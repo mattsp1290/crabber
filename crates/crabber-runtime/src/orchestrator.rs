@@ -1,7 +1,92 @@
+mod builder;
+mod entry;
+mod events;
+mod execution;
+mod helpers;
+mod model_support;
+mod model_turn;
+mod recovery;
+pub(crate) use helpers::{RecordedCall, read_recorded_call, unknown_tool_arguments};
+use helpers::{
+    ToolRun, ensure_lease, invalid_provider, is_reserved_arguments, push_part, request_error,
+    runtime_error_output, storable_call_arguments, storable_error_text, validate_arguments,
+};
+mod close_dependents;
+mod driver;
+mod heartbeat;
+mod host_close;
+mod model_callbacks;
+mod notifications;
+mod reasoning;
+mod worker;
+pub use close_dependents::RuntimeDependentCloseReport;
+use heartbeat::HeartbeatGuard;
+pub use host_close::{CloseObservation, RuntimeCloseObservation, RuntimeCloseReport};
+mod host_callbacks;
+#[path = "orchestrator/observation_lifetime.rs"]
+mod observation_lifetime;
+use observation_lifetime::ObservationLifetime;
+#[path = "orchestrator/frontend.rs"]
+mod frontend;
+#[path = "orchestrator/frontend_control.rs"]
+mod frontend_control;
+#[path = "orchestrator/tool_recovery.rs"]
+mod tool_recovery;
+pub use frontend_control::{ContinueFrontend, RecoverFrontend};
+pub use tool_recovery::RecoverTool;
+#[path = "orchestrator/tool_continuation.rs"]
+mod tool_continuation;
+#[path = "orchestrator/tool_suspension.rs"]
+mod tool_suspension;
+pub use tool_continuation::{ContinueTool, ToolContinuation};
+#[path = "orchestrator/admission.rs"]
+mod admission;
+#[path = "orchestrator/approval.rs"]
+mod approval;
+#[path = "orchestrator/approval_recovery.rs"]
+mod approval_recovery;
+pub use approval_recovery::RecoverApproval;
+mod attempt_control;
+#[path = "orchestrator/continuation.rs"]
+mod continuation;
+mod continuation_source;
+mod management;
+#[path = "orchestrator/queue.rs"]
+mod queue;
+mod queue_context;
+mod run_control;
+#[path = "orchestrator/session_owner.rs"]
+mod session_owner;
+pub use queue::QueueControl;
+#[path = "orchestrator/phase_control.rs"]
+mod phase_control;
+mod public_session;
+pub use continuation::{Continuation, ContinueApproval};
+#[path = "orchestrator/attempt.rs"]
+mod attempt;
+#[path = "orchestrator/binding.rs"]
+mod binding;
+#[path = "orchestrator/input.rs"]
+mod input;
+#[path = "orchestrator/preparation.rs"]
+mod preparation;
+pub use preparation::{
+    PreparationRetryProgress, RetainedPreparationProgress, RetainedPreparationStatus,
+};
+#[path = "orchestrator/terminal.rs"]
+mod terminal;
+#[path = "orchestrator/tool_batch.rs"]
+mod tool_batch;
+#[path = "orchestrator/tool_execution.rs"]
+mod tool_execution;
+#[path = "orchestrator/tool_invoke.rs"]
+mod tool_invoke;
+#[path = "orchestrator/tool_phase.rs"]
+mod tool_phase;
 use crate::observation::{Measurement, result_reason};
 use crate::policy::{
-    ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
-    PermissionDecision, PermissionPolicy, StaticPolicy, ToolPipeline,
+    IdentityToolPipeline, InterruptPolicy, PermissionDecision, PermissionPolicy, StaticPolicy,
+    ToolPipeline,
 };
 use crate::{
     ModelPurpose, MonotonicClock, OperationKind, OperationalObservation, SystemMonotonicClock,
@@ -13,17 +98,17 @@ use crabber_core::event_payload::{self, StreamOutcome};
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, ContextEpoch, EpochId,
     EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunFence, RunId,
-    RunStatus, Session, SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus,
-    ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
+    RunStatus, Session, SessionContext, SessionId, SystemClock, ToolCallId, ToolCallRecord,
+    ToolCallStatus, ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    ApprovalFacade, Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext,
-    GuardDecision, HostServices, InputUnavailable, ModelCompleted, ModelRequestError,
-    ModelRequested, ModelStream as ExtensionModelStream, PromptAttemptContext,
-    PromptContributionOutcome, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled,
-    RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass,
-    ToolPrepare, ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare,
-    TurnStarted, WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
+    Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision, HostServices,
+    InputUnavailable, ModelCompleted, ModelRequestError, ModelRequested,
+    ModelStream as ExtensionModelStream, PromptAttemptContext, PromptContributionOutcome,
+    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, StateSink,
+    ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass, ToolPrepare,
+    ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare, TurnStarted,
+    WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
     WorkspaceReaderResolver, collect_prompt_contributions_with_resolver,
     prompt_contribution_failed_message, result_transform_failed_message,
 };
@@ -36,7 +121,7 @@ use crabber_session::{
     AdmissionRequestData, AdmitRequest, ClaimUnstartedAdmissionRequest, ExecutionStore, InboxKind,
     KeyedAdmitOutcome, KeyedAdmitRequest, Store, StoreError, admission_config_hash,
 };
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::StreamExt;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -68,16 +153,15 @@ impl WorkspaceReaderResolver for AttemptWorkspaceReaderResolver {
     }
 }
 
-fn admission_error(error: StoreError) -> RuntimeError {
-    if error == StoreError::Busy {
-        RuntimeError::SessionBusy
-    } else {
-        RuntimeError::Store(error)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Request {
+    /// Explicit selection or frozen host fallback for stored session defaults.
+    pub selection_policy: crabber_session::AdmissionSelectionPolicy,
+    /// Defaults and input share this captured session revision at admission.
+    pub captured_revision: Option<crabber_core::SessionRevision>,
+    /// Host-validated semantic input. None adapts the text convenience API.
+    /// With Some, text must be empty or the exact plain-text adapter shape.
+    pub input_envelope: Option<crabber_core::InputEnvelope>,
     pub session_id: Option<SessionId>,
     pub workspace_id: String,
     pub directory: String,
@@ -88,19 +172,22 @@ pub struct Request {
     pub max_output_tokens: Option<u32>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum InitialEntry {
     Unkeyed,
     Keyed,
+    RecoveredKeyed(Option<crabber_session::session_owner::driver::NativeClaimLocator>),
 }
 struct InitialRequest {
     request: Request,
     entry: InitialEntry,
+    bound: Option<crabber_providers::BoundProvider>,
 }
 
 impl Request {
     fn admission_data(&self) -> Result<AdmissionRequestData, StoreError> {
         Ok(AdmissionRequestData {
+            selection_policy: self.selection_policy.clone(),
             session_id: self.session_id.clone().ok_or(StoreError::NotFound)?,
             workspace_id: self.workspace_id.clone(),
             directory: self.directory.clone(),
@@ -114,6 +201,9 @@ impl Request {
     }
     fn from_admission(data: AdmissionRequestData) -> Self {
         Self {
+            selection_policy: data.selection_policy,
+            captured_revision: None,
+            input_envelope: None,
             session_id: Some(data.session_id),
             workspace_id: data.workspace_id,
             directory: data.directory,
@@ -165,8 +255,9 @@ pub struct RunResult {
 }
 
 /// Outcome of a recovery sweep: the runs it recovered and the expired runs it
-/// left unfinished. A skipped run keeps its status and fence; the host can
-/// inspect it with `resume` and dispose of it with fenced abandonment.
+/// left unfinished. Reconciliation never dispatches a Started/unknown attempt.
+/// A failed atomic first-reservation check may already have rotated an expired
+/// run fence; that ownership change does not establish an execution outcome.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecoverReport {
     pub recovered: Vec<RunResult>,
@@ -178,21 +269,69 @@ pub struct RecoverReport {
 pub struct SkippedRun {
     pub session_id: SessionId,
     pub run_id: RunId,
-    pub reason: StoreError,
+    pub reason: RecoverySkipReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoverySkipReason {
+    Store(StoreError),
+    Attempt(crabber_session::AttemptError),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
+    #[error("original preparation must be reconciled before new work")]
+    PreparationRecoveryRequired,
+    #[error("admission already committed")]
+    AdmissionAlreadyCommitted(
+        crabber_session::session_owner::preparation::PreparationAdmissionReceipt,
+    ),
+    #[error("preparation requires explicit reconciliation: {source}")]
+    PreparationIncomplete {
+        preparation: Box<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        #[source]
+        source: Box<RuntimeError>,
+    },
+    #[error("session ownership: {0}")]
+    SessionOwner(#[from] crabber_session::session_owner::SessionOwnerError),
+    #[error("durable run control: {0}")]
+    RunControl(#[from] crabber_session::RunControlError),
+    #[error("agent host is closed")]
+    HostClosed,
     #[error("session is busy")]
     SessionBusy,
+    #[error("session management: {0}")]
+    Management(#[from] crabber_session::ManagementError),
     #[error("store: {0}")]
     Store(#[from] StoreError),
     #[error("admission execution: {0}")]
     AdmissionExecution(#[from] AdmissionExecutionError),
+    #[error("execution attempt: {0}")]
+    Attempt(#[from] crabber_session::AttemptError),
+    #[error("durable approval: {0}")]
+    Approval(#[from] crabber_session::ApprovalError),
+    #[error("tool continuation: {0}")]
+    ToolContinuation(#[from] crabber_session::ToolContinuationError),
+    #[error("tool checkpoint boundary outcome is unknown")]
+    ToolContinuationBoundaryUnknown {
+        run_id: RunId,
+        operation_id: crabber_core::ControlId,
+        reason: crabber_session::ToolContinuationError,
+    },
+    #[error("approval boundary persistence outcome is unknown")]
+    ApprovalBoundaryUnknown {
+        run_id: RunId,
+        operation_id: crabber_core::ControlId,
+        reason: crabber_session::ApprovalError,
+    },
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
+    #[error("provider binding: {0}")]
+    ProviderBinding(#[from] crabber_providers::ProviderBindingError),
     #[error("extension: {0}")]
     Extension(String),
+    #[error(transparent)]
+    ExtensionPlan(#[from] crabber_extension::ExtensionError),
     #[error("turn limit reached")]
     TurnLimit,
     #[error("run task stopped")]
@@ -205,6 +344,36 @@ pub enum RuntimeError {
     LeaseLost,
     #[error("run interrupted")]
     Interrupted,
+    /// The task stopped without acknowledged terminal persistence. Reconcile
+    /// the retained run and events; this error proves neither rollback nor commit.
+    ///
+    /// Unstable compatibility variant: the current native execution driver
+    /// reports `AttemptBoundaryUnknown` for an unacknowledged attempt conclusion.
+    /// This variant is retained but is not emitted by that driver.
+    #[error("run terminal persistence outcome is unknown")]
+    TerminalOutcomeUnknown {
+        run_id: RunId,
+        #[source]
+        reason: StoreError,
+    },
+    #[error("attempt boundary persistence outcome is unknown")]
+    AttemptBoundaryUnknown {
+        run_id: RunId,
+        reason: crabber_session::AttemptError,
+    },
+    #[error("attempt resource cleanup is incomplete")]
+    AttemptCleanupIncomplete { run_id: RunId },
+    #[error("native tool phase outcome requires reconciliation")]
+    PhaseOutcomeUnknown {
+        run_id: RunId,
+        phase: Box<crabber_session::PhaseTarget>,
+        operation_id: Option<crabber_core::ControlId>,
+        reason: crabber_session::PhaseError,
+    },
+    #[error("tool execution outcome requires reconciliation")]
+    ToolOutcomeUnknown { run_id: RunId, call_id: ToolCallId },
+    #[error("run requires its durable continuation claim")]
+    DurableContinuationRequired { run_id: RunId },
     #[error("run paused")]
     Paused,
     #[error("run plan changed since checkpoint")]
@@ -213,6 +382,7 @@ pub enum RuntimeError {
 
 #[derive(Debug, Clone)]
 pub struct TurnSnapshot {
+    pub context: Vec<crabber_core::InputContext>,
     pub identity: RequestIdentity,
     pub selection: Selection,
     pub messages: Vec<Message>,
@@ -375,17 +545,40 @@ impl Streamer for SingleUseStreamer {
 #[derive(Clone)]
 pub struct Orchestrator {
     store: Arc<dyn Store>,
+    behavior_fingerprint: crabber_core::InputFingerprint,
+    host_callbacks: crabber_core::InputFingerprint,
+    execution_tasks: crate::execution_tasks::ExecutionTasks,
+    worker_resources: Option<crate::execution_tasks::WorkerResources>,
+    root_scope: Option<crate::execution_tasks::RootScope>,
+    close_coordinator: Arc<host_close::CloseCoordinator>,
+    worker_callbacks: Option<crabber_extension::CallbackInvocationCapability>,
+    session_invocations: crate::session_invocations::SessionInvocations,
+    session_services: crate::session_services::SessionServices,
+    preparation_scope: Option<preparation::scope::PlanScope>,
+    retained_preparations: preparation::retained::RetainedPreparations,
+    pending_drivers: crabber_session::session_owner::owned_scope::PendingDriverTasks,
+    owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
+    source_delivery: Option<Arc<crate::public_source::SourceDelivery>>,
+    observation_lifetime: Arc<ObservationLifetime>,
+    tool_resumes: Arc<
+        std::sync::Mutex<std::collections::BTreeMap<ToolCallId, crabber_session::ToolPhaseResume>>,
+    >,
+    frontend_resumes: Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<ToolCallId, crabber_session::FrontendPhaseResume>,
+        >,
+    >,
+    tool_suspensions: Arc<std::sync::Mutex<Vec<tool_suspension::PendingSuspension>>>,
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Arc<dyn RunPlanProvider>,
+    contextual_provider: Option<Arc<crabber_extension::ContextualPlanProvider>>,
     clock: Arc<dyn Clock>,
     monotonic_clock: Arc<dyn MonotonicClock>,
     observer: Arc<dyn Observer>,
     model_stream: Arc<dyn ModelStream>,
     policy: Arc<dyn PermissionPolicy>,
-    approver: Arc<dyn ApprovalRequester>,
     tool_pipeline: Arc<dyn ToolPipeline>,
-    pipeline_cleanup: CleanupTracker,
     host_services: HostServices,
     max_turns: usize,
     heartbeat_interval: Duration,
@@ -418,6 +611,15 @@ impl From<&Session> for RunSession {
 /// The request saved in a paused run's checkpoint, written and read only here.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CheckpointRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "crabber_session::AdmissionSelectionPolicy::is_explicit"
+    )]
+    selection_policy: crabber_session::AdmissionSelectionPolicy,
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    input_digest: Option<String>,
     workspace_id: String,
     directory: String,
     title: String,
@@ -430,6 +632,12 @@ struct CheckpointRequest {
 impl CheckpointRequest {
     fn new(request: &Request) -> Self {
         Self {
+            selection_policy: request.selection_policy.clone(),
+            version: 2,
+            input_digest: request
+                .input_envelope
+                .as_ref()
+                .map(|input| admission_config_hash(&serde_json::json!(input))),
             workspace_id: request.workspace_id.clone(),
             directory: request.directory.clone(),
             title: request.title.clone(),
@@ -461,6 +669,9 @@ impl CheckpointRequest {
     }
     fn into_request(self, session_id: &SessionId) -> Request {
         Request {
+            selection_policy: self.selection_policy,
+            captured_revision: None,
+            input_envelope: None,
             session_id: Some(session_id.clone()),
             workspace_id: self.workspace_id,
             directory: self.directory,
@@ -478,18 +689,18 @@ impl CheckpointRequest {
 
 #[derive(Default)]
 pub struct OrchestratorBuilder {
+    behavior_fingerprint: Option<crabber_core::InputFingerprint>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Option<Arc<dyn RunPlanProvider>>,
+    contextual_provider: Option<Arc<crabber_extension::ContextualPlanProvider>>,
     clock: Option<Arc<dyn Clock>>,
     monotonic_clock: Option<Arc<dyn MonotonicClock>>,
     observer: Option<Arc<dyn Observer>>,
     model_stream: Option<Arc<dyn ModelStream>>,
     policy: Option<Arc<dyn PermissionPolicy>>,
-    approver: Option<Arc<dyn ApprovalRequester>>,
     tool_pipeline: Option<Arc<dyn ToolPipeline>>,
-    pipeline_cleanup: Option<CleanupTracker>,
     host_services: Option<HostServices>,
     max_turns: Option<usize>,
     heartbeat_interval: Option<Duration>,
@@ -499,186 +710,47 @@ pub struct OrchestratorBuilder {
     context_observer: Option<ResultContextObserver>,
 }
 
-impl OrchestratorBuilder {
-    #[cfg(test)]
-    pub(crate) fn context_observer(mut self, observer: ResultContextObserver) -> Self {
-        self.context_observer = Some(observer);
-        self
-    }
-
-    #[must_use]
-    pub fn store(mut self, value: Arc<dyn Store>) -> Self {
-        self.store = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn resolver(mut self, value: Arc<dyn Resolver>) -> Self {
-        self.resolver = Some(value);
-        self
-    }
-    /// Grants typed model middleware host-authorized, per-workspace readers.
-    #[must_use]
-    pub fn workspace_reader_resolver(mut self, value: Arc<dyn WorkspaceReaderResolver>) -> Self {
-        self.workspace_reader_resolver = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn plan_provider(mut self, value: Arc<dyn RunPlanProvider>) -> Self {
-        self.plan_provider = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn clock(mut self, value: Arc<dyn Clock>) -> Self {
-        self.clock = Some(value);
-        self
-    }
-    /// Injects execution timing independently of event/lease wall time.
-    #[must_use]
-    pub fn monotonic_clock(mut self, value: Arc<dyn MonotonicClock>) -> Self {
-        self.monotonic_clock = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn observer(mut self, value: Arc<dyn Observer>) -> Self {
-        self.observer = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn model_stream(mut self, value: Arc<dyn ModelStream>) -> Self {
-        self.model_stream = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn policy(mut self, value: Arc<dyn PermissionPolicy>) -> Self {
-        self.policy = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn approver(mut self, value: Arc<dyn ApprovalRequester>) -> Self {
-        self.approver = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn tool_pipeline(mut self, value: Arc<dyn ToolPipeline>) -> Self {
-        self.tool_pipeline = Some(value);
-        self
-    }
-    /// Tracker handed to the pre-stage. Default: a detached tracker.
-    #[must_use]
-    pub fn pipeline_cleanup(mut self, tracker: CleanupTracker) -> Self {
-        self.pipeline_cleanup = Some(tracker);
-        self
-    }
-    #[must_use]
-    pub fn host_services(mut self, value: HostServices) -> Self {
-        self.host_services = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn max_turns(mut self, value: usize) -> Self {
-        self.max_turns = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn heartbeat_interval(mut self, value: Duration) -> Self {
-        self.heartbeat_interval = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn execution_mode(mut self, value: ExecutionMode) -> Self {
-        self.execution_mode = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn compaction(mut self, value: CompactionPolicy) -> Self {
-        self.compaction = Some(value);
-        self
-    }
-    #[must_use]
-    pub fn config_snapshot(mut self, value: ConfigSnapshot) -> Self {
-        self.execution_mode = Some(value.execution_mode);
-        self.compaction = Some(value.compaction);
-        self.max_turns = Some(value.max_turns);
-        self
-    }
-
-    /// Builds an orchestrator from its required dependencies.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Missing` if the store, resolver, or plan provider is absent.
-    pub fn build(self) -> Result<Orchestrator, RuntimeError> {
-        let heartbeat_interval = self.heartbeat_interval.unwrap_or(Duration::from_secs(5));
-        if heartbeat_interval.is_zero() || heartbeat_interval >= Duration::from_secs(15) {
-            return Err(RuntimeError::InvalidConfiguration(
-                "heartbeat interval must be positive and below 15 seconds",
-            ));
-        }
-        if matches!(
-            self.execution_mode,
-            Some(ExecutionMode::Parallel { max: 0 })
-        ) {
-            return Err(RuntimeError::InvalidConfiguration(
-                "parallel max must be positive",
-            ));
-        }
-        if self.max_turns == Some(0) {
-            return Err(RuntimeError::InvalidConfiguration(
-                "max turns must be positive",
-            ));
-        }
-        let compaction = self.compaction.unwrap_or_default();
-        if !(0.0..=1.0).contains(&compaction.trigger_ratio) || compaction.trigger_ratio == 0.0 {
-            return Err(RuntimeError::InvalidConfiguration(
-                "compaction trigger ratio must be in (0,1]",
-            ));
-        }
-        Ok(Orchestrator {
-            store: self.store.ok_or(RuntimeError::Missing("store"))?,
-            resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
-            workspace_reader_resolver: self.workspace_reader_resolver,
-            plan_provider: self
-                .plan_provider
-                .ok_or(RuntimeError::Missing("plan provider"))?,
-            clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
-            monotonic_clock: self
-                .monotonic_clock
-                .unwrap_or_else(|| Arc::new(SystemMonotonicClock::default())),
-            observer: self.observer.unwrap_or_else(|| Arc::new(NoopObserver)),
-            model_stream: self
-                .model_stream
-                .unwrap_or_else(|| Arc::new(DirectModelStream)),
-            policy: self
-                .policy
-                .unwrap_or_else(|| Arc::new(StaticPolicy::default())),
-            approver: self
-                .approver
-                .unwrap_or_else(|| Arc::new(DefaultDenyApprover)),
-            tool_pipeline: self
-                .tool_pipeline
-                .unwrap_or_else(|| Arc::new(IdentityToolPipeline)),
-            pipeline_cleanup: self
-                .pipeline_cleanup
-                .unwrap_or_else(CleanupTracker::detached),
-            host_services: self.host_services.unwrap_or_default(),
-            max_turns: self.max_turns.unwrap_or(64),
-            heartbeat_interval,
-            execution_mode: self.execution_mode.unwrap_or_default(),
-            compaction,
-            #[cfg(test)]
-            context_observer: self.context_observer,
-        })
-    }
-}
-
 pub struct RunHandle {
     session_id: SessionId,
     run_id: RunId,
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
     done: oneshot::Receiver<Result<RunResult, RuntimeError>>,
+    task: Arc<crate::execution_tasks::ExecutionTask>,
+    tasks: crate::execution_tasks::ExecutionTasks,
+    worker_resources: Arc<crate::execution_tasks::WorkerResources>,
     completion: watch::Receiver<bool>,
     cancellation: CancellationToken,
+    events: Option<crate::RunEvents>,
+}
+
+/// Cloneable local control/observation of one worker. It carries no fence and
+/// grants no durable cancellation authority. Dropping it does not cancel work.
+#[derive(Clone)]
+pub struct RunControl {
+    session_id: SessionId,
+    run_id: RunId,
+    cancellation: CancellationToken,
+    completion: watch::Receiver<bool>,
+}
+impl RunControl {
+    /// Signal local cancellation. This is not a persisted request/acknowledgement.
+    pub fn interrupt(&self) {
+        self.cancellation.cancel();
+    }
+    #[must_use]
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+    #[must_use]
+    pub fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+    /// Publication of the worker result; never a join or proof of cleanup.
+    #[must_use]
+    pub fn completion_signal(&self) -> watch::Receiver<bool> {
+        self.completion.clone()
+    }
 }
 
 struct RunStateSink {
@@ -719,74 +791,42 @@ impl StateSink for RunStateSink {
     }
 }
 
-struct HeartbeatGuard {
-    task: tokio::task::JoinHandle<()>,
-    lost: Arc<AtomicBool>,
-    signal: watch::Receiver<bool>,
-    _signal_sender: watch::Sender<bool>,
-}
+impl RunHandle {
+    #[cfg(test)]
+    pub(crate) fn worker_resources_for_test(&self) -> &crate::execution_tasks::WorkerResources {
+        &self.worker_resources
+    }
 
-impl HeartbeatGuard {
-    fn start(
-        execution: Arc<dyn ExecutionStore>,
-        store: Arc<dyn Store>,
-        fence: RunFence,
-        clock: Arc<dyn Clock>,
-        period: Duration,
-    ) -> Self {
-        let lost = Arc::new(AtomicBool::new(false));
-        let lost_in_task = Arc::clone(&lost);
-        let (sender, signal) = watch::channel(false);
-        let task_sender = sender.clone();
-        let task = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                if execution
-                    .renew_lease(clock.now() + time::Duration::seconds(30))
-                    .await
-                    .is_err()
-                {
-                    let settled_by_this_owner = store
-                        .get_run(&fence.run_id)
-                        .await
-                        .ok()
-                        .flatten()
-                        .is_some_and(|run| {
-                            run.status.is_terminal() && run.claim_token == fence.claim_token
-                        });
-                    if settled_by_this_owner {
-                        break;
-                    }
-                    lost_in_task.store(true, Ordering::SeqCst);
-                    let _ = task_sender.send(true);
-                    break;
-                }
-            }
-        });
-        Self {
-            task,
-            lost,
-            signal,
-            _signal_sender: sender,
+    /// Clone local control while retaining sole ownership of the event receiver.
+    #[must_use]
+    pub fn control(&self) -> RunControl {
+        debug_assert!(
+            self.worker_resources
+                .matches(&self.session_id, &self.run_id)
+        );
+        RunControl {
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            cancellation: self.cancellation.clone(),
+            completion: self.completion.clone(),
         }
     }
-}
 
-impl Drop for HeartbeatGuard {
-    fn drop(&mut self) {
-        self.task.abort();
+    /// Take the sole bounded event receiver for this worker.
+    /// # Panics
+    /// Panics if the receiver was already taken.
+    #[must_use]
+    pub fn events(&mut self) -> crate::RunEvents {
+        self.events.take().expect("events receiver already taken")
     }
-}
 
-impl RunHandle {
-    /// Cancels the active provider stream or tool body. The run task performs
-    /// durable settlement before `done` resolves.
+    /// Requests cancellation of the active provider stream or tool body.
+    /// `done` reports settlement failures, including unknown durable outcomes.
     pub fn interrupt(&self) {
         self.cancellation.cancel();
     }
-    /// Signals when the run task has returned, whether it succeeded or failed.
+    /// Signals publication of the worker result, whether success or failure.
+    /// This signal is not a join or proof of durable outcome/cleanup.
     #[must_use]
     pub fn completion_signal(&self) -> watch::Receiver<bool> {
         self.completion.clone()
@@ -799,13 +839,18 @@ impl RunHandle {
     pub fn run_id(&self) -> &RunId {
         &self.run_id
     }
-    /// Waits for the run's terminal result.
+    /// Waits for the worker result and its actual task join. This joins the
+    /// worker only; extension-owned resources require separate cleanup.
     ///
     /// # Errors
     ///
     /// Returns the run failure or `TaskStopped` if its task ended unexpectedly.
     pub async fn done(self) -> Result<RunResult, RuntimeError> {
-        self.done.await.map_err(|_| RuntimeError::TaskStopped)?
+        let result = self.done.await;
+        if self.tasks.join(&self.task).await != crate::TaskTermination::Returned {
+            return Err(RuntimeError::TaskStopped);
+        }
+        result.map_err(|_| RuntimeError::TaskStopped)?
     }
     /// Queues input for the next model request.
     ///
@@ -824,1970 +869,132 @@ impl RunHandle {
         self.enqueue(InboxKind::FollowUp, text.into()).await
     }
     async fn enqueue(&self, kind: InboxKind, text: String) -> Result<(), RuntimeError> {
-        let message = user_message(self.session_id.clone(), text, self.clock.now());
-        self.store
-            .enqueue_inbox(&self.session_id, kind, message)
-            .await?;
-        Ok(())
+        let store = self.store.clone();
+        let session = self.session_id.clone();
+        let clock = self.clock.clone();
+        let admitted = self
+            .tasks
+            .admit(Some(session.clone()), move |scope| async move {
+                if scope.cancellation().is_cancelled() {
+                    return Err(RuntimeError::HostClosed);
+                }
+                let message = user_message(session.clone(), text, clock.now());
+                store.enqueue_inbox(&session, kind, message).await?;
+                Ok(())
+            })?;
+        let result = admitted.result.await;
+        if self.tasks.join(&admitted.task).await != crate::TaskTermination::Returned {
+            return Err(RuntimeError::TaskStopped);
+        }
+        result.map_err(|_| RuntimeError::TaskStopped)?
     }
 }
 
 impl Orchestrator {
+    async fn join_worker_resources(&self, run: &RunId, bound: Duration) -> bool {
+        let joined = match &self.worker_resources {
+            Some(resources) if resources.run_matches(run) => resources.join(bound).await,
+            _ => false,
+        };
+        // Refuse known failed OR still-unobserved kernel callbacks. This is a
+        // negative gate over actual joins, not a whole-Run ownership proof.
+        joined
+            && self
+                .worker_callbacks
+                .as_ref()
+                .is_none_or(|callbacks| callbacks.check_observed_joins().is_ok())
+    }
+    #[cfg(test)]
+    pub(crate) fn execution_tasks_for_test(&self) -> &crate::execution_tasks::ExecutionTasks {
+        &self.execution_tasks
+    }
+
     #[must_use]
     pub fn builder() -> OrchestratorBuilder {
         OrchestratorBuilder::default()
     }
 
-    /// Rebuilds the latest assistant batch when a resumed process died after
-    /// committing its message but before staging every call.
-    async fn reconcile_committed_assistant(
-        &self,
-        execution: &dyn ExecutionStore,
-        run: &crabber_core::Run,
-        plan: &RunPlan,
-        lease_lost: &AtomicBool,
-    ) -> Result<Option<bool>, RuntimeError> {
-        if run.status != RunStatus::Paused {
-            return Ok(None);
-        }
-        let Some(checkpoint) = &run.checkpoint else {
-            return Ok(None);
-        };
-        let paused_calls: HashSet<&str> = checkpoint
-            .get("pending_calls")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        if paused_calls.is_empty() {
-            return Ok(None);
-        }
-        let history = self.store.list_all_messages(&run.session_id).await?;
-        let Some(anchor) = history.iter().rposition(|message| message.parts.iter().any(|part|
-            matches!(&part.content, ContentBlock::ToolCall { call_id, .. } if paused_calls.contains(call_id.0.as_str())))) else {
-            return Ok(None);
-        };
-        let latest = history[anchor + 1..].iter().rev().find(|message| {
-            message.run_id.as_ref() == Some(&run.id)
-                && message.role == Role::Assistant
-                && message
-                    .parts
-                    .iter()
-                    .any(|part| part.kind != PartKind::CompactionSummary)
-        });
-        let Some(latest) = latest else {
-            return Ok(None);
-        };
-        let settled: HashSet<ToolCallId> = history
-            .iter()
-            .flat_map(|message| &message.parts)
-            .filter_map(|part| match &part.content {
-                ContentBlock::ToolResult { call_id, .. } => Some(call_id.clone()),
-                _ => None,
-            })
-            .collect();
-        let unfinished: HashSet<ToolCallId> = self
-            .store
-            .list_unfinished_tool_calls(&run.id)
-            .await?
-            .into_iter()
-            .map(|call| call.id)
-            .collect();
-        let mut has_calls = false;
-        for part in &latest.parts {
-            if let ContentBlock::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } = &part.content
-            {
-                has_calls = true;
-                if !settled.contains(call_id) && !unfinished.contains(call_id) {
-                    ensure_lease(lease_lost)?;
-                    self.stage_tool(
-                        execution,
-                        &run.session_id,
-                        &run.id,
-                        plan,
-                        PendingCall {
-                            message_id: Some(latest.id.clone()),
-                            turn_id: None,
-                            args_completed: true,
-                            id: call_id.clone(),
-                            name: name.clone(),
-                            raw: String::new(),
-                            arguments: Some(arguments.clone()),
-                        },
-                        lease_lost,
-                    )
-                    .await?;
-                }
-            }
-        }
-        Ok(Some(has_calls))
+    /// Declared nonsecret native behavior identity, required for exact recovery.
+    #[must_use]
+    pub fn behavior_fingerprint(&self) -> &crabber_core::InputFingerprint {
+        &self.behavior_fingerprint
     }
 
-    /// Reclaims a paused or expired run and finishes its persisted tool calls.
-    ///
-    /// # Errors
-    ///
-    /// Returns a conflict for a live lease, or `PlanChanged` if registered
-    /// tools and handlers no longer match the admitted plan.
-    pub async fn resume(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
-        self.resume_with_context(run_id, None).await
+    /// Joins retained initial, keyed-recovery and resume workers within a shared
+    /// deadline. A dropped run handle leaves its worker retained here.
+    /// This does not stop ingress, cancel work, or prove durable settlement or
+    /// external resource cleanup. Inspect `pending`, `pending_preparations` and
+    /// tool `resources` and `background_tasks` (sealed state, pending joins and failures). Active tool scopes
+    /// remain open; the host must stop its ingress before a final drain.
+    pub async fn drain_execution_tasks(&self, bound: Duration) -> crate::ExecutionTaskDrain {
+        self.execution_tasks.drain(bound).await
     }
 
-    /// Reclaims one run with explicit current attempt correlation identity.
-    /// The host persists predecessor identity separately from execution authority.
-    /// # Errors
-    /// Returns the same fencing and plan errors as `resume`.
-    pub async fn resume_with_context(
-        &self,
-        run_id: &RunId,
-        context: Option<TraceContext>,
-    ) -> Result<RunResult, RuntimeError> {
-        Box::pin(self.with_context(context).resume_attempt(run_id)).await
-    }
-
-    async fn resume_attempt(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
-        let run = self
-            .store
-            .get_run(run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        // Stored-record identity check, before plan acquisition, the claim and
-        // any pending tool execution: a rejection leaves the run untouched.
-        let validated = self.validated_session(&run).await?;
-        Box::pin(self.resume_loaded(run, validated)).await
-    }
-
-    /// Loads the run's persisted session and compares it with the request saved
-    /// in the run checkpoint, when there is one.
-    async fn validated_session(
-        &self,
-        run: &crabber_core::Run,
-    ) -> Result<(RunSession, Option<Request>), StoreError> {
-        let session = self
-            .store
-            .get_session(&run.session_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        let saved = CheckpointRequest::from_checkpoint(run.checkpoint.as_ref())?;
-        if let Some(saved) = &saved {
-            session.ensure_identity(&saved.workspace_id, &saved.directory)?;
-        }
-        Ok((
-            RunSession::from(&session),
-            saved.map(|saved| saved.into_request(&session.id)),
-        ))
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn resume_loaded(
-        &self,
-        run: crabber_core::Run,
-        (session, saved): (RunSession, Option<Request>),
-    ) -> Result<RunResult, RuntimeError> {
-        let run_id = &run.id.clone();
-        if self.store.admission_execution_state(run_id).await?
-            == Some(crabber_session::AdmissionExecutionState::Unstarted)
-        {
-            return Err(StoreError::AdmissionRecoveryRequired.into());
-        }
-        let plan = self
-            .plan_provider
-            .acquire_plan(&run.session_id)
-            .await
-            .map_err(|error| RuntimeError::Extension(error.to_string()))?;
-        if plan.fingerprint().to_string() != run.plan_fingerprint {
-            plan.release();
-            return Err(RuntimeError::PlanChanged);
-        }
-        let fence = self
-            .store
-            .claim_expired_run(run_id, &RunId::new().to_string())
-            .await?;
-        let measurement_lost = Arc::new(AtomicBool::new(false));
-        let measurement_cancellation = CancellationToken::new();
-        let mut measurement = Measurement::new(
-            self.observer.as_ref(),
-            self.monotonic_clock.as_ref(),
-            &run.session_id,
-            run_id,
-            OperationKind::Run,
-            &measurement_cancellation,
-            &measurement_lost,
-        );
-        let execution = match self.store.execution(fence.clone()).await {
-            Ok(execution) => execution,
-            Err(error) => {
-                if self.verified_lease_loss(&fence).await {
-                    measurement_lost.store(true, Ordering::SeqCst);
-                }
-                return Err(error.into());
-            }
-        };
-        let execution: Arc<dyn ExecutionStore> = execution.into();
-        let heartbeat = HeartbeatGuard::start(
-            Arc::clone(&execution),
-            Arc::clone(&self.store),
-            fence.clone(),
-            Arc::clone(&self.clock),
-            self.heartbeat_interval,
-        );
-        let mut signal = heartbeat.signal.clone();
-        let lost = Arc::clone(&heartbeat.lost);
-        let cancellation = CancellationToken::new();
-        let work_cancellation = cancellation.clone();
-        let state_sink: Arc<dyn StateSink> = Arc::new(RunStateSink {
-            store: Arc::clone(&self.store),
-            execution: Arc::clone(&execution),
-            session_id: run.session_id.clone(),
-            lost: Arc::clone(&lost),
-        });
-        let work_fence = fence.clone();
-        let observed_lost = Arc::clone(&measurement_lost);
-        let resumed_work = async move {
-            let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
-            execution.append_event(resumed.clone()).await?;
-            self.observer.emit(&resumed);
-            let committed_turn = self
-                .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
-                .await?;
-            let mut interrupted = false;
-            // D10 fixed settlement: Running calls and non-retry-safe Pending calls
-            // outside a Paused run get only runtime-authored interrupted text.
-            // No executor, pre-stage, result transform or final redactor runs here.
-            for call in self.store.list_unfinished_tool_calls(run_id).await? {
-                if call.status == ToolCallStatus::Running
-                    || (run.status != RunStatus::Paused && !call.retry_safe)
-                {
-                    if call.status == ToolCallStatus::Pending {
-                        let event = self.event(&run.session_id, run_id, EventKind::ToolCallRunning);
-                        execution.claim_tool_call(&call.id, event).await?;
-                    }
-                    self.settle_interrupted_call(
-                        execution.as_ref(),
-                        &run.session_id,
-                        run_id,
-                        &plan,
-                        &call,
-                        None,
-                    )
-                    .await?;
-                    interrupted = true;
-                    continue;
-                }
-                // D10 re-execution: retain durable identity and input, skip ToolPrepare,
-                // and rerun the executor, pre-stage and full result chain.
-                let pending = PendingCall {
-                    message_id: None,
-                    turn_id: None,
-                    args_completed: true,
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    raw: String::new(),
-                    arguments: Some(call.arguments.clone()),
-                };
-                self.execute_tool(
-                    execution.as_ref(),
-                    &session,
-                    run_id,
-                    &plan,
-                    pending,
-                    Some(call),
-                    None,
-                    &work_cancellation,
-                    lost.as_ref(),
-                )
-                .await?;
-            }
-            if run.status == RunStatus::Paused
-                && let Some(checkpoint) = &run.checkpoint
-                && let Some(request) = saved
-            {
-                let usage = checkpoint
-                    .get("usage")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok())
-                    .unwrap_or_default();
-                if committed_turn == Some(false) {
-                    let event = self.run_settled_event(
-                        &run.session_id,
-                        run_id,
-                        RunStatus::Completed,
-                        &usage,
-                        run.created_at,
-                    );
-                    match execution
-                        .settle_run(RunStatus::Completed, None, usage.clone(), event.clone())
-                        .await
-                    {
-                        Ok(()) => {
-                            self.observer.emit(&event);
-                            plan.release();
-                            return Ok(RunResult {
-                                session_id: run.session_id,
-                                run_id: run_id.clone(),
-                                status: RunStatus::Completed,
-                                usage,
-                            });
-                        }
-                        Err(StoreError::PendingInput) => {
-                            self.claim_input(execution.as_ref(), InboxKind::Steer)
-                                .await?;
-                            self.claim_input(execution.as_ref(), InboxKind::FollowUp)
-                                .await?;
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                self.emit_durable(
-                    execution.as_ref(),
-                    &run.session_id,
-                    run_id,
-                    &plan,
-                    EventKind::TurnCompleted,
-                )
-                .await?;
-                let outcome = self
-                    .run_loop(
-                        execution.as_ref(),
-                        run_id,
-                        &session,
-                        &request,
-                        &plan,
-                        &work_cancellation,
-                        false,
-                        usage,
-                        lost.as_ref(),
-                        &std::sync::Mutex::new(None),
-                    )
-                    .await;
-                let result = match outcome {
-                    Ok(usage) => Ok(RunResult {
-                        session_id: run.session_id.clone(),
-                        run_id: run_id.clone(),
-                        status: RunStatus::Completed,
-                        usage,
-                    }),
-                    Err(RuntimeError::Paused) => Ok(RunResult {
-                        session_id: run.session_id.clone(),
-                        run_id: run_id.clone(),
-                        status: RunStatus::Paused,
-                        usage: Usage::default(),
-                    }),
-                    Err(error) => {
-                        if lost.load(Ordering::SeqCst)
-                            || matches!(error, RuntimeError::LeaseLost)
-                            || self.verified_lease_loss(&work_fence).await
-                        {
-                            observed_lost.store(true, Ordering::SeqCst);
-                            plan.release();
-                            return Err(error);
-                        }
-                        self.settle_unfinished_calls(
-                            execution.as_ref(),
-                            &run.session_id,
-                            run_id,
-                            &plan,
-                            true,
-                            None,
-                        )
-                        .await?;
-                        let event = self.run_settled_event(
-                            &run.session_id,
-                            run_id,
-                            RunStatus::Failed,
-                            &Usage::default(),
-                            run.created_at,
-                        );
-                        execution
-                            .settle_run(
-                                RunStatus::Failed,
-                                Some(storable_error_text(&error)),
-                                Usage::default(),
-                                event.clone(),
-                            )
-                            .await?;
-                        self.observer.emit(&event);
-                        Err(error)
-                    }
-                };
-                plan.release();
-                return result;
-            }
-            let status = if interrupted || run.status != RunStatus::Paused {
-                RunStatus::Interrupted
-            } else {
-                RunStatus::Completed
-            };
-            let event =
-                self.run_settled_event(&run.session_id, run_id, status, &run.usage, run.created_at);
-            execution
-                .settle_run(status, None, run.usage.clone(), event.clone())
-                .await?;
-            self.observer.emit(&event);
-            plan.release();
-            Ok(RunResult {
-                session_id: run.session_id,
-                run_id: run_id.clone(),
-                status,
-                usage: run.usage,
-            })
-        };
-        let resumed_work = crabber_extension::with_state_sink(state_sink, resumed_work);
-        tokio::pin!(resumed_work);
-        let result = tokio::select! {
-            biased;
-            update = signal.changed() => match update {
-                Ok(()) if *signal.borrow_and_update() => {
-                    cancellation.cancel();
-                    Err(RuntimeError::LeaseLost)
-                }
-                Ok(()) | Err(_) => resumed_work.as_mut().await,
-            },
-            result = &mut resumed_work => result,
-        };
-        drop(heartbeat);
-        if result.is_err() && self.verified_lease_loss(&fence).await {
-            measurement_lost.store(true, Ordering::SeqCst);
-        }
-        measurement.observation.reason = result_reason(&result);
-        result
-    }
-
-    /// Reclaims expired unfinished runs. Live leases are left to their owners.
-    /// The report also lists each expired run left unfinished, and why.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store or execution error for a run it successfully claims.
-    pub async fn recover(&self) -> Result<RecoverReport, RuntimeError> {
-        self.recover_with_context(|_| None).await
-    }
-
-    /// Selects fresh correlation independently for each eligible run.
-    /// The selector cannot grant a lease; live leases and competing claims stay fenced.
-    /// Running calls and non-retry-safe Pending calls outside Paused runs settle
-    /// with runtime-only interrupted text, bypassing the pre-stage and result chain.
-    /// Other Pending calls re-execute the full chain from their stored IDs and input
-    /// without rerunning `ToolPrepare`. There is no caller-visible cancellation source.
-    /// # Errors
-    /// Returns the same store and execution errors as `recover`.
-    pub async fn recover_with_context<F>(
-        &self,
-        mut context_for: F,
-    ) -> Result<RecoverReport, RuntimeError>
-    where
-        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
-    {
-        let mut report = RecoverReport::default();
-        for run in self.store.list_unfinished_runs().await? {
-            if run.lease_until > self.clock.now() {
-                continue;
-            }
-            let (session_id, run_id) = (run.session_id.clone(), run.id.clone());
-            let context = context_for(&run);
-            // A run whose session is missing, undecodable or drifted, or that is
-            // claimed elsewhere or awaits admission recovery, stays unfinished
-            // and is reported; it must not stop the sweep.
-            let outcome = match self.validated_session(&run).await {
-                Ok(validated) => {
-                    Box::pin(self.with_context(context).resume_loaded(run, validated)).await
-                }
-                Err(error) => Err(error.into()),
-            };
-            match outcome {
-                Ok(result) => report.recovered.push(result),
-                Err(RuntimeError::Store(
-                    reason @ (StoreError::NotFound
-                    | StoreError::Validation(_)
-                    | StoreError::SessionIdentityMismatch
-                    | StoreError::Conflict
-                    | StoreError::AdmissionRecoveryRequired),
-                )) => {
-                    report.skipped.push(SkippedRun {
-                        session_id,
-                        run_id,
-                        reason,
-                    });
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(report)
-    }
-
-    /// Fixed interruption settlement deliberately runs no pre-stage or result chain;
-    /// unfinished calls carry no tool-authored payload into persistence.
-    async fn settle_unfinished_calls(
-        &self,
-        execution: &dyn ExecutionStore,
-        session_id: &SessionId,
-        run_id: &RunId,
-        plan: &RunPlan,
-        include_pending: bool,
-        turn_id: Option<&TurnId>,
-    ) -> Result<(), RuntimeError> {
-        // execute_tool may already have settled a redacted Interrupted result.
-        // Listing only unfinished calls keeps both live and resumed cleanup single-write.
-        for call in self.store.list_unfinished_tool_calls(run_id).await? {
-            if call.status == ToolCallStatus::Pending && !include_pending {
-                continue;
-            }
-            if call.status == ToolCallStatus::Pending {
-                let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
-                running.turn_id = turn_id.cloned();
-                execution.claim_tool_call(&call.id, running).await?;
-            }
-            self.settle_interrupted_call(execution, session_id, run_id, plan, &call, turn_id)
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// Writes only the bare runtime-authored interrupted text, with no pre-stage,
-    /// transform or final redactor. Fixed settlements notify `EventPublished` only.
-    async fn settle_interrupted_call(
-        &self,
-        execution: &dyn ExecutionStore,
-        session_id: &SessionId,
-        run_id: &RunId,
-        plan: &RunPlan,
-        call: &ToolCallRecord,
-        turn_id: Option<&TurnId>,
-    ) -> Result<(), RuntimeError> {
-        let content = vec![ContentBlock::Text {
-            text: INTERRUPTED_RESULT_TEXT.into(),
-        }];
-        let message_id = MessageId::new();
-        let message = Message {
-            id: message_id.clone(),
-            session_id: session_id.clone(),
-            run_id: Some(run_id.clone()),
-            role: Role::Tool,
-            parent_id: None,
-            parts: vec![Part {
-                id: PartId::new(),
-                message_id,
-                ordinal: 0,
-                kind: PartKind::FunctionToolResult,
-                content: ContentBlock::ToolResult {
-                    call_id: call.id.clone(),
-                    content: content.clone(),
-                    is_error: true,
-                },
-            }],
-            created_at: self.clock.now(),
-        };
-        let mut event = self.event(session_id, run_id, EventKind::ToolCallSettled);
-        event.turn_id = turn_id.cloned();
-        event.payload = json!(crate::event_payload::Settlement {
-            result: event_payload::CallSettled {
-                call_id: call.id.clone(),
-                message_id: message.id.clone(),
-                content: std::borrow::Cow::Borrowed(&content),
-                is_error: true,
-            },
-            diagnostics: json!({"name": call.name, "status": "interrupted"}),
-        });
-        event.correlation = Some(call.id.to_string());
-        execution
-            .settle_tool_call(
-                &call.id,
-                ToolResult {
-                    status: ToolResultStatus::Interrupted,
-                    content,
-                },
-                message,
-                event.clone(),
-            )
-            .await?;
-        self.observer.emit(&event);
-        Self::notify_interrupted_settlement(plan, &event, false);
-        Ok(())
-    }
-
-    fn notify_interrupted_settlement(plan: &RunPlan, event: &EventRecord, protected: bool) {
-        // Notification callbacks cannot delay sibling settlement. Keep the plan lease
-        // until delivery finishes so mount shutdown still waits for these callbacks.
-        let plan = plan.clone();
-        let state_sink = crabber_extension::current_state_sink();
-        let projection = serde_json::to_value(event).unwrap_or(Value::Null);
-        tokio::spawn(async move {
-            let delivery = async {
-                plan.dispatcher
-                    .notify::<EventPublished>(projection.clone())
-                    .await;
-                if protected {
-                    plan.dispatcher
-                        .notify::<crabber_extension::ToolSettled>(projection)
-                        .await;
-                }
-            };
-            // Preserve state reads and best-effort writes; the original sink still
-            // rejects writes after terminal settlement through its execution fence.
-            if let Some(sink) = state_sink {
-                crabber_extension::with_state_sink(sink, delivery).await;
-            } else {
-                delivery.await;
-            }
-            plan.release();
-        });
-    }
-
-    /// Admits a run and starts its turn loop in the background.
-    ///
-    /// # Errors
-    ///
-    /// Returns `SessionBusy` for a session with an active run, or a plan/store error.
-    pub async fn start(&self, request: Request) -> Result<RunHandle, RuntimeError> {
-        self.start_with_context(request, None).await
-    }
-
-    /// Starts a run with validated transport metadata, excluded from its semantic fingerprint.
-    /// # Errors
-    /// Returns the same admission errors as `start`.
-    pub async fn start_with_context(
-        &self,
-        request: Request,
-        context: Option<TraceContext>,
-    ) -> Result<RunHandle, RuntimeError> {
-        let runtime = self.with_context(context);
-        let (plan, admission, _) = runtime.prepare_admission(&request).await?;
-        let admitted = self
-            .store
-            .admit_run(admission)
-            .await
-            .map_err(admission_error)?;
-        Ok(runtime.spawn_admitted(
-            request,
-            plan,
-            admitted.fence,
-            &admitted.session,
-            InitialEntry::Unkeyed,
-        ))
-    }
-
-    /// Admit with a host-selected stable session ID, or reconcile its original receipt.
-    /// # Errors
-    /// Rejects missing session ID, semantic conflicts, immutable identity changes,
-    /// busy sessions, unsupported stores, or plan/store failures.
-    pub async fn start_keyed(
-        &self,
-        request: Request,
-        options: AdmissionOptions,
-    ) -> Result<Admission, RuntimeError> {
-        self.start_keyed_with_context(request, options, None).await
-    }
-
-    /// Keyed admission with optional host identity. Replay never attaches replacement
-    /// context or executes the retained receipt; identity is not semantic input.
-    /// # Errors
-    /// Returns the same admission errors as `start_keyed`.
-    pub async fn start_keyed_with_context(
-        &self,
-        request: Request,
-        options: AdmissionOptions,
-        context: Option<TraceContext>,
-    ) -> Result<Admission, RuntimeError> {
-        if request.session_id.is_none() {
-            return Err(StoreError::Validation(
-                "keyed admission requires a stable session ID".into(),
-            )
-            .into());
-        }
-        let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
-        match self
-            .store
-            .admit_keyed_run(keyed)
-            .await
-            .map_err(admission_error)?
-        {
-            KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
-                receipt,
-                handle: self.with_context(context).spawn_admitted(
-                    request,
-                    plan,
-                    admitted.fence,
-                    &admitted.session,
-                    InitialEntry::Keyed,
-                ),
-            }),
-            KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
-        }
-    }
-
-    /// Completes an expired, durably Unstarted keyed admission with the original
-    /// semantics. Exact retries and Started/terminal evidence remain metadata-only.
-    /// # Errors
-    /// Missing evidence, semantic drift, live/stale owners, unsupported adapters,
-    /// and unknown claim responses grant no execution authority.
-    pub async fn recover_admission(
-        &self,
-        request: Request,
-        options: AdmissionOptions,
-    ) -> Result<Admission, RuntimeError> {
-        self.recover_admission_with_context(request, options, None)
-            .await
-    }
-
-    /// Recovers with fresh transport metadata, excluded from retained authority.
-    /// # Errors
-    /// Returns the same failures as `recover_admission`.
-    pub async fn recover_admission_with_context(
-        &self,
-        request: Request,
-        options: AdmissionOptions,
-        context: Option<TraceContext>,
-    ) -> Result<Admission, RuntimeError> {
-        let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
-        // Host-presented identity check, before the receipt lookup and before
-        // any replay: a drifted request never receives a replayed result.
-        let persisted = self
-            .store
-            .get_session(session)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        persisted.ensure_identity(&request.workspace_id, &request.directory)?;
-        let receipt = self
-            .store
-            .lookup_admission(session, &options.key)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        let record = self
-            .store
-            .load_admission_execution(session, &options.key)
-            .await?
-            .ok_or(AdmissionExecutionError::MissingEvidence)?;
-        let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
-        let capsule = keyed
-            .execution
-            .as_ref()
-            .ok_or(AdmissionExecutionError::MissingEvidence)?;
-        // Compare the entire capsule, including independently recomputed semantics,
-        // before terminal/Started replay or any ownership operation.
-        record.capsule.validate(&keyed)?;
-        if receipt.semantic_digest_version != 1
-            || record.receipt != receipt
-            || record.key != keyed.options.key
-            || record.capsule != *capsule
-        {
-            return Err(StoreError::AdmissionConflict.into());
-        }
-        let run = self
-            .store
-            .get_run(&receipt.run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        if run.session_id != *session
-            || run.config_hash != capsule.config_hash
-            || run.plan_fingerprint != capsule.plan_fingerprint
-        {
-            return Err(StoreError::AdmissionConflict.into());
-        }
-        if run.status.is_terminal() || record.state == AdmissionExecutionState::Started {
-            return Ok(Admission::Replayed(receipt));
-        }
-        let claimed = self
-            .store
-            .claim_unstarted_admission(ClaimUnstartedAdmissionRequest {
-                session_id: session.clone(),
-                key: keyed.options.key,
-                expected_fence: RunFence {
-                    run_id: run.id,
-                    claim_token: run.claim_token,
-                },
-                expected_owner: run.owner,
-                fingerprint: capsule.fingerprint.clone(),
-                behavior_fingerprint: capsule.behavior_fingerprint.clone(),
-                semantic_digest: capsule.semantic_digest.clone(),
-                capsule_digest: capsule.digest()?,
-                owner: keyed.request.owner,
-                lease: keyed.request.lease,
-            })
-            .await?;
-        Ok(Admission::Started {
-            receipt: claimed.record.receipt,
-            handle: self.with_context(context).spawn_admitted(
-                Request::from_admission(claimed.record.capsule.request),
-                plan,
-                claimed.fence,
-                &persisted,
-                InitialEntry::Keyed,
-            ),
-        })
-    }
-
-    async fn prepare_keyed_admission(
-        &self,
-        request: &Request,
-        options: AdmissionOptions,
-    ) -> Result<(RunPlan, KeyedAdmitRequest), RuntimeError> {
-        let (plan, admission, runtime_semantics) = self.prepare_admission(request).await?;
-        let mut keyed = KeyedAdmitRequest {
-            request: admission,
-            options,
-            execution: None,
-        };
-        let capsule = AdmissionExecutionCapsule {
-            version: 1,
-            request: request.admission_data()?,
-            runtime_semantics,
-            config_hash: keyed.request.config_hash.clone(),
-            plan_fingerprint: keyed.request.plan_fingerprint.clone(),
-            fingerprint: keyed.options.fingerprint.clone(),
-            behavior_fingerprint: keyed.options.behavior_fingerprint.clone(),
-            semantic_digest: keyed.semantic_digest()?,
-        };
-        capsule.validate(&keyed)?;
-        keyed.execution = Some(capsule);
-        Ok((plan, keyed))
-    }
-
-    // A generic store Conflict is not evidence of lease loss. Verify retained
-    // authority before classifying it or skipping settlement, and keep the original error.
-    async fn verified_lease_loss(&self, fence: &RunFence) -> bool {
-        self.store
-            .get_run(&fence.run_id)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|run| {
-                run.claim_token != fence.claim_token
-                    || (run.status != RunStatus::Paused
-                        && !run.status.is_terminal()
-                        && run.lease_until <= self.clock.now())
-            })
-    }
-
-    fn with_context(&self, context: Option<TraceContext>) -> Self {
-        let mut runtime = self.clone();
-        runtime.observer = Arc::new(ContextObserver {
-            inner: Arc::clone(&self.observer),
-            context,
-            attempt: RunId::new(),
-        });
-        runtime
-    }
-
-    /// Settles orphaned work without resolving providers, preparing plans or
-    /// executing extension hooks. Retry the same request after unknown responses.
-    /// # Errors
-    /// Returns typed eligibility, ownership or durable settlement failures.
-    pub async fn abandon(
-        &self,
-        request: crabber_core::AbandonRequest,
-    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
-        self.store.abandon_run(request).await
-    }
-
-    /// Reads retained metadata without acquiring a plan or execution lease.
-    /// # Errors
-    /// Returns store errors; None does not rule out a concurrent commit.
-    pub async fn lookup_admission(
+    /// Join this session's retained preparation, workers, tools and background tasks.
+    /// This is a local observation: it neither stops ingress nor proves durable
+    /// cleanup or the absence of work on another controller.
+    pub async fn drain_session_execution_tasks(
         &self,
         session: &SessionId,
-        key: &AdmissionKey,
-    ) -> Result<Option<AdmissionReceipt>, RuntimeError> {
-        Ok(self.store.lookup_admission(session, key).await?)
+        bound: Duration,
+    ) -> crate::ExecutionTaskDrain {
+        self.execution_tasks.drain_session(session, bound).await
     }
 
-    async fn prepare_admission(
+    /// Observe or cooperatively cancel only this session's independent jobs.
+    /// A deadline retains every unfinished join; expiry never counts as Joined.
+    pub async fn drain_session_invocations(
         &self,
-        request: &Request,
-    ) -> Result<(RunPlan, AdmitRequest, Value), RuntimeError> {
-        if request.max_output_tokens == Some(0) {
-            return Err(RuntimeError::InvalidConfiguration(
-                "max output tokens must be positive",
-            ));
-        }
-        let now = self.clock.now();
-        let session_id = request.session_id.clone().unwrap_or_default();
-        let plan = self
-            .plan_provider
-            .acquire_plan(&session_id)
-            .await
-            .map_err(|error| RuntimeError::Extension(error.to_string()))?;
-        // Hash structured, independently observed semantics, never a caller's claim.
-        let mut config = json!([
-            "crabber.runtime.admission.v1",
-            request.selection.provider_id,
-            request.selection.model_id,
-            request.system_prompt,
-            request.max_output_tokens,
-            format!("{:?}", self.execution_mode),
-            self.compaction.trigger_ratio,
-            self.compaction.keep_tail_messages,
-            self.max_turns,
-            plan.tools.iter().map(|tool| &tool.info).collect::<Vec<_>>(),
-            plan.prompts
-                .iter()
-                .map(|p| (&p.name, p.order, &p.text))
-                .collect::<Vec<_>>(),
-            plan.restrictions,
-            plan.components,
-            plan.guards
-                .iter()
-                .map(|guard| guard.id())
-                .collect::<Vec<_>>(),
-            plan.providers
-                .iter()
-                .map(|provider| {
-                    let info = provider.info();
-                    (info.id, info.name)
-                })
-                .collect::<Vec<_>>()
-        ]);
-        config.sort_all_objects();
-        let config_hash = admission_config_hash(&config);
-        let admission = AdmitRequest {
-            session_id: request.session_id.clone(),
-            workspace_id: request.workspace_id.clone(),
-            directory: request.directory.clone(),
-            title: request.title.clone(),
-            user_message: user_message(session_id, request.text.clone(), now),
-            config_hash,
-            plan_fingerprint: plan.fingerprint().to_string(),
-            owner: RunId::new().to_string(),
-            lease: Duration::from_secs(30),
-        };
-        Ok((plan, admission, config))
+        session: &SessionId,
+        cancel: bool,
+        bound: Duration,
+    ) -> Vec<crate::SessionInvocationReport> {
+        self.session_invocations.drain(session, cancel, bound).await
     }
 
-    /// Every admitted run is bound to the workspace identity of the persisted
-    /// `session` it was admitted into; there is no other way to start one.
-    fn spawn_admitted(
+    fn own_preparation<T, F, W>(
         &self,
-        request: Request,
-        plan: RunPlan,
-        fence: RunFence,
-        session: &Session,
-        entry: InitialEntry,
-    ) -> RunHandle {
-        let (sender, done) = oneshot::channel();
-        let (completion_sender, completion) = watch::channel(false);
-        let handle = RunHandle {
-            session_id: session.id.clone(),
-            run_id: fence.run_id.clone(),
-            store: Arc::clone(&self.store),
-            clock: Arc::clone(&self.clock),
-            done,
-            completion,
-            cancellation: CancellationToken::new(),
-        };
-        let cancellation = handle.cancellation.clone();
+        session_id: SessionId,
+        build: F,
+    ) -> impl std::future::Future<Output = Result<T, RuntimeError>> + Send + '_
+    where
+        T: Send + 'static,
+        F: FnOnce(Self) -> W + Send + 'static,
+        W: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
+    {
+        self.own_root(Some(session_id), build)
+    }
+    fn own_root<T, F, W>(
+        &self,
+        session: Option<SessionId>,
+        build: F,
+    ) -> impl std::future::Future<Output = Result<T, RuntimeError>> + Send + '_
+    where
+        T: Send + 'static,
+        F: FnOnce(Self) -> W + Send + 'static,
+        W: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
+    {
         let runtime = self.clone();
-        let session = RunSession::from(session);
-        tokio::spawn(async move {
-            let result = runtime
-                .run(fence, session, request, plan, cancellation, entry)
-                .await;
-            let _ = sender.send(result);
-            let _ = completion_sender.send(true);
-        });
-        handle
-    }
-
-    async fn run(
-        &self,
-        fence: RunFence,
-        session: RunSession,
-        request: Request,
-        plan: RunPlan,
-        cancellation: CancellationToken,
-        entry: InitialEntry,
-    ) -> Result<RunResult, RuntimeError> {
-        let lost = AtomicBool::new(false);
-        let mut measurement = Measurement::new(
-            self.observer.as_ref(),
-            self.monotonic_clock.as_ref(),
-            &session.id,
-            &fence.run_id,
-            OperationKind::Run,
-            &cancellation,
-            &lost,
-        );
-        let result = self
-            .run_inner(
-                fence.clone(),
-                session.clone(),
-                InitialRequest { request, entry },
-                plan,
-                cancellation.clone(),
-                &lost,
-            )
-            .await;
-        if result.is_err() && self.verified_lease_loss(&fence).await {
-            lost.store(true, Ordering::SeqCst);
-        }
-        measurement.observation.reason = result_reason(&result);
-        result
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn run_inner(
-        &self,
-        fence: RunFence,
-        session: RunSession,
-        initial: InitialRequest,
-        plan: RunPlan,
-        cancellation: CancellationToken,
-        observed_lost: &AtomicBool,
-    ) -> Result<RunResult, RuntimeError> {
-        let session_id = session.id.clone();
-        let InitialRequest { request, entry } = initial;
-        let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
-        if matches!(entry, InitialEntry::Keyed) {
-            execution.begin_admission_execution().await?;
-        }
-        execution
-            .renew_lease(self.clock.now() + time::Duration::seconds(30))
-            .await?;
-        let heartbeat = HeartbeatGuard::start(
-            Arc::clone(&execution),
-            Arc::clone(&self.store),
-            fence.clone(),
-            Arc::clone(&self.clock),
-            self.heartbeat_interval,
-        );
-        let run_id = fence.run_id.clone();
-        let run_started_at = self.clock.now();
-        let mut signal = heartbeat.signal.clone();
-        let lost = Arc::clone(&heartbeat.lost);
-        let state_sink: Arc<dyn StateSink> = Arc::new(RunStateSink {
-            store: Arc::clone(&self.store),
-            execution: Arc::clone(&execution),
-            session_id: session_id.clone(),
-            lost: Arc::clone(&lost),
-        });
-        let current_turn = std::sync::Mutex::new(None);
-        let outcome = {
-            let run_future = crabber_extension::with_state_sink(
-                state_sink,
-                self.run_loop(
-                    execution.as_ref(),
-                    &run_id,
-                    &session,
-                    &request,
-                    &plan,
-                    &cancellation,
-                    true,
-                    Usage::default(),
-                    lost.as_ref(),
-                    &current_turn,
-                ),
-            );
-            tokio::pin!(run_future);
-            loop {
-                tokio::select! {
-                    biased;
-                    update = signal.changed() => match update {
-                        Ok(()) if *signal.borrow_and_update() => break Err(RuntimeError::LeaseLost),
-                        Ok(()) => (),
-                        Err(_) => break run_future.as_mut().await,
-                    },
-                    result = &mut run_future => break result,
+        async move {
+            let admitted = self.execution_tasks.admit(session, move |scope| {
+                let mut runtime = runtime;
+                runtime.root_scope = Some(scope);
+                // Public reentry never inherits a prior worker's native/local loan.
+                runtime.worker_resources = None;
+                runtime.worker_callbacks = None;
+                runtime.preparation_scope = None;
+                runtime.owned_attempt = None;
+                async move {
+                    runtime.check_original_stop()?;
+                    build(runtime).await
                 }
+            })?;
+            let result = admitted.result.await;
+            if self.execution_tasks.join(&admitted.task).await != crate::TaskTermination::Returned {
+                return Err(RuntimeError::TaskStopped);
             }
-        };
-        drop(heartbeat);
-        let result = match outcome {
-            Ok(usage) => Ok(RunResult {
-                session_id,
-                run_id,
-                status: RunStatus::Completed,
-                usage,
-            }),
-            Err(error) => {
-                if matches!(error, RuntimeError::Paused) {
-                    plan.release();
-                    return Ok(RunResult {
-                        session_id,
-                        run_id,
-                        status: RunStatus::Paused,
-                        usage: Usage::default(),
-                    });
-                }
-                if lost.load(Ordering::SeqCst)
-                    || matches!(error, RuntimeError::LeaseLost)
-                    || self.verified_lease_loss(&fence).await
-                {
-                    observed_lost.store(true, Ordering::SeqCst);
-                    plan.release();
-                    return Err(error);
-                }
-                if !matches!(error, RuntimeError::LeaseLost) {
-                    let turn_id = current_turn.lock().expect("turn context poisoned").clone();
-                    self.settle_unfinished_calls(
-                        execution.as_ref(),
-                        &session_id,
-                        &run_id,
-                        &plan,
-                        true,
-                        turn_id.as_ref(),
-                    )
-                    .await?;
-                }
-                let status = if matches!(error, RuntimeError::Interrupted) {
-                    RunStatus::Interrupted
-                } else {
-                    RunStatus::Failed
-                };
-                let settled = self.run_settled_event(
-                    &session_id,
-                    &run_id,
-                    status,
-                    &Usage::default(),
-                    run_started_at,
-                );
-                if !matches!(error, RuntimeError::LeaseLost)
-                    && execution
-                        .settle_run(
-                            status,
-                            Some(storable_error_text(&error)),
-                            Usage::default(),
-                            settled.clone(),
-                        )
-                        .await
-                        .is_ok()
-                {
-                    self.observer.emit(&settled);
-                    let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-                    plan.dispatcher
-                        .notify::<EventPublished>(projection.clone())
-                        .await;
-                    plan.dispatcher.notify::<RunSettled>(projection).await;
-                }
-                if status == RunStatus::Interrupted {
-                    Ok(RunResult {
-                        session_id,
-                        run_id,
-                        status,
-                        usage: Usage::default(),
-                    })
-                } else {
-                    Err(error)
-                }
-            }
-        };
-        plan.release();
-        result
-    }
-
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    async fn run_loop(
-        &self,
-        execution: &dyn ExecutionStore,
-        run_id: &RunId,
-        session: &RunSession,
-        request: &Request,
-        plan: &RunPlan,
-        cancellation: &CancellationToken,
-        initial: bool,
-        mut usage: Usage,
-        lease_lost: &AtomicBool,
-        current_turn: &std::sync::Mutex<Option<TurnId>>,
-    ) -> Result<Usage, RuntimeError> {
-        let session_id = &session.id;
-        let run_started_at = self.clock.now();
-        if initial {
-            plan.dispatcher
-                .gate::<RunBeforeExecute>(json!({"run_id": run_id.to_string()}))
-                .await
-                .map_err(|e| RuntimeError::Extension(e.to_string()))?;
-            self.emit_durable(execution, session_id, run_id, plan, EventKind::RunAdmitted)
-                .await?;
-            self.emit_durable(execution, session_id, run_id, plan, EventKind::RunStarted)
-                .await?;
+            result.map_err(|_| RuntimeError::TaskStopped)?
         }
-        let streamer = if let Some(provider) = plan
-            .providers
-            .iter()
-            .find(|p| p.info().id == request.selection.provider_id)
-        {
-            provider.build(&request.selection).await?
-        } else {
-            self.resolver.resolve(&request.selection).await?
-        };
-        for _ in 0..self.max_turns {
-            if cancellation.is_cancelled() {
-                return Err(RuntimeError::Interrupted);
-            }
-            let turn_id = TurnId::new();
-            *current_turn.lock().expect("turn context poisoned") = Some(turn_id.clone());
-            self.publish_event(
-                execution,
-                plan,
-                self.turn_event(session_id, run_id, &turn_id, EventKind::TurnStarted),
-            )
-            .await?;
-            let mut snapshot = self.snapshot(run_id, session, request, plan).await?;
-            snapshot.identity.turn_id = turn_id.clone();
-            let mut compacted = false;
-            if let Some(provider) = plan
-                .providers
-                .iter()
-                .find(|provider| provider.info().id == request.selection.provider_id)
-            {
-                let models = provider.models().await?;
-                if let Some(model) = models
-                    .iter()
-                    .find(|model| model.id == request.selection.model_id)
-                {
-                    let estimated =
-                        serde_json::to_vec(&snapshot.messages).map_or(0, |bytes| bytes.len() / 4);
-                    #[allow(clippy::cast_precision_loss)]
-                    if snapshot.messages.len() > self.compaction.keep_tail_messages
-                        && model.context_limit > 0
-                        && (estimated as f64)
-                            >= (model.context_limit as f64 * self.compaction.trigger_ratio)
-                    {
-                        self.compact(
-                            execution,
-                            run_id,
-                            session_id,
-                            &snapshot,
-                            plan,
-                            Arc::clone(&streamer),
-                            false,
-                            cancellation,
-                            lease_lost,
-                        )
-                        .await?;
-                        snapshot.messages = self.store.list_messages(session_id, None).await?;
-                        compacted = true;
-                    }
-                }
-            }
-            plan.dispatcher
-                .hook::<TurnPrepare>(json!({"run_id":run_id.to_string()}))
-                .await
-                .map_err(|e| RuntimeError::Extension(e.to_string()))?;
-            let (calls, turn_usage) = Box::pin(self.model_turn_with_retry(
-                execution,
-                run_id,
-                session_id,
-                &snapshot,
-                plan,
-                &session.workspace,
-                Arc::clone(&streamer),
-                compacted,
-                cancellation,
-                lease_lost,
-            ))
-            .await?;
-            if cancellation.is_cancelled() {
-                return Err(RuntimeError::Interrupted);
-            }
-            usage.input_tokens += turn_usage.input_tokens;
-            usage.output_tokens += turn_usage.output_tokens;
-            let had_tools = !calls.is_empty();
-            let mut staged = Vec::with_capacity(calls.len());
-            for call in calls {
-                staged.push(
-                    self.stage_tool(execution, session_id, run_id, plan, call, lease_lost)
-                        .await?,
-                );
-            }
-            if staged.iter().any(|call| {
-                plan.tools
-                    .iter()
-                    .find(|tool| tool.info.name == call.name)
-                    .is_some_and(|tool| {
-                        self.policy.interrupt_policy(&tool.info, &call.arguments)
-                            == InterruptPolicy::Pause
-                    })
-            }) {
-                let event = self.turn_event(session_id, run_id, &turn_id, EventKind::RunPaused);
-                execution.pause_run(json!({"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
-                    "request": CheckpointRequest::new(request), "usage":usage}), event.clone()).await?;
-                self.observer.emit(&event);
-                return Err(RuntimeError::Paused);
-            }
-            match self.execution_mode {
-                ExecutionMode::Sequential => {
-                    for record in staged {
-                        let mut call = PendingCall::from_record(&record);
-                        call.turn_id = Some(turn_id.clone());
-                        self.execute_tool(
-                            execution,
-                            session,
-                            run_id,
-                            plan,
-                            call,
-                            Some(record),
-                            None,
-                            cancellation,
-                            lease_lost,
-                        )
-                        .await?;
-                    }
-                }
-                ExecutionMode::Parallel { max } => {
-                    let (sender, receiver) = watch::channel(0usize);
-                    futures::stream::iter(staged.into_iter().enumerate().map(|(index, record)| {
-                        let receiver = receiver.clone();
-                        let sender = sender.clone();
-                        let turn_id = turn_id.clone();
-                        async move {
-                            let mut call = PendingCall::from_record(&record);
-                            call.turn_id = Some(turn_id);
-                            self.execute_tool(
-                                execution,
-                                session,
-                                run_id,
-                                plan,
-                                call,
-                                Some(record),
-                                Some((index, receiver, sender)),
-                                cancellation,
-                                lease_lost,
-                            )
-                            .await
-                        }
-                    }))
-                    .buffer_unordered(max)
-                    .try_collect::<Vec<_>>()
-                    .await?;
-                }
-            }
-            let mut claimed = self.claim_input(execution, InboxKind::Steer).await?;
-            if !had_tools && claimed == 0 {
-                claimed += self.claim_input(execution, InboxKind::FollowUp).await?;
-            }
-            self.publish_event(
-                execution,
-                plan,
-                self.turn_event(session_id, run_id, &turn_id, EventKind::TurnCompleted),
-            )
-            .await?;
-            if !had_tools && claimed == 0 {
-                ensure_lease(lease_lost)?;
-                let settled = self.run_settled_event(
-                    session_id,
-                    run_id,
-                    RunStatus::Completed,
-                    &usage,
-                    run_started_at,
-                );
-                match execution
-                    .settle_run(RunStatus::Completed, None, usage.clone(), settled.clone())
-                    .await
-                {
-                    Ok(()) => {
-                        self.observer.emit(&settled);
-                        let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-                        plan.dispatcher
-                            .notify::<EventPublished>(projection.clone())
-                            .await;
-                        plan.dispatcher.notify::<RunSettled>(projection).await;
-                        return Ok(usage);
-                    }
-                    Err(StoreError::PendingInput) => {
-                        if self.claim_input(execution, InboxKind::Steer).await?
-                            + self.claim_input(execution, InboxKind::FollowUp).await?
-                            == 0
-                        {
-                            return Err(RuntimeError::Store(StoreError::PendingInput));
-                        }
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        }
-        Err(RuntimeError::TurnLimit)
-    }
-
-    async fn snapshot(
-        &self,
-        run_id: &RunId,
-        session: &RunSession,
-        request: &Request,
-        plan: &RunPlan,
-    ) -> Result<TurnSnapshot, RuntimeError> {
-        let session_id = &session.id;
-        let mut system = request.system_prompt.clone().unwrap_or_default();
-        for prompt in &plan.prompts {
-            if !system.is_empty() {
-                system.push('\n');
-            }
-            system.push_str(&prompt.text);
-        }
-        let mut messages = self.store.list_messages(session_id, None).await?;
-        let turn_index = messages
-            .iter()
-            .filter(|message| message.role == Role::Assistant)
-            .count();
-        // Workspace keys are runtime-owned: pinned so no handler can change
-        // them for a later handler. An unavailable field is JSON null.
-        let workspace = &session.workspace;
-        let contributions = plan
-            .dispatcher
-            .transform_pinned::<ContextAssemble>(
-                json!({
-                    "system_prelude":[], "user_suffix":[], "prompt_sections":[],
-                    "run_id":run_id.to_string(), "session_id":session_id.to_string(),
-                    "provider_id":request.selection.provider_id, "model_id":request.selection.model_id,
-                    "turn_index":turn_index, "message_count":messages.len(),
-                    "has_system_prompt":request.system_prompt.is_some()
-                }),
-                &[
-                    (
-                        WorkspaceContext::WORKSPACE_ID_KEY,
-                        json!(workspace.workspace_id()),
-                    ),
-                    (
-                        WorkspaceContext::DIRECTORY_KEY,
-                        json!(workspace.directory()),
-                    ),
-                ],
-            )
-            .await
-            .map_err(|e| RuntimeError::Extension(e.to_string()))?;
-        if let Some(sections) = contributions
-            .get("prompt_sections")
-            .and_then(Value::as_array)
-        {
-            for section in sections.iter().filter_map(Value::as_str) {
-                if !system.is_empty() {
-                    system.push('\n');
-                }
-                system.push_str(section);
-            }
-        }
-        if let Some(prelude) = contributions
-            .get("system_prelude")
-            .and_then(Value::as_array)
-        {
-            for line in prelude.iter().filter_map(Value::as_str) {
-                system = format!("{line}\n{system}");
-            }
-        }
-        if let Some(suffixes) = contributions.get("user_suffix").and_then(Value::as_array)
-            && let Some(message) = messages
-                .iter_mut()
-                .rev()
-                .find(|message| message.role == Role::User)
-            && let Some(text) =
-                message
-                    .parts
-                    .iter_mut()
-                    .rev()
-                    .find_map(|part| match &mut part.content {
-                        ContentBlock::Text { text } => Some(text),
-                        _ => None,
-                    })
-        {
-            for suffix in suffixes.iter().filter_map(Value::as_str) {
-                text.push('\n');
-                text.push_str(suffix);
-            }
-        }
-        Ok(TurnSnapshot {
-            identity: RequestIdentity {
-                session_id: session_id.clone(),
-                run_id: run_id.clone(),
-                turn_id: TurnId::new(),
-            },
-            selection: request.selection.clone(),
-            messages,
-            system: (!system.is_empty()).then_some(system),
-            max_output_tokens: request.max_output_tokens,
-            tools: plan.tools.iter().map(|tool| tool.info.clone()).collect(),
-        })
-    }
-
-    async fn claim_input(
-        &self,
-        execution: &dyn ExecutionStore,
-        kind: InboxKind,
-    ) -> Result<usize, RuntimeError> {
-        Ok(execution.claim_inbox_into_history(kind).await?.len())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn model_turn_with_retry(
-        &self,
-        execution: &dyn ExecutionStore,
-        run_id: &RunId,
-        session_id: &SessionId,
-        snapshot: &TurnSnapshot,
-        plan: &RunPlan,
-        workspace: &WorkspaceContext,
-        streamer: Arc<dyn Streamer>,
-        mut compacted: bool,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-    ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
-        let mut snapshot = snapshot.clone();
-        let mut retries = 0u32;
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            let system = Self::attempt_system(
-                plan,
-                &snapshot,
-                workspace,
-                attempt,
-                compacted,
-                cancellation,
-                self.workspace_reader_resolver.clone(),
-            )
-            .await?;
-            if !plan.prompt_contributors.is_empty() {
-                ensure_lease(lease_lost)?;
-            }
-            match self
-                .model_turn(
-                    execution,
-                    run_id,
-                    session_id,
-                    &snapshot,
-                    system,
-                    plan,
-                    Arc::clone(&streamer),
-                    cancellation,
-                    lease_lost,
-                )
-                .await
-            {
-                Ok(result) => return Ok(result),
-                Err(RuntimeError::Provider(error)) => {
-                    let overflow =
-                        error.kind == crabber_providers::ProviderErrorKind::ContextOverflow;
-                    let retry = !overflow && error.retryable && retries < 2;
-                    let delay = if retry {
-                        100u64.saturating_mul(1u64 << retries)
-                    } else {
-                        0
-                    };
-                    let decision = request_error(plan, &error, retries + 1, retry, delay).await?;
-                    if overflow && !compacted && decision.compaction_requested {
-                        self.compact(
-                            execution,
-                            run_id,
-                            session_id,
-                            &snapshot,
-                            plan,
-                            Arc::clone(&streamer),
-                            true,
-                            cancellation,
-                            lease_lost,
-                        )
-                        .await?;
-                        snapshot.messages = self.store.list_messages(session_id, None).await?;
-                        compacted = true;
-                        continue;
-                    }
-                    if retry && decision.retry {
-                        retries += 1;
-                        tokio::time::sleep(Duration::from_millis(decision.delay_ms)).await;
-                        continue;
-                    }
-                    return Err(RuntimeError::Provider(error));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn attempt_system(
-        plan: &RunPlan,
-        snapshot: &TurnSnapshot,
-        workspace: &WorkspaceContext,
-        attempt: u32,
-        compacted: bool,
-        cancellation: &CancellationToken,
-        workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
-    ) -> Result<Option<String>, RuntimeError> {
-        if plan.prompt_contributors.is_empty() {
-            return Ok(snapshot.system.clone());
-        }
-        let context = PromptAttemptContext::new(
-            snapshot.identity.session_id.clone(),
-            snapshot.identity.run_id.clone(),
-            snapshot.identity.turn_id.clone(),
-            workspace.clone(),
-            snapshot.selection.provider_id.clone(),
-            snapshot.selection.model_id.clone(),
-            attempt,
-            compacted,
-        )
-        .with_cancellation(cancellation.clone());
-        let workspace_reader_resolver = workspace_reader_resolver.map(|host| {
-            Arc::new(AttemptWorkspaceReaderResolver {
-                admitted: workspace.clone(),
-                host,
-            }) as Arc<dyn WorkspaceReaderResolver>
-        });
-        match collect_prompt_contributions_with_resolver(
-            &plan.prompt_contributors,
-            context,
-            workspace_reader_resolver,
-        )
-        .await
-        {
-            PromptContributionOutcome::Completed { sections } => {
-                let mut system = snapshot.system.clone().unwrap_or_default();
-                for section in sections {
-                    if !system.is_empty() {
-                        system.push('\n');
-                    }
-                    system.push_str(&section.text);
-                }
-                Ok((!system.is_empty()).then_some(system))
-            }
-            PromptContributionOutcome::Failed { contributor } => Err(RuntimeError::Extension(
-                prompt_contribution_failed_message(&contributor),
-            )),
-            PromptContributionOutcome::Interrupted => Err(RuntimeError::Interrupted),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    async fn compact(
-        &self,
-        execution: &dyn ExecutionStore,
-        run_id: &RunId,
-        session_id: &SessionId,
-        snapshot: &TurnSnapshot,
-        plan: &RunPlan,
-        streamer: Arc<dyn Streamer>,
-        overflow: bool,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-    ) -> Result<(), RuntimeError> {
-        let run = self
-            .store
-            .get_run(run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        let messages = &snapshot.messages;
-        let context_limit = if let Some(provider) = plan
-            .providers
-            .iter()
-            .find(|provider| provider.info().id == snapshot.selection.provider_id)
-        {
-            provider
-                .models()
-                .await?
-                .into_iter()
-                .find(|model| model.id == snapshot.selection.model_id)
-                .map_or(0, |model| model.context_limit)
-        } else {
-            0
-        };
-        let budget_chars = usize::try_from(context_limit)
-            .ok()
-            .filter(|limit| *limit > 0)
-            .unwrap_or(2048)
-            .min(4096);
-        let mut tail_start = messages
-            .len()
-            .saturating_sub(self.compaction.keep_tail_messages);
-        if overflow && !messages.is_empty() {
-            tail_start = tail_start.max(1);
-            while tail_start < messages.len()
-                && serde_json::to_vec(&messages[tail_start..])
-                    .map_or(usize::MAX, |bytes| bytes.len())
-                    > budget_chars
-            {
-                tail_start += 1;
-            }
-        }
-        let summary_range = if tail_start == 0 {
-            None
-        } else {
-            messages
-                .first()
-                .zip(messages.get(tail_start - 1))
-                .map(|(first, last)| (first.id.clone(), last.id.clone()))
-        };
-        let epoch = ContextEpoch {
-            id: EpochId::new(),
-            session_id: session_id.clone(),
-            run_id: run_id.clone(),
-            parent: Some(run.epoch_id),
-            summarized_range: summary_range,
-            summary_message_id: None,
-            tail_start_message_id: messages.get(tail_start).map(|message| message.id.clone()),
-            provider_id: snapshot.selection.provider_id.clone(),
-            model_id: snapshot.selection.model_id.clone(),
-            reason: if overflow {
-                "context_overflow"
-            } else {
-                "proactive"
-            }
-            .into(),
-            next_policy: None,
-        };
-        ensure_lease(lease_lost)?;
-        execution.start_epoch(epoch.clone()).await?;
-        self.emit_durable(
-            execution,
-            session_id,
-            run_id,
-            plan,
-            EventKind::ContextEpochStarted,
-        )
-        .await?;
-        let summary_prompt = "Summarize this context for continuation. Preserve every standing instruction and unresolved task from the previous summary and new context.";
-        let raw: Vec<char> = serde_json::to_string(&messages[..tail_start])
-            .map_err(|error| invalid_provider(&format!("cannot serialize context: {error}")))?
-            .chars()
-            .collect();
-        let mut offset = 0;
-        let mut text = String::new();
-        while offset < raw.len() {
-            // Every character in the replaced range reaches a summary request.
-            // Reserve room for the prior summary instead of silently taking a suffix.
-            let capacity = budget_chars.saturating_sub(text.chars().count());
-            if capacity == 0 {
-                return Err(invalid_provider("compaction summary exceeded input budget").into());
-            }
-            let end = (offset + capacity).min(raw.len());
-            let chunk: String = raw[offset..end].iter().collect();
-            let input = format!("Previous summary:\n{text}\nNew context:\n{chunk}");
-            let request = ModelRequest {
-                identity: RequestIdentity {
-                    session_id: session_id.clone(),
-                    run_id: run_id.clone(),
-                    turn_id: TurnId::new(),
-                },
-                selection: snapshot.selection.clone(),
-                system: Some(summary_prompt.into()),
-                messages: vec![user_message(session_id.clone(), input, self.clock.now())],
-                tools: Vec::new(),
-                temperature: None,
-                max_tokens: Some(1024),
-                tool_choice: None,
-            };
-            let mut measurement = Measurement::new(
-                self.observer.as_ref(),
-                self.monotonic_clock.as_ref(),
-                session_id,
-                run_id,
-                OperationKind::Model {
-                    purpose: ModelPurpose::Compaction,
-                    provider: snapshot.selection.provider_id.clone(),
-                    model: snapshot.selection.model_id.clone(),
-                },
-                cancellation,
-                lease_lost,
-            );
-            let summary_started = self.monotonic_clock.now();
-            let observe_summary = |status: &str| {
-                let mut observed = self.event(
-                    session_id,
-                    run_id,
-                    EventKind::Custom {
-                        name: "model_call".into(),
-                    },
-                );
-                observed.payload = json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,
-                    "status":status,"input_tokens":0,"output_tokens":0,
-                    "latency_ms":self.monotonic_clock.now().saturating_sub(summary_started).as_millis(),"purpose":"compaction"});
-                self.observer.model_completed(&observed);
-            };
-            // Compaction is an internal model request with a dedicated prompt. System-prompt
-            // middleware is intentionally scoped to agent-turn attempts and is not collected
-            // here; the next agent-turn attempt refreshes middleware after compaction.
-            let mut stream = tokio::select! {
-                () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
-                result = streamer.stream(request) => match result {
-                    Ok(stream) => stream,
-                    Err(error) => { observe_summary("error"); return Err(error.into()); }
-                },
-            };
-            let mut next_text = String::new();
-            let mut completed = false;
-            loop {
-                let delta = tokio::select! {
-                    () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
-                    result = stream.next() => result,
-                };
-                let Some(delta) = delta else {
-                    break;
-                };
-                match delta {
-                    StreamDelta::TextDelta(fragment) => {
-                        measurement.first_text(&fragment);
-                        next_text.push_str(&fragment);
-                    }
-                    StreamDelta::Completed => {
-                        completed = true;
-                        break;
-                    }
-                    StreamDelta::Error(error) => {
-                        observe_summary("error");
-                        return Err(error.into());
-                    }
-                    _ => {}
-                }
-            }
-            if cancellation.is_cancelled() {
-                observe_summary("error");
-                return Err(RuntimeError::Interrupted);
-            }
-            observe_summary(if completed { "ok" } else { "error" });
-            if !completed || next_text.is_empty() {
-                return Err(invalid_provider("compaction summary was empty").into());
-            }
-            measurement.observation.reason = TerminalReason::Success;
-            drop(measurement);
-            text = next_text;
-            offset = end;
-        }
-        let message_id = MessageId::new();
-        let summary = Message {
-            id: message_id.clone(),
-            session_id: session_id.clone(),
-            run_id: Some(run_id.clone()),
-            role: Role::Assistant,
-            parent_id: None,
-            created_at: self.clock.now(),
-            parts: vec![Part {
-                id: PartId::new(),
-                message_id,
-                ordinal: 0,
-                kind: PartKind::CompactionSummary,
-                content: ContentBlock::Text { text },
-            }],
-        };
-        if cancellation.is_cancelled() {
-            return Err(RuntimeError::Interrupted);
-        }
-        ensure_lease(lease_lost)?;
-        execution.finish_epoch(&epoch.id, summary).await?;
-        self.emit_durable(
-            execution,
-            session_id,
-            run_id,
-            plan,
-            EventKind::ContextEpochFinished,
-        )
-        .await?;
-        Ok(())
-    }
-
-    fn event(&self, session_id: &SessionId, run_id: &RunId, kind: EventKind) -> EventRecord {
-        EventRecord {
-            cursor: None,
-            session_id: session_id.clone(),
-            run_id: run_id.clone(),
-            turn_id: None,
-            kind,
-            payload: Value::Null,
-            correlation: None,
-            live_only: false,
-            created_at: self.clock.now(),
-        }
-    }
-
-    fn turn_event(
-        &self,
-        session_id: &SessionId,
-        run_id: &RunId,
-        turn_id: &TurnId,
-        kind: EventKind,
-    ) -> EventRecord {
-        let mut event = self.event(session_id, run_id, kind);
-        event.turn_id = Some(turn_id.clone());
-        event
-    }
-
-    pub(crate) fn live_payload(
-        &self,
-        snapshot: &TurnSnapshot,
-        kind: EventKind,
-        payload: impl serde::Serialize,
-    ) {
-        let mut event = self.turn_event(
-            &snapshot.identity.session_id,
-            &snapshot.identity.run_id,
-            &snapshot.identity.turn_id,
-            kind,
-        );
-        event.live_only = true;
-        event.payload = serde_json::to_value(payload).expect("event payload serializes");
-        self.observer.emit(&event);
-    }
-
-    async fn committed_message(
-        &self,
-        execution: &dyn ExecutionStore,
-        plan: &RunPlan,
-        snapshot: &TurnSnapshot,
-        id: &MessageId,
-    ) -> Result<(), RuntimeError> {
-        let mut event = self.turn_event(
-            &snapshot.identity.session_id,
-            &snapshot.identity.run_id,
-            &snapshot.identity.turn_id,
-            EventKind::MessageCommitted,
-        );
-        event.payload = serde_json::to_value(event_payload::MessageCommitted {
-            message_id: id.clone(),
-            role: Role::Assistant,
-        })
-        .expect("event payload serializes");
-        self.publish_event(execution, plan, event).await
-    }
-
-    fn run_settled_event(
-        &self,
-        session_id: &SessionId,
-        run_id: &RunId,
-        status: RunStatus,
-        usage: &Usage,
-        started_at: OffsetDateTime,
-    ) -> EventRecord {
-        let mut event = self.event(session_id, run_id, EventKind::RunSettled);
-        let duration = event.created_at - started_at;
-        event.payload = json!({"status": status, "usage": usage,
-            "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-            "duration_ms": duration.whole_milliseconds(),
-            "duration_ns": duration.whole_nanoseconds()});
-        event.correlation = Some(run_id.to_string());
-        event
-    }
-
-    async fn emit_durable(
-        &self,
-        execution: &dyn ExecutionStore,
-        session_id: &SessionId,
-        run_id: &RunId,
-        plan: &RunPlan,
-        kind: EventKind,
-    ) -> Result<(), RuntimeError> {
-        self.publish_event(execution, plan, self.event(session_id, run_id, kind))
-            .await
-    }
-
-    async fn publish_event(
-        &self,
-        execution: &dyn ExecutionStore,
-        plan: &RunPlan,
-        event: EventRecord,
-    ) -> Result<(), RuntimeError> {
-        execution.append_event(event.clone()).await?;
-        self.observer.emit(&event);
-        let projection = serde_json::to_value(&event).unwrap_or(Value::Null);
-        plan.dispatcher
-            .notify::<EventPublished>(projection.clone())
-            .await;
-        match event.kind {
-            EventKind::RunAdmitted => plan.dispatcher.notify::<RunAdmitted>(projection).await,
-            EventKind::RunStarted => plan.dispatcher.notify::<RunStarted>(projection).await,
-            EventKind::TurnStarted => plan.dispatcher.notify::<TurnStarted>(projection).await,
-            EventKind::TurnCompleted => plan.dispatcher.notify::<TurnCompleted>(projection).await,
-            EventKind::RunSettled => plan.dispatcher.notify::<RunSettled>(projection).await,
-            _ => {}
-        }
-        Ok(())
     }
 }
 
@@ -2834,909 +1041,6 @@ impl PendingCall {
     }
 }
 
-impl Orchestrator {
-    #[allow(clippy::too_many_lines)] // Streaming assembly and durable assistant commit form one turn boundary.
-    #[allow(clippy::too_many_arguments)]
-    async fn model_turn(
-        &self,
-        execution: &dyn ExecutionStore,
-        run_id: &RunId,
-        session_id: &SessionId,
-        snapshot: &TurnSnapshot,
-        system: Option<String>,
-        plan: &RunPlan,
-        streamer: Arc<dyn Streamer>,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-    ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
-        let mut measurement = Measurement::new(
-            self.observer.as_ref(),
-            self.monotonic_clock.as_ref(),
-            session_id,
-            run_id,
-            OperationKind::Model {
-                purpose: ModelPurpose::Turn,
-                provider: snapshot.selection.provider_id.clone(),
-                model: snapshot.selection.model_id.clone(),
-            },
-            cancellation,
-            lease_lost,
-        );
-        let model_started = self.monotonic_clock.now();
-        let request = ModelRequest {
-            identity: snapshot.identity.clone(),
-            selection: snapshot.selection.clone(),
-            system,
-            messages: snapshot.messages.clone(),
-            tools: snapshot.tools.clone(),
-            temperature: None,
-            max_tokens: snapshot.max_output_tokens,
-            tool_choice: None,
-        };
-        let calls_to_next = Arc::new(AtomicUsize::new(0));
-        let next: Arc<dyn Streamer> = Arc::new(SingleUseStreamer {
-            inner: streamer,
-            calls: Arc::clone(&calls_to_next),
-        });
-        plan.dispatcher.notify::<ModelRequested>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"message_count":snapshot.messages.len()})).await;
-        let stream_slot = Arc::new(std::sync::Mutex::new(None));
-        let error_slot = Arc::new(std::sync::Mutex::new(None));
-        let terminal: Callback = {
-            let model_stream = Arc::clone(&self.model_stream);
-            let stream_slot = Arc::clone(&stream_slot);
-            let error_slot = Arc::clone(&error_slot);
-            Arc::new(move |input| {
-                let model_stream = Arc::clone(&model_stream);
-                let next = Arc::clone(&next);
-                let request = request.clone();
-                let stream_slot = Arc::clone(&stream_slot);
-                let error_slot = Arc::clone(&error_slot);
-                Box::pin(async move {
-                    let mut request = request;
-                    if let Some(value) = input.get("temperature") {
-                        request.temperature = if value.is_null() {
-                            None
-                        } else {
-                            Some(
-                                value
-                                    .as_f64()
-                                    .filter(|v| v.is_finite() && (0.0..=2.0).contains(v))
-                                    .ok_or_else(|| {
-                                        crabber_extension::ExtensionError::Plan(
-                                            "invalid model temperature".into(),
-                                        )
-                                    })?,
-                            )
-                        };
-                    }
-                    if let Some(value) = input.get("max_tokens") {
-                        request.max_tokens = if value.is_null() {
-                            None
-                        } else {
-                            Some(
-                                value
-                                    .as_u64()
-                                    .and_then(|v| u32::try_from(v).ok())
-                                    .filter(|v| *v > 0)
-                                    .ok_or_else(|| {
-                                        crabber_extension::ExtensionError::Plan(
-                                            "invalid model max_tokens".into(),
-                                        )
-                                    })?,
-                            )
-                        };
-                    }
-                    if let Some(value) = input.get("tool_choice") {
-                        request.tool_choice = if value.is_null() {
-                            None
-                        } else {
-                            Some(
-                                value
-                                    .as_str()
-                                    .ok_or_else(|| {
-                                        crabber_extension::ExtensionError::Plan(
-                                            "invalid model tool_choice".into(),
-                                        )
-                                    })?
-                                    .to_owned(),
-                            )
-                        };
-                    }
-                    match model_stream.stream(request, next).await {
-                        Ok(stream) => {
-                            *stream_slot.lock().unwrap() = Some(stream);
-                            Ok(Value::Null)
-                        }
-                        Err(error) => {
-                            *error_slot.lock().unwrap() = Some(error);
-                            Err(crabber_extension::ExtensionError::Plan(
-                                "model stream failed".into(),
-                            ))
-                        }
-                    }
-                })
-            })
-        };
-        let dispatched = tokio::select! {
-            () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
-            dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"tool_choice":null}),terminal) => dispatched,
-        };
-        let provider_error = error_slot.lock().unwrap().take();
-        if let Some(error) = provider_error {
-            return Err(error.into());
-        }
-        dispatched.map_err(|e| {
-            measurement.observation.reason = TerminalReason::RuntimeError;
-            RuntimeError::Extension(e.to_string())
-        })?;
-        let mut stream = stream_slot.lock().unwrap().take().ok_or_else(|| {
-            measurement.observation.reason = TerminalReason::RuntimeError;
-            RuntimeError::Extension("model stream did not produce a stream".into())
-        })?;
-        if calls_to_next.load(Ordering::SeqCst) != 1 {
-            return Err(invalid_provider(
-                "model stream wrapper did not call provider exactly once",
-            )
-            .into());
-        }
-        let id = MessageId::new();
-        self.live_payload(
-            snapshot,
-            EventKind::MessageStarted,
-            event_payload::MessageIdentity {
-                message_id: id.clone(),
-            },
-        );
-        let mut presentation = crate::event_payload::Presentation::new(self, snapshot, id.clone());
-        let mut text = String::new();
-        let mut reasoning = String::new();
-        let mut provider_state = Vec::new();
-        let mut calls: Vec<PendingCall> = Vec::new();
-        let mut usage = Usage::default();
-        let observe_model = |status: &str, usage: &Usage| {
-            let mut event = self.event(
-                session_id,
-                run_id,
-                EventKind::Custom {
-                    name: "model_call".into(),
-                },
-            );
-            event.payload = json!({"provider": snapshot.selection.provider_id,
-                "model": snapshot.selection.model_id, "status": status,
-                "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-                "latency_ms": self.monotonic_clock.now().saturating_sub(model_started).as_millis()});
-            self.observer.model_completed(&event);
-        };
-        let stream_result: Result<(), RuntimeError> = async {
-            let mut completed = false;
-            loop {
-                let delta = tokio::select! {
-                    () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
-                    delta = stream.next() => delta,
-                };
-                let Some(delta) = delta else {
-                    break;
-                };
-                match delta {
-                    StreamDelta::TextDelta(fragment) => {
-                        measurement.first_text(&fragment);
-                        text.push_str(&fragment);
-                        self.live_payload(
-                            snapshot,
-                            EventKind::TextDelta,
-                            event_payload::MessageDelta {
-                                message_id: id.clone(),
-                                text: fragment,
-                            },
-                        );
-                    }
-                    StreamDelta::ReasoningDelta(fragment) => {
-                        reasoning.push_str(&fragment);
-                        self.live_payload(
-                            snapshot,
-                            EventKind::ReasoningDelta,
-                            event_payload::MessageDelta {
-                                message_id: id.clone(),
-                                text: fragment,
-                            },
-                        );
-                    }
-                    StreamDelta::ToolCallStart { call_id, name } => {
-                        if calls.iter().any(|call| call.id == call_id) {
-                            return Err(invalid_provider("duplicate tool call start").into());
-                        }
-                        self.live_payload(
-                            snapshot,
-                            EventKind::ToolCallStarted,
-                            event_payload::CallStarted {
-                                message_id: id.clone(),
-                                call_id: call_id.clone(),
-                                name: name.clone(),
-                            },
-                        );
-                        presentation.start_call(call_id.clone());
-                        calls.push(PendingCall {
-                            message_id: Some(id.clone()),
-                            turn_id: Some(snapshot.identity.turn_id.clone()),
-                            args_completed: false,
-                            id: call_id,
-                            name,
-                            raw: String::new(),
-                            arguments: None,
-                        });
-                    }
-                    StreamDelta::ToolCallArgsDelta { call_id, text } => {
-                        let Some(call) = calls
-                            .iter_mut()
-                            .find(|call| call.id == call_id && !call.args_completed)
-                        else {
-                            return Err(invalid_provider("tool arguments without open call").into());
-                        };
-                        call.raw.push_str(&text);
-                        self.live_payload(
-                            snapshot,
-                            EventKind::ToolCallArgsDelta,
-                            event_payload::CallDelta {
-                                message_id: id.clone(),
-                                call_id,
-                                text,
-                            },
-                        );
-                    }
-                    StreamDelta::ToolCallDone { call_id } => {
-                        let Some(call) = calls
-                            .iter_mut()
-                            .find(|call| call.id == call_id && !call.args_completed)
-                        else {
-                            return Err(
-                                invalid_provider("tool completion without open call").into()
-                            );
-                        };
-                        call.args_completed = true;
-                        call.arguments = Some(match serde_json::from_str(&call.raw) {
-                            Ok(parsed) => storable_call_arguments(parsed, &call.raw),
-                            Err(_) => Value::String(call.raw.clone()),
-                        });
-                        presentation.complete_call(&call_id);
-                    }
-                    StreamDelta::ProviderState { codec_id, payload } => {
-                        provider_state.push((codec_id, payload));
-                    }
-                    StreamDelta::Usage(delta) => {
-                        usage.input_tokens += delta.input_tokens;
-                        usage.output_tokens += delta.output_tokens;
-                    }
-                    StreamDelta::Completed => {
-                        completed = true;
-                        break;
-                    }
-                    StreamDelta::Error(error) => {
-                        return Err(error.into());
-                    }
-                }
-            }
-            if !completed {
-                return Err(invalid_provider("model stream ended without completion").into());
-            }
-            if text.is_empty()
-                && reasoning.is_empty()
-                && calls.is_empty()
-                && provider_state.is_empty()
-            {
-                return Err(invalid_provider("empty model response").into());
-            }
-            Ok(())
-        }
-        .await;
-        let outcome = match &stream_result {
-            Ok(()) => StreamOutcome::Completed,
-            Err(RuntimeError::Interrupted) => StreamOutcome::Interrupted,
-            Err(_) => StreamOutcome::Failed,
-        };
-        presentation.finish(outcome);
-        if matches!(&stream_result, Err(RuntimeError::Interrupted))
-            && (!text.is_empty() || !reasoning.is_empty())
-        {
-            let mut parts = Vec::new();
-            if !text.is_empty() {
-                push_part(
-                    &mut parts,
-                    &id,
-                    PartKind::AssistantText,
-                    ContentBlock::Text { text: text.clone() },
-                );
-            }
-            if !reasoning.is_empty() {
-                push_part(
-                    &mut parts,
-                    &id,
-                    PartKind::Reasoning,
-                    ContentBlock::Reasoning {
-                        text: reasoning.clone(),
-                        provider_state: None,
-                    },
-                );
-            }
-            ensure_lease(lease_lost)?;
-            execution
-                .append_message(Message {
-                    id: id.clone(),
-                    session_id: session_id.clone(),
-                    run_id: Some(run_id.clone()),
-                    role: Role::Assistant,
-                    parent_id: None,
-                    parts,
-                    created_at: self.clock.now(),
-                })
-                .await?;
-            self.committed_message(execution, plan, snapshot, &id)
-                .await?;
-        }
-        if stream_result.is_err() {
-            observe_model("error", &usage);
-        }
-        stream_result?;
-        measurement.observation.reason = TerminalReason::Success;
-        drop(measurement);
-        observe_model("ok", &usage);
-        let mut parts = Vec::new();
-        if !text.is_empty() {
-            push_part(
-                &mut parts,
-                &id,
-                PartKind::AssistantText,
-                ContentBlock::Text { text },
-            );
-        }
-        if !reasoning.is_empty() {
-            push_part(
-                &mut parts,
-                &id,
-                PartKind::Reasoning,
-                ContentBlock::Reasoning {
-                    text: reasoning,
-                    provider_state: None,
-                },
-            );
-        }
-        for (codec_id, payload) in provider_state {
-            push_part(
-                &mut parts,
-                &id,
-                PartKind::ProviderState,
-                ContentBlock::ProviderState { codec_id, payload },
-            );
-        }
-        for call in &calls {
-            push_part(
-                &mut parts,
-                &id,
-                PartKind::FunctionToolCall,
-                ContentBlock::ToolCall {
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: call
-                        .arguments
-                        .clone()
-                        .unwrap_or_else(|| Value::String(call.raw.clone())),
-                },
-            );
-        }
-        let message = Message {
-            id: id.clone(),
-            session_id: session_id.clone(),
-            run_id: Some(run_id.clone()),
-            role: Role::Assistant,
-            parent_id: None,
-            parts,
-            created_at: self.clock.now(),
-        };
-        ensure_lease(lease_lost)?;
-        execution.append_message(message).await?;
-        self.committed_message(execution, plan, snapshot, &id)
-            .await?;
-        plan.dispatcher
-            .notify::<ModelCompleted>(json!({"usage":usage}))
-            .await;
-        Ok((calls, usage))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn stage_tool(
-        &self,
-        execution: &dyn ExecutionStore,
-        session_id: &SessionId,
-        run_id: &RunId,
-        plan: &RunPlan,
-        call: PendingCall,
-        lease_lost: &AtomicBool,
-    ) -> Result<ToolCallRecord, RuntimeError> {
-        let definition = plan
-            .tools
-            .iter()
-            .find(|tool| tool.info.name == call.name)
-            .cloned();
-        let raw = call.arguments.unwrap_or(Value::String(call.raw));
-        let arguments = if let Some(tool) = &definition {
-            let prepared = match validate_arguments(&tool.info, &raw) {
-                Ok(()) => match self.tool_pipeline.prepare(&tool.info, raw.clone()).await {
-                    Ok(value) => match plan.dispatcher.transform::<ToolPrepare>(json!({"name":tool.info.name,"call_id":call.id.to_string(),"input":value})).await {
-                        Ok(output) => {
-                            let input = output.get("input").cloned().unwrap_or(output);
-                            validate_arguments(&tool.info, &input).map(|()| input)
-                        }
-                        Err(error) => Err(error.to_string()),
-                    },
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            };
-            match prepared {
-                Ok(value) if is_reserved_arguments(&value) => {
-                    json!({PREPARE_ERROR_KEY: RESERVED_ARGUMENT_KEY_TEXT})
-                }
-                Ok(value) => value,
-                Err(error) => json!({PREPARE_ERROR_KEY: error}),
-            }
-        } else {
-            unknown_tool_arguments(&raw)
-        };
-        ensure_lease(lease_lost)?;
-        let mut event = self.event(session_id, run_id, EventKind::ToolCallPending);
-        event.turn_id = call.turn_id.clone();
-        event.payload = json!({"call_id":call.id,"name":call.name,"status":"pending", "message_id":call.message_id});
-        event.correlation = Some(call.id.to_string());
-        let mut record = ToolCallRecord {
-            id: call.id,
-            run_id: run_id.clone(),
-            name: call.name,
-            arguments,
-            status: ToolCallStatus::Pending,
-            retry_safe: definition.as_ref().is_some_and(|tool| tool.info.retry_safe),
-            result: None,
-        };
-        if crabber_session::ensure_storable(&record).is_err() {
-            record.arguments = json!({PREPARE_ERROR_KEY: UNSTORABLE_ARGUMENTS_TEXT});
-        }
-        execution
-            .create_tool_call(record.clone(), event.clone())
-            .await?;
-        self.observer.emit(&event);
-        plan.dispatcher
-            .notify::<EventPublished>(serde_json::to_value(&event).unwrap_or(Value::Null))
-            .await;
-        Ok(record)
-    }
-
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    async fn execute_tool(
-        &self,
-        execution: &dyn ExecutionStore,
-        session: &RunSession,
-        run_id: &RunId,
-        plan: &RunPlan,
-        call: PendingCall,
-        existing: Option<ToolCallRecord>,
-        settlement: Option<(usize, watch::Receiver<usize>, watch::Sender<usize>)>,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-    ) -> Result<(), RuntimeError> {
-        let session_id = &session.id;
-        let definition = plan
-            .tools
-            .iter()
-            .find(|tool| tool.info.name == call.name)
-            .cloned();
-        let record = existing.expect("tool calls are staged before execution");
-        let recorded = read_recorded_call(record.arguments, &call.name, definition.is_some());
-        ensure_lease(lease_lost)?;
-        let tool_name = call.name.clone();
-        let mut measurement = Measurement::new(
-            self.observer.as_ref(),
-            self.monotonic_clock.as_ref(),
-            session_id,
-            run_id,
-            OperationKind::Tool {
-                name: tool_name.clone(),
-            },
-            cancellation,
-            lease_lost,
-        );
-        let tool_started_at = self.monotonic_clock.now();
-        let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
-        running.turn_id = call.turn_id.clone();
-        running.payload = json!({"call_id": call.id, "name": tool_name, "status": "running"});
-        running.correlation = Some(call.id.to_string());
-        execution
-            .claim_tool_call(&call.id, running.clone())
-            .await
-            .inspect_err(|_| {
-                measurement.observation.reason = TerminalReason::RuntimeError;
-            })?;
-        self.observer.emit(&running);
-        let running_projection = serde_json::to_value(&running).unwrap_or(Value::Null);
-        plan.dispatcher
-            .notify::<EventPublished>(running_projection.clone())
-            .await;
-        plan.dispatcher
-            .notify::<crabber_extension::ToolStarted>(running_projection)
-            .await;
-        execution
-            .renew_lease(self.clock.now() + time::Duration::seconds(30))
-            .await
-            .inspect_err(|_| {
-                measurement.observation.reason = TerminalReason::RuntimeError;
-            })?;
-        ensure_lease(lease_lost)?;
-        let child_cancellation = cancellation.child_token();
-        let mut mark_error = false;
-        let mut pipeline_failed = false;
-        let (class, input, resolved, outcome): (_, _, _, Result<Value, String>) = match recorded {
-            RecordedCall::Execute(arguments) => {
-                let tool = definition.expect("the record reader executes only calls that resolve");
-                let input = ToolInput::Normalized(arguments.clone());
-                let pipeline_context = ToolResultContext::new(
-                    call.name.clone(),
-                    true,
-                    input.clone(),
-                    record.id.clone(),
-                    session_id.clone(),
-                    run_id.clone(),
-                    ToolOutcomeClass::Succeeded,
-                )
-                .with_cancellation(child_cancellation.clone())
-                .with_cleanup(self.pipeline_cleanup.clone());
-                let run = tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => {
-                        measurement.observation.reason = TerminalReason::Cancelled;
-                        return Err(RuntimeError::Interrupted);
-                    },
-                    result = self.permit_and_execute(
-                    execution,
-                    session,
-                    run_id,
-                    &call.id,
-                    plan,
-                    &tool,
-                    arguments,
-                    cancellation,
-                    lease_lost,
-                    &pipeline_context,
-                    ) => result.inspect_err(|error| {
-                        measurement.observation.reason = match error {
-                            RuntimeError::LeaseLost => TerminalReason::LeaseLost,
-                            RuntimeError::Interrupted => TerminalReason::Cancelled,
-                            RuntimeError::Paused => TerminalReason::Paused,
-                            _ => TerminalReason::RuntimeError,
-                        };
-                    })?,
-                };
-                match run {
-                    ToolRun::Output(value) => {
-                        mark_error = value.mark_error;
-                        (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
-                    }
-                    ToolRun::PipelineFailed => {
-                        pipeline_failed = true;
-                        (
-                            ToolOutcomeClass::Succeeded,
-                            input,
-                            true,
-                            Ok(Value::String(result_transform_failed_message(
-                                TOOL_PIPELINE_HANDLER_ID,
-                            ))),
-                        )
-                    }
-                    ToolRun::PermissionDenied => (
-                        ToolOutcomeClass::PermissionDenied,
-                        input,
-                        true,
-                        Err("permission denied".into()),
-                    ),
-                    ToolRun::ExecutionFailed(error) => {
-                        (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
-                    }
-                }
-            }
-            RecordedCall::Settled {
-                class,
-                input,
-                resolved,
-                seed,
-            } => (class, input, resolved, Err(seed)),
-        };
-        ensure_lease(lease_lost)?;
-        // Built from the stored record only, so a resumed call derives the same context.
-        let result_context = ToolResultContext::new(
-            call.name.clone(),
-            resolved,
-            input,
-            record.id.clone(),
-            session_id.clone(),
-            run_id.clone(),
-            class,
-        )
-        .with_cancellation(child_cancellation);
-        debug_assert_eq!(result_context.class().is_error(), outcome.is_err());
-        #[cfg(test)]
-        if let Some(observer) = &self.context_observer {
-            observer(&result_context);
-        }
-        let seed = TransformOutput {
-            result: match outcome {
-                Ok(value) => value,
-                Err(error) => Value::String(error),
-            },
-            mark_error,
-        };
-        let outcome = if pipeline_failed {
-            ToolResultOutcome::Failed {
-                handler: TOOL_PIPELINE_HANDLER_ID.into(),
-            }
-        } else {
-            plan.dispatcher
-                .transform_tool_result(result_context, seed)
-                .await
-        };
-        let interrupted = matches!(outcome, ToolResultOutcome::Interrupted { .. });
-        let (status, output, is_error) = match outcome {
-            ToolResultOutcome::Completed { result, is_error } => (
-                if is_error {
-                    ToolResultStatus::Failed
-                } else {
-                    ToolResultStatus::Completed
-                },
-                result,
-                is_error,
-            ),
-            ToolResultOutcome::Failed { handler } => (
-                ToolResultStatus::Failed,
-                Value::String(result_transform_failed_message(&handler)),
-                true,
-            ),
-            ToolResultOutcome::Interrupted {
-                redacted: Some(value),
-            } => (ToolResultStatus::Interrupted, value, true),
-            // The run error arm settles unfinished calls with the fixed runtime text.
-            ToolResultOutcome::Interrupted { redacted: None } => {
-                ensure_lease(lease_lost)?;
-                measurement.observation.reason = TerminalReason::Cancelled;
-                return Err(RuntimeError::Interrupted);
-            }
-        };
-        measurement.observation.reason = if interrupted {
-            TerminalReason::Cancelled
-        } else if is_error {
-            TerminalReason::ToolError
-        } else {
-            TerminalReason::Success
-        };
-        drop(measurement);
-        let text = serde_json::to_string(&output).expect("JSON value serializes");
-        let content = vec![ContentBlock::Text { text }];
-        let result = ToolResult {
-            status,
-            content: content.clone(),
-        };
-        let message_id = MessageId::new();
-        let message = Message {
-            id: message_id.clone(),
-            session_id: session_id.clone(),
-            run_id: Some(run_id.clone()),
-            role: Role::Tool,
-            parent_id: None,
-            parts: vec![Part {
-                id: PartId::new(),
-                message_id,
-                ordinal: 0,
-                kind: PartKind::FunctionToolResult,
-                content: ContentBlock::ToolResult {
-                    call_id: call.id.clone(),
-                    content,
-                    is_error,
-                },
-            }],
-            created_at: self.clock.now(),
-        };
-        let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
-        settled.turn_id = call.turn_id.clone();
-        settled.payload = json!(crate::event_payload::Settlement {
-            result: event_payload::CallSettled {
-                call_id: call.id.clone(),
-                message_id: message.id.clone(),
-                content: std::borrow::Cow::Borrowed(&result.content),
-                is_error,
-            },
-            diagnostics: json!({"name": tool_name, "status": status,
-                "tool": tool_name, "tool_id": call.id.to_string(),
-                "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()}),
-        });
-        settled.correlation = Some(call.id.to_string());
-        // Interrupted calls settle out of order: their error drops sibling futures,
-        // then bulk cleanup settles only calls that remain unfinished.
-        if !interrupted && let Some((index, receiver, _)) = &settlement {
-            let mut receiver = receiver.clone();
-            while *receiver.borrow_and_update() != *index {
-                receiver
-                    .changed()
-                    .await
-                    .map_err(|_| RuntimeError::TaskStopped)?;
-            }
-        }
-        ensure_lease(lease_lost)?;
-        execution
-            .settle_tool_call(&call.id, result, message, settled.clone())
-            .await?;
-        self.observer.emit(&settled);
-        if interrupted {
-            Self::notify_interrupted_settlement(plan, &settled, true);
-            return Err(RuntimeError::Interrupted);
-        }
-        let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-        plan.dispatcher
-            .notify::<EventPublished>(settled_projection.clone())
-            .await;
-        plan.dispatcher
-            .notify::<crabber_extension::ToolSettled>(settled_projection)
-            .await;
-        if let Some((index, _, sender)) = settlement {
-            let _ = sender.send(index + 1);
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    async fn permit_and_execute(
-        &self,
-        execution: &dyn ExecutionStore,
-        session: &RunSession,
-        run_id: &RunId,
-        call_id: &ToolCallId,
-        plan: &RunPlan,
-        tool: &ToolDefinition,
-        arguments: Value,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-        pipeline_context: &ToolResultContext,
-    ) -> Result<ToolRun, RuntimeError> {
-        let (session_id, workspace) = (&session.id, session.workspace.clone());
-        let guard_decisions: Vec<_> = plan
-            .guards
-            .iter()
-            .map(|guard| {
-                guard.check_with_context(GuardContext {
-                    tool: &tool.info,
-                    arguments: &arguments,
-                    call_id,
-                    session_id,
-                    run_id,
-                })
-            })
-            .collect();
-        let guard_denied = guard_decisions.contains(&GuardDecision::Deny);
-        let restricted = plan
-            .restrictions
-            .iter()
-            .any(|set| !set.iter().any(|name| name == &tool.info.name));
-        let allowed = if guard_denied || restricted {
-            false
-        } else {
-            let decision = if guard_decisions.contains(&GuardDecision::Ask) {
-                PermissionDecision::Ask
-            } else if guard_decisions.contains(&GuardDecision::Allow) {
-                PermissionDecision::Allow
-            } else {
-                self.policy.decide(&tool.info, &arguments)
-            };
-            match decision {
-                PermissionDecision::Allow => true,
-                PermissionDecision::Deny => false,
-                PermissionDecision::Ask => {
-                    self.emit_durable(
-                        execution,
-                        session_id,
-                        run_id,
-                        plan,
-                        EventKind::PermissionRequested,
-                    )
-                    .await?;
-                    let approved = self.approver.approve(&tool.info, &arguments).await;
-                    self.emit_durable(
-                        execution,
-                        session_id,
-                        run_id,
-                        plan,
-                        EventKind::PermissionDecided,
-                    )
-                    .await?;
-                    approved
-                }
-            }
-        };
-        if !allowed {
-            return Ok(ToolRun::PermissionDenied);
-        }
-        ensure_lease(lease_lost)?;
-        execution
-            .renew_lease(self.clock.now() + time::Duration::seconds(30))
-            .await
-            .map_err(|_| RuntimeError::LeaseLost)?;
-        ensure_lease(lease_lost)?;
-        let observer = Arc::clone(&self.observer);
-        let session_for_progress = session_id.clone();
-        let run_for_progress = run_id.clone();
-        let clock = Arc::clone(&self.clock);
-        let progress = Arc::new(move |content: ContentBlock| {
-            let event = EventRecord {
-                cursor: None,
-                session_id: session_for_progress.clone(),
-                run_id: run_for_progress.clone(),
-                turn_id: None,
-                kind: EventKind::Custom {
-                    name: "tool_progress".into(),
-                },
-                payload: json!({"content":content}),
-                correlation: None,
-                live_only: true,
-                created_at: clock.now(),
-            };
-            observer.emit(&event);
-        });
-        let context = ToolContext::new(
-            session_id.clone(),
-            run_id.clone(),
-            call_id.clone(),
-            cancellation.clone(),
-            self.host_services.clone(),
-            workspace,
-            progress,
-            Some(Arc::new(HostApproval {
-                approver: Arc::clone(&self.approver),
-                tool: tool.info.clone(),
-                arguments: arguments.clone(),
-            })),
-        );
-        let executor = Arc::clone(&tool.executor);
-        let authorized_arguments = arguments.clone();
-        let terminal: Callback = Arc::new(move |input| {
-            let executor = Arc::clone(&executor);
-            let context = context.clone();
-            let authorized_arguments = authorized_arguments.clone();
-            Box::pin(async move {
-                if input != authorized_arguments {
-                    return Err(crabber_extension::ExtensionError::Tool(
-                        "around handler changed immutable tool input".into(),
-                    ));
-                }
-                executor
-                    .execute_with_context(context, authorized_arguments)
-                    .await
-            })
-        });
-        let output = match plan
-            .dispatcher
-            .around::<ToolExecute>(arguments, terminal)
-            .await
-        {
-            Ok(output) => output,
-            Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
-        };
-        ensure_lease(lease_lost)?;
-        let transformed = std::panic::AssertUnwindSafe(async {
-            self.tool_pipeline
-                .transform_result(pipeline_context, &tool.info, output)
-                .await
-        })
-        .catch_unwind()
-        .await;
-        Ok(match transformed {
-            Ok(Ok(value)) => ToolRun::Output(value),
-            Ok(Err(_)) | Err(_) => ToolRun::PipelineFailed,
-        })
-    }
-}
-
 /// Test bound from cancellation to durable settlement; store writes have no timer.
 pub const INTERRUPT_SETTLEMENT_BOUND: Duration = Duration::from_secs(1);
 
@@ -3752,242 +1056,6 @@ const RESERVED_KEY_PREFIX: &str = "$crabber_";
 /// Recorded (and seeded) when prepared arguments would be read back as a runtime sentinel.
 const RESERVED_ARGUMENT_KEY_TEXT: &str = "reserved argument key";
 const UNSTORABLE_ARGUMENTS_TEXT: &str = "unstorable arguments";
-
-fn storable_error_text(error: &RuntimeError) -> String {
-    error.to_string().replace('\0', "\u{fffd}")
-}
-
-fn storable_call_arguments(parsed: Value, raw: &str) -> Value {
-    let message_id = MessageId::new();
-    let probe = Message {
-        id: message_id.clone(),
-        session_id: SessionId::new(),
-        run_id: Some(RunId::new()),
-        role: Role::Assistant,
-        parent_id: None,
-        parts: vec![Part {
-            id: PartId::new(),
-            message_id,
-            ordinal: 0,
-            kind: PartKind::FunctionToolCall,
-            content: ContentBlock::ToolCall {
-                call_id: ToolCallId::new(),
-                name: String::new(),
-                arguments: parsed.clone(),
-            },
-        }],
-        created_at: OffsetDateTime::UNIX_EPOCH,
-    };
-    if crabber_session::ensure_storable(&probe).is_ok() {
-        parsed
-    } else {
-        Value::String(raw.to_owned())
-    }
-}
-
-/// The record arguments for an unknown tool. Stores write records without a depth limit but decode
-/// them with `serde_json::from_str` (128 levels), and both the sentinel and the enclosing
-/// `ToolCallRecord` add levels. When the whole record would not decode back unchanged, `raw` holds
-/// the arguments' JSON text instead, as for unparseable provider text. That form is a fixed depth
-/// (a string is a scalar), so it always decodes.
-pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
-    let arguments = json!({UNKNOWN_TOOL_KEY: {"raw": raw}});
-    let probe = ToolCallRecord {
-        id: ToolCallId::new(),
-        run_id: RunId::new(),
-        name: String::new(),
-        arguments: arguments.clone(),
-        status: ToolCallStatus::Pending,
-        retry_safe: false,
-        result: None,
-    };
-    if crabber_session::ensure_storable(&probe).is_ok() {
-        return arguments;
-    }
-    let text = serde_json::to_string(raw).unwrap_or_default();
-    json!({UNKNOWN_TOOL_KEY: {"raw": text}})
-}
-
-/// Typed result of running a resolved call, so the class never depends on error text.
-enum ToolRun {
-    Output(TransformOutput),
-    PipelineFailed,
-    PermissionDenied,
-    ExecutionFailed(String),
-}
-
-/// What the stored `record.arguments` say about a call (Recorded answer 1).
-#[derive(Debug, PartialEq)]
-pub(crate) enum RecordedCall {
-    /// A resolved call with real arguments: class comes from execution.
-    Execute(Value),
-    /// The call does not execute; class, input and the chain's seed text come from the record.
-    Settled {
-        class: ToolOutcomeClass,
-        input: ToolInput,
-        resolved: bool,
-        seed: String,
-    },
-}
-
-/// An object whose only key is reserved for the runtime.
-fn sole_reserved_key(arguments: &Value) -> Option<(&str, &Value)> {
-    let object = arguments.as_object().filter(|object| object.len() == 1)?;
-    let (key, value) = object.iter().next()?;
-    key.starts_with(RESERVED_KEY_PREFIX)
-        .then_some((key.as_str(), value))
-}
-
-fn is_reserved_arguments(arguments: &Value) -> bool {
-    sole_reserved_key(arguments).is_some()
-}
-
-pub(crate) fn read_recorded_call(arguments: Value, name: &str, resolves: bool) -> RecordedCall {
-    let unknown_seed = || format!("unknown tool: {name}");
-    let prepare_failed = |seed: String| RecordedCall::Settled {
-        class: ToolOutcomeClass::PrepareFailed,
-        input: ToolInput::Unavailable {
-            reason: InputUnavailable::PrepareFailed,
-        },
-        resolved: true,
-        seed,
-    };
-    match sole_reserved_key(&arguments) {
-        Some((UNKNOWN_TOOL_KEY, value)) => RecordedCall::Settled {
-            class: ToolOutcomeClass::UnknownTool,
-            input: match value.as_object().and_then(|object| object.get("raw")) {
-                Some(raw) => ToolInput::Raw(raw.clone()),
-                None => ToolInput::Unavailable {
-                    reason: InputUnavailable::Unresolved,
-                },
-            },
-            resolved: false,
-            seed: unknown_seed(),
-        },
-        Some((PREPARE_ERROR_KEY, value)) => prepare_failed(
-            value
-                .as_str()
-                .unwrap_or(RESERVED_ARGUMENT_KEY_TEXT)
-                .to_owned(),
-        ),
-        Some(_) => prepare_failed(RESERVED_ARGUMENT_KEY_TEXT.to_owned()),
-        None if resolves => RecordedCall::Execute(arguments),
-        None => RecordedCall::Settled {
-            class: ToolOutcomeClass::UnknownTool,
-            input: ToolInput::Unavailable {
-                reason: InputUnavailable::Unresolved,
-            },
-            resolved: false,
-            seed: unknown_seed(),
-        },
-    }
-}
-
-fn push_part(parts: &mut Vec<Part>, message_id: &MessageId, kind: PartKind, content: ContentBlock) {
-    parts.push(Part {
-        id: PartId::new(),
-        message_id: message_id.clone(),
-        ordinal: u32::try_from(parts.len()).expect("assistant part count fits u32"),
-        kind,
-        content,
-    });
-}
-
-fn invalid_provider(message: &str) -> ProviderError {
-    ProviderError {
-        kind: crabber_providers::ProviderErrorKind::Invalid,
-        message: message.into(),
-        retryable: false,
-    }
-}
-
-fn ensure_lease(lost: &AtomicBool) -> Result<(), RuntimeError> {
-    if lost.load(Ordering::SeqCst) {
-        Err(RuntimeError::LeaseLost)
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_arguments(tool: &ToolInfo, arguments: &Value) -> Result<(), String> {
-    let validator = jsonschema::validator_for(&tool.parameters)
-        .map_err(|error| format!("invalid tool schema: {error}"))?;
-    validator
-        .validate(arguments)
-        .map_err(|error| format!("invalid tool arguments: {error}"))
-}
-
-struct HostApproval {
-    approver: Arc<dyn ApprovalRequester>,
-    tool: ToolInfo,
-    arguments: Value,
-}
-#[async_trait]
-impl ApprovalFacade for HostApproval {
-    async fn request(&self, _reason: &str) -> bool {
-        self.approver.approve(&self.tool, &self.arguments).await
-    }
-}
-
-struct RetryDecision {
-    retry: bool,
-    delay_ms: u64,
-    compaction_requested: bool,
-}
-
-async fn request_error(
-    plan: &RunPlan,
-    error: &ProviderError,
-    attempt: u32,
-    retry: bool,
-    delay_ms: u64,
-) -> Result<RetryDecision, RuntimeError> {
-    let class = format!("{:?}", error.kind);
-    let seed = json!({"class":class,"attempt":attempt,"retry":retry,"delay_ms":delay_ms,"compaction_requested":error.kind == crabber_providers::ProviderErrorKind::ContextOverflow});
-    match plan.dispatcher.transform::<ModelRequestError>(seed).await {
-        Ok(decision)
-            if decision.get("class").and_then(Value::as_str) != Some(class.as_str())
-                || decision.get("attempt").and_then(Value::as_u64) != Some(u64::from(attempt)) =>
-        {
-            Err(RuntimeError::Extension(
-                "request-error handler changed immutable metadata".into(),
-            ))
-        }
-        Ok(decision) if decision.get("retry").and_then(Value::as_bool) == Some(true) && !retry => {
-            Err(RuntimeError::Extension(
-                "request-error handler cannot enable retry".into(),
-            ))
-        }
-        Ok(decision)
-            if decision
-                .get("delay_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                > delay_ms =>
-        {
-            Err(RuntimeError::Extension(
-                "request-error handler cannot lengthen delay".into(),
-            ))
-        }
-        Ok(decision)
-            if decision
-                .get("compaction_requested")
-                .and_then(Value::as_bool)
-                == Some(true)
-                && error.kind != crabber_providers::ProviderErrorKind::ContextOverflow =>
-        {
-            Err(RuntimeError::Extension(
-                "compaction is only valid for context overflow".into(),
-            ))
-        }
-        Ok(decision) => Ok(RetryDecision {
-            retry: decision["retry"].as_bool().unwrap_or(false),
-            delay_ms: decision["delay_ms"].as_u64().unwrap_or(0),
-            compaction_requested: decision["compaction_requested"].as_bool().unwrap_or(false),
-        }),
-        Err(handler) => Err(RuntimeError::Extension(handler.to_string())),
-    }
-}
 
 #[cfg(test)]
 mod recovery_contract_tests {
@@ -4045,10 +1113,12 @@ mod recovery_contract_tests {
             &self,
             context: &ToolResultContext,
             _: &ToolInfo,
-            _: Value,
+            _: crabber_core::ToolOutput,
         ) -> Result<TransformOutput, String> {
             self.0.lock().unwrap().push(context.clone());
-            Ok(TransformOutput::new(json!("re-executed pre-stage")))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(json!("re-executed pre-stage"))).unwrap(),
+            ))
         }
     }
 
@@ -4085,10 +1155,39 @@ mod recovery_contract_tests {
             )
             .await
             .unwrap();
-        runtime
-            .settle_unfinished_calls(execution.as_ref(), &session_id, &run_id, &plan, false, None)
+        let work_session = session_id.clone();
+        let work_run = run_id.clone();
+        let work_plan = plan.clone();
+        let recovery_session = session_id.clone();
+        let recovery_run = run_id.clone();
+        let recovery = runtime
+            .own_preparation(session_id.clone(), move |runtime| async move {
+                runtime.spawn_worker(
+                    recovery_session,
+                    recovery_run,
+                    move |worker, _| async move {
+                        worker
+                            .settle_unfinished_calls(
+                                execution.as_ref(),
+                                &work_session,
+                                &work_run,
+                                &work_plan,
+                                false,
+                                None,
+                            )
+                            .await?;
+                        // This fixture exercises settlement without claiming a native
+                        // terminal Run result. Its actual worker still owns delivery.
+                        Err(RuntimeError::Interrupted)
+                    },
+                )
+            })
             .await
             .unwrap();
+        assert!(matches!(
+            recovery.done().await,
+            Err(RuntimeError::Interrupted)
+        ));
         let record = Finished {
             harness: &harness,
             session_id,
@@ -4125,8 +1224,17 @@ mod recovery_contract_tests {
                     "final",
                     Arc::new(move |context, value| {
                         final_contexts.lock().unwrap().push(context);
-                        assert_eq!(value, json!("re-executed pre-stage"));
-                        Box::pin(async { Ok(TransformOutput::new(json!("redacted replay"))) })
+                        assert_eq!(
+                            value,
+                            crabber_core::ToolOutput::from_json(&(json!("re-executed pre-stage")))
+                                .unwrap()
+                        );
+                        Box::pin(async {
+                            Ok(TransformOutput::new(
+                                crabber_core::ToolOutput::from_json(&(json!("redacted replay")))
+                                    .unwrap(),
+                            ))
+                        })
                     }),
                 );
             }
@@ -4191,5 +1299,53 @@ mod recovery_contract_tests {
                 text: "\"redacted replay\"".into()
             }]
         );
+    }
+}
+
+mod session_defaults;
+
+impl Orchestrator {
+    fn public_source_for_attempt(
+        &self,
+        session: &SessionId,
+    ) -> crabber_extension::PublicSourceWriter {
+        self.owned_attempt.as_ref().map_or_else(
+            crabber_extension::PublicSourceWriter::default,
+            |attempt| {
+                crate::public_source::bind(
+                    self.store.clone(),
+                    session.clone(),
+                    crabber_session::PublicSourceAuthority::Attempt(attempt.authority.clone()),
+                    self.source_delivery.clone(),
+                    None,
+                )
+            },
+        )
+    }
+}
+
+impl Orchestrator {
+    fn new_source_delivery(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Arc<crate::public_source::SourceDelivery>, RuntimeError> {
+        let attempt = self
+            .owned_attempt
+            .as_ref()
+            .ok_or(crabber_session::AttemptError::UnknownStoreOutcome)?;
+        let cursor = attempt
+            .begin_cursor
+            .ok_or(crabber_session::AttemptError::UnknownStoreOutcome)?;
+        Ok(crate::public_source::SourceDelivery::new(
+            session.clone(),
+            run.clone(),
+            crabber_core::PublicAttemptIdentity {
+                id: attempt.target.id.clone(),
+                generation: attempt.target.generation,
+            },
+            cursor,
+            self.observer.clone(),
+        ))
     }
 }

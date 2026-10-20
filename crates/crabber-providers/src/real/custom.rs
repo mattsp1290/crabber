@@ -79,6 +79,12 @@ pub struct CustomHttpAdapter {
 }
 
 impl CustomHttpAdapter {
+    /// Inspect encoding support without invoking any custom host callback.
+    #[must_use]
+    pub fn input_support(&self) -> super::HttpInputSupport {
+        self.inner.input_support()
+    }
+
     /// Prepends one validated host product, keeping Crabber's product last.
     /// # Errors
     /// Returns a sanitized invalid-provider error for an invalid product.
@@ -240,3 +246,6 @@ impl ProviderAdapter for CustomHttpAdapter {
         self.inner.build(selection).await
     }
 }
+
+#[cfg(test)]
+mod tests;

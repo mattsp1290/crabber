@@ -1,5 +1,6 @@
 //! Isolated-schema admission receipt and execution-evidence migration proofs.
 use super::*;
+use sqlx::postgres::PgPoolOptions;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -198,7 +199,10 @@ async fn legacy_migration(url: &str, legacy_version: i32) {
             .fetch_all(&migrated.pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(
+        versions,
+        (1..=crate::POSTGRES_SCHEMA_VERSION).collect::<Vec<_>>()
+    );
     assert_eq!(
         migrated.get_session(&session).await.unwrap(),
         Some(admitted.session.clone())
@@ -535,6 +539,16 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             .await
             .unwrap();
         // Build exact v3/v4 table fixtures from the legacy None admission path.
+        let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM admission_execution_sources")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(sources, 0, "legacy admission has no execution-start source");
+        strip_enrollment_fixture(&store.pool).await;
+        sqlx::query("DROP TABLE admission_execution_sources")
+            .execute(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("DROP TABLE admission_executions")
             .execute(&store.pool)
             .await
@@ -576,12 +590,7 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
         };
         let mut before = Vec::new();
         for table in &tables {
-            let value: serde_json::Value = sqlx::query_scalar(&format!(
-                "SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {table} t"
-            ))
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+            let value = pre_enrollment_rows(&store.pool, table).await;
             before.push(value);
         }
         assert!(PostgresStore::connect(&isolated_url).await.is_err());
@@ -589,14 +598,12 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
         PostgresStore::migrate(&isolated_url).await.unwrap();
         let reopened = PostgresStore::connect(&isolated_url).await.unwrap();
         for (table, expected) in tables.iter().zip(before) {
-            let value: serde_json::Value = sqlx::query_scalar(&format!(
-                "SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {table} t"
-            ))
-            .fetch_one(&reopened.pool)
-            .await
-            .unwrap();
+            let value = pre_enrollment_rows(&reopened.pool, table).await;
             assert_eq!(value, expected, "v{baseline} retained {table}");
         }
+        let enrollment: (i32, Option<String>) = sqlx::query_as("SELECT CAST(execution_enrollment_protocol AS INTEGER),execution_enrollment_origin_id FROM runs WHERE id=$1")
+            .bind(&receipt.run_id.0).fetch_one(&reopened.pool).await.unwrap();
+        assert_eq!(enrollment, (0, None), "migration never adopts an old Run");
         assert_eq!(
             reopened.lookup_admission(&session, &key).await.unwrap(),
             Some(receipt)
@@ -625,4 +632,73 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             .unwrap();
     }
     admin.close().await;
+}
+
+/// A downgraded version roster must not retain the newer immutable birth DDL.
+/// Removing it models a predecessor, rather than replaying migrations22/23/24 over
+/// their already-created columns and protected raw/Pending sources.
+async fn strip_enrollment_fixture(pool: &sqlx::PgPool) {
+    sqlx::raw_sql(
+        "DROP TABLE initial_consumer_origins,initial_consumer_cohorts,
+        initial_consumer_assignments,initial_consumer_calls,initial_consumer_results,
+        initial_consumer_roster,initial_consumer_reverse,initial_consumer_publications,
+        initial_consumer_heads,initial_consumer_closes CASCADE;
+        DROP FUNCTION crabber_initial_consumer_guard();
+        DROP TABLE pending_initial_cohorts,pending_initial_epochs,
+        pending_initial_source_slots,pending_initial_registered_completes,
+        pending_initial_assignments,pending_initial_closes,
+        pending_initial_publications,pending_initial_heads CASCADE;
+        DROP FUNCTION crabber_pending_initial_guard();
+        DROP TRIGGER runs_execution_identity ON runs;
+        ALTER TABLE runs DROP COLUMN execution_enrollment_origin_id;
+        DROP TABLE native_execution_unclassified,native_execution_origins CASCADE;
+        ALTER TABLE runs DROP COLUMN execution_enrollment_protocol CASCADE;
+        DROP INDEX native_run_sources_issuer_identity;
+        DROP FUNCTION crabber_execution_run_identity();
+        DROP FUNCTION crabber_execution_source_guard();",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn pre_enrollment_rows(pool: &sqlx::PgPool, table: &str) -> serde_json::Value {
+    let projection = if table == "runs" {
+        "to_jsonb(t)-'execution_enrollment_protocol'-'execution_enrollment_origin_id'"
+    } else {
+        "to_jsonb(t)"
+    };
+    sqlx::query_scalar(&format!(
+        "SELECT coalesce(jsonb_agg({projection}), '[]'::jsonb) FROM {table} t"
+    ))
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn current_migration_never_relocks_runtime_tables() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let mut active = crate::postgres::transaction::begin(&pool).await.unwrap();
+    sqlx::query("LOCK TABLE operation_receipts IN ROW EXCLUSIVE MODE")
+        .execute(&mut *active)
+        .await
+        .unwrap();
+    let migrated = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        PostgresStore::migrate(&url),
+    )
+    .await;
+    active.rollback().await.unwrap();
+    pool.close().await;
+    migrated
+        .expect("current-schema migration must finish while runtime tables stay locked")
+        .unwrap();
 }

@@ -1,9 +1,9 @@
 use crate::RESULT_TRANSFORM_CONTRACT_VERSION;
 use crate::dispatch::Dispatcher;
 use crate::registry::ToolGuard;
-use crate::{MountedPromptContributor, ToolContext};
+use crate::{HostServices, MountedPromptContributor, ToolContext};
 use async_trait::async_trait;
-use crabber_core::{SessionId, ToolInfo};
+use crabber_core::{SessionContext, SessionId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +28,33 @@ impl fmt::Display for PlanFingerprint {
     }
 }
 
+pub(crate) fn registration_config(value: &str) -> Value {
+    // Structured metadata is canonicalized; scalar strings (including all-digit
+    // opaque hashes) retain exact identity rather than passing through numbers.
+    match serde_json::from_str(value) {
+        Ok(value @ (Value::Object(_) | Value::Array(_))) => value,
+        _ => Value::String(value.into()),
+    }
+}
+
+pub(crate) fn registration_hash(
+    value: Value,
+) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+    let mut value = Value::Array(vec![
+        Value::from("crabber.registration-profile.v1"),
+        Value::from(crate::RESULT_TRANSFORM_CONTRACT_VERSION),
+        Value::from(crate::SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION),
+        Value::from(crate::PROMPT_CONTRIBUTION_CONTRACT_VERSION),
+        value,
+    ]);
+    value.sort_all_objects();
+    crabber_core::InputFingerprint::new(format!(
+        "{:x}",
+        Sha256::digest(value.to_string().as_bytes())
+    ))
+    .map_err(|_| ExtensionError::RegistrationDescriptorUnavailable)
+}
+
 /// Id of the synthetic component that carries the result-transform contract
 /// version into every fingerprint (D9).
 const RESULT_TRANSFORM_CONTRACT_COMPONENT_ID: &str = "contract:crabber/tool/result-transform";
@@ -47,6 +74,18 @@ pub fn compute_fingerprint(components: &[ComponentIdentity]) -> PlanFingerprint 
         id: RESULT_TRANSFORM_CONTRACT_COMPONENT_ID.into(),
         version: RESULT_TRANSFORM_CONTRACT_VERSION.to_string(),
     });
+    canonical.push(ComponentIdentity {
+        id: "contract:crabber/tool/resources".into(),
+        version: format!(
+            "{}:{}",
+            crate::TOOL_RESOURCE_CONTRACT_VERSION,
+            crate::MAX_TOOL_RESOURCE_TASKS
+        ),
+    });
+    canonical.push(ComponentIdentity {
+        id: "contract:crabber/tool/interaction".into(),
+        version: crate::TOOL_INTERACTION_CONTRACT_VERSION.to_string(),
+    });
     canonical.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
     let bytes = serde_json::to_vec(&canonical).expect("component identities serialize");
     PlanFingerprint(Sha256::digest(bytes).into())
@@ -61,6 +100,20 @@ pub struct PromptSection {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExtensionError {
+    #[error("preparation resource contract is invalid")]
+    PreparationResourceContractInvalid,
+    #[error("owned preparation resource scope is unsupported")]
+    PreparationResourcesUnsupported,
+    #[error("plan already has an owned preparation lease")]
+    PreparationLeaseAlreadyBound,
+    #[error("preparation acquisition registration rejected: {0}")]
+    PreparationRegistration(#[from] crate::ResourceRegistrationError),
+    #[error(transparent)]
+    SessionServiceDependency(#[from] crate::SessionServiceDependencyError),
+    #[error(transparent)]
+    DurableInteractionUnsupported(#[from] crate::DurableInteractionUnsupported),
+    #[error("frozen registration declarations are unavailable")]
+    RegistrationDescriptorUnavailable,
     #[error("extension plan failed: {0}")]
     Plan(String),
     #[error("tool execution failed: {0}")]
@@ -85,19 +138,118 @@ pub enum ExtensionError {
     MissingCapability(&'static str),
     #[error("mount close timed out: {extension}")]
     MountCloseTimeout { extension: String },
+    #[error("owned mount cleanup incomplete: {extension}")]
+    MountCleanupIncomplete { extension: String },
     #[error("extension registry is closed")]
     RegistryClosed,
+    #[error("context owner is closed")]
+    ContextOwnerClosed,
+    #[error("context identity changed")]
+    ContextIdentityMismatch,
+    #[error("workspace context is unavailable")]
+    WorkspaceUnavailable,
+    #[error("context initialization failed: {component}")]
+    ContextInitializationFailed { component: String },
+    #[error("context initialization is incomplete")]
+    ContextInitializationIncomplete,
+    #[error("context cleanup is incomplete")]
+    ContextCleanupIncomplete,
 }
 
+/// An ordinary, run-to-completion tool returning validated ordered content.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Captured declaration for the frozen registration/plan identity.
+    fn resumable_identity(&self) -> Option<crabber_core::ResumableToolIdentity> {
+        self.resumable().map(crate::ResumableTool::identity)
+    }
+    /// Ordinary executors never expose a native continuation state machine.
+    fn resumable(&self) -> Option<&dyn crate::ResumableTool> {
+        None
+    }
+    async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError>;
+    /// Forward to the original execution future while observing its disposal.
+    /// # Panics
+    /// Panics if original construction, polling or disposal fails. Retained
+    /// owned callers observe that failure independently of semantic tool errors.
+    async fn execute_with_context(
+        &self,
+        _context: ToolContext,
+        arguments: Value,
+    ) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        match crate::dispatch::original::original(
+            || self.execute(arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            _ => panic!("original Tool execution observation failed"),
+        }
+    }
+}
+
+/// Explicit JSON-to-text adapter. JSON is always literal data; it is never
+/// inspected for media, runtime identity, suspension or authority fields.
+#[async_trait]
+pub trait JsonToolExecutor: Send + Sync {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError>;
+    /// Forward to the original JSON execution future while observing disposal.
+    /// # Panics
+    /// Panics if original construction, polling or disposal fails. Retained
+    /// owned callers observe that failure independently of semantic tool errors.
     async fn execute_with_context(
         &self,
         _context: ToolContext,
         arguments: Value,
     ) -> Result<Value, ExtensionError> {
-        self.execute(arguments).await
+        match crate::dispatch::original::original(
+            || JsonToolExecutor::execute(self, arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            _ => panic!("original JSON Tool execution observation failed"),
+        }
+    }
+}
+
+#[async_trait]
+impl<T: JsonToolExecutor + ?Sized> ToolExecutor for T {
+    async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        let value = match crate::dispatch::original::original(
+            || JsonToolExecutor::execute(self, arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result?,
+            _ => panic!("original JSON Tool execution observation failed"),
+        };
+        crabber_core::ToolOutput::from_json(&value)
+            .map_err(|_| ExtensionError::Tool("invalid JSON tool output".into()))
+    }
+    async fn execute_with_context(
+        &self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        let value = match crate::dispatch::original::original(
+            || JsonToolExecutor::execute_with_context(self, context, arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result?,
+            _ => panic!("original JSON Tool execution observation failed"),
+        };
+        crabber_core::ToolOutput::from_json(&value)
+            .map_err(|_| ExtensionError::Tool("invalid JSON tool output".into()))
     }
 }
 
@@ -117,13 +269,37 @@ pub struct RunPlan {
     pub dispatcher: Dispatcher,
     pub components: Vec<ComponentIdentity>,
     pub providers: Vec<Arc<dyn ProviderAdapter>>,
-    _lease: Option<Arc<PlanLease>>,
+    pub host_services: HostServices,
+    workspace_reader_resolver: Option<Arc<dyn crate::WorkspaceReaderResolver>>,
+    lease: Option<Arc<PlanLease>>,
+    preparation_lease: Option<crate::PreparationResourceLease>,
 }
 
-struct PlanLease(Box<dyn Fn() + Send + Sync>);
+struct PlanLease(Option<Box<dyn FnOnce() + Send + Sync>>);
 impl Drop for PlanLease {
     fn drop(&mut self) {
-        (self.0)();
+        if let Some(release) = self.0.take() {
+            release();
+        }
+    }
+}
+
+/// Observes disposal of one acquired plan's lease reference and its clones.
+/// This does not prove that shared components or preparation resources stopped.
+/// Keeping an observer alive does not retain the plan lease.
+#[derive(Clone, Debug)]
+pub struct PlanReleaseObserver {
+    released: tokio_util::sync::CancellationToken,
+}
+
+impl PlanReleaseObserver {
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        self.released.is_cancelled()
+    }
+
+    pub async fn released(&self) {
+        self.released.cancelled().await;
     }
 }
 
@@ -139,6 +315,8 @@ impl RunPlan {
         dispatcher: Dispatcher,
         providers: Vec<Arc<dyn ProviderAdapter>>,
         components: Vec<ComponentIdentity>,
+        host_services: HostServices,
+        workspace_reader_resolver: Option<Arc<dyn crate::WorkspaceReaderResolver>>,
         release: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         Self {
@@ -151,14 +329,71 @@ impl RunPlan {
             dispatcher,
             providers,
             components,
-            _lease: Some(Arc::new(PlanLease(Box::new(release)))),
+            host_services,
+            workspace_reader_resolver,
+            lease: Some(Arc::new(PlanLease(Some(Box::new(release))))),
+            preparation_lease: None,
         }
+    }
+    /// Original selected resolver facade, when supplied by a unique product.
+    /// Existing plans default to no resolver; this carries no ownership policy.
+    #[must_use]
+    pub fn workspace_reader_resolver(&self) -> Option<&Arc<dyn crate::WorkspaceReaderResolver>> {
+        self.workspace_reader_resolver.as_ref()
     }
     #[must_use]
     pub fn fingerprint(&self) -> &PlanFingerprint {
         &self.fingerprint
     }
 
+    /// Observe this acquisition without retaining it. Clones made from the
+    /// returned plan share the observation. Previously existing clones retain
+    /// their own references to the underlying lease and shared components.
+    /// The observation fires after dropping this acquisition's lease reference;
+    /// a panic from its final release callback leaves it unacknowledged.
+    #[must_use]
+    pub fn observe_release(self) -> (Self, PlanReleaseObserver) {
+        let observer = PlanReleaseObserver {
+            released: tokio_util::sync::CancellationToken::new(),
+        };
+        let signal = observer.released.clone();
+        (self.after_lease_release(move || signal.cancel()), observer)
+    }
+
+    // Acknowledges only disposal of this acquisition's underlying lease
+    // reference. A failing underlying release never runs the acknowledgement.
+    pub(crate) fn after_lease_release(
+        mut self,
+        released: impl FnOnce() + Send + Sync + 'static,
+    ) -> Self {
+        let lease = self.lease.take();
+        self.lease = Some(Arc::new(PlanLease(Some(Box::new(move || {
+            drop(lease);
+            released();
+        })))));
+        self
+    }
+
+    /// Attach the retained preparation lifetime without replacing an earlier
+    /// owner's lease. Disposal only signals its cleanup supervisor.
+    /// # Errors
+    /// Refuses replacement of an existing resource lease.
+    pub fn with_preparation_lease(
+        mut self,
+        lease: crate::PreparationResourceLease,
+    ) -> Result<Self, ExtensionError> {
+        if self.preparation_lease.is_some() {
+            return Err(ExtensionError::PreparationLeaseAlreadyBound);
+        }
+        self.preparation_lease = Some(lease);
+        Ok(self)
+    }
+    /// Whether this acquisition retains an actual preparation resource lease.
+    /// This selects stricter native worker registration; it proves no cleanup.
+    #[must_use]
+    pub fn retains_preparation_resources(&self) -> bool {
+        self.preparation_lease.is_some()
+    }
     pub fn release(self) {
         drop(self);
     }
@@ -166,7 +401,54 @@ impl RunPlan {
 
 #[async_trait]
 pub trait RunPlanProvider: Send + Sync {
+    /// Pure fresh-work ingress check. This must not initialize resources or
+    /// grant a plan; metadata declaration/replay remains independently readable.
+    /// # Errors
+    /// Refuses a locally closed or incompatible context before preparation.
+    fn check_preparation_context(&self, _context: &SessionContext) -> Result<(), ExtensionError> {
+        Ok(())
+    }
+    /// Inspect frozen registration declarations without acquiring a plan,
+    /// initializing components or obtaining execution authority. Frozen providers
+    /// retain these declarations after close. Actual instance schemas still
+    /// require a separate restore check.
+    /// # Errors
+    /// Custom providers must explicitly implement declaration inspection.
+    fn registration_fingerprint(
+        &self,
+        _context: &SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        Err(ExtensionError::RegistrationDescriptorUnavailable)
+    }
+
+    /// Pure owned-scope declaration. None preserves legacy acquisition semantics
+    /// and is coverage-unknown. Changing this contract changes frozen bindings.
+    /// # Errors
+    /// Refuses invalid declarations without acquiring or initializing resources.
+    fn preparation_resource_contract(
+        &self,
+        _context: &SessionContext,
+    ) -> Result<Option<crate::PreparationResourceContract>, ExtensionError> {
+        Ok(None)
+    }
+
+    /// Acquire within actual pre-registered owned capacity. A provider declaring
+    /// a contract must implement this bridge and register every scoped cleanup
+    /// before effects. Shared service dependencies remain independently owned.
+    async fn acquire_plan_in_preparation(
+        &self,
+        _context: &crate::PreparationResourceContext,
+    ) -> Result<RunPlan, ExtensionError> {
+        Err(ExtensionError::PreparationResourcesUnsupported)
+    }
+
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError>;
+
+    /// Acquire using the authoritative session identity, or the host-admitted
+    /// identity for a new session. Shared plans may ignore workspace routing.
+    async fn acquire_plan_in(&self, context: &SessionContext) -> Result<RunPlan, ExtensionError> {
+        self.acquire_plan(context.session_id()).await
+    }
 }
 
 #[derive(Clone)]
@@ -196,6 +478,12 @@ impl StaticPlanProvider {
                 }
             })
             .collect::<Vec<_>>();
+        identities.extend(tools.iter().filter_map(|tool| {
+            tool.resumable_identity().map(|identity| ComponentIdentity {
+                id: format!("resumable:{}", tool.info.name),
+                version: serde_json::to_string(&identity).expect("tool identity serializes"),
+            })
+        }));
         identities.extend(prompts.iter().map(|prompt| ComponentIdentity {
             id: format!("prompt:{}", prompt.name),
             version: serde_json::json!({"order":prompt.order,"text":prompt.text}).to_string(),
@@ -211,7 +499,10 @@ impl StaticPlanProvider {
                 dispatcher: Dispatcher::new(Vec::new()),
                 components: identities,
                 providers: Vec::new(),
-                _lease: None,
+                host_services: HostServices::default(),
+                workspace_reader_resolver: None,
+                lease: None,
+                preparation_lease: None,
             },
         }
     }
@@ -219,166 +510,35 @@ impl StaticPlanProvider {
 
 #[async_trait]
 impl RunPlanProvider for StaticPlanProvider {
+    fn registration_fingerprint(
+        &self,
+        _context: &SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        registration_hash(serde_json::json!([
+            "static",
+            self.plan.fingerprint.to_string(),
+            self.plan
+                .tools
+                .iter()
+                .map(|tool| &tool.info)
+                .collect::<Vec<_>>(),
+            self.plan
+                .prompts
+                .iter()
+                .map(|prompt| (&prompt.name, prompt.order, &prompt.text))
+                .collect::<Vec<_>>(),
+        ]))
+    }
+
     async fn acquire_plan(&self, _session: &SessionId) -> Result<RunPlan, ExtensionError> {
         Ok(self.plan.clone())
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "plan/tests.rs"]
+mod tests;
 
-    #[test]
-    fn fingerprint_is_order_independent() {
-        let a = ComponentIdentity {
-            id: "a".into(),
-            version: "1".into(),
-        };
-        let b = ComponentIdentity {
-            id: "b".into(),
-            version: "1".into(),
-        };
-        assert_eq!(
-            compute_fingerprint(&[a.clone(), b.clone()]),
-            compute_fingerprint(&[b, a])
-        );
-    }
-
-    struct MetadataOnlyTool;
-
-    #[async_trait]
-    impl ToolExecutor for MetadataOnlyTool {
-        async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
-            panic!("metadata test must not execute")
-        }
-    }
-
-    #[test]
-    fn canonical_tool_identity_retains_default_build_serialization() {
-        let provider = StaticPlanProvider::new(
-            vec![Arc::new(ToolDefinition {
-                info: ToolInfo {
-                    name: "tool".into(),
-                    description: "metadata".into(),
-                    parameters: serde_json::json!({"type":"object","properties":{}}),
-                    retry_safe: false,
-                    required_permissions: vec![],
-                },
-                executor: Arc::new(MetadataOnlyTool),
-            })],
-            Vec::new(),
-        );
-        // Before keyed admission, default serde_json builds serialized ToolInfo
-        // fields in declaration order and nested JSON objects in sorted order.
-        let retained_identity = ComponentIdentity {
-            id: "tool:tool".into(),
-            version: r#"{"name":"tool","description":"metadata","parameters":{"properties":{},"type":"object"},"retry_safe":false,"required_permissions":[]}"#.into(),
-        };
-        assert_eq!(provider.plan.components, vec![retained_identity.clone()]);
-        assert_eq!(
-            provider.plan.fingerprint,
-            compute_fingerprint(&[retained_identity])
-        );
-    }
-
-    /// Re-pinned for D9 (epic crabber-miia): the fingerprint covers component
-    /// identities plus the result-transform contract component at version 2,
-    /// so both hashes differ from the pre-contract values (1e222d9f..., 3defff03...,
-    /// pinned at 5e3046a). Workspace values are not inputs.
-    #[test]
-    fn fingerprint_of_fixed_components_is_pinned() {
-        let components = [
-            ComponentIdentity {
-                id: "example/native".into(),
-                version: "1".into(),
-            },
-            ComponentIdentity {
-                id: "example/other".into(),
-                version: "2.0.0".into(),
-            },
-        ];
-        assert_eq!(
-            compute_fingerprint(&components).to_string(),
-            "77ef3495189564ce7fadd89fa4b63e88b3dec1b1a92dbad900d4dc81a4cf5025"
-        );
-        let provider = StaticPlanProvider::new(
-            Vec::new(),
-            vec![Arc::new(PromptSection {
-                name: "system".into(),
-                order: 0,
-                text: "pinned".into(),
-            })],
-        );
-        assert_eq!(
-            provider.plan.fingerprint.to_string(),
-            "25d4c815b08bdb22373d9e9c93fe71a140279d68feacd4f92c56c43d40e5efce"
-        );
-    }
-
-    fn pre_contract_fingerprint(components: &[ComponentIdentity]) -> String {
-        let mut canonical = components.to_vec();
-        canonical.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
-        let bytes = serde_json::to_vec(&canonical).unwrap();
-        PlanFingerprint(Sha256::digest(bytes).into()).to_string()
-    }
-
-    #[test]
-    fn contract_component_participates_in_fingerprint() {
-        let components = [ComponentIdentity {
-            id: "example/native".into(),
-            version: "1".into(),
-        }];
-        let old = pre_contract_fingerprint(&components);
-        assert_ne!(compute_fingerprint(&components).to_string(), old);
-        assert_ne!(
-            compute_fingerprint(&[]).to_string(),
-            pre_contract_fingerprint(&[])
-        );
-    }
-
-    /// A caller component with the contract's id and version is appended
-    /// beside the contract component, not deduplicated, so it cannot
-    /// reproduce a pre-contract fingerprint or the contract-free digest.
-    #[test]
-    fn caller_component_cannot_shadow_contract_component() {
-        let contract = ComponentIdentity {
-            id: RESULT_TRANSFORM_CONTRACT_COMPONENT_ID.into(),
-            version: RESULT_TRANSFORM_CONTRACT_VERSION.to_string(),
-        };
-        let spoofed = [contract.clone()];
-        assert_ne!(
-            compute_fingerprint(&spoofed).to_string(),
-            pre_contract_fingerprint(&spoofed)
-        );
-        assert_ne!(compute_fingerprint(&spoofed), compute_fingerprint(&[]));
-        let other_version = [ComponentIdentity {
-            version: "1".into(),
-            ..contract
-        }];
-        assert_ne!(
-            compute_fingerprint(&other_version).to_string(),
-            pre_contract_fingerprint(&other_version)
-        );
-    }
-
-    #[test]
-    fn static_plan_fingerprint_tracks_prompt_text() {
-        let first = StaticPlanProvider::new(
-            Vec::new(),
-            vec![Arc::new(PromptSection {
-                name: "system".into(),
-                order: 0,
-                text: "one".into(),
-            })],
-        );
-        let second = StaticPlanProvider::new(
-            Vec::new(),
-            vec![Arc::new(PromptSection {
-                name: "system".into(),
-                order: 0,
-                text: "two".into(),
-            })],
-        );
-        assert_ne!(first.plan.fingerprint, second.plan.fingerprint);
-    }
-}
+#[cfg(test)]
+#[path = "plan/release_tests.rs"]
+mod release_tests;

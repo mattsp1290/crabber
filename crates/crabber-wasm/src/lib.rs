@@ -1,6 +1,7 @@
 //! Sandboxed Component Model extensions.
 #![allow(clippy::missing_errors_doc)]
 mod adapters;
+mod profile;
 
 use async_trait::async_trait;
 use crabber_core::ToolInfo;
@@ -67,6 +68,7 @@ pub struct ModuleConfig {
     pub path: PathBuf,
     pub allowed_root: PathBuf,
     pub expected_sha256: [u8; 32],
+    /// Nonsecret guest configuration; its exact bytes bind the registration.
     pub config_json: String,
     pub limits: Limits,
     pub instance_mode: InstanceMode,
@@ -149,7 +151,7 @@ struct WasmTool {
 
 #[async_trait]
 impl ToolExecutor for WasmTool {
-    async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
+    async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError> {
         self.invoke(arguments, None).await
     }
 
@@ -157,7 +159,7 @@ impl ToolExecutor for WasmTool {
         &self,
         context: ToolContext,
         arguments: Value,
-    ) -> Result<Value, ExtensionError> {
+    ) -> Result<crabber_core::ToolOutput, ExtensionError> {
         self.invoke(arguments, Some(context)).await
     }
 }
@@ -167,7 +169,7 @@ impl WasmTool {
         &self,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> Result<Value, ExtensionError> {
+    ) -> Result<crabber_core::ToolOutput, ExtensionError> {
         let turn = turn_metadata(context.as_ref());
         let args = [
             Val::String(self.name.clone()),
@@ -190,8 +192,12 @@ impl WasmTool {
         let Val::String(json) = *value else {
             return Err(ExtensionError::Tool("guest returned non-JSON".into()));
         };
-        serde_json::from_str(&json)
-            .map_err(|e| ExtensionError::Tool(format!("invalid guest JSON: {e}")))
+        if json.len() > crabber_core::input::MAX_INPUT_BYTES + 128 {
+            return Err(ExtensionError::Tool("invalid typed guest output".into()));
+        }
+        let value = serde_json::from_str(&json)
+            .map_err(|_| ExtensionError::Tool("invalid typed guest output".into()))?;
+        crabber_extension::parse_tool_output_envelope(value)
     }
 }
 
@@ -271,10 +277,10 @@ impl Extension for WasmExtension {
         &self.config.name
     }
     fn version(&self) -> &'static str {
-        "0.1.0"
+        "0.2.0"
     }
     fn config_hash(&self) -> String {
-        format!("{:x?}", self.config.expected_sha256)
+        profile::config_hash(&self.config)
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         let loader = Arc::new(Loader::new().map_err(|e| ExtensionError::Plan(e.to_string()))?);
@@ -835,7 +841,7 @@ impl LoadedModule {
         function: &str,
         args: &[Val],
     ) -> Result<Val, WasmError> {
-        let name = format!("crabber:extensions/{interface}@0.1.0");
+        let name = format!("crabber:extensions/{interface}@0.2.0");
         let iface = instance
             .get_export_index(&mut *store, None, &name)
             .ok_or_else(|| WasmError::Contract(format!("missing {name}")))?;
@@ -996,7 +1002,6 @@ mod tests {
             crabber_extension::HostServices::default(),
             crabber_extension::WorkspaceContext::from_persisted("native-ws", "/native/root"),
             Arc::new(|_| {}),
-            None,
         );
         assert_eq!(
             format!("{:?}", turn_metadata(Some(&context))),
@@ -1119,7 +1124,7 @@ mod tests {
         config.expected_sha256 = [0; 32];
         assert!(matches!(loader.load(config).await, Err(WasmError::Hash)));
         let mut config = fixture("echo-tool");
-        config.allowed_root = PathBuf::from("/tmp");
+        config.allowed_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         assert!(matches!(loader.load(config).await, Err(WasmError::Path(_))));
         let mut config = fixture("echo-tool");
         config.limits.max_module_bytes = 1;
@@ -1157,7 +1162,7 @@ mod tests {
                 .execute(serde_json::json!({"hello":"wasm"}))
                 .await
                 .unwrap(),
-            serde_json::json!({"hello":"wasm"})
+            crabber_core::ToolOutput::from_json(&(serde_json::json!({"hello":"wasm"}))).unwrap()
         );
     }
 
@@ -1266,9 +1271,12 @@ mod tests {
                     Arc::new(|context, _| {
                         Box::pin(async move {
                             assert!(context.cancellation().is_cancelled());
-                            Ok(crabber_extension::TransformOutput::new(serde_json::json!(
-                                "protected"
-                            )))
+                            Ok(crabber_extension::TransformOutput::new(
+                                crabber_core::ToolOutput::from_json(
+                                    &(serde_json::json!("protected")),
+                                )
+                                .unwrap(),
+                            ))
                         })
                     }),
                 );
@@ -1388,6 +1396,7 @@ mod tests {
             ]]);
             let store = Arc::new(MemoryStore::new());
             let runtime = Orchestrator::builder()
+                .behavior_version("wasm-runtime-fixture.v1")
                 .store(store.clone())
                 .resolver(Arc::new(fake))
                 .plan_provider(registry.clone())
@@ -1395,6 +1404,9 @@ mod tests {
                 .unwrap();
             let handle = runtime
                 .start(Request {
+                    selection_policy: crabber_runtime::AdmissionSelectionPolicy::Explicit,
+                    captured_revision: None,
+                    input_envelope: None,
                     session_id: None,
                     workspace_id: "test".into(),
                     directory: ".".into(),
@@ -1465,10 +1477,12 @@ mod tests {
             ToolOutcomeClass::Succeeded,
         )
         .with_cancellation(token.clone());
-        let mut invocation = Box::pin(
-            plan.dispatcher
-                .transform_tool_result(context, TransformOutput::new(serde_json::json!("secret"))),
-        );
+        let mut invocation = Box::pin(plan.dispatcher.transform_tool_result(
+            context,
+            TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(serde_json::json!("secret"))).unwrap(),
+            ),
+        ));
         std::future::poll_fn(|cx| {
             assert!(invocation.as_mut().poll(cx).is_pending());
             std::task::Poll::Ready(())
@@ -1592,7 +1606,13 @@ mod tests {
         let invocation = tokio::spawn(async move {
             let plan = plan;
             plan.dispatcher
-                .transform_tool_result(context, TransformOutput::new(serde_json::json!("secret")))
+                .transform_tool_result(
+                    context,
+                    TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(serde_json::json!("secret")))
+                            .unwrap(),
+                    ),
+                )
                 .await
         });
         tokio::time::timeout(Duration::from_secs(10), entered.acquire())
@@ -1813,13 +1833,20 @@ mod tests {
                     crabber_core::RunId::new(),
                     crabber_extension::ToolOutcomeClass::Succeeded,
                 ),
-                crabber_extension::TransformOutput::new(serde_json::json!({"secret":"secret"})),
+                crabber_extension::TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(serde_json::json!({"secret":"secret"})))
+                        .unwrap(),
+                ),
             )
             .await;
         let crabber_extension::ToolResultOutcome::Completed { result, .. } = result else {
             panic!("WASM redactor failed");
         };
-        assert!(result.to_string().contains("[REDACTED]"));
+        assert!(
+            serde_json::to_string(&result)
+                .unwrap()
+                .contains("[REDACTED]")
+        );
     }
 
     async fn echo_middleware_plan() -> (
@@ -1893,25 +1920,41 @@ mod tests {
             ),
         ] {
             let context = middleware_context(input, class);
-            let expected = result_envelope(&context, serde_json::json!({"a": 1}));
+            let expected = result_envelope(
+                &context,
+                crabber_core::ToolOutput::from_json(&(serde_json::json!({"a": 1}))).unwrap(),
+            );
             let outcome = plan
                 .dispatcher
-                .transform_tool_result(context, TransformOutput::new(expected["result"].clone()))
+                .transform_tool_result(
+                    context,
+                    TransformOutput::new(
+                        serde_json::from_value(expected["result"].clone()).unwrap(),
+                    ),
+                )
                 .await;
             let ToolResultOutcome::Completed { result, is_error } = outcome else {
                 panic!("{outcome:?}");
             };
-            assert_eq!(result["tool_name"], "secret-tool");
-            assert_eq!(result["tool_call_id"], "call-rtc");
-            assert_eq!(result["executed_input"], expected["context"]["input"]);
+            assert_eq!(result.json_value().unwrap()["tool_name"], "secret-tool");
+            assert_eq!(result.json_value().unwrap()["tool_call_id"], "call-rtc");
             assert_eq!(
-                serde_json::from_str::<Value>(result["output_json"].as_str().unwrap()).unwrap(),
+                result.json_value().unwrap()["executed_input"],
+                expected["context"]["input"]
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(
+                    result.json_value().unwrap()["output_json"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap(),
                 expected
             );
-            assert_eq!(result["is_error"], class.is_error());
+            assert_eq!(result.json_value().unwrap()["is_error"], class.is_error());
             assert_eq!(is_error, class.is_error());
             assert_eq!(
-                result["turn"],
+                result.json_value().unwrap()["turn"],
                 serde_json::json!({
                     "session_id":"", "run_id":"", "epoch_id":"", "turn_index":0,
                     "agent_name":"", "agent_mode":"", "provider_id":"", "model_id":"",
@@ -1938,7 +1981,7 @@ mod tests {
                     .transform_tool_result(
                         middleware_context(ToolInput::Normalized(Value::Null), class),
                         TransformOutput {
-                            result: result.clone(),
+                            result: crabber_core::ToolOutput::from_json(&(result.clone())).unwrap(),
                             mark_error: marked,
                         },
                     )
@@ -1946,7 +1989,7 @@ mod tests {
                 assert_eq!(
                     outcome,
                     ToolResultOutcome::Completed {
-                        result,
+                        result: crabber_core::ToolOutput::from_json(&(result)).unwrap(),
                         is_error: class.is_error() || marked
                     }
                 );
@@ -1959,7 +2002,10 @@ mod tests {
                     ToolInput::Normalized(Value::Null),
                     ToolOutcomeClass::Succeeded,
                 ),
-                TransformOutput::new(serde_json::json!("__mark_error__")),
+                TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(serde_json::json!("__mark_error__")))
+                        .unwrap(),
+                ),
             )
             .await;
         assert!(matches!(
@@ -2001,7 +2047,9 @@ mod tests {
                         ToolInput::Normalized(Value::Null),
                         ToolOutcomeClass::Succeeded,
                     ),
-                    TransformOutput::new(serde_json::json!(marker)),
+                    TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(serde_json::json!(marker))).unwrap(),
+                    ),
                 )
                 .await;
             assert_eq!(
@@ -2018,7 +2066,7 @@ mod tests {
     async fn wasm_after_tool_deep_input_decode_boundary_is_contained() {
         use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
         let (_registry, _mount, plan) = echo_middleware_plan().await;
-        for (depth, raw) in [(124, true), (126, false)] {
+        for (depth, raw) in [(16, true), (124, true), (126, false)] {
             let deep: Value =
                 serde_json::from_str(&("[".repeat(depth) + &"]".repeat(depth))).unwrap();
             let arguments = if raw {
@@ -2055,8 +2103,11 @@ mod tests {
                     ToolOutcomeClass::Succeeded
                 },
             );
-            let envelope =
-                crabber_extension::result_envelope(&context, serde_json::json!("SECRET-ORIGINAL"));
+            let envelope = crabber_extension::result_envelope(
+                &context,
+                crabber_core::ToolOutput::from_json(&(serde_json::json!("SECRET-ORIGINAL")))
+                    .unwrap(),
+            );
             assert_eq!(
                 serde_json::from_str::<Value>(&envelope.to_string()).is_ok(),
                 raw
@@ -2066,21 +2117,27 @@ mod tests {
             );
             let outcome = plan
                 .dispatcher
-                .transform_tool_result(context, TransformOutput::new(envelope["result"].clone()))
+                .transform_tool_result(
+                    context,
+                    TransformOutput::new(
+                        serde_json::from_value(envelope["result"].clone()).unwrap(),
+                    ),
+                )
                 .await;
-            if raw {
+            if depth == 16 {
                 let ToolResultOutcome::Completed { result, is_error } = outcome else {
-                    panic!("depth-124 raw input should roundtrip: {outcome:?}");
+                    panic!("bounded raw input should roundtrip: {outcome:?}");
                 };
                 assert!(is_error);
-                assert_eq!(result["executed_input"], envelope["context"]["input"]);
+                assert_eq!(
+                    result.json_value().unwrap()["executed_input"],
+                    envelope["context"]["input"]
+                );
                 let mut settled = record;
                 settled.status = crabber_core::ToolCallStatus::Failed;
                 settled.result = Some(crabber_core::ToolResult {
                     status: crabber_core::ToolResultStatus::Failed,
-                    content: vec![crabber_core::ContentBlock::Text {
-                        text: serde_json::to_string(&result).unwrap(),
-                    }],
+                    content: result.to_content_blocks(),
                 });
                 assert_eq!(
                     serde_json::from_str::<crabber_core::ToolCallRecord>(

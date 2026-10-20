@@ -13,6 +13,38 @@ Codex sign-in follows the current [Sign in with ChatGPT open-source agent flow](
 
 Credentials are written under `${XDG_CONFIG_HOME}/crabber/auth.json`, or `${HOME}/.config/crabber/auth.json`, with owner-only file permissions on Unix. The stable host identifier is stored in the same directory. The adapter never logs credential values or request bodies.
 
+## Typed input support
+
+`HttpAdapter::input_support()` and `CustomHttpAdapter::input_support()` report
+supported roles, media references and explicit context data without I/O.
+Context reaches each protocol as canonical user-role JSON text, separate from
+system policy and UI activity. Unsupported roles/media fail before credentials,
+header callbacks or network access; media is never silently removed or fetched.
+Encoding support is specific to the media source, MIME type and placement:
+
+| Protocol | Image sources | Placements |
+| --- | --- | --- |
+| Responses | Inline base64, URL, opaque file ID | User messages and function-call output |
+| Chat Completions | Inline base64, URL | User messages |
+| Messages | None in this implementation | Unsupported media fails before I/O |
+
+Supported image MIME types are PNG, JPEG, WebP and GIF. Other media kinds,
+unsupported roles/sources and malformed references fail before credentials or
+HTTP. Source URLs are passed through and never fetched by Crabber; opaque file
+IDs remain opaque. `HttpMediaSupport` reports these encoding limits, including
+`message_roles`, `tool_results` and `mime_types`; it does not claim that a selected
+remote model supports vision. Native typed streamers receive media unchanged.
+The wire mapping follows the official [image input guide](https://developers.openai.com/api/docs/guides/images-vision),
+[function output guide](https://developers.openai.com/api/docs/guides/function-calling)
+and [Chat Completions schema](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+
+Agent admission requires an explicit host `behavior_version` or
+`behavior_fingerprint`. Built-in HTTP bindings independently capture endpoint,
+protocol, implementation version and user agent, excluding credential values.
+Opaque custom callbacks/transports require an explicit `VersionedResolver` or
+`VersionedAdapter` route/configuration declaration for Agent execution. Direct
+adapter streaming remains available for transport tests and host-owned drivers.
+
 ## Host-owned custom HTTP providers
 
 Enable the facade's `custom-http` feature (or `crabber-providers/custom-http`
@@ -146,3 +178,30 @@ Tool-free live acceptance command (load `OPENCODE_GO_API_KEY` into the environme
 ```sh
 cargo test -p crabber --features opencode-go --test opencode_go_live -- --ignored
 ```
+
+## Experimental durable binding primitives
+
+`ProviderBindingDescriptor` in `crabber-core` records a provider/model route,
+backend identity, behavior version, nonsecret configuration fingerprint, and
+known token limits. Construction and deserialization validate the same bounds.
+Native hosts own truthful version declarations; the library cannot inspect
+opaque callbacks or guarantee that remote model aliases stay immutable.
+
+`Resolver::bind` and `ProviderAdapter::bind` return a `BoundProvider` holding one
+implementation and descriptor. `restore_binding` rejects changed descriptors
+before acquisition. Credential refresh within that implementation does not
+change binding identity. Undeclared bindings return typed `Unavailable` rather
+than assuming provider/model strings identify equivalent behavior.
+
+Use `VersionedResolver` to declare an immutable allowlist of routes over a host
+resolver, or `VersionedAdapter` for an extension-provided adapter. Each declaration
+must cover endpoint/gateway routing, protocol, opaque hooks and other behavior
+settings without including credentials, credential values or headers. These
+wrappers cannot verify falsely unchanged native configuration. `FakeProvider`
+declares its built-in deterministic fixture contract.
+
+These primitives are unstable. Runtime bound admission and checkpoint restoration
+retain and verify the original descriptor, configuration and input before fresh
+execution; missing or changed evidence fails closed. This binding does not prove
+resource ownership or arbitrary provider effects. See the current
+[server-host binding contract](../../docs/server-host.md).

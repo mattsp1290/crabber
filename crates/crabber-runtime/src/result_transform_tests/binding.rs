@@ -34,10 +34,12 @@ async fn exact_binding(mode: ExecutionMode) {
                         {
                             json!({"bound": "changed"})
                         } else {
-                            result
+                            (result).json_value().unwrap()
                         };
                         completed.send(context.call_id().clone()).unwrap();
-                        Ok(TransformOutput::new(result))
+                        Ok(TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&result).unwrap(),
+                        ))
                     })
                 }),
             );

@@ -24,26 +24,25 @@ pub(super) fn abandon_transaction(
     if request.authority == AbandonAuthority::ExpiredLease && run.lease_until > now {
         return Err(AbandonError::LiveLease);
     }
+    if state
+        .attempts
+        .values()
+        .any(|record| record.snapshot.run_id == run.id)
+        || state
+            .phases
+            .values()
+            .any(|record| record.snapshot.run_id == run.id)
+        || state.approval_barriers.contains_key(&run.session_id)
+    {
+        return Err(AbandonError::NativeReconciliationRequired);
+    }
+    let no_effect_v1 = super::admission_journal::no_effect(state, &run, &request)?;
     // Revoke first in the transaction candidate. Publication of any
     // change waits until all settlements and evidence have succeeded.
-    run.claim_token = uuid::Uuid::new_v4().to_string();
-    run.lease_until = now;
-    run.updated_at = now;
-    state.runs.insert(run.id.clone(), run.clone());
+    revoke_run(state, &mut run, now)?;
     #[cfg(test)]
     fail_boundary(state, 1)?;
-    let calls: Vec<_> = state
-        .calls
-        .values()
-        .filter(|call| {
-            call.run_id == run.id
-                && matches!(
-                    call.status,
-                    ToolCallStatus::Pending | ToolCallStatus::Running
-                )
-        })
-        .cloned()
-        .collect();
+    let calls = unfinished_calls(state, &run);
     let interrupted_tools = calls.iter().map(|call| call.id.clone()).collect();
     for call in calls {
         let (result, message, event) = interrupted_tool(&run, &call, now);
@@ -67,12 +66,14 @@ pub(super) fn abandon_transaction(
     if state.abandon_fail_after_tools {
         return Err(StoreError::Validation("injected abandonment failure".into()).into());
     }
+    let previous = fence_state(&run)?;
     run.status = RunStatus::Interrupted;
     // Retain usage, checkpoint and prior error/history verbatim.
-    state.runs.insert(run.id.clone(), run.clone());
+    persist_run(state, &previous, &run)?;
     #[cfg(test)]
     fail_boundary(state, 5)?;
     let evidence = AbandonEvidence {
+        no_effect_v1: no_effect_v1.clone(),
         request,
         run: run.clone(),
         interrupted_tools,
@@ -93,13 +94,38 @@ pub(super) fn abandon_transaction(
     state.abandonments.insert(
         outcome.run.id.clone(),
         AbandonCommit {
+            no_effect_v1,
             request: evidence.request,
             outcome: outcome.clone(),
         },
     );
     #[cfg(test)]
     fail_boundary(state, 7)?;
+    super::run_control::finalize(state, &outcome.run, now)?;
     Ok(outcome)
+}
+
+fn revoke_run(state: &mut State, run: &mut Run, now: OffsetDateTime) -> Result<(), AbandonError> {
+    let previous = fence_state(run)?;
+    run.claim_token = uuid::Uuid::new_v4().to_string();
+    run.lease_until = now;
+    run.updated_at = now;
+    persist_run(state, &previous, run)
+}
+
+fn fence_state(run: &Run) -> Result<crate::native_parent::RunState, AbandonError> {
+    crate::native_parent::RunState::from_run(run)
+        .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()).into())
+}
+fn persist_run(
+    state: &mut State,
+    previous: &crate::native_parent::RunState,
+    run: &Run,
+) -> Result<(), AbandonError> {
+    super::native_parent::record_run_states(state, Some(previous), fence_state(run)?)
+        .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
+    state.runs.insert(run.id.clone(), run.clone());
+    Ok(())
 }
 
 fn replay(
@@ -129,4 +155,19 @@ fn fail_boundary(state: &State, boundary: u8) -> Result<(), AbandonError> {
         return Err(StoreError::Validation(format!("injected boundary {boundary}")).into());
     }
     Ok(())
+}
+
+fn unfinished_calls(state: &State, run: &Run) -> Vec<crabber_core::ToolCallRecord> {
+    state
+        .calls
+        .values()
+        .filter(|call| {
+            call.run_id == run.id
+                && matches!(
+                    call.status,
+                    ToolCallStatus::Pending | ToolCallStatus::Running
+                )
+        })
+        .cloned()
+        .collect()
 }

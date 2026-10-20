@@ -23,6 +23,129 @@ impl SqliteFixture {
 }
 #[async_trait]
 impl Store for SqliteFixture {
+    fn supports_preparation_protocol(&self) -> bool {
+        self.store.supports_preparation_protocol()
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.store.reserve_preparation(request).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.store.mutate_session_owner(request, authority).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.store.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        let completed = self.store.complete_preparation(joined).await?;
+
+        Ok(completed)
+    }
+
+    fn supports_owned_attempts(&self) -> bool {
+        self.store.supports_owned_attempts()
+    }
+    fn supports_owned_tool_phases(&self) -> bool {
+        self.store.supports_owned_tool_phases()
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        self.store.supports_pre_effect_approvals()
+    }
+    async fn tool_phase(
+        &self,
+        run: &crabber::core::RunId,
+        id: &crabber::core::PhaseId,
+    ) -> Result<crabber::session::VersionedPhase, crabber::session::PhaseError> {
+        self.store.tool_phase(run, id).await
+    }
+    async fn resolve_uncertain_phase(
+        &self,
+        resolution: crabber::session::PhaseResolution,
+    ) -> Result<crabber::session::PhaseResolutionOutcome, crabber::session::PhaseError> {
+        self.store.resolve_uncertain_phase(resolution).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::PhaseReceipt>, crabber::session::PhaseError> {
+        self.store.lookup_phase_mutation(session, id).await
+    }
+    async fn approval_snapshot(
+        &self,
+        session: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+    ) -> Result<Option<crabber::session::ApprovalSnapshot>, crabber::session::ApprovalError> {
+        self.store.approval_snapshot(session, run).await
+    }
+    async fn original_approval_plan(
+        &self,
+        selected: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+        target: &crabber::session::ContinuationTarget,
+    ) -> Result<crabber::core::InputFingerprint, crabber::session::ApprovalError> {
+        self.store
+            .original_approval_plan(selected, run, target)
+            .await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::ApprovalReceipt>, crabber::session::ApprovalError> {
+        self.store.lookup_approval(session, id).await
+    }
+    async fn answer_approval(
+        &self,
+        answer: crabber::session::ApprovalAnswer,
+    ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
+        self.store.answer_approval(answer).await
+    }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crabber_session::ApprovalContinuationRecovery,
+    ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
+        self.store.reclaim_approval_continuation(request).await
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crabber::session::ApprovalContinuationClaim,
+    ) -> Result<crabber::session::ApprovalClaimOutcome, crabber::session::ApprovalError> {
+        self.store.claim_approval_continuation(claim).await
+    }
+
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.store.latest_execution_attempt(run).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.store.admit_run(request).await
     }
@@ -54,6 +177,15 @@ impl Store for SqliteFixture {
         run: &RunId,
     ) -> Result<Option<crabber::session::AdmissionExecutionState>, StoreError> {
         self.store.admission_execution_state(run).await
+    }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        self.store.inspect_admission_recovery(request).await
     }
     async fn claim_unstarted_admission(
         &self,
@@ -128,7 +260,25 @@ impl Store for SqliteFixture {
 #[async_trait]
 impl abandonment_contract::FixtureStore for SqliteFixture {
     async fn seed_run(&self, run: Run) {
-        sqlx::query("UPDATE runs SET status=$2,data=$3,lease_until=$4 WHERE id=$1")
+        let mut tx = self.raw.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let previous: String = sqlx::query_scalar("SELECT data FROM runs WHERE id=$1")
+            .bind(&run.id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let previous: Run = serde_json::from_str(&previous).unwrap();
+        let latest:Option<String>=sqlx::query_scalar("SELECT data_json FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT 1").bind(&run.session_id.0).bind(&run.id.0).fetch_optional(&mut *tx).await.unwrap();
+        if let Some(issuance) = crate::run_journal::advance(&previous, &run, latest.as_deref()) {
+            let header: String = sqlx::query_scalar("SELECT json_object('version',protocol_version,'session_id',session_id,'run_id',run_id,'sequence',sequence,'origin_digest',origin_digest,'chain_digest',chain_digest) FROM native_run_source_heads WHERE session_id=$1 AND run_id=$2")
+                .bind(&run.session_id.0).bind(&run.id.0).fetch_one(&mut *tx).await.unwrap();
+            let source = crate::run_journal::source(&issuance, &header);
+            sqlx::query("INSERT INTO native_run_sources(session_id,run_id,sequence,issuance_digest,previous_digest,chain_digest) VALUES($1,$2,$3,$4,$5,$6)")
+                .bind(&source.session_id.0).bind(&source.run_id.0).bind(i64::try_from(source.sequence).unwrap())
+                .bind(source.issuance_digest.as_str()).bind(source.previous_digest.as_ref().map(crabber_core::InputFingerprint::as_str)).bind(source.chain_digest.as_str())
+                .execute(&mut *tx).await.unwrap();
+            sqlx::query("INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,$3,$4)").bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(issuance.sequence).unwrap()).bind(serde_json::to_string(&issuance).unwrap()).execute(&mut *tx).await.unwrap();
+        }
+        sqlx::query("UPDATE runs SET status=$2,data=$3,lease_until=$4,claim_token=$5 WHERE id=$1")
             .bind(&run.id.0)
             .bind(match run.status {
                 RunStatus::Pending => "pending",
@@ -138,9 +288,11 @@ impl abandonment_contract::FixtureStore for SqliteFixture {
             })
             .bind(serde_json::to_string(&run).unwrap())
             .bind(i64::try_from(run.lease_until.unix_timestamp_nanos() / 1_000).unwrap())
-            .execute(&self.raw)
+            .bind(&run.claim_token)
+            .execute(&mut *tx)
             .await
             .unwrap();
+        tx.commit().await.unwrap();
     }
     async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
         sqlx::query("SELECT data FROM tool_calls WHERE run_id=$1 ORDER BY id")

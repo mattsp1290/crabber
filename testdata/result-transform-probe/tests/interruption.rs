@@ -1,21 +1,72 @@
 //! Public-facade proof that a real `RunHandle::interrupt` stops result
 //! dispatch while a reducer-owned child process is active, settles the call
-//! `Interrupted` without unredacted output, and that mount close joins the
-//! extension-owned cleanup.
+//! `Interrupted` without unredacted output only after native cleanup joins,
+//! while the extension mount also retains its cleanup accounting.
 
 mod interruption_support;
 
 use crabber::{
     core::{ContentBlock, EventKind, RunStatus, SessionId, ToolCallStatus, ToolResultStatus},
-    extension::FINAL_REDACTION_DEADLINE,
     runtime::{INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT},
     session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store},
 };
 use interruption_support::{Probes, RAW_OUTPUT, REDACTED_OUTPUT, agent_builder};
 use std::{sync::Arc, time::Duration};
-use tokio::time::{Instant, timeout};
+use tokio::time::timeout;
 
 const FIXTURE_BOUND: Duration = Duration::from_secs(10);
+
+// The real subprocess is already ready before this helper is entered. Freeze
+// only the accepted reducer window; deadline exactness belongs to paused-time
+// unit tests, not OS scheduling of a child-process integration fixture.
+struct ResumeClock;
+impl Drop for ResumeClock {
+    fn drop(&mut self) {
+        tokio::time::resume();
+    }
+}
+async fn frozen_redaction(operation: impl std::future::Future<Output = ()>) {
+    tokio::time::pause();
+    let _resume = ResumeClock;
+    let started = std::time::Instant::now();
+    tokio::pin!(operation);
+    loop {
+        assert!(
+            started.elapsed() < FIXTURE_BOUND,
+            "accepted redaction wall-clock watchdog"
+        );
+        tokio::select! {
+            biased;
+            () = &mut operation => {
+                assert!(started.elapsed() < FIXTURE_BOUND, "accepted redaction wall-clock watchdog");
+                return;
+            },
+            // Remaining runnable prevents Tokio's paused clock from advancing
+            // automatically while actual child cancellation/cleanup is polled.
+            () = tokio::task::yield_now() => {}
+        }
+    }
+}
+async fn interrupt_and_observe(run: &crabber::RunHandle, probes: &Probes, accepted: bool) {
+    let operation = async {
+        run.interrupt();
+        probes.callback_dropped.wait().await;
+        probes.kill_started.wait().await;
+        // Dropping the callback never proves that its child has been reaped.
+        // While the actual wait is held, no native or logical result is ready.
+        assert_eq!(probes.permit_count(), 0);
+        assert!(!probes.reaped.observed());
+        assert!(!probes.pipe_closed.observed());
+        if accepted {
+            probes.redacted.wait().await;
+        }
+    };
+    if accepted {
+        frozen_redaction(operation).await;
+    } else {
+        operation.await;
+    }
+}
 
 async fn assert_settlement(
     store: &dyn Store,
@@ -89,6 +140,7 @@ async fn assert_settlement(
         .filter(|event| event.kind == EventKind::ToolCallSettled)
         .collect();
     assert_eq!(settled.len(), 1);
+    assert_native_settlement(store, run, &events).await;
     let payload = &settled[0].payload;
     assert_eq!(payload["call_id"], serde_json::json!(call.id));
     assert_eq!(payload["content"], serde_json::json!(result.content));
@@ -112,6 +164,53 @@ async fn assert_settlement(
             assert!(!persisted.contains(REDACTED_OUTPUT), "seed was accepted");
         }
     }
+}
+
+async fn assert_native_settlement(
+    store: &dyn Store,
+    run: &crabber::core::RunId,
+    events: &[crabber::core::EventRecord],
+) {
+    let source = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == EventKind::ToolPhaseChanged)
+        .unwrap();
+    let phase: crabber::session::PhaseSnapshot =
+        serde_json::from_value(source.payload["phase"].clone()).unwrap();
+    let phase = store.tool_phase(run, &phase.target.id).await.unwrap().phase;
+    assert_eq!(phase.state, crabber::session::PhaseState::Failed);
+    assert_eq!(
+        phase.quiescence,
+        crabber::session::PhaseQuiescence::Complete
+    );
+}
+
+async fn assert_held_phase(store: &dyn Store, session: &SessionId, run: &crabber::core::RunId) {
+    assert_eq!(
+        store.get_run(run).await.unwrap().unwrap().status,
+        RunStatus::Running
+    );
+    let calls = store.list_unfinished_tool_calls(run).await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].status, ToolCallStatus::Running);
+    assert!(calls[0].result.is_none());
+    let events = store.list_events(session, None, 1000).await.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == EventKind::ToolCallSettled)
+    );
+    let source = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == EventKind::ToolPhaseChanged)
+        .unwrap();
+    let phase: crabber::session::PhaseSnapshot =
+        serde_json::from_value(source.payload["phase"].clone()).unwrap();
+    let phase = store.tool_phase(run, &phase.target.id).await.unwrap().phase;
+    assert_eq!(phase.state, crabber::session::PhaseState::Started);
+    assert_eq!(phase.quiescence, crabber::session::PhaseQuiescence::Pending);
 }
 
 async fn assert_drained(probes: &Probes, pid: u32) {
@@ -145,25 +244,14 @@ async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
         let pid = probes.ready().await;
         assert_ne!(pid, 0);
         assert_eq!(probes.permit_count(), 0);
-        let interrupted = Instant::now();
-        run.interrupt();
-        let status = timeout(INTERRUPT_SETTLEMENT_BOUND, run.done())
-            .await
-            .expect("durable interrupt settlement bound")
-            .unwrap()
-            .status;
-        // `done()` resolves after the call and the run are durably settled.
-        // Only that is timed; the reads below are the probe's own work and
-        // must not count against the runtime's bounds.
-        let settled_after = interrupted.elapsed();
-        println!("interrupt to durable settlement: {settled_after:?}");
-        assert_eq!(status, RunStatus::Interrupted);
-        if accepted {
-            assert!(
-                settled_after <= FINAL_REDACTION_DEADLINE,
-                "accepted fallback settled after {settled_after:?}"
-            );
-        }
+        interrupt_and_observe(&run, &probes, accepted).await;
+        assert_held_phase(store.as_ref(), &session, &run_id).await;
+        probes.release_reap();
+        timeout(INTERRUPT_SETTLEMENT_BOUND, async {
+            assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
+        })
+        .await
+        .expect("durable interrupt settlement after actual cleanup");
         assert_settlement(
             store.as_ref(),
             &session,
@@ -200,13 +288,6 @@ async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
             }
         }
         assert_eq!(live_settlements, 1);
-        probes.callback_dropped.wait().await;
-        probes.kill_started.wait().await;
-        // Cleanup outlives the dropped callback and cannot release before wait().
-        assert_eq!(probes.permit_count(), 0);
-        assert!(!probes.reaped.observed());
-        assert!(!probes.pipe_closed.observed());
-        probes.release_reap();
         agent.close_extensions().await.unwrap();
         assert_drained(&probes, pid).await;
     })

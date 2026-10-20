@@ -1,15 +1,19 @@
 use super::tests::{TEST_LOCK, test_url};
 use super::*;
 use crate::abandonment_contract::{FixtureStore, abandon_request, event, request};
+use async_trait::async_trait;
 use crabber_core::{
     AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest, EventKind, ManualClock,
 };
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 #[async_trait]
 impl FixtureStore for PostgresStore {
     async fn seed_run(&self, run: Run) {
-        let mut tx = self.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .unwrap();
         load_run(&mut tx, &run.id, true).await.unwrap();
         save_run(&mut tx, &run).await.unwrap();
         tx.commit().await.unwrap();
@@ -239,7 +243,9 @@ async fn independent_pools_renew_resume_and_abandon_serialize() {
             clock.set(admitted.run.lease_until);
         }
         let request = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         load_run(&mut held, &admitted.run.id, true).await.unwrap();
         let competing_store = other.clone();
         let competing_run = admitted.run.clone();
@@ -279,7 +285,7 @@ async fn independent_pools_renew_resume_and_abandon_serialize() {
         // Wait until the contender is blocked on the run row, not just scheduled.
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%runs%'")
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND (query LIKE '%runs%' OR query LIKE '%pg_advisory_xact_lock%')")
                     .fetch_one(&store.pool).await.unwrap();
                 if count > 0 {break;} tokio::task::yield_now().await;
             }
@@ -374,7 +380,9 @@ async fn clock_is_read_under_lock_and_abandonment_wins_queued_recovery() {
     for resume in [false, true] {
         let admitted = store.admit_run(request()).await.unwrap();
         let execution = other.execution(admitted.fence.clone()).await.unwrap();
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         load_run(&mut held, &admitted.run.id, true).await.unwrap();
         let abandoning = store.clone();
         let expected = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
@@ -419,7 +427,7 @@ async fn clock_is_read_under_lock_and_abandonment_wins_queued_recovery() {
 async fn wait_for_locks(store: &PostgresStore, required: i64) {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%runs%'")
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND (query LIKE '%runs%' OR query LIKE '%pg_advisory_xact_lock%')")
                 .fetch_one(&store.pool).await.unwrap();
             if count >= required {break;} tokio::task::yield_now().await;
         }

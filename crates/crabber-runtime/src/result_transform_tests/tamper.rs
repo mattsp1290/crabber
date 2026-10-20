@@ -14,7 +14,7 @@ const HANDLER: &str = "reject-tampered-envelope";
 
 struct SeededTool;
 #[async_trait]
-impl ToolExecutor for SeededTool {
+impl JsonToolExecutor for SeededTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         Ok(json!(SEED))
     }
@@ -67,7 +67,7 @@ fn failing_chain(callback: Callback, after: Arc<AtomicUsize>) -> Arc<ClosureExte
             "accept-intermediate",
             Arc::new(|mut value| {
                 Box::pin(async move {
-                    value["result"] = json!(INTERMEDIATE);
+                    value["result"] = fixture_output(&json!(INTERMEDIATE));
                     Ok(value)
                 })
             }),
@@ -119,8 +119,10 @@ async fn every_context_field_is_immutable_and_stops_the_chain() {
             Box::pin(async move {
                 let original = value.clone();
                 value["context"][field] = replacement;
-                value["result"] = json!(AUTHORED);
-                seen.lock().unwrap().push((original, value.clone()));
+                value["result"] = fixture_output(&json!(AUTHORED));
+                seen.lock()
+                    .unwrap()
+                    .push((fixture_envelope(original), fixture_envelope(value.clone())));
                 Ok(value)
             })
         });
@@ -168,8 +170,8 @@ async fn malformed_replies_errors_and_panics_persist_only_fixed_text() {
         let callback: Callback = Arc::new(move |mut value| {
             let seen = Arc::clone(&seen);
             Box::pin(async move {
-                seen.lock().unwrap().push(value.clone());
-                value["result"] = json!(AUTHORED);
+                seen.lock().unwrap().push(fixture_envelope(value.clone()));
+                value["result"] = fixture_output(&json!(AUTHORED));
                 match mode {
                     "missing-context" => {
                         value.as_object_mut().unwrap().remove("context");
@@ -223,7 +225,7 @@ async fn mark_error_escalates_success_and_later_false_cannot_clear_it() {
                 Box::pin(async move {
                     assert_eq!(value["context"]["class"], "succeeded");
                     assert_eq!(value["context"]["is_error"], false);
-                    value["result"] = json!({"safe": true});
+                    value["result"] = fixture_output(&json!({"safe": true}));
                     value["mark_error"] = json!(true);
                     Ok(value)
                 })
@@ -281,7 +283,7 @@ async fn false_mark_error_cannot_clear_any_error_class() {
                         assert_eq!(value["context"]["class"], class);
                         assert_eq!(value["context"]["is_error"], true);
                         assert_eq!(value["mark_error"], false);
-                        value["result"] = json!({"safe": true});
+                        value["result"] = fixture_output(&json!({"safe": true}));
                         Ok(value)
                     })
                 }),
@@ -335,7 +337,7 @@ async fn denied_calls_cannot_be_rewritten_into_execution_or_success() {
                         value["context"]["tool_name"] = json!(SHOUT);
                         value["context"]["input"] =
                             json!({"kind": "normalized", "value": {"text": AUTHORED}});
-                        value["result"] = json!(AUTHORED);
+                        value["result"] = fixture_output(&json!(AUTHORED));
                         Ok(value)
                     })
                 }),
@@ -390,7 +392,7 @@ async fn tampered_run_id_does_not_change_store_fencing() {
                 Box::pin(async move {
                     held.pass(&value).await;
                     value["context"]["run_id"] = json!(RunId::new().to_string());
-                    value["result"] = json!(AUTHORED);
+                    value["result"] = fixture_output(&json!(AUTHORED));
                     Ok(value)
                 })
             }),

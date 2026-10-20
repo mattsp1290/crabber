@@ -1,0 +1,297 @@
+//! Protected source membership is independent of mutable issuance projections.
+use crate::memory::State;
+use crate::native_parent::source_protocol::{JournalHead, JournalSource};
+use crate::native_parent::{Error, RunIssuance};
+
+/// Immutable Session identity era is installed with the actual first row.
+pub(in crate::memory) fn session_birth(
+    state: &mut State,
+    session: &crabber_core::SessionId,
+) -> Result<(), crate::session_owner::SessionOwnerError> {
+    if state.session_owners.record_native_session_birth(session)? {
+        state.native_session_protocols.insert(session.clone());
+    }
+    Ok(())
+}
+
+/// A protected Run cannot fall back to legacy behavior when its mutable latest
+/// projection disappears, including writes that would emit no new issuance.
+pub(super) fn verify_previous(
+    state: &State,
+    previous: &crate::native_parent::RunState,
+    latest: Option<&RunIssuance>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    crate::native_parent::source_protocol::validate_scope(&previous.session_id, &previous.run_id)?;
+    let scope = (previous.session_id.clone(), previous.run_id.clone());
+    if !state.native_run_protocols.contains(&scope) {
+        if state
+            .native_session_protocols
+            .contains(&previous.session_id)
+        {
+            return Err(Error);
+        }
+        return if state
+            .native_run_source_heads
+            .keys()
+            .any(|(_, id)| id == &previous.run_id)
+            || state
+                .native_run_sources
+                .keys()
+                .any(|(_, id, _)| id == &previous.run_id)
+        {
+            Err(Error)
+        } else {
+            Ok(())
+        };
+    }
+    history(state, &previous.session_id, &previous.run_id, proof).map_err(|_| Error)?;
+    let head = state.native_run_source_heads.get(&scope).ok_or(Error)?;
+    head.validate()?;
+    let latest = latest.ok_or(Error)?;
+    if head.session_id != previous.session_id
+        || head.run_id != previous.run_id
+        || head.sequence != latest.sequence
+        || latest.state != *previous
+    {
+        return Err(Error);
+    }
+    let selected = state
+        .native_run_sources
+        .get(&(scope.0.clone(), scope.1.clone(), head.sequence))
+        .ok_or(Error)?;
+    selected.verify(latest)?;
+    let original = state
+        .native_run_sources
+        .get(&(scope.0, scope.1, 1))
+        .ok_or(Error)?;
+    original.validate()?;
+    if selected.chain_digest != head.chain_digest
+        || original.chain_digest != head.origin_digest
+        || original.session_id != previous.session_id
+        || original.run_id != previous.run_id
+        || original.sequence != 1
+    {
+        return Err(Error);
+    }
+    Ok(())
+}
+
+/// All validation precedes the first mutation; publishing the prepared entries
+/// cannot fail halfway through updating the protected maps.
+pub(super) fn append_with_proof(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
+    append_output(
+        state,
+        issuer,
+        creation,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .map(|_| ())
+}
+pub(super) fn append_captured_with_proof(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    append_output(
+        state,
+        issuer,
+        creation,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+    )
+}
+pub(super) fn append_initial_captured_with_birth(
+    state: &mut State,
+    issuer: &RunIssuance,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    append_output_with_birth(
+        state,
+        issuer,
+        true,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+        birth,
+    )
+}
+fn append_output(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    append_output_with_birth(
+        state,
+        issuer,
+        creation,
+        proof,
+        capture,
+        crate::native_enrollment::pending_initial::BirthDecision::Raw,
+    )
+}
+fn append_output_with_birth(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+    birth_decision: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    use crate::public_session::v2::proof::ReadError;
+    proof.measure(issuer).map_err(ReadError::Budget)?;
+    if crate::snapshot::encoded_bytes(issuer, 2048).is_none() {
+        return Err(Error.into());
+    }
+    issuer.validate()?;
+    let scope = (issuer.state.session_id.clone(), issuer.state.run_id.clone());
+    let key = (scope.0.clone(), scope.1.clone(), issuer.sequence);
+    let protocol = state.native_run_protocols.contains(&scope);
+    if state
+        .native_run_protocols
+        .iter()
+        .any(|(session, run)| run == &scope.1 && session != &scope.0)
+        || state
+            .native_run_source_heads
+            .keys()
+            .any(|(session, run)| run == &scope.1 && session != &scope.0)
+        || state
+            .native_run_sources
+            .keys()
+            .any(|(session, run, _)| run == &scope.1 && session != &scope.0)
+    {
+        return Err(Error.into());
+    }
+    if creation {
+        if protocol
+            || state.native_run_source_heads.contains_key(&scope)
+            || state
+                .native_run_sources
+                .keys()
+                .any(|(_, run, _)| run == &scope.1)
+        {
+            return Err(Error.into());
+        }
+    } else if !protocol {
+        // Retained legacy state is usable but never promoted by a later write.
+        return if state.native_run_source_heads.contains_key(&scope)
+            || state
+                .native_run_sources
+                .keys()
+                .any(|(_, run, _)| run == &scope.1)
+        {
+            Err(Error.into())
+        } else {
+            crate::native_enrollment::caller::initial::SourcePublication::legacy(
+                capture, issuer, creation, proof,
+            )
+            .map_err(ReadError::Budget)
+        };
+    }
+    if state.native_run_sources.contains_key(&key) {
+        return Err(Error.into());
+    }
+    let previous = state.native_run_source_heads.get(&scope);
+    if creation != previous.is_none() {
+        return Err(Error.into());
+    }
+    if let Some(head) = previous {
+        head.validate()?;
+        let previous_key = (scope.0.clone(), scope.1.clone(), head.sequence);
+        let source = state.native_run_sources.get(&previous_key).ok_or(Error)?;
+        let original = state.native_run_issuances.get(&previous_key).ok_or(Error)?;
+        proof
+            .measure(&(head, source, original))
+            .map_err(ReadError::Budget)?;
+        source.verify(original)?;
+        if source.chain_digest != head.chain_digest {
+            return Err(Error.into());
+        }
+    }
+    let source = JournalSource::new(previous, issuer)?;
+    let head = JournalHead::advance(previous, &source)?;
+    let birth = if creation
+        && matches!(
+            birth_decision,
+            crate::native_enrollment::pending_initial::BirthDecision::Raw
+        ) {
+        Some(
+            crate::memory::native_enrollment::prepare_birth(state, issuer, &source, proof)
+                .map_err(ReadError::Budget)?,
+        )
+    } else {
+        None
+    };
+    verify_pending_initial_birth(birth_decision, creation, issuer, proof)?;
+    let captured = crate::native_enrollment::caller::initial::SourcePublication::capture(
+        capture, issuer, &source, creation, proof,
+    )
+    .map_err(ReadError::Budget)?;
+    if let Some(birth) = birth {
+        crate::memory::native_enrollment::publish_birth(state, birth).map_err(ReadError::Budget)?;
+    }
+    state.native_run_protocols.insert(scope.clone());
+    state.native_run_sources.insert(key, source);
+    state.native_run_source_heads.insert(scope, head);
+    Ok(captured)
+}
+
+fn verify_pending_initial_birth(
+    birth_decision: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+    creation: bool,
+    issuer: &RunIssuance,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
+    use crate::public_session::v2::proof::ReadError;
+    if let crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(call) =
+        birth_decision
+    {
+        if !creation || issuer.sequence != 1 {
+            return Err(Error.into());
+        }
+        call.selected()
+            .verify(call.selected().original(), proof)
+            .map_err(ReadError::Budget)?;
+        if call.correlation().key.session_id != issuer.state.session_id {
+            return Err(Error.into());
+        }
+        // The actual complete result assigns the Pending origin later in this
+        // SAME transaction; no Raw origin is ever published in this branch.
+    }
+    Ok(())
+}
+
+#[path = "source_protocol/original.rs"]
+mod original;
+#[path = "source_protocol/read.rs"]
+mod read;
+pub(in crate::memory) use read::{current, history, raw_current, retained_current, routes};
+#[cfg(test)]
+#[path = "source_protocol/tests.rs"]
+mod tests;
+pub(in crate::memory) use original::read as original;
+
+#[cfg(test)]
+#[path = "source_protocol/begin_tests.rs"]
+mod begin_tests;

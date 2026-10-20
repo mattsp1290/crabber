@@ -5,6 +5,7 @@ use std::{env, fmt::Write, fs, path::Path, process::Command};
 
 mod agui;
 mod datadog;
+mod probes;
 
 const GLUE_START: &str = "crabber:glue-start";
 const GLUE_END: &str = "crabber:glue-end";
@@ -16,11 +17,16 @@ fn main() {
         (Some("check"), None) => check(),
         (Some("build-fixtures"), None) => build_fixtures(),
         (Some("verify-datadog"), None) => datadog::verify(),
+        (Some("check-probes"), None) => probes::check(workspace()),
         _ => {
-            eprintln!("usage: cargo xtask <check|build-fixtures|verify-datadog>");
+            eprintln!("usage: cargo xtask <check|build-fixtures|verify-datadog|check-probes>");
             std::process::exit(2);
         }
     }
+}
+
+fn workspace() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
 fn check() {
@@ -29,10 +35,26 @@ fn check() {
         .expect("xtask belongs directly under the workspace root");
 
     agui::check(workspace);
+    probes::check(workspace);
     check_wit(workspace);
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);
+    check_server_host(workspace);
     check_custom_http(workspace);
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "wasm,sqlite,postgres,custom-http",
+            "--test",
+            "typed_input",
+            "--test",
+            "typed_output",
+        ],
+    );
     check_sqlite(workspace);
     run(
         workspace,
@@ -105,6 +127,54 @@ fn check() {
         "testdata/external-consumer/check.sh",
     );
     check_glue(workspace);
+}
+
+// This local adoption probe deliberately needs no network provider or AG-UI SDK.
+fn check_server_host(workspace: &Path) {
+    // check() builds the actual local component fixtures before this gate.
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "server-host-probe",
+            "--features",
+            "wasm",
+            "--test",
+            "shared_wasm",
+        ],
+    );
+    run(
+        workspace,
+        &["test", "-p", "server-host-probe", "--features", "sqlite"],
+    );
+    run(
+        workspace,
+        &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "sqlite",
+            "--test",
+            "server_host",
+            "--test",
+            "durable_interactions",
+            "--test",
+            "durable_controls",
+            "--test",
+            "session_management",
+        ],
+    );
+    run_script(
+        workspace,
+        "locked server-host consumer",
+        "testdata/server-host-consumer/check.sh",
+    );
 }
 
 fn check_sqlite(workspace: &Path) {

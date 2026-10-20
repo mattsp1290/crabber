@@ -13,7 +13,7 @@ CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features datadog,postgres --t
 ```
 
 Run these on a clean committed checkout. The parent and each fresh worker print
-that full source Git SHA, backend/schema (schema5 for PostgreSQL), fake provider,
+that full source Git SHA, backend/schema (current PostgreSQL schema from `POSTGRES_SCHEMA_VERSION`), fake provider,
 session/run IDs, current and predecessor trace identities and callback counts.
 They omit the DSN, payload and private paths. Workers are separate OS processes;
 PostgreSQL retains the run and receipt. Missing PostgreSQL configuration fails
@@ -62,10 +62,11 @@ fresh current attempt. Use `recover_with_context(|run| current_context_for(run))
 for a per-run selection; the callback is invoked only for runs whose lease appears
 expired, and actual claim can still lose a race. The existing `resume`/`recover`
 methods deliberately select no context, so old context-free records stay usable.
-Paused calls resume persisted input. Expired pending calls run only when retry-safe;
-expired running calls are interrupted to avoid repeating ambiguous side effects.
-The execution identity, retained receipt and session remain unchanged; the lease
-claim token changes and stale owners remain fenced.
+Eligible paused calls resume persisted input. A native Started attempt or phase
+remains non-replayable after lease expiry or process death; explicit host outcome
+and cleanup reconciliation is required. Expiry alone cannot assert Interrupted
+or joined resources. Eligible fresh resume preserves the execution identity,
+retained receipt and session, rotates the lease claim, and fences stale owners.
 
 Build a new current identity with `current.linked_to(&prior)?`. This rejects the
 same numeric trace, including a 64-bit trace and its zero-padded 128-bit alias.
@@ -80,8 +81,9 @@ LLM link. Host span identity is APM correlation, never an internal LLM parent.
 The Datadog exporter maps the approved attempt UUID and unchanged session/run to
 internal LLM identity and links to that specifically observed prior root.
 
-Crabber Store remains at schema5. Correlation lives in host durable queue/journal
-records; there is no Store migration or persistence requirement for custom Stores.
+Trace correlation lives in host durable queue/journal records; it adds no
+Store persistence requirement. Current PostgreSQL storage also contains the
+separate experimental durable-host foundation.
 The example fsyncs its completed/paused attempt journal after execution supplies
 the winning observation UUID. Its controlled loss tool flushes telemetry and fsyncs
 that UUID before signaling readiness for a test kill. It has a single designated
@@ -93,7 +95,7 @@ must not replace the journal's winning attempt. No recursive baggage or attempt
 history belongs in `TraceContext`; keep any required audit history in the host.
 
 Acceptance evidence maps to `trace_context` (Memory/PG paused resume, fresh process,
-validated bounded link, original schema5 rows/receipts and snapshot continuation),
+validated bounded link, retained rows/receipts and snapshot continuation),
 `admission_receipts::process` (durable context, precommit loss, lost commit reply,
 contention, replay, genuine worker kill during a running tool, fencing), and runtime
 `recovery_selects_current_attempt_per_run_without_ambient_contamination` (two runs,
@@ -138,7 +140,7 @@ internal graphs and native lineage.
 The facade broadcaster forwards each callback once to host observers and the
 optional exporter. `crabber::obs` exposes direct exporter construction for hosts
 that initialize their own subscriber. No global subscriber is installed. No `Store` trait or storage migration is required for trace context; context-free
-records remain supported. PostgreSQL remains schema5. The host envelope and
+records remain supported. Current PostgreSQL storage requires `POSTGRES_SCHEMA_VERSION` (24). The host envelope and
 attempt journal carry correlation metadata separately from execution storage.
 
 An attempt's closed `crabber.attempt.admission` agent and
@@ -159,8 +161,11 @@ identify an LLM attempt and does not fabricate a native LLM link. Native recover
 links point to the previous LLM admission root, never the unrelated host APM span.
 
 The killed-worker test flushes the original anchor/model export before killing
-its process, waits for real lease expiry, and proves a fresh worker emits an
-interrupted attempt linked to the captured original root. Nonblocking export
+its process and waits for real lease expiry. Fresh recovery refuses the native
+Started work with `Busy`: it emits no replacement callbacks, effects or recovery
+span, and preserves the unresolved phase/cleanup state and original closed
+anchor. The host must reconcile the actual outcome and resource joins explicitly;
+lease expiry supplies neither evidence. Nonblocking export
 can lose buffered observations on abrupt termination. A host needing guaranteed
 telemetry delivery must synchronize intake or supply its own durable observation
 policy; an absent predecessor cannot be claimed visible in Datadog.
@@ -173,9 +178,9 @@ policy; an absent predecessor cannot be claimed visible in Datadog.
 | 64/full128/None isolation | `concurrent_contexts_and_context_free_execution_are_isolated` checks generated intake bodies per session and host association |
 | Same/absent host identity across resume | `context_free_and_reused_host_context_resume_have_distinct_closed_graphs` proves fresh LLM IDs and no invented host links |
 | Invalid context before mutation and keyed replay | `malformed_transport_context_is_rejected_before_admission`, `replay_ignores_replacement_context_without_receipt_or_execution_mutation` |
-| Durable API handoff, fresh worker, retained schema5 data | `postgres_fresh_workers_preserve_schema5_receipts_sessions_and_cursors` with `CRABBER_REQUIRE_POSTGRES=1` |
+| Durable API handoff, fresh worker, retained session data | `postgres_fresh_workers_preserve_receipts_sessions_and_cursors` with `CRABBER_REQUIRE_POSTGRES=1` |
 | Paused recovery with native predecessor link | `durable_memory_paused_resume_and_duplicate_delivery` and required PostgreSQL fresh-worker test compare link IDs with actual prior captured roots |
-| Process loss and valid lineage without reopening | `killed_worker_recovery_links_to_an_already_captured_closed_anchor` checks prior model/anchor presence, fresh trace/link, fencing and interrupted outcome |
+| Process loss without invented recovery | `killed_started_worker_refuses_replay_and_preserves_closed_anchor` checks actual kill+wait and expiry, explicit Busy, no callbacks/model/tool effects, unresolved native state and unchanged prior model/closed-anchor export; it creates no replacement execution trace |
 | Prompt, output, argument, path and credential sentinel redaction | Real journey's mock HTTP decoder checks every signal; `all_intake_and_transport_diagnostics_hide_response_and_endpoint_secrets` checks all intake diagnostics and transport Display/Debug |
 | Bounded queue, overflow, split and retry, flush/shutdown | `cargo test -p crabber-obs`; accepted chunks are retained across retries, failed shutdown remains retryable |
 | External public adoption and required feature coverage | `cargo xtask check`, independent `testdata/external-consumer/check.sh`, CI PostgreSQL feature gate |
@@ -226,8 +231,8 @@ cargo test -p crabber --features datadog,sqlite --test trace_context
 The SQLite command migrates a temporary file and fresh workers reconnect without
 migration. It checks paused resume, duplicate receipt delivery and real captured
 export links; `sqlite_fresh_workers_preserve_receipts_sessions_and_cursors` adds
-session/receipt/cursor assertions. Schema is SQLite version 1, carrying PostgreSQL
-schema-5 semantics. The demo ignores `CRABBER_SQLITE_PATH` and removes its temporary
+session/receipt/cursor assertions. Current storage is SQLite 20 / PostgreSQL 24; the foundation tables were
+introduced in SQLite 2 / PostgreSQL 6. The demo ignores `CRABBER_SQLITE_PATH` and removes its temporary
 queue/database directory on success. No Datadog or provider credentials are needed.
 These are offline assertions; live Datadog correlation remains a separate gate.
 See [SQLite operations](../../docs/sqlite-store.md).

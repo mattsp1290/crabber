@@ -1,28 +1,112 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
-//! connecting only verifies a version-one Crabber database already using WAL.
+//! connecting only verifies a current-version Crabber database already using WAL.
+
+use crate::transaction::Transaction;
+#[path = "sqlite/admission_reads.rs"]
+mod admission_reads;
+#[path = "sqlite/credential_access.rs"]
+mod credential_access;
+#[path = "sqlite/expired.rs"]
+mod expired;
+#[path = "sqlite/read_proof.rs"]
+mod read_proof;
+#[path = "sqlite/run_facts.rs"]
+mod run_facts;
+
+#[path = "sqlite/continuation_handoff.rs"]
+mod continuation_handoff;
+#[path = "sqlite/continuation_input.rs"]
+mod continuation_input;
 
 mod abandon;
+mod abandon_history;
 mod admission_execution;
+mod admission_journal;
+mod approval;
+mod attempt;
+mod deletion;
 mod execution;
+mod execution_binding;
+mod extension_state;
+mod fork;
+mod frontend;
+mod inbox;
+mod legacy_execution;
+mod management;
+mod native_enrollment;
+mod native_parent;
+mod ownership_origin;
+mod phase;
+mod public_continuation_source;
+mod public_header;
+mod public_run;
+mod public_state;
+mod queue;
 mod records;
+mod run_control;
+mod session_owner;
 mod snapshot;
 mod store_impl;
+mod store_reads;
+mod tool_continuation;
+mod tool_result;
 mod transactions;
 use crate::StoreError;
 use crabber_core::{ByteLimits, Clock, SystemClock};
 use execution::SqliteExecution;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{
-    Connection, Sqlite, SqliteConnection, SqlitePool, Transaction,
+    Connection, Sqlite, SqliteConnection, SqlitePool,
     error::ErrorKind,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteSynchronous},
 };
 use std::{path::Path, sync::Arc, time::Duration};
 
 const APPLICATION_ID: i32 = 0x4352_4142;
-const SCHEMA_VERSION: i64 = 1;
+use crate::SQLITE_SCHEMA_VERSION;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA: &str = include_str!("../migrations/sqlite/0001_initial.sql");
+const SCHEMA: &str = concat!(
+    include_str!("../migrations/sqlite/0001_initial.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(1);\n",
+    include_str!("../migrations/sqlite/0002_host_foundation.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(2);\n",
+    include_str!("../migrations/sqlite/0003_typed_admission.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(3);\n",
+    include_str!("../migrations/sqlite/0004_continuations.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(4);\n",
+    include_str!("../migrations/sqlite/0005_session_management.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(5);\n",
+    include_str!("../migrations/sqlite/0006_future_queue.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(6);\n",
+    include_str!("../migrations/sqlite/0007_tool_continuations.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(7);\n",
+    include_str!("../migrations/sqlite/0008_run_controls.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(8);\n",
+    include_str!("../migrations/sqlite/0009_session_owners.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(9);\n",
+    include_str!("../migrations/sqlite/0010_frontend_continuations.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(10);\n",
+    include_str!("../migrations/sqlite/0011_safe_forks.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(11);\n",
+    include_str!("../migrations/sqlite/0012_session_deletion.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(12);\n",
+    include_str!("../migrations/sqlite/0013_admission_execution_sources.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(13);\n",
+    include_str!("../migrations/sqlite/0014_owner_publications.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(14);\n",
+    include_str!("../migrations/sqlite/0015_native_run_sources.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(15);\n",
+    include_str!("../migrations/sqlite/0016_continuation_input_sources.sql"),
+    "\n",
+    "\nINSERT INTO schema_version(version) VALUES(16);\n",
+    include_str!("../migrations/sqlite/0017_queue_publications.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(17);\n",
+    include_str!("../migrations/sqlite/0018_native_execution_enrollment.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(18);\n",
+    include_str!("../migrations/sqlite/0019_pending_initial.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(19);\n",
+    include_str!("../migrations/sqlite/0020_pending_initial_consumer.sql"),
+);
 
 /// A dedicated, file-backed SQLite session database.
 ///
@@ -36,6 +120,30 @@ pub struct SqliteStore {
     limits: ByteLimits,
     #[cfg(test)]
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    management_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    native_raw_probe: Arc<crate::native_enrollment::caller::Probe>,
+    #[cfg(test)]
+    phase_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    approval_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    binding_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    queue_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    deletion_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    control_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -79,7 +187,7 @@ impl SqliteStore {
         #[cfg(test)]
         self.write_waiters
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let result = self.writer.begin_with("BEGIN IMMEDIATE").await;
+        let result = crate::transaction::begin_with(&self.writer, "BEGIN IMMEDIATE").await;
         #[cfg(test)]
         self.write_waiters
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -124,25 +232,56 @@ async fn connect_with(
         #[cfg(test)]
         abandon_fault: Arc::default(),
         #[cfg(test)]
+        public_state_fault: Arc::default(),
+        #[cfg(test)]
+        management_fault: Arc::default(),
+        #[cfg(test)]
+        attempt_fault: Arc::default(),
+        #[cfg(test)]
+        native_raw_probe: Arc::default(),
+        #[cfg(test)]
+        phase_fault: Arc::default(),
+        #[cfg(test)]
+        approval_fault: Arc::default(),
+        #[cfg(test)]
+        binding_fault: Arc::default(),
+        #[cfg(test)]
+        queue_fault: Arc::default(),
+        #[cfg(test)]
+        deletion_fault: Arc::default(),
+        #[cfg(test)]
+        tool_continuation_fault: Arc::default(),
+        #[cfg(test)]
+        control_fault: Arc::default(),
+        #[cfg(test)]
+        session_owner_fault: Arc::default(),
+        #[cfg(test)]
         write_waiters: Arc::default(),
     })
 }
 
 async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
-    let mut connection = writer.acquire().await.map_err(db)?;
-    if classify_snapshot(&mut connection).await? != DatabaseState::Current {
-        return Err(foreign_database());
+    // Own the pooled connection before BEGIN, including its unacknowledged
+    // interval. A cancelled verifier must not return that connection for reuse.
+    let mut transaction = crate::transaction::begin(writer).await.map_err(db)?;
+    let result = async {
+        if classify(&mut transaction).await? != DatabaseState::Current {
+            return Err(foreign_database());
+        }
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(classification_error)?;
+        if mode != "wal" {
+            return Err(StoreError::Validation(
+                "SQLite database is not in WAL mode; run migrate".into(),
+            ));
+        }
+        Ok(())
     }
-    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(classification_error)?;
-    if mode != "wal" {
-        return Err(StoreError::Validation(
-            "SQLite database is not in WAL mode; run migrate".into(),
-        ));
-    }
-    Ok(())
+    .await;
+    transaction.rollback().await.map_err(db)?;
+    result
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -154,7 +293,9 @@ enum DatabaseState {
 // Metadata must come from one snapshot when another process initializes the
 // file concurrently. End this read transaction before attempting a WAL change.
 async fn classify_snapshot(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
-    let mut transaction = connection.begin().await.map_err(classification_error)?;
+    let mut transaction = crate::transaction::begin_on::<Sqlite>(connection, None)
+        .await
+        .map_err(classification_error)?;
     let state = classify(&mut transaction).await;
     transaction.rollback().await.map_err(db)?;
     state
@@ -170,11 +311,12 @@ async fn classify(connection: &mut SqliteConnection) -> Result<DatabaseState, St
         .await
         .map_err(classification_error)?;
     if application == APPLICATION_ID {
-        let version: Option<i64> = sqlx::query_scalar("SELECT max(version) FROM schema_version")
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|_| unsupported_version())?;
-        if version != Some(SCHEMA_VERSION) {
+        let versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version")
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|_| unsupported_version())?;
+        if versions != (1..=SQLITE_SCHEMA_VERSION).collect::<Vec<_>>() {
             return Err(unsupported_version());
         }
         Ok(DatabaseState::Current)
@@ -222,7 +364,10 @@ async fn migrate_connection(
     if state == DatabaseState::Current {
         return Ok(());
     }
-    let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+    let mut transaction =
+        crate::transaction::begin_on::<Sqlite>(connection, Some("BEGIN IMMEDIATE"))
+            .await
+            .map_err(db)?;
     let result = match classify(&mut transaction).await {
         Ok(DatabaseState::Fresh) => initialize(&mut transaction, schema).await,
         Ok(DatabaseState::Current) => return transaction.rollback().await.map_err(db),
@@ -256,7 +401,7 @@ async fn initialize(
         .await
         .map_err(db)?;
     sqlx::query("INSERT INTO schema_version(version) VALUES(?1)")
-        .bind(SCHEMA_VERSION)
+        .bind(SQLITE_SCHEMA_VERSION)
         .execute(&mut **transaction)
         .await
         .map_err(db)?;
@@ -266,6 +411,9 @@ async fn initialize(
 #[allow(clippy::needless_pass_by_value)] // Required by map_err.
 fn db(error: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(detail) = &error {
+        if detail.message() == "crabber_session_deleted" {
+            return StoreError::SessionDeleted;
+        }
         match detail.kind() {
             ErrorKind::UniqueViolation => return StoreError::Conflict,
             ErrorKind::ForeignKeyViolation => return StoreError::NotFound,

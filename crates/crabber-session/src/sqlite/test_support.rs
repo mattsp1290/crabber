@@ -118,7 +118,8 @@ pub(super) async fn ready_line(child: &mut ChildGuard) {
         Duration::from_secs(10),
         tokio::task::spawn_blocking(move || {
             for line in BufReader::new(stdout).lines() {
-                if line.unwrap() == "CRABBER_SQLITE_BARRIER_READY" {
+                // Single-threaded libtest can prefix a nocapture print with its test name.
+                if line.unwrap().ends_with("CRABBER_SQLITE_BARRIER_READY") {
                     return;
                 }
             }

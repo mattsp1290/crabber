@@ -1,9 +1,10 @@
 use std::{error::Error, sync::Arc};
 use crabber::{Agent, AgentConfig, FakeProvider, Selection, StreamDelta};
-use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse, ag_ui_core::event::Event};
+use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse, ag_ui_core::event::Event, ag_ui_encoder::CONTENT_TYPE};
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
-    let agent = Agent::builder().memory().provider(Arc::new(FakeProvider::scripted(vec![vec![
+    let agent = Agent::builder()
+        .behavior_version("example-host.v1").memory().provider(Arc::new(FakeProvider::scripted(vec![vec![
         StreamDelta::TextDelta("external host".into()), StreamDelta::Completed,
     ]])))
         .config(AgentConfig::new(Selection { provider_id:"fake".into(), model_id:"scripted".into() })).build()?;
@@ -14,6 +15,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let mut text = String::new();
     while let Some(record) = receiver.recv().await? {
         for event in projector.push(&record)? {
+            assert_eq!(CONTENT_TYPE, "text/event-stream; charset=utf-8");
             let frame = encode_sse(&event, config.max_event_bytes)?;
             assert!(frame.starts_with(b"data: "));
             if let Event::TextMessageContent(event) = event { text.push_str(&event.delta); }

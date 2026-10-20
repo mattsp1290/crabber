@@ -208,9 +208,14 @@ impl ToolPipeline for RejectPrepare {
         &self,
         _context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
-        Ok(TransformOutput::new(result))
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 
@@ -410,6 +415,17 @@ async fn resume_from_the_stored_record_derives_the_same_context() {
         fresh.resume(&run_id).await.unwrap().status,
         crabber_core::RunStatus::Completed
     );
+    assert_resume_presentation(
+        &harness,
+        &session_id,
+        [
+            (&echo, json!({"text":"hi"})),
+            (&unknown_array, json!([1, 2])),
+            (&unknown_text, json!("{broken")),
+            (&schema, json!({"text":5})),
+        ],
+    )
+    .await;
     let done = Finished {
         harness: &harness,
         session_id,
@@ -627,7 +643,7 @@ impl ToolPipeline for FailResult {
         &self,
         _context: &ToolResultContext,
         _tool: &ToolInfo,
-        _result: Value,
+        _result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         assert!(!self.panic, "private panic text and original output");
         Err("pre-stage failed".into())
@@ -763,12 +779,12 @@ impl ToolPipeline for CaptureResult {
         &self,
         context: &ToolResultContext,
         tool: &ToolInfo,
-        _result: Value,
+        _result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         assert_eq!(context.tool_name(), tool.name);
         self.contexts.lock().unwrap().push(context.clone());
         Ok(TransformOutput {
-            result: json!("pipeline output"),
+            result: crabber_core::ToolOutput::from_json(&(json!("pipeline output"))).unwrap(),
             mark_error: self.mark_error,
         })
     }
@@ -858,11 +874,16 @@ impl ToolPipeline for ParkResult {
         &self,
         context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
         *self.context.lock().unwrap() = Some(context.clone());
         self.gate.pass(&result).await;
-        Ok(TransformOutput::new(result))
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 
@@ -907,4 +928,32 @@ async fn cancellation_during_pre_stage_discards_output_and_skips_chain() {
         ToolCallStatus::Interrupted
     );
     assert_eq!(record_text(&done.record(&call.id).await), "interrupted");
+}
+
+async fn assert_resume_presentation(
+    harness: &Harness,
+    session: &SessionId,
+    expected: [(&ScriptedCall, Value); 4],
+) {
+    let records = harness
+        .store
+        .list_events(session, None, 1000)
+        .await
+        .unwrap();
+    let resumed = records
+        .iter()
+        .find(|record| record.kind == EventKind::RunResumed)
+        .unwrap();
+    let source: crabber_core::continuation_source::ResumeSource =
+        serde_json::from_value(resumed.payload.clone()).unwrap();
+    assert_eq!(source.calls.len(), 4);
+    for (call, arguments) in expected {
+        let public = source
+            .calls
+            .iter()
+            .find(|public| public.call_id == call.id)
+            .unwrap();
+        assert_eq!(public.name, call.name);
+        assert_eq!(public.arguments, arguments);
+    }
 }

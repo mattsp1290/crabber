@@ -8,11 +8,16 @@ use crabber_core::{
 use std::{sync::Arc, time::Duration};
 use time::OffsetDateTime;
 
+mod cross_session_ids;
+
 fn request(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitRequest {
     let id = MessageId::new();
     KeyedAdmitRequest {
         execution: None,
         request: AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: Some(session.clone()),
             workspace_id: "workspace-secret".into(),
             directory: "/private/secret".into(),
@@ -251,4 +256,5 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .iter()
             .any(|run| run.session_id == session)
     );
+    Box::pin(cross_session_ids::run(&store, &original, &receipt, now)).await;
 }

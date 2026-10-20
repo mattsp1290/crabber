@@ -1,98 +1,94 @@
-use super::{
-    PostgresExecution, PostgresStore, db, decode, decode_record, json, load_run, lookup_receipt,
-    save_run,
-};
+mod initial_begin;
+#[path = "admission_execution/lookup.rs"]
+mod lookup;
+#[cfg(test)]
+use crate::ClaimUnstartedAdmissionRequest;
+use crate::postgres::transaction::Transaction;
+pub(in crate::postgres) use initial_begin::begin_initial_in;
+#[path = "admission_execution/recovery.rs"]
+mod recovery;
+pub(super) use recovery::claim;
+pub(in crate::postgres) use recovery::claim_in_transaction;
+#[cfg(test)]
+pub(super) use recovery::claim_with_proof;
+#[path = "admission_execution/prepared.rs"]
+mod prepared;
+pub(super) use prepared::claim_prepared;
+#[path = "admission_execution/inspection.rs"]
+mod inspection;
+use super::{PostgresExecution, PostgresStore, db, decode, lookup_receipt};
 use crate::StoreError;
-use crate::{
-    AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
-    ClaimUnstartedAdmissionRequest, ClaimedAdmission,
-};
-use crabber_core::{Message, Run, RunFence, RunId};
-use sqlx::{Postgres, Row, Transaction};
+use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
+use crabber_core::{Run, RunId};
+pub(super) use inspection::{inspect, validate_source_with_proof};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn load_record(
     tx: &mut Transaction<'_, Postgres>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
-    sqlx::query("SELECT data,start_state FROM admission_executions WHERE run_id=$1")
+    let record = load_unchecked(tx, run).await?;
+    if let Some(record) = &record {
+        super::admission_journal::read(tx, record).await?;
+    }
+    Ok(record)
+}
+pub(super) async fn load_record_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<AdmissionExecutionRecord>, crate::public_session::v2::proof::ReadError<StoreError>>
+{
+    use crate::public_session::v2::proof::ReadError;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(CASE WHEN capsule_version=1 THEN octet_length(data::text) ELSE octet_length(data_json) END AS BIGINT) FROM admission_executions WHERE run_id=$1").bind(&run.0),proof).await.map_err(ReadError::Budget)?;
+    let record = load_unchecked(tx, run).await?;
+    if let Some(record) = &record {
+        super::admission_journal::read_with_proof(tx, record, proof).await?;
+    }
+    Ok(record)
+}
+async fn load_unchecked(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
+    let record = sqlx::query("SELECT capsule_version,CASE WHEN capsule_version=1 AND octet_length(data::text)<=16777216 THEN data ELSE NULL END AS data,CASE WHEN octet_length(data_json)<=16777216 THEN data_json END AS data_json,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)?
         .map(|row| {
-            let record: AdmissionExecutionRecord = decode(row.get("data"))?;
+            let version: i32 = row.try_get("capsule_version").map_err(db)?;
+            let record: AdmissionExecutionRecord = match version {
+                1 => decode(row.try_get::<Option<sqlx::types::Json<serde_json::Value>>, _>("data").map_err(db)?.ok_or(StoreError::AdmissionConflict)?)?,
+                2 => AdmissionExecutionRecord::decode(&row.try_get::<Option<String>, _>("data_json").map_err(db)?.ok_or(StoreError::AdmissionConflict)?)?,
+                _ => return Err(StoreError::AdmissionConflict),
+            };
+            if u32::try_from(version).ok() != Some(record.capsule.version) { return Err(StoreError::AdmissionConflict); }
             let state: String = row.get("start_state");
             if state != format!("{:?}", record.state) {
                 return Err(StoreError::AdmissionConflict);
             }
             Ok(record)
         })
-        .transpose()
-}
-
-async fn validate_binding(
-    tx: &mut Transaction<'_, Postgres>,
-    record: &AdmissionExecutionRecord,
-    run: &Run,
-) -> Result<(), Error> {
-    let row = sqlx::query("SELECT snapshot_record FROM messages WHERE id=$1")
-        .bind(&record.receipt.user_message_id.0)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|_| Error::UnknownStoreFailure)?
-        .ok_or(Error::SemanticConflict)?;
-    let text: String = row.get("snapshot_record");
-    let user: Message = decode_record(&text).map_err(|_| Error::SemanticConflict)?;
-    record.validate_binding(run, &user)
-}
-
-pub(super) async fn claim(
-    store: &PostgresStore,
-    request: ClaimUnstartedAdmissionRequest,
-) -> Result<ClaimedAdmission, Error> {
-    // Ownership paths are run-first. No session row/advisory lock here.
-    let mut tx = store
-        .pool
-        .begin()
-        .await
-        .map_err(|_| Error::UnknownStoreFailure)?;
-    let mut run = load_run(&mut tx, &request.expected_fence.run_id, true)
-        .await
-        .map_err(unknown)?;
-    let record = load_record(&mut tx, &run.id)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::MissingEvidence)?;
-    let receipt = lookup_receipt(&mut tx, &request.session_id, &request.key)
-        .await
-        .map_err(unknown)?;
-    if receipt.as_ref() != Some(&record.receipt) {
-        return Err(Error::SemanticConflict);
+        .transpose()?;
+    if let Some(record) = &record
+        && record.receipt.run_id != *run
+    {
+        return Err(StoreError::AdmissionConflict);
     }
-    validate_binding(&mut tx, &record, &run).await?;
-    record.verify_claim(&request, &run)?;
-    let now = store.clock.now();
-    if run.lease_until > now {
-        return Err(Error::LiveLease);
+    if record.is_none() {
+        let orphan: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM admission_execution_sources WHERE run_id=$1)",
+        )
+        .bind(&run.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        if orphan {
+            return Err(StoreError::AdmissionConflict);
+        }
     }
-    let lease = time::Duration::try_from(request.lease).map_err(|_| Error::SemanticConflict)?;
-    if lease <= time::Duration::ZERO {
-        return Err(Error::SemanticConflict);
-    }
-    run.owner = request.owner;
-    run.claim_token = uuid::Uuid::new_v4().to_string();
-    run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
-    run.updated_at = now;
-    save_run(&mut tx, &run).await.map_err(unknown)?;
-    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
-    Ok(ClaimedAdmission {
-        record,
-        fence: RunFence {
-            run_id: run.id.clone(),
-            claim_token: run.claim_token.clone(),
-        },
-        run,
-    })
+    Ok(record)
 }
 
 fn unknown(_: StoreError) -> Error {
@@ -100,15 +96,24 @@ fn unknown(_: StoreError) -> Error {
 }
 
 pub(super) async fn begin(execution: &PostgresExecution) -> Result<(), Error> {
+    begin_with_proof(
+        execution,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+pub(super) async fn begin_with_proof(
+    execution: &PostgresExecution,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    proof
+        .measure(&execution.fence)
+        .map_err(|_| Error::UnknownStoreFailure)?;
     let store = &execution.store;
-    let mut tx = store
-        .pool
-        .begin()
+    let (mut tx, run) = store
+        .run_transaction_with_proof(&execution.fence.run_id, proof)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
-    let run = load_run(&mut tx, &execution.fence.run_id, true)
-        .await
-        .map_err(unknown)?;
     if run.claim_token != execution.fence.claim_token {
         return Err(Error::StaleOwner);
     }
@@ -118,33 +123,66 @@ pub(super) async fn begin(execution: &PostgresExecution) -> Result<(), Error> {
     if run.lease_until <= store.clock.now() {
         return Err(Error::StaleOwner);
     }
-    let mut record = load_record(&mut tx, &run.id)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::MissingEvidence)?;
-    validate_binding(&mut tx, &record, &run).await?;
-    if lookup_receipt(&mut tx, &run.session_id, &record.key)
-        .await
-        .map_err(unknown)?
-        .as_ref()
-        != Some(&record.receipt)
-    {
-        return Err(Error::SemanticConflict);
-    }
-    if record.receipt.run_id != run.id || record.receipt.session_id != run.session_id {
-        return Err(Error::SemanticConflict);
-    }
-    if record.state != AdmissionExecutionState::Unstarted {
-        return Err(Error::AlreadyStarted);
-    }
-    record.state = AdmissionExecutionState::Started;
-    sqlx::query("UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1")
-        .bind(&run.id.0)
-        .bind(json(&record).map_err(unknown)?)
-        .execute(&mut *tx)
+    let enrollment = super::native_enrollment::original(&mut tx, &run.session_id, &run.id, proof)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
-    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
+    let captured = Box::pin(begin_initial_in(
+        &mut tx,
+        &run,
+        &execution.fence,
+        store.clock.now(),
+        proof,
+    ))
+    .await?;
+    let record = captured.record;
+    let sources = captured.sources;
+    super::native_enrollment::record_raw_native(
+        &mut tx,
+        crate::native_enrollment::caller::Caller::Raw,
+        &crate::native_enrollment::caller::Fresh::AdmissionBegin(
+            crate::native_enrollment::caller::AdmissionBegin {
+                fence: &execution.fence,
+                run: &run,
+                record: &record,
+                sources: sources.as_ref().map(|(init, begin)| (init, begin)),
+            },
+        ),
+        proof,
+        #[cfg(test)]
+        &store.native_raw_probe,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreFailure)?;
+    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
+    #[cfg(test)]
+    if store.native_raw_probe.after_begin(&execution.fence.run_id) {
+        return Err(Error::UnknownStoreFailure);
+    }
+    Ok(())
+}
+
+async fn validate_binding_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &AdmissionExecutionRecord,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let count = record
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let messages = super::execution_binding::original_messages_with_proof(
+        tx,
+        &run.session_id,
+        &run.id,
+        count,
+        proof,
+    )
+    .await
+    .map_err(|_| Error::SemanticConflict)?;
+    record.validate_messages(run, &messages)
 }
 
 #[cfg(test)]
@@ -201,7 +239,9 @@ mod tests {
             .with_clock(clock.clone());
         let (_, admitted, request) = admission(&store, now).await;
         clock.set(now + time::Duration::seconds(30));
-        let mut session_lock = store.pool.begin().await.unwrap();
+        let mut session_lock = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("SELECT id FROM sessions WHERE id=$1 FOR UPDATE")
             .bind(&admitted.session.id.0)
             .fetch_one(&mut *session_lock)
@@ -222,7 +262,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        // Owner writes take run then session. They may wait on the deliberately
+        // Owner writes take the session gate, run, then session row. They may wait on the deliberately
         // held session, while claim/begin have already released their run lock.
         let event =
             crate::abandonment_contract::event(&claimed.run, crabber_core::EventKind::RunSettled);
@@ -398,3 +438,7 @@ async fn failed_begin_update_rolls_back_started_and_can_be_retried() {
     );
     store.pool.close().await;
 }
+
+#[cfg(test)]
+#[path = "admission_execution/source_tests.rs"]
+mod source_tests;

@@ -3,7 +3,58 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod interaction;
+pub use interaction::{
+    AuthorityRequirement, InteractionDescription, InteractionKind, InteractionState,
+};
+mod continuation;
+pub mod continuation_source;
+pub use continuation::{
+    AcceptedToolResponse, MAX_TOOL_CHECKPOINT_BYTES, ResumableToolIdentity, ToolCheckpoint,
+    ToolPhaseOutcome, ToolSuspension,
+};
+
+mod public_source;
+mod public_state;
+mod reasoning;
+pub use public_source::{
+    PublicAttemptIdentity, PublicInvocationEvent, PublicInvocationIdentity, PublicInvocationStatus,
+    PublicPatchOperation, PublicPresentationChange, PublicSourceChange, PublicSourceEvent,
+    PublicSourceIdentity, PublicSourceMessage, apply_public_patch,
+};
+pub use public_state::{
+    MAX_ACTIVITY_BYTES, MAX_PUBLIC_CONTENTS_BYTES, MAX_PUBLIC_STATE_BYTES, PublicActivity,
+    PublicStateContents,
+};
+pub use reasoning::ReasoningProvenance;
+
+mod frontend_result;
+pub use frontend_result::{FrontendResultStatus, FrontendToolResult};
+
+mod imported_history;
+pub use imported_history::{ImportedCallSource, ImportedMessageProvenance, ImportedToolCall};
+
+mod tool_output;
+pub use tool_output::{TOOL_OUTPUT_ENVELOPE_VERSION, ToolOutput};
+
+pub mod input;
+pub use input::{
+    AdmissionKind, FrontendTool, InputContent, InputContext, InputEnvelope, InputMessage,
+    InputPart, InputState, MediaKind, MediaSource, MessageContent,
+};
+
+mod execution_identity;
+pub use execution_identity::{
+    AttemptGeneration, ContinuationGeneration, PhaseGeneration, SessionOwnerGeneration,
+    SessionRevision,
+};
+
+mod provider_binding;
+pub use provider_binding::{ProviderBindingDescriptor, ProviderBindingLimits};
+
+mod session_context;
 mod trace_context;
+pub use session_context::SessionContext;
 pub use trace_context::{TraceContext, TraceContextError, TraceLink};
 mod abandonment;
 pub use abandonment::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
@@ -59,6 +110,16 @@ id!(PartId);
 id!(ToolCallId);
 id!(EpochId);
 id!(TurnId);
+// Correlation only: these IDs never substitute for private store fences.
+id!(AttemptId);
+id!(PhaseId);
+id!(InvocationId);
+id!(SessionOwnerId);
+id!(SessionOwnerOperationId);
+id!(QueueId);
+id!(ControlId);
+id!(InteractionId);
+id!(ContinuationId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,14 +153,22 @@ pub struct Part {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PartKind {
+    /// Model-input text with a role other than the legacy user/assistant cases.
+    InputText,
+    /// Explicit model-input/result media, separate from custom UI activity.
+    Media,
     UserInputText,
     AssistantText,
     Reasoning,
     FunctionToolCall,
     FunctionToolResult,
     ProviderState,
-    Custom { custom_type: String },
-    CustomMessage { custom_type: String },
+    Custom {
+        custom_type: String,
+    },
+    CustomMessage {
+        custom_type: String,
+    },
     CompactionSummary,
 }
 
@@ -112,10 +181,20 @@ pub enum ContentBlock {
     Reasoning {
         text: String,
         provider_state: Option<Value>,
+        #[serde(default, skip_serializing_if = "ReasoningProvenance::is_unspecified")]
+        provenance: ReasoningProvenance,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
     },
     Media {
         uri: String,
         mime_type: String,
+    },
+    /// Explicit typed media; source interpretation is never inferred from a string.
+    MediaContent {
+        kind: MediaKind,
+        mime_type: String,
+        source: MediaSource,
     },
     ToolCall {
         call_id: ToolCallId,
@@ -145,6 +224,8 @@ pub struct ToolInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
+    /// Waiting on a persisted explicit tool checkpoint and required response set.
+    Waiting,
     Pending,
     Running,
     Completed,
@@ -274,6 +355,22 @@ pub struct EventCursor(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    RunControlChanged,
+    InteractionChanged,
+    ContinuationChanged,
+    /// Safe pending presentation committed with the actual continuation freeze.
+    ContinuationWaiting,
+    ExecutionAttemptChanged,
+    ToolPhaseChanged,
+    PublicStateSnapshot,
+    PublicStateDelta,
+    PublicPresentation,
+    ActivitySnapshot,
+    ActivityDelta,
+    InvocationStarted,
+    InvocationFinished,
+    InvocationError,
+    ToolProgress,
     RunAdmitted,
     RunStarted,
     TurnStarted,
@@ -297,7 +394,9 @@ pub enum EventKind {
     ContextEpochStarted,
     ContextEpochFinished,
     ExtensionNotice,
-    Custom { name: String },
+    Custom {
+        name: String,
+    },
 }
 impl EventKind {
     #[must_use]
@@ -358,14 +457,20 @@ pub enum CoreError {
     Conflict,
     #[error("admission key conflicts with retained input")]
     AdmissionConflict,
+    #[error("admission session revision changed")]
+    AdmissionRevisionConflict,
     #[error("keyed admission is unsupported by this store")]
     AdmissionUnsupported,
     #[error("unstarted admission requires original semantics and recover_admission")]
     AdmissionRecoveryRequired,
     #[error("bounded snapshots are unsupported by this store")]
     SnapshotUnsupported,
+    #[error("durable host operations are unsupported by this store")]
+    HostUnsupported,
     #[error("session identity does not match")]
     SessionIdentityMismatch,
+    #[error("session was permanently deleted")]
+    SessionDeleted,
     #[error("session is busy")]
     Busy,
     #[error("record not found")]
@@ -441,6 +546,15 @@ pub mod event_payload {
     #[serde(deny_unknown_fields)]
     pub struct MessageDelta {
         pub message_id: MessageId,
+        pub text: String,
+    }
+    /// Only explicitly classified public summaries may use this live payload.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ReasoningDelta {
+        pub message_id: MessageId,
+        pub item_id: String,
+        pub provenance: super::ReasoningProvenance,
         pub text: String,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]

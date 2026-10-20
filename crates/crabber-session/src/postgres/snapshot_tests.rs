@@ -83,6 +83,8 @@ async fn settled(
                 ContentBlock::Reasoning {
                     text: "deep".into(),
                     provider_state: None,
+                    provenance: crabber_core::ReasoningProvenance::Unspecified,
+                    item_id: None,
                 },
             ],
             is_error: false,
@@ -755,6 +757,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     admission.user_message.parts[0].content = ContentBlock::Reasoning {
         text: "opaque input".into(),
         provider_state: Some(opaque_numbers()),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     };
     let message_id = admission.user_message.id.clone();
     let memory_admission = memory.admit_run(admission.clone()).await.unwrap();
@@ -819,6 +823,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
         content: vec![ContentBlock::Reasoning {
             text: "result".into(),
             provider_state: Some(opaque_numbers()),
+            provenance: crabber_core::ReasoningProvenance::Unspecified,
+            item_id: None,
         }],
     };
     let mut result_message = assistant(&postgres_admission, "");
@@ -853,6 +859,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     inbox.parts[0].content = ContentBlock::Reasoning {
         text: "pending".into(),
         provider_state: Some(opaque_numbers()),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     };
     memory
         .enqueue_inbox(&session, InboxKind::FollowUp, inbox.clone())
@@ -883,6 +891,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     inbox.parts[0].content = ContentBlock::Reasoning {
         text: "claimed without history".into(),
         provider_state: Some(opaque_numbers()),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     };
     memory
         .enqueue_inbox(&session, InboxKind::Steer, inbox.clone())
@@ -952,6 +962,121 @@ async fn awkward_float_initial_snapshot_preserves_bits_and_exact_encoded_cap() {
         assert_eq!(
             serde_json::to_vec(&normalize_page(actual).messages).unwrap(),
             serde_json::to_vec(&normalize_page(expected.clone()).messages).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn captured_public_revision_survives_metadata_changes_and_rejects_tampering() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::management_contract::captured_history_revision(&store).await;
+}
+
+#[tokio::test]
+async fn public_run_state_contract() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::public_run::tests::run(&store).await;
+}
+
+#[test]
+fn public_run_private_allocation_is_bounded() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = runtime.block_on(TEST_LOCK.lock());
+    runtime.block_on(PostgresStore::migrate(&url)).unwrap();
+    let store = runtime.block_on(PostgresStore::connect(&url)).unwrap();
+    crate::public_run::tests::allocation_contract(&runtime, &store);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn public_history_projection_contract() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::public_history::tests::run(&store).await;
+}
+
+#[tokio::test]
+async fn public_run_projection_excludes_unknown_usage_and_rejects_bad_fields() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let created = store
+        .manage_session(crate::management_contract::create())
+        .await
+        .unwrap();
+    let admitted = store
+        .admit_run(crate::management_contract::admission(&created.summary))
+        .await
+        .unwrap();
+    let original = serde_json::to_value(&admitted.run).unwrap();
+    let mut value = original.clone();
+    value["usage"]["private-extra"] = serde_json::json!("private-sentinel".repeat(100_000));
+    sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+        .bind(&admitted.run.id.0)
+        .bind(sqlx::types::Json(&value))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let crate::PublicRunOutcome::State(state) = store
+        .public_run_state(&created.session_id, 8192)
+        .await
+        .unwrap()
+    else {
+        panic!("private usage extra must not transfer or count against public projection");
+    };
+    assert_eq!(state.run.unwrap().usage, admitted.run.usage);
+    for (field, replacement) in [
+        ("id", serde_json::json!("wrong-run")),
+        ("session_id", serde_json::json!("wrong-session")),
+        ("status", serde_json::json!("completed")),
+        (
+            "usage",
+            serde_json::json!({"input_tokens":-1,"output_tokens":0}),
+        ),
+    ] {
+        let mut value = original.clone();
+        value[field] = replacement;
+        sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+            .bind(&admitted.run.id.0)
+            .bind(sqlx::types::Json(&value))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let result = store.public_run_state(&created.session_id, 8192).await;
+        // Restore even when the assertion fails: later contracts inspect all
+        // unfinished runs in the shared native test database.
+        sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+            .bind(&admitted.run.id.0)
+            .bind(sqlx::types::Json(&original))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Err(StoreError::Validation(_))),
+            "corrupt public {field} accepted"
         );
     }
 }

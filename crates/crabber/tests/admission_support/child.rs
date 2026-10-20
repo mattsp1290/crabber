@@ -64,6 +64,7 @@ async fn facade_child() {
     } else {
         None
     };
+    let factories = count(&dir.join("ledger"), "factory");
     let result = agent
         .prompt_keyed_with_context(
             session.clone(),
@@ -72,12 +73,30 @@ async fn facade_child() {
             Some(context.clone()),
         )
         .await;
-    if mode == "precommit" || mode == "commit-loss" {
-        assert!(matches!(
+    if mode == "precommit"
+        || mode == "commit-loss"
+        || (mode == "preparation-blocked" || mode == "preparation-inflight")
+    {
+        preparation_failure(
+            &agent,
+            store.as_ref(),
+            &dir,
+            &session,
+            &mode,
             result,
-            Err(RuntimeError::Store(StoreError::Validation(_)))
+            factories,
+        )
+        .await;
+        return;
+    }
+    if mode.starts_with("race-") && result.is_err() {
+        let error = result.err().unwrap();
+        assert!(error.preparation_reconciliation().is_some());
+        assert!(matches!(
+            error.operation_error(),
+            RuntimeError::PreparationRecoveryRequired
+                | RuntimeError::Store(StoreError::AdmissionRecoveryRequired)
         ));
-        assert_eq!(count(&dir.join("ledger"), "provider"), 0);
         return;
     }
     let admission = result.unwrap();
@@ -85,6 +104,7 @@ async fn facade_child() {
     if let Some(expected) = original {
         assert_eq!(receipt, expected);
         assert!(matches!(admission, Admission::Replayed(_)));
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories);
         let after = store.get_run(&receipt.run_id).await.unwrap();
         if dir.join("executing").exists() && !dir.join("execute-release").exists() {
             // The original worker may heartbeat; replay must not take ownership.
@@ -113,28 +133,18 @@ async fn facade_child() {
         return;
     }
     if mode == "recover" {
-        let current = TraceContext::new("9876543210abcdef9876543210abcdef", "9876543210abcdef")
-            .unwrap()
-            .linked_to(&context)
-            .unwrap();
-        recover(
+        super::reconcile_started::recover(
             &agent,
             store.as_ref(),
             &session,
             &receipt,
             before.unwrap(),
-            current.clone(),
+            &dir,
         )
         .await;
-        assert!(!capture.0.lock().unwrap().is_empty());
         assert!(
-            capture
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(event, observed)| event.run_id == receipt.run_id
-                    && observed.as_ref() == Some(&current))
+            capture.0.lock().unwrap().is_empty(),
+            "metadata controls do not notify business observers"
         );
     }
     if mode != "recover" {
@@ -159,41 +169,106 @@ async fn facade_child() {
     );
 }
 
-async fn recover(
+async fn preparation_failure(
     agent: &Agent,
     store: &dyn Store,
+    dir: &Path,
     session: &SessionId,
-    receipt: &AdmissionReceipt,
-    old: Run,
-    context: TraceContext,
+    mode: &str,
+    result: Result<Admission, RuntimeError>,
+    factories: usize,
 ) {
-    let stale = RunFence {
-        run_id: old.id.clone(),
-        claim_token: old.claim_token,
+    use crabber::session::session_owner::{
+        SessionOwnerState,
+        preparation::{PreparationKey, PreparationReconciliation},
     };
-    let result = agent
-        .resume_with_context(&receipt.run_id, Some(context))
-        .await
-        .unwrap();
-    assert_eq!(result.status, RunStatus::Interrupted);
-    assert_ne!(
-        store
-            .get_run(&receipt.run_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .claim_token,
-        stale.claim_token
-    );
-    assert!(
-        store.execution(stale).await.is_err(),
-        "old owner remains fenced"
-    );
+    let Err(error) = result else {
+        panic!("injected preparation failure")
+    };
+    let descriptor = error.preparation_reconciliation().unwrap();
+    assert_eq!(&descriptor.session_id, session);
     assert_eq!(
         agent
-            .lookup_admission(session, &options().key)
+            .lookup_preparation_operation(session, &PreparationKey::Admission(options().key))
             .await
-            .unwrap(),
-        Some(receipt.clone())
+            .unwrap()
+            .as_ref(),
+        Some(descriptor)
     );
+    if mode == "preparation-blocked" || mode == "preparation-inflight" {
+        assert!(matches!(
+            error.operation_error(),
+            RuntimeError::PreparationRecoveryRequired
+        ));
+        if mode == "preparation-blocked" {
+            let original: PreparationReconciliation =
+                serde_json::from_slice(&fs::read(dir.join("preparation.meta")).unwrap()).unwrap();
+            assert_eq!(*descriptor, original);
+        }
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories);
+    } else {
+        assert!(matches!(
+            error.operation_error(),
+            RuntimeError::Store(StoreError::Validation(_))
+        ));
+        fs::write(
+            dir.join("preparation.meta"),
+            serde_json::to_vec(descriptor).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories + 1);
+    }
+    assert_eq!(
+        store
+            .get_session_owner(session, &descriptor.owner.id)
+            .await
+            .unwrap()
+            .state,
+        if mode == "commit-loss" {
+            SessionOwnerState::Joined
+        } else {
+            SessionOwnerState::Active
+        }
+    );
+    assert_eq!(count(&dir.join("ledger"), "provider"), 0);
+    assert_eq!(count(&dir.join("ledger"), "tool"), 0);
+    finish_retained_failure(agent, dir, session, mode, descriptor).await;
+    assert_eq!(
+        agent
+            .lookup_preparation_operation(session, &PreparationKey::Admission(options().key))
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(descriptor)
+    );
+}
+
+async fn finish_retained_failure(
+    agent: &Agent,
+    dir: &Path,
+    session: &SessionId,
+    mode: &str,
+    descriptor: &crabber::session::session_owner::preparation::PreparationReconciliation,
+) {
+    if mode == "precommit" {
+        // Persistent failure retains the legacy plan until this process exits.
+        // Neither mount disposal nor an unsupported cleanup may imply Joined.
+        let retained = agent.retained_preparation_status(session);
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].preparation, *descriptor);
+        return;
+    }
+    if mode == "commit-loss" {
+        let factories = count(&dir.join("ledger"), "factory");
+        let progress = agent
+            .retry_preparation_completion(descriptor)
+            .await
+            .unwrap();
+        assert!(progress.replayed);
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories);
+        assert_eq!(count(&dir.join("ledger"), "provider"), 0);
+        assert_eq!(count(&dir.join("ledger"), "tool"), 0);
+        assert_eq!(agent.retained_preparation_status(session), []);
+    }
+    agent.close_extensions().await.unwrap();
 }

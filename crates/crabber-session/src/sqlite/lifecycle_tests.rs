@@ -147,7 +147,7 @@ async fn seed_run(connection: &mut SqliteConnection) {
 }
 
 #[tokio::test]
-async fn migrate_creates_version_one_wal_database() {
+async fn migrate_creates_current_version_wal_database() {
     let database = Database::migrated().await;
     let mut connection = database.raw().await;
     let application: i32 = sqlx::query_scalar("PRAGMA application_id")
@@ -169,7 +169,10 @@ async fn migrate_creates_version_one_wal_database() {
         .fetch_all(&mut connection)
         .await
         .unwrap();
-    assert_eq!(versions, [1]);
+    assert_eq!(
+        versions,
+        (1..=crate::SQLITE_SCHEMA_VERSION).collect::<Vec<_>>()
+    );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM snapshot_auth WHERE singleton=1")
         .fetch_one(&mut connection)
         .await
@@ -255,7 +258,8 @@ async fn unknown_schema_version_is_refused_without_changes() {
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO schema_version VALUES(2)")
+        sqlx::query("INSERT INTO schema_version VALUES(?1)")
+            .bind(crate::SQLITE_SCHEMA_VERSION + 1)
             .execute(&mut connection)
             .await
             .unwrap();
@@ -277,7 +281,7 @@ async fn malformed_version_metadata_is_refused_without_changes() {
     for statement in [
         "DELETE FROM schema_version",
         "DROP TABLE schema_version",
-        "UPDATE schema_version SET version=0",
+        "UPDATE schema_version SET version=-version",
     ] {
         let database = Database::migrated().await;
         let mut connection = database.raw().await;
@@ -299,7 +303,8 @@ async fn malformed_version_metadata_is_refused_without_changes() {
 async fn unknown_schema_in_a_backup_is_refused_before_enabling_wal() {
     let database = Database::migrated().await;
     let mut connection = database.raw().await;
-    sqlx::query("INSERT INTO schema_version VALUES(2)")
+    sqlx::query("INSERT INTO schema_version VALUES(?1)")
+        .bind(crate::SQLITE_SCHEMA_VERSION + 1)
         .execute(&mut connection)
         .await
         .unwrap();
@@ -436,7 +441,10 @@ async fn concurrent_migrate_initializes_once() {
             .fetch_all(&mut connection)
             .await
             .unwrap();
-        assert_eq!(versions, [1]);
+        assert_eq!(
+            versions,
+            (1..=crate::SQLITE_SCHEMA_VERSION).collect::<Vec<_>>()
+        );
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM snapshot_auth")
             .fetch_one(&mut connection)
             .await
@@ -458,7 +466,9 @@ async fn classification_snapshot_survives_concurrent_initialization() {
         .execute(&mut connection)
         .await
         .unwrap();
-    let mut snapshot = connection.begin().await.unwrap();
+    let mut snapshot = crate::transaction::begin_on::<Sqlite>(&mut connection, None)
+        .await
+        .unwrap();
     let application: i32 = sqlx::query_scalar("PRAGMA application_id")
         .fetch_one(&mut *snapshot)
         .await
@@ -712,4 +722,126 @@ async fn migrate_waits_for_a_journal_mode_lock() {
         }
         connection.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn version_one_files_are_refused_without_migration_or_journal_changes() {
+    prior_version_is_refused(1).await;
+}
+#[tokio::test]
+async fn version_two_files_are_refused_without_migration_or_journal_changes() {
+    prior_version_is_refused(2).await;
+}
+async fn prior_version_is_refused(version: i64) {
+    let database = Database::fresh();
+    let mut connection =
+        SqliteConnection::connect_with(&options(&database.path).create_if_missing(true))
+            .await
+            .unwrap();
+    sqlx::query(&format!("PRAGMA application_id={APPLICATION_ID}"))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::Executor::execute(
+        &mut connection,
+        sqlx::raw_sql(include_str!("../../migrations/sqlite/0001_initial.sql")),
+    )
+    .await
+    .unwrap();
+    if version >= 2 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0002_host_foundation.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 3 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0003_typed_admission.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 4 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0004_continuations.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 5 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0005_session_management.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 6 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0006_future_queue.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    for marker in 1..=version {
+        sqlx::query("INSERT INTO schema_version(version) VALUES(?1)")
+            .bind(marker)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO snapshot_auth(singleton,secret) VALUES(1,?1)")
+        .bind(uuid::Uuid::new_v4().to_string())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    seed_session(&mut connection).await;
+    let before = image(&mut connection).await;
+    let hash = database.hash();
+    assert_refused(&database.path, "unsupported SQLite schema version").await;
+    assert_eq!(image(&mut connection).await, before);
+    assert_eq!(database.hash(), hash);
+    connection.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn current_version_requires_complete_numbered_schema_history() {
+    let database = Database::migrated().await;
+    let mut connection = database.raw().await;
+    sqlx::query("DELETE FROM schema_version WHERE version=1")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    checkpoint(&mut connection).await;
+    let before = image(&mut connection).await;
+    assert_refused(&database.path, "unsupported SQLite schema version").await;
+    assert_eq!(image(&mut connection).await, before);
+    connection.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn management_rejects_prior_v3_and_v4_files_without_any_changes() {
+    prior_version_is_refused(3).await;
+    prior_version_is_refused(4).await;
+}
+
+#[tokio::test]
+async fn version_five_and_six_files_are_refused_without_rewrites() {
+    prior_version_is_refused(5).await;
+    prior_version_is_refused(6).await;
 }

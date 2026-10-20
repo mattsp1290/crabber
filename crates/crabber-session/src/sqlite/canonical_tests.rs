@@ -187,6 +187,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     admission.user_message.parts[0].content = ContentBlock::Reasoning {
         text: "opaque input".into(),
         provider_state: Some(opaque_numbers()),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     };
     let message_id = admission.user_message.id.clone();
     let memory_admission = memory.admit_run(admission.clone()).await.unwrap();
@@ -251,6 +253,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
         content: vec![ContentBlock::Reasoning {
             text: "result".into(),
             provider_state: Some(opaque_numbers()),
+            provenance: crabber_core::ReasoningProvenance::Unspecified,
+            item_id: None,
         }],
     };
     let mut result_message = assistant(&sqlite_admission, "");
@@ -285,6 +289,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     inbox.parts[0].content = ContentBlock::Reasoning {
         text: "pending".into(),
         provider_state: Some(opaque_numbers()),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     };
     memory
         .enqueue_inbox(&session, InboxKind::FollowUp, inbox.clone())
@@ -315,6 +321,8 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     inbox.parts[0].content = ContentBlock::Reasoning {
         text: "claimed without history".into(),
         provider_state: Some(opaque_numbers()),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     };
     memory
         .enqueue_inbox(&session, InboxKind::Steer, inbox.clone())

@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, EventRecord, FakeProvider, MonotonicClock, Observer,
-    OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, TerminalReason, ToolDefinition, ToolExecutor, TraceContext,
+    Agent, AgentConfig, EventKind, EventRecord, FakeProvider, JsonToolExecutor, MonotonicClock,
+    Observer, OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
+    StreamDelta, TerminalReason, ToolDefinition, TraceContext,
     core::{RunId, ToolCallId, ToolInfo},
 };
 use serde_json::{Value, json};
@@ -38,7 +38,7 @@ impl Observer for Capture {
 }
 struct Echo(Arc<Clock>);
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, value: Value) -> Result<Value, crabber::ExtensionError> {
         self.0.0.store(12, Ordering::SeqCst);
         Ok(value)
@@ -51,6 +51,7 @@ async fn composed_callbacks_keep_attempt_context_and_broadcast_native_tool_turn(
     let clock = Arc::new(Clock::default());
     let id = ToolCallId::new();
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .monotonic_clock(clock.clone())
         .provider(Arc::new(FakeProvider::scripted(vec![
@@ -79,7 +80,7 @@ async fn composed_callbacks_keep_attempt_context_and_broadcast_native_tool_turn(
         .observer(first.clone())
         .observer(second.clone())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "echo".into(),
                 description: "echo".into(),

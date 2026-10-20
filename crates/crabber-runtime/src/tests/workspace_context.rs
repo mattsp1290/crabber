@@ -8,14 +8,13 @@ use crate::{
 };
 use async_trait::async_trait;
 use crabber_core::{
-    AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, EpochId, EventCursor,
-    EventKind, EventRecord, InputFingerprint, ManualClock, Message, MessageId, Part, PartId,
-    PartKind, Role, Run, RunFence, RunId, RunStatus, Session, SessionId, ToolCallId,
-    ToolCallRecord, ToolCallStatus, ToolInfo,
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, EpochId, EventCursor, EventKind,
+    EventRecord, InputFingerprint, ManualClock, Message, Run, RunFence, RunId, RunStatus, Session,
+    SessionId, ToolCallId, ToolCallRecord, ToolCallStatus, ToolInfo,
 };
 use crabber_extension::{
-    ContextAssemble, Extension, ExtensionError, Point, Registrar, Registry, RunPlan,
-    RunPlanProvider, Scope, ToolContext, ToolDefinition, ToolExecutor, WorkspaceContext,
+    ContextAssemble, Extension, ExtensionError, JsonToolExecutor, Point, Registrar, Registry,
+    RunPlan, RunPlanProvider, Scope, ToolContext, ToolDefinition, WorkspaceContext,
 };
 use crabber_providers::{FakeProvider, Selection, StreamDelta};
 use crabber_session::{
@@ -27,7 +26,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::time::Duration;
 use time::OffsetDateTime;
 
 type Identity = (Option<String>, Option<String>);
@@ -75,7 +73,7 @@ impl Seen {
 
 struct ProbeTool(Arc<Seen>);
 #[async_trait]
-impl ToolExecutor for ProbeTool {
+impl JsonToolExecutor for ProbeTool {
     async fn execute(&self, _arguments: Value) -> Result<Value, ExtensionError> {
         Err(ExtensionError::Tool("context required".into()))
     }
@@ -158,166 +156,29 @@ struct CountingPlans {
 }
 #[async_trait]
 impl RunPlanProvider for CountingPlans {
+    fn registration_fingerprint(
+        &self,
+        context: &crabber_core::SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        self.inner.registration_fingerprint(context)
+    }
+
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
         self.acquired.fetch_add(1, Ordering::SeqCst);
         self.inner.acquire_plan(session).await
     }
+    async fn acquire_plan_in(
+        &self,
+        context: &crabber_core::SessionContext,
+    ) -> Result<RunPlan, ExtensionError> {
+        self.acquired.fetch_add(1, Ordering::SeqCst);
+        self.inner.acquire_plan_in(context).await
+    }
 }
 
-/// Test-only view of a memory store whose persisted session identity can be
-/// altered between pause and resume, and whose keyed admission response can be lost.
-struct DriftStore {
-    inner: Arc<MemoryStore>,
-    drift: Mutex<HashMap<SessionId, (String, String)>>,
-    /// Session reads that fail with the error, or find nothing when `None`.
-    broken: Mutex<HashMap<SessionId, Option<StoreError>>>,
-    /// Runs whose checkpoint request loses its workspace identity on read.
-    corrupt: Mutex<HashSet<RunId>>,
-    lose_admission: AtomicBool,
-}
-impl DriftStore {
-    fn new(inner: Arc<MemoryStore>) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
-            drift: Mutex::new(HashMap::new()),
-            broken: Mutex::new(HashMap::new()),
-            corrupt: Mutex::new(HashSet::new()),
-            lose_admission: AtomicBool::new(false),
-        })
-    }
-    fn alter(&self, session: &SessionId, workspace_id: &str, directory: &str) {
-        self.drift
-            .lock()
-            .unwrap()
-            .insert(session.clone(), (workspace_id.into(), directory.into()));
-    }
-    fn restore(&self, session: &SessionId) {
-        self.drift.lock().unwrap().remove(session);
-    }
-    /// Every read of a corrupt run sees a checkpoint request without identity.
-    fn view(&self, mut run: Run) -> Run {
-        if self.corrupt.lock().unwrap().contains(&run.id)
-            && let Some(request) = run
-                .checkpoint
-                .as_mut()
-                .and_then(|checkpoint| checkpoint.get_mut("request"))
-                .and_then(Value::as_object_mut)
-        {
-            request.remove("workspace_id");
-        }
-        run
-    }
-}
-#[async_trait]
-impl Store for DriftStore {
-    async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        self.inner.admit_run(request).await
-    }
-    async fn admit_keyed_run(
-        &self,
-        request: crabber_session::KeyedAdmitRequest,
-    ) -> Result<crabber_session::KeyedAdmitOutcome, StoreError> {
-        let outcome = self.inner.admit_keyed_run(request).await?;
-        if self.lose_admission.load(Ordering::SeqCst) {
-            return Err(StoreError::Validation("unknown admission response".into()));
-        }
-        Ok(outcome)
-    }
-    async fn load_admission_execution(
-        &self,
-        session: &SessionId,
-        key: &AdmissionKey,
-    ) -> Result<
-        Option<crabber_session::AdmissionExecutionRecord>,
-        crabber_session::AdmissionExecutionError,
-    > {
-        self.inner.load_admission_execution(session, key).await
-    }
-    async fn claim_unstarted_admission(
-        &self,
-        request: crabber_session::ClaimUnstartedAdmissionRequest,
-    ) -> Result<crabber_session::ClaimedAdmission, crabber_session::AdmissionExecutionError> {
-        self.inner.claim_unstarted_admission(request).await
-    }
-    async fn lookup_admission(
-        &self,
-        session: &SessionId,
-        key: &AdmissionKey,
-    ) -> Result<Option<AdmissionReceipt>, StoreError> {
-        self.inner.lookup_admission(session, key).await
-    }
-    async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        self.inner.execution(fence).await
-    }
-    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError> {
-        if let Some(broken) = self.broken.lock().unwrap().get(id) {
-            return broken.clone().map_or(Ok(None), Err);
-        }
-        let mut session = self.inner.get_session(id).await?;
-        if let (Some(session), Some((workspace_id, directory))) =
-            (session.as_mut(), self.drift.lock().unwrap().get(id))
-        {
-            session.workspace_id.clone_from(workspace_id);
-            session.directory.clone_from(directory);
-        }
-        Ok(session)
-    }
-    async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        Ok(self.inner.get_run(id).await?.map(|run| self.view(run)))
-    }
-    async fn list_messages(
-        &self,
-        id: &SessionId,
-        epoch: Option<EpochId>,
-    ) -> Result<Vec<Message>, StoreError> {
-        self.inner.list_messages(id, epoch).await
-    }
-    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
-        self.inner.list_all_messages(id).await
-    }
-    async fn list_events(
-        &self,
-        id: &SessionId,
-        after: Option<EventCursor>,
-        limit: usize,
-    ) -> Result<Vec<EventRecord>, StoreError> {
-        self.inner.list_events(id, after, limit).await
-    }
-    async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        let runs = self.inner.list_unfinished_runs().await?;
-        Ok(runs.into_iter().map(|run| self.view(run)).collect())
-    }
-    async fn list_unfinished_tool_calls(
-        &self,
-        run: &RunId,
-    ) -> Result<Vec<ToolCallRecord>, StoreError> {
-        self.inner.list_unfinished_tool_calls(run).await
-    }
-    async fn admission_execution_state(
-        &self,
-        run: &RunId,
-    ) -> Result<Option<crabber_session::AdmissionExecutionState>, StoreError> {
-        self.inner.admission_execution_state(run).await
-    }
-    async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        self.inner.claim_expired_run(run, owner).await
-    }
-    async fn get_extension_state(
-        &self,
-        extension_id: &str,
-        session: &SessionId,
-    ) -> Result<BTreeMap<String, String>, StoreError> {
-        self.inner.get_extension_state(extension_id, session).await
-    }
-    async fn enqueue_inbox(
-        &self,
-        session: &SessionId,
-        kind: InboxKind,
-        message: Message,
-    ) -> Result<(), StoreError> {
-        self.inner.enqueue_inbox(session, kind, message).await
-    }
-}
+#[path = "workspace_context/drift_store.rs"]
+mod drift_store;
+use drift_store::DriftStore;
 
 struct Harness {
     clock: Arc<ManualClock>,
@@ -347,6 +208,7 @@ async fn host(
         acquired: AtomicUsize::new(0),
     });
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(store) as Arc<dyn Store>)
         .clock(clock.clone())
         .resolver(Arc::new(fake.clone()))
@@ -380,6 +242,9 @@ fn allow() -> Arc<dyn PermissionPolicy> {
 
 fn request(session: Option<&SessionId>, workspace_id: &str, directory: &str) -> Request {
     Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
+        input_envelope: None,
         session_id: session.cloned(),
         workspace_id: workspace_id.into(),
         directory: directory.into(),
@@ -583,43 +448,14 @@ async fn row6_generic_recovery_of_paused_run_with_checkpoint_request() {
 /// Admits a run directly in the store and leaves it `Running` with one
 /// retry-safe pending call and no checkpoint, as a crashed host would.
 async fn crashed_running_run(h: &Harness, workspace_id: &str, directory: &str) -> RunId {
-    let session = SessionId::new();
-    let plan = h.plans.inner.acquire_plan(&session).await.unwrap();
-    let fingerprint = plan.fingerprint().to_string();
-    plan.release();
     let now = h.clock.now();
-    let message_id = MessageId::new();
-    let admitted = h
-        .memory
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: workspace_id.into(),
-            directory: directory.into(),
-            title: "test".into(),
-            user_message: Message {
-                id: message_id.clone(),
-                session_id: session,
-                run_id: None,
-                role: Role::User,
-                parent_id: None,
-                created_at: now,
-                parts: vec![Part {
-                    id: PartId::new(),
-                    message_id,
-                    ordinal: 0,
-                    kind: PartKind::UserInputText,
-                    content: ContentBlock::Text {
-                        text: "hello".into(),
-                    },
-                }],
-            },
-            config_hash: "test".into(),
-            plan_fingerprint: fingerprint,
-            owner: "crashed".into(),
-            lease: Duration::from_secs(30),
-        })
+    let (plan, prepared, _) = h
+        .runtime
+        .prepare_admission(&request(None, workspace_id, directory))
         .await
         .unwrap();
+    plan.release();
+    let admitted = h.memory.admit_bound_run(prepared).await.unwrap();
     let execution = h.memory.execution(admitted.fence).await.unwrap();
     execution
         .create_tool_call(
@@ -650,16 +486,40 @@ async fn crashed_running_run(h: &Harness, workspace_id: &str, directory: &str) -
 }
 
 #[tokio::test]
-async fn row7_reclaimed_running_run_without_checkpoint_is_not_missing_context() {
+async fn row7_legacy_running_run_cannot_authorize_execution_from_context_alone() {
     let h = harness(Vec::new(), allow()).await;
     let run_id = crashed_running_run(&h, "ws-c", "/c").await;
-    let run = h.memory.get_run(&run_id).await.unwrap().unwrap();
-    assert_eq!(run.status, RunStatus::Running);
-    assert!(run.checkpoint.is_none());
+    let before = h.memory.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(before.status, RunStatus::Running);
+    assert!(before.checkpoint.is_none());
     expire(&h.clock);
-    let recovered = h.runtime.recover().await.unwrap().recovered;
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(h.seen.tools(), [identity("ws-c", "/c")]);
+    let report = h.runtime.recover().await.unwrap();
+    assert_eq!(report.recovered, Vec::new());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(
+        report.skipped[0].reason,
+        crate::RecoverySkipReason::Attempt(crabber_session::AttemptError::InvalidTransition)
+    );
+    assert_eq!(h.seen.tools(), Vec::new());
+    let after = h.memory.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        (
+            after.status,
+            after.checkpoint,
+            after.config_hash,
+            after.plan_fingerprint
+        ),
+        (
+            before.status,
+            before.checkpoint,
+            before.config_hash,
+            before.plan_fingerprint
+        )
+    );
+    assert_eq!(
+        h.memory.latest_execution_attempt(&run_id).await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -675,6 +535,16 @@ async fn row8_keyed_admission_recovery_uses_persisted_identity_and_rejects_drift
             .is_err()
     );
     h.store.lose_admission.store(false, Ordering::SeqCst);
+    let acquired = h.plans.acquired.load(Ordering::SeqCst);
+    assert!(matches!(
+        h.runtime
+            .recover_admission(input.clone(), options("row8"))
+            .await,
+        Err(RuntimeError::AdmissionExecution(
+            crabber_session::AdmissionExecutionError::LiveLease
+        ))
+    ));
+    assert_eq!(h.plans.acquired.load(Ordering::SeqCst), acquired);
     expire(&h.clock);
     let before = h.memory.list_unfinished_runs().await.unwrap();
     assert_eq!(before.len(), 1);
@@ -813,10 +683,16 @@ async fn recover_sweep_skips_and_reports_bad_runs_and_recovers_the_rest() {
         .collect();
     skipped.sort_by(|a, b| a.0.cmp(&b.0));
     let mut expected = vec![
-        (runs[1].1.clone(), StoreError::SessionIdentityMismatch),
-        (runs[2].1.clone(), invalid),
-        (runs[3].1.clone(), StoreError::NotFound),
-        (runs[4].1.clone(), corrupt),
+        (
+            runs[1].1.clone(),
+            crate::RecoverySkipReason::Store(StoreError::SessionIdentityMismatch),
+        ),
+        (runs[2].1.clone(), crate::RecoverySkipReason::Store(invalid)),
+        (
+            runs[3].1.clone(),
+            crate::RecoverySkipReason::Store(StoreError::NotFound),
+        ),
+        (runs[4].1.clone(), crate::RecoverySkipReason::Store(corrupt)),
     ];
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(skipped, expected);
@@ -848,6 +724,7 @@ async fn parallel_tool_calls_share_the_persisted_identity() {
     both.pop();
     both.extend(call_script());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store as Arc<dyn Store>)
         .clock(clock)
         .resolver(Arc::new(FakeProvider::scripted(vec![

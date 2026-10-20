@@ -159,9 +159,10 @@ async fn valid_protocol_errors_are_the_only_terminal_delta() {
             concat!(
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"before\"}\n\n",
                 "event: response.failed\n",
-                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n"
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error_PRIVATE_CODE_SENTINEL\",\"message\":\"PRIVATE_BODY_SENTINEL\"}}}\n\n"
             ),
-            "Responses response.failed: server_error",
+            "Responses stream failed",
+            ProviderErrorKind::Server,
         ),
         (
             Protocol::Responses,
@@ -169,9 +170,10 @@ async fn valid_protocol_errors_are_the_only_terminal_delta() {
                 "event: response.completed\n",
                 "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
                 "event: response.incomplete\n",
-                "data: {\"type\":\"response.incomplete\",\"response\":{\"error\":{\"code\":\"context_limit\"}}}\n\n"
+                "data: {\"type\":\"response.incomplete\",\"response\":{\"error\":{\"code\":\"context_limit_PRIVATE_CODE_SENTINEL\",\"message\":\"PRIVATE_BODY_SENTINEL\"}}}\n\n"
             ),
-            "Responses response.incomplete: context_limit",
+            "Responses stream failed",
+            ProviderErrorKind::ContextOverflow,
         ),
         (
             Protocol::Messages,
@@ -182,6 +184,7 @@ async fn valid_protocol_errors_are_the_only_terminal_delta() {
                 "data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"}}\n\n"
             ),
             "Messages stream error",
+            ProviderErrorKind::Server,
         ),
         (
             Protocol::Messages,
@@ -192,10 +195,11 @@ async fn valid_protocol_errors_are_the_only_terminal_delta() {
                 "data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"}}\n\n"
             ),
             "Messages stream error",
+            ProviderErrorKind::Server,
         ),
     ];
 
-    for (protocol, body, expected_message) in cases {
+    for (protocol, body, expected_message, expected_kind) in cases {
         let server = RawServer::start(raw_response("200 OK", body.len(), body.as_bytes())).await;
         let mut stream = HttpAdapter::custom("custom", &server.url, protocol)
             .with_api_key("key")
@@ -212,6 +216,7 @@ async fn valid_protocol_errors_are_the_only_terminal_delta() {
         }
 
         assert_single_protocol_error(&consumer_items, expected_message);
+        assert_eq!(stream_errors(&consumer_items)[0].kind, expected_kind);
         assert!(stream.next().await.is_none());
         let _ = server.body().await;
     }
@@ -225,10 +230,10 @@ async fn decode_stops_at_first_protocol_error_in_same_chunk() {
             concat!(
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"before\"}\n\n",
                 "event: response.failed\n",
-                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error_PRIVATE_CODE_SENTINEL\",\"message\":\"PRIVATE_BODY_SENTINEL\"}}}\n\n",
                 "data: {\n\n"
             ),
-            "Responses response.failed: server_error",
+            "Responses stream failed",
         ),
         (
             Protocol::Messages,
@@ -271,9 +276,9 @@ async fn parser_batches_preserve_order_before_terminal_or_parser_error() {
             concat!(
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"before\"}\n\n",
                 "event: response.failed\n",
-                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n"
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error_PRIVATE_CODE_SENTINEL\",\"message\":\"PRIVATE_BODY_SENTINEL\"}}}\n\n"
             ),
-            "Responses response.failed: server_error",
+            "Responses stream failed",
         ),
         (
             Protocol::Messages,
@@ -311,7 +316,7 @@ async fn parser_batches_preserve_order_before_terminal_or_parser_error() {
     let prefix = concat!(
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"before\"}\n\n",
         "event: response.failed\n",
-        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n"
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error_PRIVATE_CODE_SENTINEL\",\"message\":\"PRIVATE_BODY_SENTINEL\"}}}\n\n"
     );
     let mut oversized = prefix.as_bytes().to_vec();
     oversized.extend_from_slice(b"data: ");
@@ -329,7 +334,7 @@ async fn parser_batches_preserve_order_before_terminal_or_parser_error() {
         .collect()
         .await;
     assert!(matches!(items.first(), Some(StreamDelta::TextDelta(text)) if text == "before"));
-    assert_single_protocol_error(&items, "Responses response.failed: server_error");
+    assert_single_protocol_error(&items, "Responses stream failed");
     assert_eq!(
         items.len(),
         2,

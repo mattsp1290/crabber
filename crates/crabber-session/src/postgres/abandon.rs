@@ -1,19 +1,23 @@
 use super::{
     PostgresStore, call_status, db, decode, decode_record, insert_event, insert_message, json,
-    load_run, save_run,
+    save_run,
 };
 use crate::StoreError;
 use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 use crabber_core::{EventCursor, EventRecord, Run, RunStatus, ToolCallRecord, ToolCallStatus};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn abandon(
     store: &PostgresStore,
     request: AbandonRequest,
 ) -> Result<AbandonOutcome, AbandonError> {
-    let mut tx = store.pool.begin().await.map_err(db)?;
-    let (outcome, changed) = match settle(store, &mut tx, request).await {
+    let (mut tx, run) = match store.run_transaction(&request.expected.run_id).await {
+        Err(StoreError::NotFound) => return Err(AbandonError::NotFound),
+        result => result?,
+    };
+    let (outcome, changed) = match settle(store, &mut tx, request, run).await {
         Ok(outcome) => outcome,
         Err(error) => {
             // Explicitly release all locks before returning even on semantic
@@ -53,11 +57,8 @@ async fn settle(
     store: &PostgresStore,
     tx: &mut Transaction<'_, Postgres>,
     request: AbandonRequest,
+    mut run: Run,
 ) -> Result<(AbandonOutcome, bool), AbandonError> {
-    let mut run = match load_run(tx, &request.expected.run_id, true).await {
-        Err(StoreError::NotFound) => return Err(AbandonError::NotFound),
-        result => result?,
-    };
     // All ownership operations serialize on this row. Read the store clock only
     // after acquiring it, so waiting for a renewal cannot use a stale timestamp.
     let now = store.clock.now();
@@ -70,12 +71,24 @@ async fn settle(
     if request.authority == AbandonAuthority::ExpiredLease && run.lease_until > now {
         return Err(AbandonError::LiveLease);
     }
+    let native: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
+    )
+    .bind(&run.id.0)
+    .bind(&run.session_id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    if native {
+        return Err(AbandonError::NativeReconciliationRequired);
+    }
+    let no_effect_v1 = super::admission_journal::no_effect(tx, &run, &request).await?;
     run.claim_token = uuid::Uuid::new_v4().to_string();
     run.lease_until = now;
     run.updated_at = now;
     save_run(tx, &run).await?;
     let calls: Vec<ToolCallRecord> = sqlx::query(
-        "SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id",
+        "SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting') ORDER BY id",
     )
     .bind(&run.id.0)
     .fetch_all(&mut **tx)
@@ -107,6 +120,7 @@ async fn settle(
     run.status = RunStatus::Interrupted;
     save_run(tx, &run).await?;
     let evidence = AbandonEvidence {
+        no_effect_v1: no_effect_v1.clone(),
         request,
         run: run.clone(),
         interrupted_tools,
@@ -131,6 +145,7 @@ async fn settle(
     // Ordinary event writers have no path to this table. Publish authenticated
     // provenance only in the transaction that rotated and fully settled the run.
     let commit = AbandonCommit {
+        no_effect_v1,
         request: evidence.request,
         outcome: outcome.clone(),
     };
@@ -141,6 +156,9 @@ async fn settle(
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+    super::run_control::finalize(tx, &outcome.run, now)
+        .await
+        .map_err(crate::run_control::store_error)?;
     Ok((outcome, true))
 }
 
@@ -162,7 +180,7 @@ async fn replay(
     if event != commit.outcome.terminal_event {
         return Err(StoreError::Validation("invalid abandonment terminal event".into()).into());
     }
-    let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running'))")
+    let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting'))")
         .bind(&run.id.0).fetch_one(&mut **tx).await.map_err(db)?;
     if unfinished {
         return Err(StoreError::Validation("unfinished abandoned tools".into()).into());

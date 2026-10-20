@@ -46,14 +46,37 @@ pub(crate) fn call_record(call: &ToolCallRecord) -> Result<Accounting, StoreErro
     )
 }
 
+pub(crate) fn imported_call_record(
+    call: &crabber_core::ImportedToolCall,
+) -> Result<Accounting, StoreError> {
+    accounting(
+        call,
+        0,
+        call.result.content.iter().fold(0usize, |n, block| {
+            n.saturating_add(crate::snapshot::text_bytes(block))
+        }),
+    )
+}
+pub(crate) fn provenance_record(
+    record: &crabber_core::ImportedMessageProvenance,
+) -> Result<Accounting, StoreError> {
+    accounting(record, 0, 0)
+}
+
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Boundary {
     pub(crate) session: String,
     pub(crate) revision: i64,
+    pub(crate) public_revision: i64,
     pub(crate) messages: i64,
     pub(crate) calls: i64,
+    pub(crate) imported: i64,
+    pub(crate) provenance: i64,
     pub(crate) message_after: i64,
     pub(crate) call_after: i64,
+    pub(crate) imported_after: i64,
+    pub(crate) provenance_after: i64,
     pub(crate) high_water: EventCursor,
 }
 pub(crate) fn invalid() -> StoreError {
@@ -75,7 +98,7 @@ fn signature(key: &str, json: &str) -> Result<String, StoreError> {
 pub(crate) fn token(boundary: &Boundary, key: &str) -> Result<SnapshotContinuation, StoreError> {
     let json = serde_json::to_string(boundary).map_err(|_| invalid())?;
     Ok(SnapshotContinuation(format!(
-        "{}:{json}",
+        "v2:{}:{json}",
         signature(key, &json)?
     )))
 }
@@ -87,7 +110,12 @@ pub(crate) fn parse(
     if token.0.len() > 2048 {
         return Err(invalid());
     }
-    let (supplied_signature, json) = token.0.split_once(':').ok_or_else(invalid)?;
+    let (supplied_signature, json) = token
+        .0
+        .strip_prefix("v2:")
+        .ok_or_else(invalid)?
+        .split_once(':')
+        .ok_or_else(invalid)?;
     let expected = signature(key, json)?;
     if supplied_signature.len() != expected.len()
         || supplied_signature
@@ -99,16 +127,25 @@ pub(crate) fn parse(
         return Err(invalid());
     }
     let b: Boundary = serde_json::from_str(json).map_err(|_| invalid())?;
+    validate_boundary(&b, session)?;
+    Ok(b)
+}
+fn validate_boundary(b: &Boundary, session: &str) -> Result<(), StoreError> {
     if b.session != session
         || b.revision < 0
+        || b.public_revision < 0
         || b.message_after < 0
         || b.call_after < 0
+        || b.imported_after < 0
+        || b.provenance_after < 0
         || b.message_after > b.messages
         || b.call_after > b.calls
+        || b.imported_after > b.imported
+        || b.provenance_after > b.provenance
     {
         return Err(invalid());
     }
-    Ok(b)
+    Ok(())
 }
 #[cfg(test)]
 mod token_tests {
@@ -118,14 +155,232 @@ mod token_tests {
         let boundary = Boundary {
             session: digest(&["session"]),
             revision: 0,
+            public_revision: 0,
             messages: 1,
             calls: 0,
+            imported: 0,
+            provenance: 0,
             message_after: 0,
             call_after: 0,
+            imported_after: 0,
+            provenance_after: 0,
             high_water: EventCursor(7),
         };
         let token = token(&boundary, "database-one-secret").unwrap();
         assert!(parse(&token, "database-one-secret", &boundary.session).is_ok());
         assert!(parse(&token, "database-two-secret", &boundary.session).is_err());
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordKind {
+    Message,
+    Native,
+    Imported,
+    Provenance,
+}
+
+/// Validate newly introduced presentation carriers against exact canonical
+/// accounting and scope before publishing them in a raw or public page.
+pub(crate) fn append_imported(
+    page: &mut crate::SnapshotPage,
+    kind: RecordKind,
+    record: &str,
+    session: &crabber_core::SessionId,
+    identity: &str,
+    expected: (i64, i64, i64),
+) -> Result<(), StoreError> {
+    let accounting = match kind {
+        RecordKind::Imported => {
+            let call: crabber_core::ImportedToolCall =
+                serde_json::from_str(record).map_err(|_| invalid())?;
+            if call.session_id != *session || call.id.0 != identity {
+                return Err(invalid());
+            }
+            let accounting = imported_call_record(&call)?;
+            if accounting.record != record
+                || (accounting.parts, accounting.text, accounting.bytes) != expected
+            {
+                return Err(invalid());
+            }
+            page.imported_calls.push(call);
+            accounting
+        }
+        RecordKind::Provenance => {
+            let origin: crabber_core::ImportedMessageProvenance =
+                serde_json::from_str(record).map_err(|_| invalid())?;
+            if origin.session_id != *session || origin.message_id.0 != identity {
+                return Err(invalid());
+            }
+            let accounting = provenance_record(&origin)?;
+            if accounting.record != record
+                || (accounting.parts, accounting.text, accounting.bytes) != expected
+            {
+                return Err(invalid());
+            }
+            page.imported_provenance.push(origin);
+            accounting
+        }
+        RecordKind::Message | RecordKind::Native => return Err(invalid()),
+    };
+    drop(accounting);
+    Ok(())
+}
+
+pub(crate) use crate::snapshot_profile::{Profile, profile_boundary, profile_json};
+pub(crate) fn token_profile(
+    boundary: &Boundary,
+    key: &str,
+    profile: Profile,
+) -> Result<SnapshotContinuation, StoreError> {
+    if profile == Profile::Raw {
+        return token(boundary, key);
+    }
+    let json = profile_json(boundary, profile)?;
+    Ok(SnapshotContinuation(format!(
+        "{}:{json}",
+        signature(key, &json)?
+    )))
+}
+pub(crate) fn parse_profile(
+    token: &SnapshotContinuation,
+    key: &str,
+    session: &str,
+    profile: Profile,
+) -> Result<Boundary, StoreError> {
+    if profile == Profile::Raw {
+        return parse(token, key, session);
+    }
+    if token.0.len() > profile.token_cap() {
+        return Err(invalid());
+    }
+    let (supplied, json) = token.0.split_once(':').ok_or_else(invalid)?;
+    let expected = signature(key, json)?;
+    if supplied.len() != expected.len()
+        || supplied
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0_u8, |n, (a, b)| n | (a ^ b))
+            != 0
+    {
+        return Err(invalid());
+    }
+    let b: Boundary = profile_boundary(json, profile)?;
+    validate_boundary(&b, session)?;
+    Ok(b)
+}
+
+#[cfg(test)]
+mod aggregate_token_tests {
+    use super::*;
+    #[test]
+    fn signed_raw_and_aggregate_boundaries_share_all_offset_bounds() {
+        let boundary = Boundary {
+            session: digest(&["session"]),
+            revision: 1,
+            public_revision: 2,
+            messages: 3,
+            calls: 2,
+            imported: 2,
+            provenance: 2,
+            message_after: 1,
+            call_after: 1,
+            imported_after: 1,
+            provenance_after: 1,
+            high_water: EventCursor(4),
+        };
+        let original = serde_json::to_value(&boundary).unwrap();
+        for (field, value) in [
+            ("revision", -1),
+            ("public_revision", -1),
+            ("message_after", -1),
+            ("message_after", 4),
+            ("call_after", -1),
+            ("call_after", 3),
+            ("imported_after", -1),
+            ("imported_after", 3),
+            ("provenance_after", -1),
+            ("provenance_after", 3),
+        ] {
+            let mut invalid = original.clone();
+            invalid[field] = serde_json::json!(value);
+            let invalid: Boundary = serde_json::from_value(invalid).unwrap();
+            // These are genuinely signed tokens, not broken-HMAC negatives.
+            for profile in [Profile::Raw, Profile::AggregateV2] {
+                let signed = token_profile(&invalid, "key", profile).unwrap();
+                assert!(parse_profile(&signed, "key", &boundary.session, profile).is_err());
+            }
+        }
+        for offset in [0, 2] {
+            let mut valid = original.clone();
+            valid["imported_after"] = serde_json::json!(offset);
+            valid["provenance_after"] = serde_json::json!(offset);
+            let valid: Boundary = serde_json::from_value(valid).unwrap();
+            for profile in [Profile::Raw, Profile::AggregateV2] {
+                let signed = token_profile(&valid, "key", profile).unwrap();
+                assert!(parse_profile(&signed, "key", &boundary.session, profile).is_ok());
+                assert!(parse_profile(&signed, "key", "foreign-session", profile).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn aggregate_profile_is_authenticated_and_cross_version_closed() {
+        let boundary = Boundary {
+            session: digest(&["session"]),
+            revision: 1,
+            public_revision: 2,
+            messages: 3,
+            calls: 0,
+            imported: 0,
+            provenance: 0,
+            message_after: 1,
+            call_after: 0,
+            imported_after: 0,
+            provenance_after: 0,
+            high_water: EventCursor(4),
+        };
+        let raw = token(&boundary, "key").unwrap();
+        let aggregate = token_profile(&boundary, "key", Profile::AggregateV2).unwrap();
+        assert!(parse_profile(&raw, "key", &boundary.session, Profile::AggregateV2).is_err());
+        assert!(parse(&aggregate, "key", &boundary.session).is_err());
+        assert!(parse_profile(&aggregate, "key", &boundary.session, Profile::AggregateV2).is_ok());
+        assert!(
+            parse_profile(
+                &aggregate,
+                "other-key",
+                &boundary.session,
+                Profile::AggregateV2
+            )
+            .is_err()
+        );
+        let json = aggregate
+            .0
+            .split_once(':')
+            .unwrap()
+            .1
+            .replace("public-session.aggregate.v2", "public-session.aggregate.v3");
+        let wrong_profile =
+            SnapshotContinuation(format!("{}:{json}", signature("key", &json).unwrap()));
+        assert!(
+            parse_profile(
+                &wrong_profile,
+                "key",
+                &boundary.session,
+                Profile::AggregateV2
+            )
+            .is_err()
+        );
+        let oversized = SnapshotContinuation("private-marker".repeat(100_000));
+        let allocations = allocation_counter::measure(|| {
+            assert!(
+                parse_profile(&oversized, "key", &boundary.session, Profile::AggregateV2).is_err()
+            );
+        });
+        assert!(
+            allocations.bytes_total < 1024,
+            "{}",
+            allocations.bytes_total
+        );
     }
 }

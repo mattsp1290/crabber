@@ -1,11 +1,14 @@
 use super::*;
-use crabber_core::{AbandonAuthority, AbandonError, AbandonRequest, EventKind, Role};
+use crabber_core::{AbandonAuthority, AbandonError, AbandonRequest, EventKind, MessageId, Role};
 use serde_json::json;
 use std::time::Duration;
 
 fn request() -> AdmitRequest {
     let session = SessionId::new();
     AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: None,
         workspace_id: "w".into(),
         directory: ".".into(),
@@ -128,18 +131,16 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
         )
         .await
         .unwrap();
-    {
-        let mut state = store.state.lock().unwrap();
-        let run = state.runs.get_mut(&admitted.run.id).unwrap();
-        // Pending is a persisted state supported by the domain; fresh admission
-        // currently produces Running, so seed it without inventing a public API.
-        run.status = RunStatus::Pending;
-        run.usage = Usage {
-            input_tokens: 123,
-            output_tokens: 45,
-        };
-        state.abandon_fail_after_tools = true;
-    }
+    let mut pending = store.get_run(&admitted.run.id).await.unwrap().unwrap();
+    // Pending is an intentional legacy fixture state, not a private corruption
+    // probe. Seed its fence journal just as the SQL fixture adapters do.
+    pending.status = RunStatus::Pending;
+    pending.usage = Usage {
+        input_tokens: 123,
+        output_tokens: 45,
+    };
+    crate::abandonment_contract::FixtureStore::seed_run(&store, pending).await;
+    store.state.lock().unwrap().abandon_fail_after_tools = true;
     clock.set(now + time::Duration::seconds(30));
     let original_run = store.get_run(&admitted.run.id).await.unwrap().unwrap();
     let original_events = store
@@ -151,6 +152,7 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
         .await
         .unwrap();
     let agent = crabber::Agent::builder()
+        .behavior_version("abandon-fixture.v1")
         .store(Arc::new(PendingFacadeStore(store.clone())))
         .provider(Arc::new(crabber::FakeProvider::scripted(vec![])))
         .config(crabber::AgentConfig::new(crabber::Selection {
@@ -265,6 +267,9 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
     );
     let next = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: Some(admitted.run.session_id.clone()),
             user_message: inbox.clone(),
             ..request()
@@ -456,6 +461,7 @@ async fn facade_each_memory_candidate_boundary_rolls_back_including_private_comm
             .unwrap();
         let provider = Arc::new(crabber::FakeProvider::scripted(vec![]));
         let agent = crabber::Agent::builder()
+            .behavior_version("abandon-fixture.v1")
             .store(Arc::new(PendingFacadeStore(store.clone())))
             .provider(provider.clone())
             .config(crabber::AgentConfig::new(crabber::Selection {

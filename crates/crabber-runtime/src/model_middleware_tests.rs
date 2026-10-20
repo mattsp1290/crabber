@@ -7,8 +7,8 @@ use crate::{
 use async_trait::async_trait;
 use crabber_core::{RunStatus, ToolCallId, ToolInfo, Usage};
 use crabber_extension::{
-    Extension, ExtensionError, MiddlewareDescriptor, ModelAttemptContext, ModelRequestError, Point,
-    Registrar, Registry, Scope, SystemPromptMiddleware, ToolDefinition, ToolExecutor,
+    Extension, ExtensionError, JsonToolExecutor, MiddlewareDescriptor, ModelAttemptContext,
+    ModelRequestError, Point, Registrar, Registry, Scope, SystemPromptMiddleware, ToolDefinition,
     WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
     WorkspaceReaderResolver,
 };
@@ -82,6 +82,9 @@ async fn mount_test(
 
 fn request() -> Request {
     Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
+        input_envelope: None,
         session_id: None,
         workspace_id: "workspace".into(),
         directory: "/workspace".into(),
@@ -212,6 +215,7 @@ fn runtime(
     backend: &WorkspaceBackend,
 ) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))
@@ -324,7 +328,7 @@ fn assert_retry_changes_only_system(requests: &[ModelRequest]) {
 struct RewriteTool(WorkspaceBackend);
 
 #[async_trait]
-impl ToolExecutor for RewriteTool {
+impl JsonToolExecutor for RewriteTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         self.0.set("AGENTS.md", "v2");
         Ok(json!("rewritten"))
@@ -796,6 +800,7 @@ fn paused_runtime(
     store: Arc<dyn Store>,
 ) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))

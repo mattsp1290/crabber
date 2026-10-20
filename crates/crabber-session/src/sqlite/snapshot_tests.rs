@@ -86,6 +86,8 @@ pub(super) async fn settled(
                 ContentBlock::Reasoning {
                     text: "deep".into(),
                     provider_state: None,
+                    provenance: crabber_core::ReasoningProvenance::Unspecified,
+                    item_id: None,
                 },
             ],
             is_error: false,
@@ -552,4 +554,94 @@ fn large_sqlite_history_keeps_client_allocation_bounded() {
         measured.bytes_max < 131_072,
         "oversized record decoded: {measured:?}"
     );
+}
+
+#[tokio::test]
+async fn captured_public_revision_survives_metadata_changes_and_rejects_tampering() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::management_contract::captured_history_revision(&store).await;
+}
+
+#[tokio::test]
+async fn public_run_state_contract() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::public_run::tests::run(&store).await;
+}
+
+#[test]
+fn public_run_private_allocation_is_bounded() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (store, _path, _directory) = runtime.block_on(temp_store());
+    crate::public_run::tests::allocation_contract(&runtime, &store);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn public_history_projection_contract() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::public_history::tests::run(&store).await;
+}
+
+#[tokio::test]
+async fn public_run_projection_excludes_unknown_usage_and_rejects_bad_fields() {
+    let (store, _path, _directory) = temp_store().await;
+    let created = store
+        .manage_session(crate::management_contract::create())
+        .await
+        .unwrap();
+    let admitted = store
+        .admit_run(crate::management_contract::admission(&created.summary))
+        .await
+        .unwrap();
+    let original = serde_json::to_value(&admitted.run).unwrap();
+    let mut value = original.clone();
+    value["usage"]["private-extra"] = serde_json::json!("private-sentinel".repeat(100_000));
+    sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+        .bind(&admitted.run.id.0)
+        .bind(serde_json::to_string(&value).unwrap())
+        .execute(&store.writer)
+        .await
+        .unwrap();
+    let crate::PublicRunOutcome::State(state) = store
+        .public_run_state(&created.session_id, 8192)
+        .await
+        .unwrap()
+    else {
+        panic!("private usage extra must not transfer or count against public projection");
+    };
+    assert_eq!(state.run.unwrap().usage, admitted.run.usage);
+    for (field, replacement) in [
+        ("id", serde_json::json!("wrong-run")),
+        ("session_id", serde_json::json!("wrong-session")),
+        ("status", serde_json::json!("completed")),
+        (
+            "usage",
+            serde_json::json!({"input_tokens":-1,"output_tokens":0}),
+        ),
+    ] {
+        let mut value = original.clone();
+        value[field] = replacement;
+        sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+            .bind(&admitted.run.id.0)
+            .bind(serde_json::to_string(&value).unwrap())
+            .execute(&store.writer)
+            .await
+            .unwrap();
+        let result = store.public_run_state(&created.session_id, 8192).await;
+        // Restore even when the assertion fails: later contracts inspect all
+        // unfinished runs in the shared native test database.
+        sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+            .bind(&admitted.run.id.0)
+            .bind(serde_json::to_string(&original).unwrap())
+            .execute(&store.writer)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Err(StoreError::Validation(_))),
+            "corrupt public {field} accepted"
+        );
+    }
 }

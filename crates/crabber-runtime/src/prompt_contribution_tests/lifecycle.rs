@@ -19,6 +19,7 @@ impl PermissionPolicy for PausePolicy {
 async fn resumed_run_invokes_contributors() {
     let h = FileHarness::new(vec![call_script(), text_script("done")], true).await;
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(h.store.clone())
         .resolver(Arc::new(h.fake.clone()))
         .plan_provider(Arc::new(h.registry.clone()))
@@ -54,6 +55,7 @@ async fn mounting_a_contributor_after_pause_refuses_resume() {
     let store = Arc::new(MemoryStore::new());
     let fake = FakeProvider::scripted(vec![call_script(), text_script("unused")]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry.clone()))
@@ -99,6 +101,7 @@ async fn lease_lost_during_contribution_makes_no_provider_call() {
     .await;
     let fake = FakeProvider::scripted(vec![text_script("unused")]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .clock(wall.clone())
         .resolver(Arc::new(fake.clone()))
@@ -160,6 +163,25 @@ async fn model_stream_handler_cannot_change_assembled_system() {
 struct SmallContext(FakeProvider);
 #[async_trait]
 impl ProviderAdapter for SmallContext {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crabber_providers::ProviderBindingError>
+    {
+        crabber_core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "small-context-fixture",
+            "1",
+            crabber_core::InputFingerprint::new("c".repeat(64)).unwrap(),
+            crabber_core::ProviderBindingLimits {
+                context_tokens: Some(4096),
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| crabber_providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "fake".into(),
@@ -200,6 +222,7 @@ async fn proactive_compaction_sets_after_compaction_on_first_attempt() {
     })
     .await;
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))
@@ -245,6 +268,7 @@ async fn recovered_run_invokes_contributors() {
     let store = Arc::new(MemoryStore::with_clock(wall.clone()));
     let build = || {
         Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store.clone())
             .clock(wall.clone())
             .resolver(Arc::new(h.fake.clone()))

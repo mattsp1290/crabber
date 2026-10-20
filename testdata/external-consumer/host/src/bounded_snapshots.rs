@@ -3,14 +3,23 @@ use crabber::{SnapshotLimits, SnapshotOutcome, SnapshotRequest, core::*, session
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 struct LegacyStore(MemoryStore);
-struct BoundedStore(MemoryStore);
+mod native_store;
+use native_store::BoundedStore;
 
 macro_rules! forward_store {
     ($store:ty, $($extra:item)*) => {
         #[async_trait::async_trait]
         impl Store for $store {
+    async fn session_revision(&self, session: &SessionId) -> Result<SessionRevision, StoreError> { self.0.session_revision(session).await }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.0.admit_run(request).await
+    }
+    async fn admit_bound_run(&self, request: BoundAdmitRequest) -> Result<AdmitOutcome, StoreError> {
+        self.0.admit_bound_run(request).await
+    }
+    async fn execution_binding(&self, session: &SessionId, run: &RunId) -> Result<Option<RetainedExecutionBinding>, StoreError> {
+        self.0.execution_binding(session, run).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         self.0.execution(fence).await
@@ -71,12 +80,6 @@ macro_rules! forward_store {
     };
 }
 forward_store!(LegacyStore,);
-forward_store!(
-    BoundedStore,
-    async fn snapshot(&self, request: SnapshotRequest) -> Result<SnapshotOutcome, StoreError> {
-        self.0.snapshot(request).await
-    }
-);
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let session = SessionId::from("external-bounded-session");
@@ -100,6 +103,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     ));
     let store = Arc::new(BoundedStore(MemoryStore::new()));
     let agent = crabber::Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(Arc::new(crabber::FakeProvider::scripted(vec![vec![
             crabber::StreamDelta::TextDelta("fake".into()),
@@ -151,7 +155,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1]);
     assert_eq!(pages, 2);
-    assert!(store.list_events(&query.session_id, Some(h), 1).await?.is_empty());
+    assert!(
+        store
+            .list_events(&query.session_id, Some(h), 1)
+            .await?
+            .is_empty()
+    );
     println!(
         "External bounded snapshots: default unsupported; delegated custom Store H={} pages={pages} messages={} caps and continuation passed",
         h.0,

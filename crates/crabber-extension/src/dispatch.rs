@@ -1,5 +1,8 @@
 //! Ordered, bounded extension callback dispatch.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+mod mount_frame;
+pub(crate) use mount_frame::MountFrame;
+
 use crate::{
     CleanupTracker, ExtensionError, FINAL_REDACTION_DEADLINE, ResultTransformCallback,
     ToolResultContext, ToolResultOutcome, TransformOutput, TransformPhase, json_result_transform,
@@ -17,6 +20,8 @@ use std::{
     task::{Context, Poll},
 };
 use tokio_util::sync::CancellationToken;
+
+pub(crate) mod original;
 
 pub type Callback =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExtensionError>> + Send + Sync>;
@@ -76,6 +81,7 @@ pub struct Handler {
     pub(crate) mount_seq: u64,
     pub(crate) registration_seq: usize,
     pub(crate) mount_id: u64,
+    pub(crate) frame: MountFrame,
     pub(crate) phase: TransformPhase,
     pub(crate) cleanup: CleanupTracker,
     pub(crate) callback: HandlerFn,
@@ -100,6 +106,7 @@ impl Handler {
 #[derive(Clone)]
 pub struct Dispatcher {
     handlers: Arc<Vec<Handler>>,
+    owned: Arc<std::collections::HashMap<u64, crate::registry::InvocationSource>>,
 }
 impl Dispatcher {
     #[must_use]
@@ -107,7 +114,16 @@ impl Dispatcher {
         handlers.sort_by_key(Handler::sort_key);
         Self {
             handlers: Arc::new(handlers),
+            owned: Arc::new(std::collections::HashMap::new()),
         }
+    }
+    pub(crate) fn from_registry(
+        handlers: Vec<Handler>,
+        owned: Vec<(u64, crate::registry::InvocationSource)>,
+    ) -> Self {
+        let mut dispatcher = Self::new(handlers);
+        dispatcher.owned = Arc::new(owned.into_iter().collect());
+        dispatcher
     }
     fn matching(&self, point: &'static str, mode: Mode) -> impl Iterator<Item = &Handler> {
         self.handlers
@@ -122,10 +138,10 @@ impl Dispatcher {
                 let callback = Arc::clone(callback);
                 let mount_id = handler.mount_id;
                 let input = value.clone();
-                let _ =
-                    AssertUnwindSafe(async move { with_mount(mount_id, callback(input)).await })
-                        .catch_unwind()
-                        .await;
+                let source = self.owned.get(&mount_id).cloned();
+                let _ = AssertUnwindSafe(invoke(source, handler.frame, move || callback(input)))
+                    .catch_unwind()
+                    .await;
             }
         }
     }
@@ -133,7 +149,14 @@ impl Dispatcher {
     pub async fn hook<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
         for handler in self.matching(P::ID, Mode::Hook) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
-                with_mount(handler.mount_id, callback(value.clone())).await?;
+                let callback = callback.clone();
+                let input = value.clone();
+                invoke(
+                    self.owned.get(&handler.mount_id).cloned(),
+                    handler.frame,
+                    move || callback(input),
+                )
+                .await?;
             }
         }
         Ok(())
@@ -157,7 +180,13 @@ impl Dispatcher {
         after(&mut value)?;
         for handler in self.matching(point, Mode::Transform) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
-                value = with_mount(handler.mount_id, callback(value)).await?;
+                let callback = callback.clone();
+                value = invoke(
+                    self.owned.get(&handler.mount_id).cloned(),
+                    handler.frame,
+                    move || callback(value),
+                )
+                .await?;
                 after(&mut value)?;
             }
         }
@@ -204,8 +233,36 @@ impl Dispatcher {
     /// cancellation was observed, in which case it is `Interrupted` and the
     /// in-flight handler is dropped, final redactors included.
     // One driver loop: its states share the accepted value and the deadline.
-    #[allow(clippy::too_many_lines)]
     pub async fn transform_tool_result(
+        &self,
+        context: ToolResultContext,
+        seed: TransformOutput,
+    ) -> ToolResultOutcome {
+        if context.cancellation().is_cancelled() {
+            return ToolResultOutcome::Interrupted { redacted: None };
+        }
+        let first_handler = self
+            .matching(ToolResultTransform::ID, Mode::Transform)
+            .find(|handler| self.owned.contains_key(&handler.mount_id));
+        if let (Some(handler), Some(resources)) =
+            (first_handler, context.cleanup().invocation_resources())
+        {
+            let Ok(owner) = crate::CallbackInvocationOwner::attach(resources) else {
+                return ToolResultOutcome::Failed {
+                    handler: handler.id.clone(),
+                };
+            };
+            crate::with_callback_invocations(
+                owner.capability(),
+                self.transform_tool_result_inner(context, seed),
+            )
+            .await
+        } else {
+            self.transform_tool_result_inner(context, seed).await
+        }
+    }
+    #[allow(clippy::too_many_lines)]
+    async fn transform_tool_result_inner(
         &self,
         context: ToolResultContext,
         seed: TransformOutput,
@@ -215,10 +272,10 @@ impl Dispatcher {
             return ToolResultOutcome::Interrupted { redacted: None };
         }
         let interrupted = || ToolResultOutcome::Interrupted { redacted: None };
-        let mut is_error = context.class().is_error() || seed.mark_error;
+        let mut is_error = context.class().is_error() || seed.mark_error || seed.result.is_error();
         // The seed is never an accepted value (D6); only a handler's valid
         // output is committed here.
-        let mut accepted: Option<Value> = None;
+        let mut accepted: Option<crabber_core::ToolOutput> = None;
         let handlers: Vec<&Handler> = self
             .matching(ToolResultTransform::ID, Mode::Transform)
             .filter(|h| {
@@ -263,12 +320,22 @@ impl Dispatcher {
                     }
                 };
             }
-            let mut handler_context = context.clone().with_cleanup(handler.cleanup.clone());
+            let mut handler_context = if context.cleanup().is_phase_scoped() {
+                context
+                    .clone()
+                    .with_cleanup(context.cleanup().for_handler_mount(&handler.cleanup))
+            } else {
+                context.clone().with_cleanup(handler.cleanup.clone())
+            };
             handler_context.set_phase(handler.phase);
             handler_context.set_is_error(is_error);
             let current = accepted.as_ref().unwrap_or(&seed.result).clone();
-            let mut future =
-                InFlight::new(invoke_result_handler(handler, handler_context, current));
+            let mut future = InFlight::new(invoke_result_handler(
+                handler.clone(),
+                self.owned.get(&handler.mount_id).cloned(),
+                handler_context,
+                current,
+            ));
             let mut result = None;
             let closing = handler.cleanup.closing();
             tokio::pin!(closing);
@@ -322,7 +389,7 @@ impl Dispatcher {
             };
             match output {
                 Some(output) => {
-                    is_error |= output.mark_error;
+                    is_error |= output.mark_error || output.result.is_error();
                     accepted = Some(output.result);
                 }
                 None if deadline.is_some() => return interrupted(),
@@ -348,11 +415,19 @@ impl Dispatcher {
     /// Gate callbacks reject on the first false result.
     pub async fn gate<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
         for handler in self.matching(P::ID, Mode::Gate) {
-            if let HandlerFn::Ordinary(callback) = &handler.callback
-                && with_mount(handler.mount_id, callback(value.clone())).await?
+            if let HandlerFn::Ordinary(callback) = &handler.callback {
+                let callback = callback.clone();
+                let input = value.clone();
+                if invoke(
+                    self.owned.get(&handler.mount_id).cloned(),
+                    handler.frame,
+                    move || callback(input),
+                )
+                .await?
                     == Value::Bool(false)
-            {
-                return Err(ExtensionError::Rejected(P::ID));
+                {
+                    return Err(ExtensionError::Rejected(P::ID));
+                }
             }
         }
         Ok(())
@@ -366,7 +441,7 @@ impl Dispatcher {
             .matching(P::ID, Mode::Around)
             .cloned()
             .collect::<Vec<_>>();
-        around_at(Arc::new(handlers), 0, value, terminal).await
+        around_at(Arc::new(handlers), self.owned.clone(), 0, value, terminal).await
     }
 }
 
@@ -425,9 +500,10 @@ async fn finish_before<T>(
 /// D2 failure (error, panic or envelope violation); handler-authored error
 /// text is discarded here so it can never reach the outcome.
 async fn invoke_result_handler(
-    handler: &Handler,
+    handler: Handler,
+    source: Option<crate::registry::InvocationSource>,
     context: ToolResultContext,
-    value: Value,
+    value: crabber_core::ToolOutput,
 ) -> Option<TransformOutput> {
     use futures::FutureExt;
     let callback = match &handler.callback {
@@ -435,9 +511,27 @@ async fn invoke_result_handler(
         HandlerFn::Ordinary(callback) => json_result_transform(Arc::clone(callback)),
         HandlerFn::Around(_) => return None,
     };
-    AssertUnwindSafe(with_mount(handler.mount_id, async move {
-        callback(context, value).await
-    }))
+    // The driver owns cancellation and the final-redaction deadline. Keep the
+    // literal callback future named until its poll and Drop have both finished.
+    let invoke = async move {
+        match original::original(
+            || callback(context, value),
+            |result| result,
+            &CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            _ => panic!("result callback observation failed"),
+        }
+    };
+    AssertUnwindSafe(async move {
+        match source {
+            Some(source) => source.invoke(move || Box::pin(invoke)).await?,
+            // Legacy result handlers constructed inside their mount frame.
+            None => with_mount(handler.frame, invoke).await,
+        }
+    })
     .catch_unwind()
     .await
     .ok()?
@@ -511,6 +605,7 @@ impl Next {
 }
 fn around_at(
     handlers: Arc<Vec<Handler>>,
+    owned: Arc<std::collections::HashMap<u64, crate::registry::InvocationSource>>,
     index: usize,
     value: Value,
     terminal: Callback,
@@ -524,6 +619,7 @@ fn around_at(
         };
         let callback = Arc::clone(callback);
         let mount_id = handler.mount_id;
+        let frame = handler.frame;
         let shared = Arc::new(NextShared {
             state: Mutex::new(NextState {
                 active: true,
@@ -536,6 +632,7 @@ fn around_at(
         let _revoke = RevokeOnDrop(Arc::clone(&shared));
         let next_handlers = Arc::clone(&handlers);
         let next_terminal = Arc::clone(&terminal);
+        let next_owned = owned.clone();
         let callback_token = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let next = Next {
             shared: Arc::clone(&shared),
@@ -543,15 +640,29 @@ fn around_at(
             invoke: Arc::new(move |v| {
                 around_at(
                     Arc::clone(&next_handlers),
+                    Arc::clone(&next_owned),
                     index + 1,
                     v,
                     Arc::clone(&next_terminal),
                 )
             }),
         };
-        let result = ACTIVE_NEXT
-            .scope(callback_token, with_mount(mount_id, callback(value, next)))
-            .await;
+        let result = match owned.get(&mount_id).cloned() {
+            Some(source) => {
+                ACTIVE_NEXT
+                    .scope(
+                        callback_token,
+                        invoke(Some(source), frame, move || callback(value, next)),
+                    )
+                    .await
+            }
+            // Preserve legacy construction before both task-local frames.
+            None => {
+                ACTIVE_NEXT
+                    .scope(callback_token, with_mount(frame, callback(value, next)))
+                    .await
+            }
+        };
         shared.revoke();
         loop {
             let notified = shared.done.notified();
@@ -571,14 +682,96 @@ fn around_at(
 }
 
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+#[path = "dispatch/phase_cleanup_tests.rs"]
+mod phase_cleanup_tests;
 tokio::task_local! { static ACTIVE_NEXT: u64; }
-tokio::task_local! { static ACTIVE_MOUNTS: Vec<u64>; }
-pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T {
+tokio::task_local! { static ACTIVE_MOUNTS: Vec<MountFrame>; }
+/// Explicit propagation for actual owned callback tasks; Tokio does not inherit
+/// task locals. Preserve ancestor mounts and the exact around continuation.
+pub(crate) struct CallbackTaskContext {
+    mounts: Vec<MountFrame>,
+    next: Option<u64>,
+    initialization: crate::contextual::InitializationContext,
+    state: Option<Arc<dyn crate::StateSink>>,
+    public_source: Option<crate::PublicSourceWriter>,
+    callbacks: Option<crate::CallbackInvocationCapability>,
+}
+impl CallbackTaskContext {
+    pub(crate) fn capture(mount: MountFrame) -> Self {
+        let mut context = Self::capture_existing();
+        context.mounts.push(mount);
+        context
+    }
+    pub(crate) fn capture_existing() -> Self {
+        Self {
+            mounts: ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default(),
+            next: ACTIVE_NEXT.try_with(|next| *next).ok(),
+            initialization: crate::contextual::InitializationContext::capture(),
+            state: crate::current_state_sink(),
+            public_source: crate::current_public_source(),
+            callbacks: crate::registry::current_callback_invocations(),
+        }
+    }
+    pub(crate) async fn scope<T>(self, future: impl Future<Output = T>) -> T {
+        // Retain the same unpolled original once. Propagating every task-local
+        // around its inline body multiplies large debug construction frames.
+        let future = Box::pin(future);
+        ACTIVE_MOUNTS
+            .scope(
+                self.mounts,
+                self.initialization.scope(async move {
+                    let next = async move {
+                        match self.next {
+                            Some(next) => ACTIVE_NEXT.scope(next, future).await,
+                            None => future.await,
+                        }
+                    };
+                    let state = async move {
+                        match self.state {
+                            Some(state) => crate::with_state_sink(state, next).await,
+                            None => next.await,
+                        }
+                    };
+                    let public = async move {
+                        match self.public_source {
+                            Some(source) => crate::with_public_source(source, state).await,
+                            None => state.await,
+                        }
+                    };
+                    match self.callbacks {
+                        Some(callbacks) => {
+                            crate::with_callback_invocations(callbacks, public).await
+                        }
+                        None => public.await,
+                    }
+                }),
+            )
+            .await
+    }
+}
+async fn invoke<T: Send + 'static>(
+    owned: Option<crate::registry::InvocationSource>,
+    frame: MountFrame,
+    construct: impl FnOnce() -> BoxFuture<'static, Result<T, ExtensionError>> + Send + 'static,
+) -> Result<T, ExtensionError> {
+    match owned {
+        Some(source) => source.invoke(construct).await?,
+        // Legacy ordinary constructors were evaluated before with_mount.
+        None => with_mount(frame, construct()).await,
+    }
+}
+pub(crate) async fn with_mount<T>(id: MountFrame, future: impl Future<Output = T>) -> T {
     let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
     stack.push(id);
     ACTIVE_MOUNTS.scope(stack, future).await
 }
-pub(crate) fn is_active_mount(id: u64) -> bool {
+pub(crate) fn with_mount_inline<T>(id: MountFrame, call: impl FnOnce() -> T) -> T {
+    let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
+    stack.push(id);
+    ACTIVE_MOUNTS.sync_scope(stack, call)
+}
+pub(crate) fn is_active_mount(id: MountFrame) -> bool {
     ACTIVE_MOUNTS
         .try_with(|stack| stack.contains(&id))
         .unwrap_or(false)
@@ -609,6 +802,7 @@ mod tests {
             mount_seq: 0,
             registration_seq: 0,
             mount_id: 1,
+            frame: MountFrame::fixture(1),
             phase: TransformPhase::Ordinary,
             cleanup: CleanupTracker::detached(),
             callback,
@@ -1103,8 +1297,8 @@ mod driver_tests {
             class,
         )
     }
-    fn seed(value: Value) -> TransformOutput {
-        TransformOutput::new(value)
+    fn seed(value: &Value) -> TransformOutput {
+        TransformOutput::new(crabber_core::ToolOutput::from_json(value).unwrap())
     }
     fn make(order: i32, id: &str, phase: TransformPhase, callback: HandlerFn) -> Handler {
         Handler {
@@ -1116,6 +1310,7 @@ mod driver_tests {
             mount_seq: 0,
             registration_seq: 0,
             mount_id: 1,
+            frame: MountFrame::fixture(1),
             phase,
             cleanup: CleanupTracker::detached(),
             callback,
@@ -1127,7 +1322,9 @@ mod driver_tests {
         + Sync
         + 'static,
     ) -> HandlerFn {
-        HandlerFn::ResultTransform(Arc::new(move |c, v| Box::pin(std::future::ready(f(c, v)))))
+        HandlerFn::ResultTransform(Arc::new(move |c, v| {
+            Box::pin(std::future::ready(f(c, (v).json_value().unwrap())))
+        }))
     }
     fn json_cb(
         f: impl Fn(Value) -> Result<Value, ExtensionError> + Send + Sync + 'static,
@@ -1137,21 +1334,28 @@ mod driver_tests {
     /// Appends `tag` to a string result.
     fn append(tag: &'static str) -> HandlerFn {
         typed(move |_, v| {
-            Ok(TransformOutput::new(json!(format!(
-                "{}{tag}",
-                v.as_str().unwrap_or("")
-            ))))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(format!("{}{tag}", v.as_str().unwrap_or("")))),
+                )
+                .unwrap(),
+            ))
         })
     }
     fn counting(counter: &Arc<AtomicUsize>) -> HandlerFn {
         let counter = Arc::clone(counter);
         typed(move |_, v| {
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok(TransformOutput::new(v))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+            ))
         })
     }
-    fn completed(result: Value, is_error: bool) -> ToolResultOutcome {
-        ToolResultOutcome::Completed { result, is_error }
+    fn completed(result: &Value, is_error: bool) -> ToolResultOutcome {
+        ToolResultOutcome::Completed {
+            result: crabber_core::ToolOutput::from_json(result).unwrap(),
+            is_error,
+        }
     }
     const O: TransformPhase = TransformPhase::Ordinary;
     const F: TransformPhase = TransformPhase::FinalRedaction;
@@ -1160,22 +1364,24 @@ mod driver_tests {
     async fn no_handlers_completes_with_seed() {
         let d = Dispatcher::new(Vec::new());
         assert_eq!(
-            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
                 .await,
-            completed(json!("s"), false)
+            completed(&json!("s"), false)
         );
         assert_eq!(
             d.transform_tool_result(
                 context(ToolOutcomeClass::Succeeded),
-                TransformOutput::marked_error(json!("s"))
+                TransformOutput::marked_error(
+                    crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap()
+                )
             )
             .await,
-            completed(json!("s"), true)
+            completed(&json!("s"), true)
         );
         assert_eq!(
-            d.transform_tool_result(context(ToolOutcomeClass::UnknownTool), seed(json!("s")))
+            d.transform_tool_result(context(ToolOutcomeClass::UnknownTool), seed(&json!("s")))
                 .await,
-            completed(json!("s"), true)
+            completed(&json!("s"), true)
         );
     }
 
@@ -1185,9 +1391,12 @@ mod driver_tests {
         let recorder = Arc::clone(&seen);
         let redactor = typed(move |_, v| {
             recorder.lock().unwrap().push(v.clone());
-            Ok(TransformOutput::new(json!(
-                v.as_str().unwrap().replace("secret", "[redacted]")
-            )))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(v.as_str().unwrap().replace("secret", "[redacted]"))),
+                )
+                .unwrap(),
+            ))
         });
         let mut late_mount = make(-100, "reducer", O, append("+secret"));
         late_mount.mount_seq = 9;
@@ -1199,9 +1408,9 @@ mod driver_tests {
             make(100, "second", O, append("+more")),
         ]);
         let out = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("raw")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("raw")))
             .await;
-        assert_eq!(out, completed(json!("raw+[redacted]+more"), false));
+        assert_eq!(out, completed(&json!("raw+[redacted]+more"), false));
         assert_eq!(*seen.lock().unwrap(), [json!("raw+secret+more")]);
     }
 
@@ -1286,7 +1495,7 @@ mod driver_tests {
             let outcome = d
                 .transform_tool_result(
                     context(ToolOutcomeClass::Succeeded),
-                    seed(json!(SEED_SECRET)),
+                    seed(&json!(SEED_SECRET)),
                 )
                 .await;
             assert_eq!(
@@ -1317,7 +1526,7 @@ mod driver_tests {
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -1348,12 +1557,17 @@ mod driver_tests {
                 O,
                 typed(move |c, v| {
                     recorder.lock().unwrap().push((c.class(), c.is_error()));
-                    Ok(TransformOutput::new(v))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
                 }),
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::ExecutionFailed), seed(json!("s")))
+            .transform_tool_result(
+                context(ToolOutcomeClass::ExecutionFailed),
+                seed(&json!("s")),
+            )
             .await;
         assert_eq!(
             outcome,
@@ -1377,7 +1591,9 @@ mod driver_tests {
                     let recorder = Arc::clone(&seen);
                     move |c, v| {
                         recorder.lock().unwrap().push(c.is_error());
-                        Ok(TransformOutput::new(v))
+                        Ok(TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                        ))
                     }
                 }),
             ),
@@ -1385,7 +1601,11 @@ mod driver_tests {
                 1,
                 "marker",
                 O,
-                typed(|_, v| Ok(TransformOutput::marked_error(v))),
+                typed(|_, v| {
+                    Ok(TransformOutput::marked_error(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
+                }),
             ),
             make(
                 2,
@@ -1408,14 +1628,16 @@ mod driver_tests {
                 F,
                 typed(move |c, v| {
                     recorder.lock().unwrap().push(c.is_error());
-                    Ok(TransformOutput::new(v))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
                 }),
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
-        assert_eq!(outcome, completed(json!("s"), true));
+        assert_eq!(outcome, completed(&json!("s"), true));
         assert_eq!(*seen.lock().unwrap(), [false, true, true]);
     }
 
@@ -1429,25 +1651,47 @@ mod driver_tests {
             O,
             typed(move |c, v| {
                 *recorder.lock().unwrap() = Some(c.is_error());
-                Ok(TransformOutput::new(v))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                ))
             }),
         )]);
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded),
-                TransformOutput::marked_error(json!("s")),
+                TransformOutput::marked_error(
+                    crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap(),
+                ),
             )
             .await;
-        assert_eq!(outcome, completed(json!("s"), true));
+        assert_eq!(outcome, completed(&json!("s"), true));
         assert_eq!(*seen.lock().unwrap(), Some(true));
     }
 
     #[tokio::test]
     async fn error_class_cannot_be_cleared() {
         let d = Dispatcher::new(vec![
-            make(0, "typed", O, typed(|_, v| Ok(TransformOutput::new(v)))),
+            make(
+                0,
+                "typed",
+                O,
+                typed(|_, v| {
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
+                }),
+            ),
             make(1, "json", O, json_cb(Ok)),
-            make(0, "final", F, typed(|_, v| Ok(TransformOutput::new(v)))),
+            make(
+                0,
+                "final",
+                F,
+                typed(|_, v| {
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
+                }),
+            ),
         ]);
         for class in [
             ToolOutcomeClass::ExecutionFailed,
@@ -1456,9 +1700,9 @@ mod driver_tests {
             ToolOutcomeClass::PrepareFailed,
         ] {
             assert_eq!(
-                d.transform_tool_result(context(class), seed(json!("s")))
+                d.transform_tool_result(context(class), seed(&json!("s")))
                     .await,
-                completed(json!("s"), true),
+                completed(&json!("s"), true),
                 "{class:?}"
             );
         }
@@ -1490,7 +1734,9 @@ mod driver_tests {
                         let _ = gate.await;
                     });
                 }
-                Ok(TransformOutput::new(v))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                ))
             }),
         );
         a.cleanup = tracker_a.clone();
@@ -1518,15 +1764,17 @@ mod driver_tests {
                     .lock()
                     .unwrap()
                     .push((c.phase(), c.cleanup().pending()));
-                Ok(TransformOutput::new(v))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                ))
             }),
         );
         b.cleanup = tracker_b.clone();
         let d = Dispatcher::new(vec![a, j, b]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
-        assert_eq!(outcome, completed(json!("s"), false));
+        assert_eq!(outcome, completed(&json!("s"), false));
         assert_eq!(*phases.lock().unwrap(), [(O, 0), (O, usize::MAX), (F, 0)]);
         assert_eq!(tracker_a.pending(), 1);
         assert_eq!(tracker_b.pending(), 0);
@@ -1541,7 +1789,7 @@ mod driver_tests {
             CleanupTracker::from_parts(tokio_util::task::TaskTracker::new(), closing.clone());
         closing.cancel();
         let outcome = Dispatcher::new(vec![h])
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -1564,7 +1812,7 @@ mod driver_tests {
                 HandlerFn::ResultTransform(Arc::new(move |_, v| {
                     let probe = Arc::clone(&probe);
                     async move {
-                        if is_active_mount(1) {
+                        if is_active_mount(MountFrame::fixture(1)) {
                             probe.fetch_add(1, Ordering::SeqCst);
                         }
                         Ok(TransformOutput::new(v))
@@ -1575,7 +1823,7 @@ mod driver_tests {
             make(1, "boom", O, typed(|_, _| panic!("{ERROR_SECRET}"))),
         ]);
         let outcome = AssertUnwindSafe(
-            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s"))),
+            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s"))),
         )
         .catch_unwind()
         .await
@@ -1606,7 +1854,9 @@ mod driver_tests {
         FINAL_REDACTION_DEADLINE * 3 / 5
     }
     fn interrupted(redacted: Option<Value>) -> ToolResultOutcome {
-        ToolResultOutcome::Interrupted { redacted }
+        ToolResultOutcome::Interrupted {
+            redacted: (redacted).map(|value| crabber_core::ToolOutput::from_json(&value).unwrap()),
+        }
     }
     fn async_typed<Fut>(
         f: impl Fn(ToolResultContext, Value) -> Fut + Send + Sync + 'static,
@@ -1614,19 +1864,30 @@ mod driver_tests {
     where
         Fut: Future<Output = Result<TransformOutput, ExtensionError>> + Send + 'static,
     {
-        HandlerFn::ResultTransform(Arc::new(move |c, v| Box::pin(f(c, v))))
+        HandlerFn::ResultTransform(Arc::new(move |c, v| {
+            Box::pin(f(c, (v).json_value().unwrap()))
+        }))
     }
     /// Replaces the value with the (unredacted) accepted marker.
     fn accept() -> HandlerFn {
-        typed(|_, _| Ok(TransformOutput::new(json!(ACCEPTED))))
+        typed(|_, _| {
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(json!(ACCEPTED))).unwrap(),
+            ))
+        })
     }
     /// Redacts the accepted marker and appends `tag`.
     fn redact(tag: &'static str) -> HandlerFn {
         typed(move |_, v| {
-            Ok(TransformOutput::new(json!(format!(
-                "{}{tag}",
-                v.as_str().unwrap().replace(ACCEPTED, "[red]")
-            ))))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(format!(
+                        "{}{tag}",
+                        v.as_str().unwrap().replace(ACCEPTED, "[red]")
+                    ))),
+                )
+                .unwrap(),
+            ))
         })
     }
     struct DropFlag(Arc<AtomicBool>);
@@ -1661,10 +1922,15 @@ mod driver_tests {
                 let _guard = guard;
                 started.notify_one();
                 tokio::time::sleep(delay).await;
-                Ok(TransformOutput::new(json!(format!(
-                    "{}{tag}",
-                    v.as_str().unwrap().replace(ACCEPTED, "[red]")
-                ))))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(
+                        &(json!(format!(
+                            "{}{tag}",
+                            v.as_str().unwrap().replace(ACCEPTED, "[red]")
+                        ))),
+                    )
+                    .unwrap(),
+                ))
             }
         })
     }
@@ -1673,17 +1939,21 @@ mod driver_tests {
         let seen = Arc::clone(seen);
         typed(move |c, v| {
             seen.lock().unwrap().push(c.cancellation().is_cancelled());
-            Ok(TransformOutput::new(v))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+            ))
         })
     }
     /// Cancels the per-call token and returns immediately in the same poll.
     fn cancel_and_return(tag: &'static str) -> HandlerFn {
         typed(move |c, v| {
             c.cancellation().cancel();
-            Ok(TransformOutput::new(json!(format!(
-                "{}{tag}",
-                v.as_str().unwrap_or("")
-            ))))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(format!("{}{tag}", v.as_str().unwrap_or("")))),
+                )
+                .unwrap(),
+            ))
         })
     }
     fn assert_no_leak(outcome: &ToolResultOutcome) {
@@ -1706,7 +1976,7 @@ mod driver_tests {
     ) -> ToolResultOutcome {
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(seed_value));
+        let driver = d.transform_tool_result(ctx, seed(&seed_value));
         tokio::pin!(driver);
         tokio::select! {
             biased;
@@ -1795,7 +2065,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![hung, make(1, "later", O, counting(&later))]);
         let driver = d.transform_tool_result(
             context(ToolOutcomeClass::Succeeded),
-            seed(json!(SEED_SECRET)),
+            seed(&json!(SEED_SECRET)),
         );
         tokio::pin!(driver);
         park(&mut driver).await;
@@ -1822,7 +2092,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
         let driver = d.transform_tool_result(
             context(ToolOutcomeClass::Succeeded),
-            seed(json!(SEED_SECRET)),
+            seed(&json!(SEED_SECRET)),
         );
         tokio::pin!(driver);
         park(&mut driver).await;
@@ -1847,7 +2117,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         // Cancellation is observed with the final redactor in flight on an
@@ -1872,7 +2142,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![hung]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         token.cancel();
@@ -1894,7 +2164,7 @@ mod driver_tests {
         ]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         token.cancel();
@@ -1912,7 +2182,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         // Both ready at once on a final redactor running on an accepted value:
@@ -1941,7 +2211,7 @@ mod driver_tests {
             make(0, "final", F, redact("+F")),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
         assert_eq!(later.load(Ordering::SeqCst), 0);
@@ -1955,7 +2225,7 @@ mod driver_tests {
             make(1, "f2", F, redact("+F2")),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -1970,9 +2240,9 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "last", F, append("+last"))]);
         let ctx = context(ToolOutcomeClass::Succeeded);
         let token = ctx.cancellation().clone();
-        let outcome = d.transform_tool_result(ctx, seed(json!("s"))).await;
+        let outcome = d.transform_tool_result(ctx, seed(&json!("s"))).await;
         token.cancel();
-        assert_eq!(outcome, completed(json!("s+last"), false));
+        assert_eq!(outcome, completed(&json!("s+last"), false));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1984,7 +2254,7 @@ mod driver_tests {
             make(0, "final", F, redact("+F")),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
         // Nothing accepted before the racer: nothing to fall back to.
@@ -1995,7 +2265,7 @@ mod driver_tests {
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded),
-                seed(json!(SEED_SECRET)),
+                seed(&json!(SEED_SECRET)),
             )
             .await;
         assert_eq!(outcome, interrupted(None));
@@ -2199,7 +2469,7 @@ mod driver_tests {
         // Without cancellation the same handlers see a live token.
         seen.lock().unwrap().clear();
         let d = Dispatcher::new(vec![make(0, "f", F, observing(&seen))]);
-        d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+        d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(*seen.lock().unwrap(), [false]);
     }
@@ -2219,7 +2489,7 @@ mod driver_tests {
             let outcome = Dispatcher::new(handlers)
                 .transform_tool_result(
                     context(ToolOutcomeClass::Succeeded).with_cancellation(token),
-                    seed(json!(SEED_SECRET)),
+                    seed(&json!(SEED_SECRET)),
                 )
                 .await;
             assert_eq!(outcome, interrupted(None));
@@ -2243,7 +2513,7 @@ mod driver_tests {
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded).with_cancellation(parent.child_token()),
-                seed(json!(SEED_SECRET)),
+                seed(&json!(SEED_SECRET)),
             )
             .await;
         assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
@@ -2262,7 +2532,7 @@ mod driver_tests {
             }),
         )]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(outcome, interrupted(None));
     }
@@ -2289,10 +2559,10 @@ mod driver_tests {
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded).with_cancellation(CancellationToken::new()),
-                seed(json!("s")),
+                seed(&json!("s")),
             )
             .await;
-        assert_eq!(outcome, completed(json!("[red]+F"), false));
+        assert_eq!(outcome, completed(&json!("[red]+F"), false));
         // D2 still applies to a failing final redactor.
         let d = Dispatcher::new(vec![
             make(0, "accept", O, accept()),
@@ -2304,7 +2574,7 @@ mod driver_tests {
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -2334,9 +2604,9 @@ mod driver_tests {
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
-        assert_eq!(outcome, completed(json!("s"), false));
+        assert_eq!(outcome, completed(&json!("s"), false));
         assert_eq!(*seen.lock().unwrap(), [json!("final_redaction")]);
     }
 
@@ -2409,7 +2679,9 @@ mod driver_tests {
         let bomb = typed(|_, v| {
             // The bomb is dropped when this (ready) future completes.
             let _bomb = Bomb;
-            Ok(TransformOutput::new(v))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+            ))
         });
         let bomb = match bomb {
             HandlerFn::ResultTransform(f) => HandlerFn::ResultTransform(Arc::new(move |c, v| {
@@ -2423,7 +2695,7 @@ mod driver_tests {
         };
         let outcome = AssertUnwindSafe(
             Dispatcher::new(vec![make(0, "bomb", O, bomb)])
-                .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s"))),
+                .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s"))),
         )
         .catch_unwind()
         .await
@@ -2479,10 +2751,12 @@ mod driver_tests {
                         calls.fetch_add(1, Ordering::SeqCst);
                         async move {
                             tokio::task::yield_now().await;
-                            Ok(TransformOutput::new(json!(format!(
-                                "{}x",
-                                v.as_str().unwrap()
-                            ))))
+                            Ok(TransformOutput::new(
+                                crabber_core::ToolOutput::from_json(
+                                    &(json!(format!("{}x", v.as_str().unwrap()))),
+                                )
+                                .unwrap(),
+                            ))
                         }
                     }),
                 ));
@@ -2494,10 +2768,12 @@ mod driver_tests {
                 F,
                 typed(move |_, v| {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    Ok(TransformOutput::new(json!(format!(
-                        "{}F",
-                        v.as_str().unwrap()
-                    ))))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(
+                            &(json!(format!("{}F", v.as_str().unwrap()))),
+                        )
+                        .unwrap(),
+                    ))
                 }),
             ));
             let d = Dispatcher::new(handlers);
@@ -2510,20 +2786,26 @@ mod driver_tests {
                 }
                 token.cancel();
             });
-            let outcome = d.transform_tool_result(ctx, seed(json!(""))).await;
+            let outcome = d.transform_tool_result(ctx, seed(&json!(""))).await;
             canceller.join().unwrap();
             let ordinary = ordinary_calls.load(Ordering::SeqCst);
             let finals = final_calls.load(Ordering::SeqCst);
             match outcome {
                 ToolResultOutcome::Completed { result, is_error } => {
-                    assert_eq!(result, json!(format!("{}F", "x".repeat(ORDINARY))));
+                    assert_eq!(
+                        result,
+                        crabber_core::ToolOutput::from_json(
+                            &(json!(format!("{}F", "x".repeat(ORDINARY))))
+                        )
+                        .unwrap()
+                    );
                     assert!(!is_error);
                     assert_eq!((ordinary, finals), (ORDINARY, 1));
                 }
                 ToolResultOutcome::Interrupted {
                     redacted: Some(value),
                 } => {
-                    let value = value.as_str().unwrap().to_owned();
+                    let value = value.json_value().unwrap().as_str().unwrap().to_owned();
                     let k = value.len() - 1;
                     assert_eq!(value, format!("{}F", "x".repeat(k)));
                     assert!((1..=ORDINARY).contains(&k), "{value}");

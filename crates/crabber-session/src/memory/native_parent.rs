@@ -1,0 +1,531 @@
+//! Exact immutable native Begin sources and private issuance witnesses.
+use super::{OperationReceipt, State};
+use crate::native_parent::{Error, RunIssuance, RunState, Witness};
+use crabber_core::{EventKind, EventRecord, Run};
+#[path = "native_parent/source_protocol.rs"]
+pub(super) mod source_protocol;
+
+pub(super) fn record_attempt(
+    state: &mut State,
+    run: &Run,
+    command: &crate::AttemptCommand,
+    attempt: &crate::attempt::AttemptRecord,
+    receipt: &crate::AttemptReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::AttemptError> {
+    if matches!(command, crate::AttemptCommand::Begin { .. }) {
+        let Some(issuance) = source_protocol::current(state, &run.session_id, &run.id, proof)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
+        else {
+            return Ok(());
+        };
+        issuance
+            .verify(run)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+        let witness = Witness::attempt(run, attempt, receipt, issuance)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+        insert(state, witness).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    }
+    Ok(())
+}
+pub(super) fn record_phase(
+    state: &mut State,
+    run: &Run,
+    phase: &crate::phase::PhaseRecord,
+    receipt: &crate::PhaseReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::PhaseError> {
+    if receipt.operation == crate::PhaseOperation::Begin {
+        let attempt = state
+            .attempts
+            .get(&phase.snapshot.target.attempt.id)
+            .ok_or(crate::PhaseError::UnknownStoreOutcome)?;
+        crate::native_enrollment::caller::measure_record(attempt, proof)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+        let Some(issuance) = source_protocol::current(state, &run.session_id, &run.id, proof)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        else {
+            return Ok(());
+        };
+        issuance
+            .verify(run)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+        let witness = Witness::phase(run, attempt, phase, receipt, issuance)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+        insert(state, witness).map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+    }
+    Ok(())
+}
+fn insert(state: &mut State, witness: Witness) -> Result<(), Error> {
+    witness.validate()?;
+    if state
+        .native_parent_witnesses
+        .contains_key(&witness.source.event_cursor)
+    {
+        return Err(Error);
+    }
+    state
+        .native_parent_witnesses
+        .insert(witness.source.event_cursor, witness);
+    Ok(())
+}
+// Owner-ledger integration consumes these proofs; metadata never grants tokens.
+
+pub(super) fn verify_attempt(
+    state: &State,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+) -> Result<Witness, Error> {
+    let event = state
+        .events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.session_id == run.session_id
+                && event.run_id == run.id
+                && event.kind == EventKind::ExecutionAttemptChanged
+        })
+        .ok_or(Error)?;
+    let key = source_key(event)?;
+    let Some(OperationReceipt::Attempt(receipt)) = state.operation_receipts.get(&key) else {
+        return Err(Error);
+    };
+    let witness = state
+        .native_parent_witnesses
+        .get(&receipt.event_cursor)
+        .ok_or(Error)?;
+    let issuance = latest_run(state, run)?.ok_or(Error)?;
+    witness.verify_attempt(run, attempt, receipt, event, issuance)?;
+    Ok(witness.clone())
+}
+
+pub(super) fn verify_phase(
+    state: &State,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+    phase: &crate::phase::PhaseRecord,
+) -> Result<Witness, Error> {
+    // Authenticate the live parent too; its token issuance may have changed
+    // without changing the public target across an Unstarted reclaim.
+    verify_attempt(state, run, attempt)?;
+    let event = state
+        .events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.session_id == run.session_id
+                && event.run_id == run.id
+                && event.kind == EventKind::ToolPhaseChanged
+                && event
+                    .payload
+                    .pointer("/phase/target/call_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(phase.snapshot.target.call_id.0.as_str())
+        })
+        .ok_or(Error)?;
+    let key = source_key(event)?;
+    let Some(OperationReceipt::Phase(receipt)) = state.operation_receipts.get(&key) else {
+        return Err(Error);
+    };
+    let witness = state
+        .native_parent_witnesses
+        .get(&receipt.event_cursor)
+        .ok_or(Error)?;
+    let issuance = latest_run(state, run)?.ok_or(Error)?;
+    witness.verify_phase(run, attempt, phase, receipt, event, issuance)?;
+    Ok(witness.clone())
+}
+fn source_key(
+    event: &EventRecord,
+) -> Result<(crabber_core::SessionId, crabber_core::ControlId), Error> {
+    if crate::snapshot::encoded_bytes(event, 65536).is_none() {
+        return Err(Error);
+    }
+    let id = event.correlation.as_deref().ok_or(Error)?;
+    crate::attempt::validate_identifier(id).map_err(|_| Error)?;
+    Ok((event.session_id.clone(), crabber_core::ControlId(id.into())))
+}
+
+/// Real Run creation/claim/activation/status writes use this before publication.
+pub(super) fn record_run(
+    state: &mut State,
+    previous: Option<&Run>,
+    updated: &Run,
+) -> Result<(), Error> {
+    record_run_with_proof(
+        state,
+        previous,
+        updated,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+pub(super) fn record_run_with_proof(
+    state: &mut State,
+    previous: Option<&Run>,
+    updated: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    proof
+        .measure(&(
+            &updated.id,
+            &updated.session_id,
+            updated.status,
+            &updated.claim_token,
+        ))
+        .map_err(|_| Error)?;
+    if let Some(previous) = previous {
+        proof
+            .measure(&(
+                &previous.id,
+                &previous.session_id,
+                previous.status,
+                &previous.claim_token,
+            ))
+            .map_err(|_| Error)?;
+    }
+    let previous = previous.map(RunState::from_run).transpose()?;
+    record_run_states_with_completion_with_proof(
+        state,
+        previous.as_ref(),
+        RunState::from_run(updated)?,
+        None,
+        proof,
+    )
+}
+pub(super) fn record_initial_run_with_birth(
+    state: &mut State,
+    run: &Run,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
+    proof.measure(run).map_err(|_| Error)?;
+    record_run_states_output_with_birth(
+        state,
+        None,
+        RunState::from_run(run)?,
+        None,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+        birth,
+    )?
+    .first
+    .ok_or(Error)
+}
+pub(super) fn record_owned_admission_with_birth(
+    state: &mut State,
+    run: &Run,
+    witness: crate::session_owner::preparation::admission::Witness,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
+    proof.measure(&witness).map_err(|_| Error)?;
+    let issuance = witness.initial_issuance(run).map_err(|_| Error)?;
+    let key = (run.session_id.clone(), run.id.clone(), 1);
+    let join = (
+        run.session_id.clone(),
+        witness.join_id().map_err(|_| Error)?,
+    );
+    if state.preparation_admission_joins.contains_key(&join)
+        || state.preparation_admissions.contains_key(&run.id)
+        || state
+            .native_run_issuances
+            .keys()
+            .any(|(_, id, _)| id == &run.id)
+    {
+        return Err(Error);
+    }
+    let first = source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)
+        .map_err(|_| Error)?
+        .first
+        .ok_or(Error)?;
+    state
+        .preparation_admission_joins
+        .insert(join, run.id.clone());
+    state.preparation_admissions.insert(run.id.clone(), witness);
+    state.native_run_issuances.insert(key, issuance);
+    Ok(first)
+}
+pub(super) fn record_run_states(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+) -> Result<(), Error> {
+    record_run_states_with_completion(state, previous, next, None)
+}
+pub(super) fn record_run_states_with_completion(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+) -> Result<(), Error> {
+    record_run_states_with_completion_with_proof(
+        state,
+        previous,
+        next,
+        completion,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+pub(super) fn record_run_completed_captured_with_proof(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, Error> {
+    record_run_completed_publication_with_proof(
+        state,
+        previous,
+        updated,
+        source,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+pub(super) fn record_run_completed_publication_with_proof(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+    proof
+        .measure(&(previous, updated, source))
+        .map_err(|_| Error)?;
+    record_run_states_output(
+        state,
+        Some(&RunState::from_run(previous)?),
+        RunState::from_run(updated)?,
+        source.cloned(),
+        proof,
+        capture,
+    )
+}
+fn record_run_states_with_completion_with_proof(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    record_run_states_captured(state, previous, next, completion, proof).map(|_| ())
+}
+fn record_run_states_captured(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, Error> {
+    record_run_states_output(
+        state,
+        previous,
+        next,
+        completion,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+fn record_run_states_output(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+    record_run_states_output_with_birth(
+        state,
+        previous,
+        next,
+        completion,
+        proof,
+        capture,
+        crate::native_enrollment::pending_initial::BirthDecision::Raw,
+    )
+}
+fn record_run_states_output_with_birth(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+    crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
+    let latest = state
+        .native_run_issuances
+        .range(
+            (next.session_id.clone(), next.run_id.clone(), 0)
+                ..=(
+                    next.session_id.clone(),
+                    next.run_id.clone(),
+                    i64::MAX as u64,
+                ),
+        )
+        .next_back()
+        .map(|(_, value)| value);
+    proof.measure(&latest).map_err(|_| Error)?;
+    if let Some(previous) = previous {
+        source_protocol::verify_previous(state, previous, latest, proof)?;
+    }
+    if completion.is_some() && latest.is_none() {
+        return Err(Error);
+    }
+    if let Some(mut issuance) = crate::native_parent::advance(previous, next, latest)? {
+        if let Some(source) = completion {
+            issuance = issuance.completed(previous.ok_or(Error)?, source)?;
+        }
+        let key = (
+            issuance.state.session_id.clone(),
+            issuance.state.run_id.clone(),
+            issuance.sequence,
+        );
+        if state.native_run_issuances.contains_key(&key) {
+            return Err(Error);
+        }
+        let source = match capture {
+            crate::native_enrollment::caller::initial::Capture::Original if previous.is_none() => {
+                source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)
+                    .map_err(|_| Error)?
+            }
+            crate::native_enrollment::caller::initial::Capture::Original => {
+                source_protocol::append_captured_with_proof(
+                    state,
+                    &issuance,
+                    previous.is_none(),
+                    proof,
+                )
+                .map_err(|_| Error)?
+            }
+            crate::native_enrollment::caller::initial::Capture::None => {
+                source_protocol::append_with_proof(state, &issuance, previous.is_none(), proof)
+                    .map_err(|_| Error)?;
+                crate::native_enrollment::caller::initial::SourcePublication::default()
+            }
+        };
+        let sequence = issuance.sequence;
+        state.native_run_issuances.insert(key, issuance);
+        return Ok(crate::native_enrollment::caller::initial::RunPublication {
+            sequence: Some(sequence),
+            first: source.first,
+            updated: source.updated,
+        });
+    } else if completion.is_some() {
+        return Err(Error);
+    }
+    Ok(crate::native_enrollment::caller::initial::RunPublication {
+        sequence: None,
+        first: None,
+        updated: None,
+    })
+}
+pub(super) fn latest_run<'a>(
+    state: &'a State,
+    run: &Run,
+) -> Result<Option<&'a RunIssuance>, Error> {
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    let latest =
+        source_protocol::current(state, &run.session_id, &run.id, &mut proof).map_err(|_| Error)?;
+    if let Some(latest) = latest {
+        latest.verify(run)?;
+    }
+    Ok(latest)
+}
+
+#[cfg(test)]
+#[path = "native_parent/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "native_parent/completion_tests.rs"]
+mod completion_tests;
+
+pub(super) fn current_issuance_with_proof<'a>(
+    state: &'a State,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<&'a RunIssuance>, Error> {
+    if !proof.active() {
+        return latest_run(state, run);
+    }
+    let current =
+        source_protocol::current(state, &run.session_id, &run.id, proof).map_err(|_| Error)?;
+    if let Some(current) = current {
+        current.verify(run)?;
+    }
+    Ok(current)
+}
+
+/// Authenticate selected native Begin originals using only the caller's Proof.
+pub(super) fn verify_public_source(
+    state: &State,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+    phase: Option<&crate::phase::PhaseRecord>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let issuance = source_protocol::current(state, &run.session_id, &run.id, proof)
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
+    issuance.verify(run)?;
+    let (event, receipt, witness) =
+        public_source_carriers(state, run, &EventKind::ExecutionAttemptChanged, None, proof)?;
+    let OperationReceipt::Attempt(receipt) = receipt else {
+        return Err(Error);
+    };
+    witness.verify_attempt(run, attempt, receipt, event, issuance)?;
+    if let Some(phase) = phase {
+        let (event, receipt, witness) = public_source_carriers(
+            state,
+            run,
+            &EventKind::ToolPhaseChanged,
+            Some(&phase.snapshot.target.call_id),
+            proof,
+        )?;
+        let OperationReceipt::Phase(receipt) = receipt else {
+            return Err(Error);
+        };
+        witness.verify_phase(run, attempt, phase, receipt, event, issuance)?;
+    }
+    Ok(())
+}
+fn public_source_carriers<'a>(
+    state: &'a State,
+    run: &Run,
+    kind: &EventKind,
+    call: Option<&crabber_core::ToolCallId>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(&'a EventRecord, &'a OperationReceipt, &'a Witness), Error> {
+    let event = state
+        .events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.session_id == run.session_id
+                && event.run_id == run.id
+                && event.kind == *kind
+                && call.is_none_or(|call| {
+                    event
+                        .payload
+                        .pointer("/phase/target/call_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(call.0.as_str())
+                })
+        })
+        .ok_or(Error)?;
+    proof.measure(event).map_err(|_| Error)?;
+    let key = source_key(event)?;
+    let receipt = state.operation_receipts.get(&key).ok_or(Error)?;
+    proof.measure(receipt).map_err(|_| Error)?;
+    let witness = state
+        .native_parent_witnesses
+        .get(&event.cursor.ok_or(Error)?)
+        .ok_or(Error)?;
+    proof.measure(witness).map_err(|_| Error)?;
+    Ok((event, receipt, witness))
+}

@@ -1,4 +1,6 @@
 //! Shared durable evidence and settlement artifacts for store implementations.
+#[path = "abandonment/history.rs"]
+pub(crate) mod history;
 use crate::StoreError;
 use crabber_core::{
     AbandonError, AbandonOutcome, AbandonRequest, ContentBlock, EventKind, EventRecord, Message,
@@ -11,6 +13,8 @@ use time::OffsetDateTime;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct AbandonEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_effect_v1: Option<crate::admission_journal::NoEffect>,
     pub request: AbandonRequest,
     pub run: Run,
     pub interrupted_tools: Vec<ToolCallId>,
@@ -84,6 +88,8 @@ pub(crate) fn terminal_event(
 /// Replay authority lives in private store state, never in caller-writable events.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct AbandonCommit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_effect_v1: Option<crate::admission_journal::NoEffect>,
     pub request: AbandonRequest,
     pub outcome: AbandonOutcome,
 }

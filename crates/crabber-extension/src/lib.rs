@@ -1,18 +1,45 @@
 //! Frozen extension plan and tool execution boundary.
 
+mod contextual;
 mod dispatch;
+pub use contextual::{
+    ContextualCloseObservation, ContextualGenerationAdmission, ContextualGenerationHost,
+    ContextualGenerationMember, ContextualGenerationMemberDisposition,
+    ContextualGenerationObservation, ContextualGenerationWork, ContextualPlanProvider,
+    ContextualProductFactory, ContextualProductRoot, ContextualProductRootObservation,
+    ContextualServiceBorrowLease, ContextualServiceBorrowSource, DisposedContextualProductRoot,
+    ExtensionFactory, FactoryContext, FactoryScope, JoinedContextualGenerationGraph,
+    ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
+    ServiceGenerationScope,
+};
 mod model_middleware;
 pub use model_middleware::*;
 mod plan;
+mod preparation_resources;
+pub use preparation_resources::{
+    PREPARATION_RESOURCE_CONTRACT_VERSION, PreparationCleanup, PreparationResourceContext,
+    PreparationResourceContract, PreparationResourceLease,
+};
 mod prompt_contribution;
 mod registry;
+pub use registry::{
+    CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations,
+};
 mod result_transform;
 pub use prompt_contribution::*;
+mod input_tool;
+mod resumable;
 mod state;
 mod tool;
+pub use resumable::ResumableTool;
+mod tool_resources;
 pub use tool::{
-    ApprovalFacade, HostServices, ProgressSink, Subprocess, ToolContext, UserPrompter,
-    WorkspaceContext, WorkspaceFs,
+    DurableInteractionUnsupported, HostServices, ProgressSink, Subprocess,
+    TOOL_INTERACTION_CONTRACT_VERSION, ToolContext, WorkspaceContext, WorkspaceFs,
+};
+pub use tool_resources::{
+    MAX_TOOL_RESOURCE_TASKS, ResourceDrain, ResourceFailure, ResourceRegistrationError,
+    TOOL_RESOURCE_CONTRACT_VERSION, ToolResourceGuard, ToolResourceOwner, ToolResources,
 };
 
 pub use result_transform::{
@@ -30,14 +57,89 @@ pub use dispatch::{
 };
 pub use registry::{
     CleanupJoinTimeout, CleanupOwner, Extension, GuardContext, GuardDecision, MountCloseObserver,
-    MountCloseTimeout, MountHandle, Registrar, Registry, Scope, ToolGuard,
+    MountCloseTimeout, MountHandle, OwnedMountHandle, OwnedMountJoin, Registrar, Registry, Scope,
+    ToolGuard,
 };
 pub use state::{StateSink, current_state_sink, with_state_sink};
 
 pub use plan::{
-    ComponentIdentity, ExtensionError, PlanFingerprint, PromptSection, RunPlan, RunPlanProvider,
-    StaticPlanProvider, ToolDefinition, ToolExecutor, compute_fingerprint,
+    ComponentIdentity, ExtensionError, JsonToolExecutor, PlanFingerprint, PlanReleaseObserver,
+    PromptSection, RunPlan, RunPlanProvider, StaticPlanProvider, ToolDefinition, ToolExecutor,
+    compute_fingerprint,
 };
 
 /// Retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-extension";
+
+mod tool_output;
+pub use tool_output::{
+    TOOL_OUTPUT_ENVELOPE_VERSION, parse_tool_output_envelope, tool_output_envelope,
+};
+
+mod session_invocations;
+pub use session_invocations::{
+    SessionInvocationAdmission, SessionInvocationContext, SessionInvocationError,
+    SessionInvocationRequest, SessionInvocationSpawner, SessionInvocationTask, SessionInvocations,
+};
+
+mod service_dependencies;
+pub use service_dependencies::{
+    SessionServiceDependencies, SessionServiceDependencyAdmission, SessionServiceDependencyContext,
+    SessionServiceDependencyControl, SessionServiceDependencyError, SessionServiceDependencyHandle,
+    SessionServiceDependencyTask, SessionServiceRegistrar,
+};
+
+// Distinct ordinary Box-tool product family; no physical/native policy credit.
+pub use contextual::product::tool::{
+    ContextualToolProduct, ContextualToolProductFactory, ContextualToolProductObservation,
+    DisposedContextualToolProduct,
+};
+
+// Fixed-route unique Box products; no native or resource-policy authority.
+pub use contextual::product::provider::{
+    ContextualProviderBindingBody, ContextualProviderProduct, ContextualProviderProductFactory,
+    ContextualStreamerProduct,
+};
+
+// Unique filesystem node; registered original disposal only, never physical policy.
+pub use contextual::product::workspace_fs::{
+    ContextualWorkspaceFsProduct, ContextualWorkspaceFsProductFactory,
+    ContextualWorkspaceFsProductObservation, DisposedContextualWorkspaceFsProduct,
+};
+
+// Unique subprocess node; no OS-process termination or physical policy claim.
+pub use contextual::product::subprocess::{
+    ContextualSubprocessProduct, ContextualSubprocessProductFactory,
+    ContextualSubprocessProductObservation, DisposedContextualSubprocessProduct,
+};
+
+// Unique resolver/returned-reader nodes; no physical or native policy claim.
+pub use contextual::product::workspace_reader::{
+    ContextualWorkspaceReaderProduct, ContextualWorkspaceReaderResolverBody,
+    ContextualWorkspaceReaderResolverProduct, ContextualWorkspaceReaderResolverProductFactory,
+    ContextualWorkspaceReaderResolverProductObservation,
+    DisposedContextualWorkspaceReaderResolverProduct,
+};
+
+// Unique synchronous guard node; original call/object joins only, no policy credit.
+pub use contextual::product::ContextualOwnedProductFactory;
+pub use contextual::product::prompt::{
+    ContextualPromptCallback, ContextualPromptProduct, ContextualPromptProductFactory,
+    ContextualPromptProductObservation, DisposedContextualPromptProduct,
+};
+pub use contextual::product::tool_guard::{
+    ContextualToolGuardProduct, ContextualToolGuardProductFactory,
+    ContextualToolGuardProductObservation, DisposedContextualToolGuardProduct,
+};
+
+// Concrete value-only source; no native permission or resource policy.
+pub use contextual::product::scripted::{
+    LibraryScriptedActive, LibraryScriptedError, LibraryScriptedSource,
+    LibraryScriptedSourceObservation, LibraryScriptedStream,
+};
+
+mod public_source;
+pub use public_source::{
+    PublicSourceError, PublicSourceSink, PublicSourceSnapshot, PublicSourceWriter,
+    current_public_source, with_public_source,
+};

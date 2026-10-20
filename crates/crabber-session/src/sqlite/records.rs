@@ -3,8 +3,8 @@ use super::{Sqlite, SqliteConnection, StoreError, Transaction, db, decode, text}
 use crate::InboxKind;
 use crate::sql_snapshot as snapshot;
 use crabber_core::{
-    AdmissionKey, AdmissionReceipt, ContextEpoch, EpochId, EventRecord, Message, Part, PartKind,
-    Run, RunId, RunStatus, SessionId, ToolCallId, ToolCallRecord, ToolCallStatus,
+    AdmissionKey, AdmissionReceipt, ContextEpoch, EpochId, EventRecord, Message, Part, Run, RunId,
+    RunStatus, SessionId, ToolCallId, ToolCallRecord, ToolCallStatus,
 };
 use serde::de::DeserializeOwned;
 use sqlx::{Row, sqlite::SqliteRow};
@@ -41,6 +41,7 @@ pub(super) fn status(status: RunStatus) -> &'static str {
 }
 pub(super) fn call_status(status: ToolCallStatus) -> &'static str {
     match status {
+        ToolCallStatus::Waiting => "waiting",
         ToolCallStatus::Pending => "pending",
         ToolCallStatus::Running => "running",
         ToolCallStatus::Completed => "completed",
@@ -52,6 +53,62 @@ pub(super) async fn save_run(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
 ) -> Result<(), StoreError> {
+    save_run_with_completion(tx, run, None).await
+}
+pub(super) async fn save_run_with_completion(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+) -> Result<(), StoreError> {
+    save_run_with_proof(
+        tx,
+        run,
+        source,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+pub(super) async fn save_run_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    super::native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
+    update_run_row(tx, run).await
+}
+pub(super) async fn save_run_captured_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, StoreError> {
+    save_run_publication_with_proof(
+        tx,
+        run,
+        source,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .await
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+pub(super) async fn save_run_publication_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, StoreError> {
+    let captured = super::native_parent::record_run_publication_with_proof(
+        tx, run, false, source, proof, capture,
+    )
+    .await?;
+    update_run_row(tx, run).await?;
+    Ok(captured)
+}
+
+async fn update_run_row(tx: &mut Transaction<'_, Sqlite>, run: &Run) -> Result<(), StoreError> {
     sqlx::query(
         "UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE \
             id=$1",
@@ -86,6 +143,22 @@ pub(super) async fn save_call(
     Ok(())
 }
 
+pub(super) async fn load_run_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Run, StoreError> {
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar("SELECT length(CAST(data AS BLOB)) FROM runs WHERE id=$1").bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(|_| StoreError::Validation("native run proof allowance".into()))?;
+    let row = sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data FROM runs WHERE id=$1")
+        .bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+    super::records::decode_row(&row, "data")
+}
 pub(super) async fn load_run(
     tx: &mut Transaction<'_, Sqlite>,
     id: &RunId,
@@ -99,6 +172,20 @@ pub(super) async fn load_run(
         .ok_or(StoreError::NotFound)?;
     decode_row(&row, "data")
 }
+pub(super) async fn bump_public_revision(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    let changed = sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1 AND public_revision<9223372036854775807")
+        .bind(&session.0).execute(&mut **tx).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(StoreError::Validation(
+            "public session revision exhausted".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
@@ -138,6 +225,7 @@ pub(super) async fn insert_message(
     for part in &message.parts {
         insert_part(tx, part).await?;
     }
+    bump_public_revision(tx, &run.session_id).await?;
     Ok(())
 }
 pub(super) async fn insert_part(
@@ -159,25 +247,28 @@ pub(super) async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
-    if event.live_only || event.kind.is_live_only() {
-        return Err(StoreError::Validation(
-            "live-only events cannot be persisted".into(),
-        ));
-    }
-    if event.session_id != run.session_id || event.run_id != run.id {
-        return Err(StoreError::Validation(
-            "event belongs to another run".into(),
-        ));
-    }
+    insert_event_captured(tx, run, event).await.map(|_| ())
+}
+pub(super) async fn insert_event_captured(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    event: &EventRecord,
+) -> Result<crabber_core::EventCursor, StoreError> {
+    crate::event_persistence::validate(run, event)?;
     // BEGIN IMMEDIATE serializes allocation with commit order.
-    sqlx::query("INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3)")
-        .bind(&run.session_id.0)
-        .bind(&run.id.0)
-        .bind(text(event)?)
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
-    Ok(())
+    let seq: i64 = sqlx::query_scalar(
+        "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
+    )
+    .bind(&run.session_id.0)
+    .bind(&run.id.0)
+    .bind(text(event)?)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    bump_public_revision(tx, &run.session_id).await?;
+    Ok(crabber_core::EventCursor(u64::try_from(seq).map_err(
+        |_| StoreError::Validation("invalid event cursor".into()),
+    )?))
 }
 pub(super) async fn messages(
     connection: &mut SqliteConnection,
@@ -235,42 +326,18 @@ pub(super) async fn project(
         None
     };
     let all = messages(connection, id).await?;
-    let selected = if let Some(epoch) = selected.filter(|epoch| epoch.summary_message_id.is_some())
-    {
-        let summary_id = epoch.summary_message_id.as_ref().expect("checked");
-        let summary = all
-            .iter()
-            .find(|message| &message.id == summary_id)
-            .ok_or(StoreError::NotFound)?
-            .clone();
-        let mut selected = vec![summary];
-        if let Some(tail) = epoch.tail_start_message_id {
-            let index = all
-                .iter()
-                .position(|message| message.id == tail)
-                .ok_or(StoreError::NotFound)?;
-            selected.extend(
-                all[index..]
-                    .iter()
-                    .filter(|message| &message.id != summary_id)
-                    .cloned(),
-            );
-        }
-        selected
-    } else {
-        all
-    };
-    Ok(selected
-        .into_iter()
-        .filter_map(|mut message| {
-            message
-                .parts
-                .retain(|part| !matches!(part.kind, PartKind::Custom { .. }));
-            (!message.parts.is_empty()).then_some(message)
-        })
-        .collect())
+    crate::context_projection::project(all, selected)
 }
 
+pub(super) async fn lookup_receipt_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    key: &AdmissionKey,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<AdmissionReceipt>, StoreError> {
+    super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|_| StoreError::Conflict)?;
+    lookup_receipt(tx, session, key).await
+}
 pub(super) async fn lookup_receipt(
     connection: &mut SqliteConnection,
     session: &SessionId,

@@ -1,5 +1,5 @@
 //! Admission and fencing inside a caller-owned immediate transaction.
-use super::records::{decode_row, insert_message, load_run, micros, project, status};
+use super::records::{insert_message, micros, status};
 use super::{Sqlite, SqliteStore, StoreError, Transaction, admission_execution, db, text};
 use crate::{AdmitOutcome, AdmitRequest};
 use crabber_core::{
@@ -18,8 +18,7 @@ pub(super) async fn finish<T, E>(
             // Keep the guard until COMMIT responds so a failed commit can be
             // rolled back explicitly. At depth zero rollback only closes the
             // guard; SQLx does not issue SQL after a successful outer commit.
-            use sqlx::{TransactionManager, sqlite::SqliteTransactionManager};
-            let committed = SqliteTransactionManager::commit(&mut tx).await;
+            let committed = tx.commit_in_place().await;
             tx.rollback().await.map_err(db).map_err(map)?;
             committed.map_err(db).map_err(map)?;
             Ok(value)
@@ -32,15 +31,55 @@ pub(super) async fn finish<T, E>(
 }
 
 impl SqliteStore {
-    #[allow(clippy::too_many_lines)] // One atomic admission transaction.
-    pub(super) async fn admit_transaction(
+    pub(super) async fn admit_transaction_guarded_with_proof(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
-        request: AdmitRequest,
+        request: &AdmitRequest,
         allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<AdmitOutcome, StoreError> {
+        let captured = self
+            .admit_transaction_captured(
+                tx,
+                request,
+                allow_create,
+                guard,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
+                read_proof,
+            )
+            .await?;
+        self.finish_initial(
+            tx,
+            crate::native_enrollment::caller::initial::Input::Ordinary(request),
+            captured,
+            read_proof,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_lines)] // Existing atomic admission body, shared with verified queue admission.
+    pub(super) async fn admit_transaction_captured(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        request: &AdmitRequest,
+        allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+        caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::native_enrollment::caller::initial::CapturedAdmission, StoreError> {
+        let birth = caller.birth();
+        caller
+            .input_request(request, read_proof)
+            .map_err(|_| StoreError::Conflict)?;
+        guard.verify(request)?;
+        if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
+            request.validate_messages()?;
+        }
         let now = self.clock.now();
-        let lease = time::Duration::try_from(request.lease)
+        let (owner, requested_lease) = guard.owner_and_lease(request);
+        let lease = time::Duration::try_from(requested_lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
         if lease <= time::Duration::ZERO {
             return Err(StoreError::Validation("lease must be positive".into()));
@@ -54,14 +93,26 @@ impl SqliteStore {
                 "user message has wrong session".into(),
             ));
         }
-        let existing = sqlx::query("SELECT data FROM sessions WHERE id=$1")
-            .bind(&session_id.0)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db)?;
+        super::deletion::ensure_live(tx, &session_id).await?;
+        super::session_owner::context_with_proof(
+            tx,
+            &session_id,
+            &request.workspace_id,
+            &request.directory,
+            read_proof,
+        )
+        .await
+        .map_err(|error| {
+            if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                StoreError::SessionIdentityMismatch
+            } else {
+                StoreError::Validation("session ownership proof unavailable".into())
+            }
+        })?;
+        let existing = super::admission_reads::session(tx, &session_id, read_proof).await?;
         let had_session = existing.is_some();
-        let session: Session = if let Some(row) = existing {
-            let existing: Session = decode_row(&row, "data")?;
+        let current_revision = existing.as_ref().map_or(0, |(_, revision)| *revision);
+        let session: Session = if let Some((existing, _)) = existing {
             existing.ensure_identity(&request.workspace_id, &request.directory)?;
             existing
         } else if request.session_id.is_some() && !allow_create {
@@ -76,6 +127,23 @@ impl SqliteStore {
                 updated_at: now,
             }
         };
+        if guard.is_ordinary()
+            && let Some(expected) = guard.expected_revision(request.expected_revision)
+        {
+            let current = u64::try_from(current_revision)
+                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
+            if expected.get() != current {
+                return Err(StoreError::AdmissionRevisionConflict);
+            }
+        }
+        if guard.is_ordinary() && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND state='Claimed' AND prepared=true)").bind(&session_id.0).fetch_one(&mut **tx).await.map_err(db)? { return Err(StoreError::Busy); }
+        if super::management::admission_archived_with_proof(tx, &session_id, read_proof).await? {
+            return Err(StoreError::Conflict);
+        }
+        let barrier = super::admission_reads::pending(tx, &session_id, read_proof).await?;
+        if barrier {
+            return Err(StoreError::Busy);
+        }
         let busy = sqlx::query(
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
         )
@@ -87,29 +155,13 @@ impl SqliteStore {
         if busy {
             return Err(StoreError::Busy);
         }
+        request.validate_messages()?;
         let prior_history = if had_session {
-            project(tx, &session_id, None).await?
+            super::admission_reads::project(tx, &session_id, read_proof).await?
         } else {
             Vec::new()
         };
-        let previous_run =
-            sqlx::query("SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1")
-                .bind(&session_id.0)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(db)?;
-        let previous: Option<ContextEpoch> = if let Some(row) = previous_run {
-            let previous_run: Run = decode_row(&row, "data")?;
-            sqlx::query("SELECT data FROM epochs WHERE id=$1")
-                .bind(&previous_run.epoch_id.0)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(db)?
-                .map(|row| decode_row(&row, "data"))
-                .transpose()?
-        } else {
-            None
-        };
+        let previous = super::admission_reads::previous_epoch(tx, &session_id, read_proof).await?;
         let run_id = RunId::new();
         let epoch_id = EpochId::new();
         let token = uuid::Uuid::new_v4().to_string();
@@ -117,12 +169,12 @@ impl SqliteStore {
             id: run_id.clone(),
             session_id: session_id.clone(),
             status: RunStatus::Running,
-            owner: request.owner,
+            owner: owner.to_owned(),
             claim_token: token.clone(),
             lease_until: now + lease,
             epoch_id: epoch_id.clone(),
-            config_hash: request.config_hash,
-            plan_fingerprint: request.plan_fingerprint,
+            config_hash: request.config_hash.clone(),
+            plan_fingerprint: request.plan_fingerprint.clone(),
             checkpoint: None,
             error: None,
             usage: Usage::default(),
@@ -153,16 +205,17 @@ impl SqliteStore {
             next_policy: previous.and_then(|value| value.next_policy),
         };
         if !had_session {
-            sqlx::query("INSERT INTO sessions(id,data) VALUES($1,$2)")
+            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol,owner_scope_protocol,native_run_protocol) VALUES($1,$2,$3,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),0),COALESCE((SELECT native_run_protocol FROM session_owner_contexts WHERE session_id=$1),1))")
                 .bind(&session.id.0)
                 .bind(text(&session)?)
+                .bind(i32::from(guard.has_owned_resources()))
                 .execute(&mut **tx)
                 .await
                 .map_err(db)?;
         }
         sqlx::query(
-            "INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) \
-                VALUES($1,$2,$3,$4,$5,$6)",
+            "INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol,execution_enrollment_protocol,execution_enrollment_origin_id) \
+                VALUES($1,$2,$3,$4,$5,$6,1,1,$1)",
         )
         .bind(&run.id.0)
         .bind(&session_id.0)
@@ -173,6 +226,19 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+        if !guard.has_owned_resources()
+            && matches!(
+                &birth,
+                crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(_)
+            )
+        {
+            return Err(StoreError::Conflict);
+        }
+        let raw_first = if guard.has_owned_resources() {
+            None
+        } else {
+            Some(super::native_parent::record_initial_run_with_proof(tx, &run, read_proof).await?)
+        };
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
             .bind(&session_id.0)
@@ -181,33 +247,77 @@ impl SqliteStore {
             .execute(&mut **tx)
             .await
             .map_err(db)?;
-        let mut user = request.user_message;
+        let mut user = request.user_message.clone();
         user.run_id = Some(run_id.clone());
         insert_message(tx, &run, &user).await?;
-        Ok(AdmitOutcome {
-            session,
-            run,
-            fence: RunFence {
-                run_id,
-                claim_token: token,
+        for original in &request.additional_messages {
+            let mut message = original.clone();
+            message.run_id = Some(run_id.clone());
+            insert_message(tx, &run, &message).await?;
+        }
+        let owned_first = super::ownership_origin::record_admission(
+            tx,
+            &session,
+            &run,
+            !had_session,
+            guard,
+            &birth,
+            read_proof,
+        )
+        .await?;
+        let ((Some(first), None) | (None, Some(first))) = (raw_first, owned_first) else {
+            return Err(StoreError::Conflict);
+        };
+        Ok(
+            crate::native_enrollment::caller::initial::CapturedAdmission {
+                first,
+                admitted: AdmitOutcome {
+                    session,
+                    run,
+                    fence: RunFence {
+                        run_id,
+                        claim_token: token,
+                    },
+                    assistant_placeholder: MessageId::new(),
+                    epoch: epoch_id,
+                    prior_history,
+                },
             },
-            assistant_placeholder: MessageId::new(),
-            epoch: epoch_id,
-            prior_history,
-        })
+        )
     }
     pub(super) async fn ownership_fenced(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         fence: &RunFence,
     ) -> Result<Run, StoreError> {
-        let run = load_run(tx, &fence.run_id).await?;
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        proof
+            .measure(fence)
+            .map_err(crate::native_enrollment::access::failure)?;
+        super::read_proof::charge(
+            tx,
+            sqlx::query_scalar("SELECT length(CAST(session_id AS BLOB)) FROM runs WHERE id=$1")
+                .bind(&fence.run_id.0),
+            &mut proof,
+        )
+        .await
+        .map_err(crate::native_enrollment::access::failure)?;
+        let session: Option<String> = sqlx::query_scalar(
+            "SELECT CASE WHEN length(CAST(session_id AS BLOB))<=512 THEN session_id END FROM runs WHERE id=$1"
+        ).bind(&fence.run_id.0).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+        let run = super::records::load_run_with_proof(tx, &fence.run_id, &mut proof).await?;
+        if run.id != fence.run_id || session.as_deref() != Some(run.session_id.0.as_str()) {
+            return Err(StoreError::Validation(
+                "stored run identity is invalid".into(),
+            ));
+        }
         if run.claim_token != fence.claim_token
             || run.status.is_terminal()
             || run.lease_until <= self.clock.now()
         {
             return Err(StoreError::Conflict);
         }
+        super::credential_access::check_current(tx, &run, &mut proof).await?;
         Ok(run)
     }
     pub(super) async fn fenced(

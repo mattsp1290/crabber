@@ -1,0 +1,411 @@
+//! Original retained preparation and the SAME preclaim main for both families.
+#[path = "pending/factory.rs"]
+mod factory;
+#[path = "pending/main.rs"]
+pub(in crate::orchestrator) mod main;
+#[path = "pending/supervise.rs"]
+mod supervise;
+use super::{DurablePreparation, Orchestrator, RuntimeError, retained};
+use crate::orchestrator::{RunHandle, worker};
+use crabber_core::{AdmissionReceipt, SessionContext};
+use crabber_session::session_owner::{
+    owned_scope::PendingSuccessorReplay,
+    preparation::{PreparationCompletion, PreparationGrant},
+};
+use std::{
+    future::Future,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use tokio::sync::{Mutex, oneshot};
+use tokio_util::sync::CancellationToken;
+
+pub(super) struct PendingPreparation {
+    factory: Mutex<retained::OwnedEntry>,
+    resources: crabber_extension::ToolResourceOwner,
+    heartbeat: Mutex<retained::heartbeat::RetainedTask>,
+    heartbeat_stop: CancellationToken,
+    grant: PreparationGrant,
+    main: OnceLock<Arc<Mutex<main::Main>>>,
+    enrollment: std::sync::Mutex<()>,
+    control: OnceLock<main::Control>,
+    cancellation: CancellationToken,
+    root_scope: Option<crate::execution_tasks::RootScope>,
+    failed: AtomicBool,
+    cleanup_active: AtomicBool,
+    cleanup_failed: AtomicBool,
+    committed: AtomicBool,
+    completion: std::sync::Mutex<Option<main::Completion>>,
+    cleanup: std::sync::Mutex<Option<Arc<crate::execution_tasks::ExecutionTask>>>,
+    native_done: CancellationToken,
+}
+impl PendingPreparation {
+    pub(super) fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire) || self.cleanup_failed.load(Ordering::Acquire)
+    }
+    fn existing_run(&self) -> Option<crabber_core::RunId> {
+        match &self.grant.original_reservation().purpose {
+            super::PreparationPurpose::ExistingRun { run_id, .. } => Some(run_id.clone()),
+            super::PreparationPurpose::OrdinaryAdmission
+            | super::PreparationPurpose::Queue { .. } => None,
+        }
+    }
+    fn register_main<F, W>(
+        &self,
+        runtime: &Orchestrator,
+        context: SessionContext,
+        original: super::JoinedPreparation,
+        body: F,
+    ) -> Result<Arc<Mutex<main::Main>>, RuntimeError>
+    where
+        F: FnOnce(
+                crabber_session::session_owner::owned_scope::DriverMainContext,
+                PreparationCompletion,
+            ) -> W
+            + Send
+            + 'static,
+        W: Future<Output = ()> + Send + 'static,
+    {
+        // This original gate covers synchronous registration, never native IO.
+        let _enrollment = self.enrollment.lock().unwrap();
+        if self.cancellation.is_cancelled() {
+            return Err(super::incomplete(
+                self.grant.reconciliation()?,
+                RuntimeError::PreparationRecoveryRequired,
+            ));
+        }
+        let main = main::Main::register(
+            &runtime.pending_drivers,
+            runtime.store.clone(),
+            context,
+            original,
+            body,
+        )?;
+        self.control
+            .set(main.control())
+            .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
+        let shared = Arc::new(Mutex::new(main));
+        self.main
+            .set(shared.clone())
+            .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
+        if self.cancellation.is_cancelled() {
+            self.control
+                .get()
+                .expect("control installed")
+                .request_stop();
+        }
+        Ok(shared)
+    }
+    pub(super) fn committed(&self) -> bool {
+        self.committed.load(Ordering::Acquire)
+    }
+    pub(super) fn retry_progress(
+        &self,
+        operation: crabber_session::session_owner::preparation::PreparationOperationKind,
+    ) -> Result<super::progress::PreparationRetryProgress, RuntimeError> {
+        if !self.committed.load(Ordering::Acquire) {
+            return Err(RuntimeError::PreparationRecoveryRequired);
+        }
+        let metadata = self.completion.lock().unwrap();
+        Ok(super::progress::PreparationRetryProgress {
+            operation,
+            replayed: metadata.as_ref().is_some_and(|metadata| metadata.replayed),
+            unkeyed_admission: match metadata.as_ref().map(|completion| &completion.metadata) {
+                Some(main::Metadata::Initial(
+                    crabber_session::session_owner::owned_scope::InitialAdmissionReplay::Unkeyed(
+                        receipt,
+                    ),
+                )) => Some(receipt.clone()),
+                _ => None,
+            },
+        })
+    }
+    pub(super) fn stop(&self) {
+        self.cancellation.cancel();
+        if let Some(control) = self.control.get() {
+            control.request_stop();
+        }
+    }
+}
+pub(in crate::orchestrator) enum ExistingOutcome {
+    Started {
+        handle: RunHandle,
+        receipt: Option<AdmissionReceipt>,
+    },
+    Replayed(PendingSuccessorReplay),
+}
+pub(in crate::orchestrator) enum PendingOutcome {
+    Started {
+        handle: RunHandle,
+        metadata: main::Metadata,
+    },
+    Replayed(main::Metadata),
+}
+
+enum Notice {
+    Fresh {
+        handle: Box<worker::HandleParts>,
+        metadata: main::Metadata,
+    },
+    Replayed(main::Metadata),
+    Failed(RuntimeError),
+}
+struct CancelOnDrop {
+    pending: Arc<PendingPreparation>,
+    armed: bool,
+}
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.pending.stop();
+        }
+    }
+}
+impl Orchestrator {
+    pub(in crate::orchestrator) async fn finish_existing_preparation<T, F, W, B, BW>(
+        &self,
+        prepared: DurablePreparation,
+        context: SessionContext,
+        work: F,
+        business: B,
+    ) -> Result<ExistingOutcome, RuntimeError>
+    where
+        T: retained::PreparationValue,
+        F: FnOnce(Option<super::scope::PlanScope>) -> W + Send + 'static,
+        W: Future<Output = Result<(T, super::PreparedOperation), RuntimeError>> + Send + 'static,
+        B: FnOnce(T, Orchestrator, CancellationToken, PreparationCompletion) -> BW + Send + 'static,
+        BW: Future<Output = Result<crate::orchestrator::RunResult, RuntimeError>> + Send + 'static,
+    {
+        match self
+            .finish_pending_preparation(prepared, context, work, business)
+            .await?
+        {
+            PendingOutcome::Started {
+                handle,
+                metadata: main::Metadata::Successor(PendingSuccessorReplay::Admission(receipt)),
+            } => Ok(ExistingOutcome::Started {
+                handle,
+                receipt: Some(receipt),
+            }),
+            PendingOutcome::Started {
+                handle,
+                metadata: main::Metadata::Successor(PendingSuccessorReplay::Expired(_)),
+            } => Ok(ExistingOutcome::Started {
+                handle,
+                receipt: None,
+            }),
+            PendingOutcome::Replayed(main::Metadata::Successor(
+                metadata @ (PendingSuccessorReplay::Admission(_)
+                | PendingSuccessorReplay::Expired(_)),
+            )) => Ok(ExistingOutcome::Replayed(metadata)),
+            PendingOutcome::Started { .. } | PendingOutcome::Replayed(_) => {
+                Err(RuntimeError::PreparationRecoveryRequired)
+            }
+        }
+    }
+    pub(in crate::orchestrator) async fn finish_pending_preparation<T, F, W, B, BW>(
+        &self,
+        prepared: DurablePreparation,
+        context: SessionContext,
+        work: F,
+        business: B,
+    ) -> Result<PendingOutcome, RuntimeError>
+    where
+        T: retained::PreparationValue,
+        F: FnOnce(Option<super::scope::PlanScope>) -> W + Send + 'static,
+        W: Future<Output = Result<(T, super::PreparedOperation), RuntimeError>> + Send + 'static,
+        B: FnOnce(T, Orchestrator, CancellationToken, PreparationCompletion) -> BW + Send + 'static,
+        BW: Future<Output = Result<crate::orchestrator::RunResult, RuntimeError>> + Send + 'static,
+    {
+        let (entry, pending, value, original) =
+            self.observe_pending_factory(prepared, work).await?;
+        let descriptor = { entry.lock().await.descriptor.clone() };
+        let run = pending.existing_run();
+        let (send, receive) = oneshot::channel();
+        let notice = Arc::new(std::sync::Mutex::new(Some(send)));
+        let (wrapper, envelope) = oneshot::channel::<worker::WorkerBusiness>();
+        let body = move |context, completion| async move {
+            if let Ok(wrapper) = envelope.await {
+                wrapper
+                    .run(move |runtime, cancellation| {
+                        business(value, runtime, cancellation, completion)
+                    })
+                    .await;
+            }
+            drop(context);
+        };
+        let shared = pending.register_main(self, context, original, body)?;
+        let mut caller = CancelOnDrop {
+            pending: pending.clone(),
+            armed: true,
+        };
+        let (start, started) = oneshot::channel();
+        let parent = pending
+            .root_scope
+            .as_ref()
+            .ok_or(RuntimeError::HostClosed)?;
+        let runtime = self.clone();
+        let supervised = pending.clone();
+        let supervised_main = shared.clone();
+        let supervisor = self.execution_tasks.spawn_reporting_in(
+            parent,
+            descriptor.session_id.clone(),
+            run,
+            move |scope| async move {
+                let mut runtime = runtime;
+                runtime.root_scope = Some(scope);
+                supervise::run(
+                    runtime,
+                    entry,
+                    supervised,
+                    supervised_main,
+                    notice,
+                    started,
+                    wrapper,
+                )
+                .await
+            },
+        )?;
+        // Retain the actual reporting supervisor and its exact local identity
+        // before the original pending main can begin native completion IO.
+        let _ = start.send(supervisor.clone());
+        shared.lock().await.start()?;
+        match receive
+            .await
+            .map_err(|_| RuntimeError::PreparationRecoveryRequired)?
+        {
+            Notice::Fresh { handle, metadata } => {
+                caller.armed = false;
+                Ok(PendingOutcome::Started {
+                    handle: (*handle).finish(supervisor),
+                    metadata,
+                })
+            }
+            Notice::Replayed(metadata) => {
+                caller.armed = false;
+                Ok(PendingOutcome::Replayed(metadata))
+            }
+            Notice::Failed(error) => Err(super::incomplete(descriptor, error)),
+        }
+    }
+}
+fn publish(
+    notice: &std::sync::Mutex<Option<oneshot::Sender<Notice>>>,
+    value: Notice,
+) -> Option<Notice> {
+    if let Some(send) = notice.lock().unwrap().take() {
+        send.send(value).err()
+    } else {
+        Some(value)
+    }
+}
+
+struct CleanupAttempt {
+    pending: Arc<PendingPreparation>,
+    succeeded: bool,
+}
+impl Drop for CleanupAttempt {
+    fn drop(&mut self) {
+        let _slot = self.pending.cleanup.lock().unwrap();
+        self.pending
+            .cleanup_failed
+            .store(!self.succeeded, Ordering::Release);
+        self.pending.cleanup_active.store(false, Ordering::Release);
+    }
+}
+pub(super) fn start_cleanup(
+    runtime: Orchestrator,
+    pending: &Arc<PendingPreparation>,
+    entry: retained::SharedEntry,
+) {
+    let mut slot = pending.cleanup.lock().unwrap();
+    if pending.cleanup_active.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    pending.cleanup_failed.store(false, Ordering::Release);
+    let prior = slot.take();
+    let retained = pending.clone();
+    let tasks = runtime.execution_tasks.clone();
+    let Some(parent) = pending.root_scope.as_ref() else {
+        pending.cleanup_failed.store(true, Ordering::Release);
+        pending.cleanup_active.store(false, Ordering::Release);
+        return;
+    };
+    let registered = tasks.spawn_reporting_in(
+        parent,
+        pending.grant.owner_authority().session_id().clone(),
+        None,
+        move |_scope| async move {
+            cleanup_body(runtime, retained, prior, entry).await;
+            crate::TaskTermination::Returned
+        },
+    );
+    if let Ok(task) = registered {
+        *slot = Some(task);
+    } else {
+        pending.cleanup_failed.store(true, Ordering::Release);
+        pending.cleanup_active.store(false, Ordering::Release);
+    }
+}
+
+async fn cleanup_body(
+    runtime: Orchestrator,
+    retained: Arc<PendingPreparation>,
+    prior: Option<Arc<crate::execution_tasks::ExecutionTask>>,
+    entry: retained::SharedEntry,
+) {
+    let mut attempt = CleanupAttempt {
+        pending: retained.clone(),
+        succeeded: false,
+    };
+    // Retain and ACTUALLY observe the preceding supervisor before retry.
+    // Its completion flag is only a wake-up, never a physical Join proof.
+    if let Some(prior) = prior {
+        runtime.execution_tasks.join(&prior).await;
+    }
+    if factory::finish(&retained, runtime.store.as_ref())
+        .await
+        .is_err()
+    {
+        return;
+    }
+    retained.native_done.cancelled().await;
+    let cancelled_factory = if retained.main.get().is_none() {
+        if factory::cancel_unstarted_root(&retained, runtime.store.as_ref())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        true
+    } else {
+        false
+    };
+    attempt.succeeded = true;
+    if !retained.failed.load(Ordering::Acquire)
+        && (retained.committed.load(Ordering::Acquire) || cancelled_factory)
+    {
+        let descriptor = { entry.lock().await.descriptor.clone() };
+        runtime.retained_preparations.remove(&descriptor, &entry);
+    }
+}
+
+pub(super) fn cleanup_request(
+    runtime: Orchestrator,
+    pending: &Arc<PendingPreparation>,
+    entry: retained::SharedEntry,
+) {
+    pending.stop();
+    pending.resources.close();
+    {
+        let _enrollment = pending.enrollment.lock().unwrap();
+        if pending.main.get().is_none() {
+            pending.native_done.cancel();
+        }
+    }
+    // Actual factory/resource cleanup may progress while the original main
+    // retains an in-flight native ACK. Entry removal still awaits native_done.
+    start_cleanup(runtime, pending, entry);
+}

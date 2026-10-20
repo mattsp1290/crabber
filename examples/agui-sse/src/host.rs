@@ -15,7 +15,7 @@ use crabber_agui::ag_ui_core::{
     types::{Message, RunAgentInput},
 };
 use crabber_agui::{
-    Completion, ProjectionConfig, ProjectionError, Projector, encode_sse, sse_frame_len,
+    Completion, ProjectionConfig, ProjectionError, Projector, encode_sse, frame_budget,
 };
 use futures::Stream;
 use serde_json::{Value, json};
@@ -231,20 +231,34 @@ async fn serve_owned(
     let Ok(agent) = (host.factory)() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed");
     };
+    let preparation_stop = CancellationToken::new();
     let result = {
-        let admission = agent.prompt(Some(SessionId::from(input.thread_id.to_string())), text);
+        let admission = async {
+            let session = SessionId::from(input.thread_id.to_string());
+            crate::thread_store::ensure_thread(&agent, &session).await?;
+            if preparation_stop.is_cancelled()
+                || host.shutdown.is_cancelled()
+                || tokio::time::Instant::now() >= expires
+            {
+                return Err(RuntimeError::HostClosed);
+            }
+            agent.prompt(Some(session), text).await
+        };
         tokio::pin!(admission);
         tokio::select! {
             result = &mut admission => result,
             () = host.shutdown.cancelled() => {
+                preparation_stop.cancel();
                 respond(reply, error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown"));
                 late_admission(host, admission.as_mut()).await
             },
             () = tokio::time::sleep_until(expires) => {
+                preparation_stop.cancel();
                 respond(reply, error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
                 late_admission(host, admission.as_mut()).await
             },
             () = reply.as_mut().expect("response pending").closed() => {
+                preparation_stop.cancel();
                 reply.take();
                 late_admission(host, admission.as_mut()).await
             },
@@ -297,7 +311,7 @@ async fn admitted_response(
             "projection_configuration",
         );
     };
-    let (sender, receiver) = mpsc::channel(32);
+    let (sender, receiver) = mpsc::channel(host.config.max_batch);
     let (terminal_sender, terminal) = oneshot::channel();
     let disconnect = CancellationToken::new();
     let output = Output {
@@ -323,7 +337,7 @@ async fn admitted_response(
     ));
     (
         [
-            ("content-type", "text/event-stream"),
+            ("content-type", crabber_agui::ag_ui_encoder::CONTENT_TYPE),
             ("cache-control", "no-cache"),
         ],
         Body::from_stream(output),
@@ -423,8 +437,10 @@ fn enqueue(
             .map_err(|_| ProjectionError::Transport)?;
         let mut reserved = Vec::with_capacity(events.len());
         for event in events {
+            // Reserve the conservative encoded size before allocating a frame.
+            // Optional fields omitted by SDK normalization may use fewer bytes.
             let count =
-                u32::try_from(sse_frame_len(event, limit)?).map_err(|_| ProjectionError::Limit)?;
+                u32::try_from(frame_budget(event, limit)?).map_err(|_| ProjectionError::Limit)?;
             let permit = budget
                 .clone()
                 .try_acquire_many_owned(count)
@@ -539,7 +555,7 @@ async fn worker(
 
 fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, ProjectionError> {
     let fits = events.iter().try_fold(0usize, |sum, event| {
-        sum.checked_add(sse_frame_len(event, limit)?)
+        sum.checked_add(frame_budget(event, limit)?)
             .filter(|total| *total <= CONTROL_BYTES)
             .ok_or(ProjectionError::Limit)
     });
@@ -554,7 +570,11 @@ fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, Projecti
         code: Some(ProjectionError::Limit.code().into()),
         usage: None,
     })];
-    let events = if fits.is_ok() { events } else { &fallback };
+    let events = match fits {
+        Ok(_) => events,
+        Err(ProjectionError::Limit) => &fallback,
+        Err(error) => return Err(error),
+    };
     let budget = Arc::new(Semaphore::new(CONTROL_BYTES));
     frames(events, limit)?
         .into_iter()
@@ -606,7 +626,7 @@ mod tests {
                 terminal,
             } = output();
             let events: Vec<Event> = [
-                json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r"}),
+                json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r", "protocolVersion":crabber_agui::ag_ui_core::processing::PROTOCOL_VERSION}),
                 json!({"type":"TEXT_MESSAGE_START", "messageId":"m", "role":"assistant"}),
                 json!({"type":"TEXT_MESSAGE_CONTENT", "messageId":"m", "delta":"buffered"}),
                 json!({"type":"TEXT_MESSAGE_END", "messageId":"m"}),
@@ -644,7 +664,17 @@ mod tests {
             let mut decoder = crate::check::Decoder::default();
             decoder.push(&raw).unwrap();
             let received = decoder.finish().unwrap();
-            assert_eq!(&received[..events.len()], events);
+            let expected: Vec<Value> = events
+                .iter()
+                .map(|event| {
+                    crabber_agui::ag_ui_core::processing::normalize_producer_event(event).unwrap()
+                })
+                .collect();
+            let received_values: Vec<Value> = received[..events.len()]
+                .iter()
+                .map(|event| serde_json::to_value(event).unwrap())
+                .collect();
+            assert_eq!(received_values, expected);
             assert!(matches!(received.last(), Some(Event::RunFinished(_))));
         }
     }
@@ -691,7 +721,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .map(|e| sse_frame_len(e, 1_048_576).unwrap())
+                .map(|e| frame_budget(e, 1_048_576).unwrap())
                 .sum::<usize>()
                 > OUTPUT_BYTES
         );

@@ -16,5 +16,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 crabber-agui = { path = "../../crates/crabber-agui" }
 ag-ui-client = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "705303b26b6b900cdf9bdfa456fbd92a7003ca6b" }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [lints]
 workspace = true

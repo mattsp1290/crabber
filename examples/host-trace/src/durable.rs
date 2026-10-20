@@ -3,8 +3,8 @@ use crate::journey::Capture;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, FakeProvider, InputFingerprint,
-    PermissionDecision, Selection, SessionId, StaticPolicy, StreamDelta, ToolDefinition,
-    ToolExecutor, TraceContext,
+    JsonToolExecutor, PermissionDecision, Selection, SessionId, StaticPolicy, StreamDelta,
+    ToolDefinition, TraceContext,
     core::{RunStatus, ToolCallId, ToolInfo},
     session::{MemoryStore, Store},
 };
@@ -69,8 +69,10 @@ struct Effect {
     capture: Arc<Capture>,
 }
 #[async_trait]
-impl ToolExecutor for Effect {
+impl JsonToolExecutor for Effect {
     async fn execute(&self, _: Value) -> Result<Value, crabber::ExtensionError> {
+        #[cfg(feature = "datadog")]
+        record_effect_entry();
         #[cfg(feature = "datadog")]
         if let Some(exporter) = &self.loss_exporter {
             exporter.flush().await.unwrap();
@@ -96,6 +98,25 @@ impl ToolExecutor for Effect {
         Ok(json!({"ok":true}))
     }
 }
+// The finite subprocess fixture counts the actual executor entry independently
+// of observers and native result publication, including a mistaken recovery call.
+#[cfg(feature = "datadog")]
+fn record_effect_entry() {
+    let Some(path) = std::env::var_os("CRABBER_SQLITE_TRACE_QUEUE")
+        .or_else(|| std::env::var_os("CRABBER_TRACE_QUEUE"))
+    else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.parent().unwrap().join("effect-entries"))
+        .unwrap();
+    file.write_all(b"effect-entered\n").unwrap();
+    file.sync_all().unwrap();
+}
+
 struct PausePolicy;
 impl crabber::runtime::PermissionPolicy for PausePolicy {
     fn decide(&self, _: &ToolInfo, _: &Value) -> PermissionDecision {
@@ -142,6 +163,7 @@ pub fn agent(store: Arc<dyn Store>, capture: &Arc<Capture>, mode: &str) -> Agent
         None
     };
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(AgentConfig::new(Selection {
@@ -150,7 +172,7 @@ pub fn agent(store: Arc<dyn Store>, capture: &Arc<Capture>, mode: &str) -> Agent
         }))
         .observer(capture.clone())
         .policy(policy)
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "effect".into(),
                 description: "controlled effect".into(),
@@ -252,20 +274,17 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             .unwrap()
             .unwrap();
         let old = store.get_run(&receipt.run_id).await.unwrap().unwrap();
-        let result = agent
-            .resume_with_context(&receipt.run_id, Some(current.clone()))
-            .await
-            .unwrap();
-        assert_eq!(
-            result.status,
-            if mode == "recover" {
-                RunStatus::Interrupted
-            } else {
-                RunStatus::Completed
-            }
-        );
-        let new = store.get_run(&receipt.run_id).await.unwrap().unwrap();
-        assert_ne!(old.claim_token, new.claim_token);
+        if mode == "recover" {
+            refused_started_recovery(&agent, store.as_ref(), &receipt.run_id, &current).await;
+        } else {
+            let result = agent
+                .resume_with_context(&receipt.run_id, Some(current.clone()))
+                .await
+                .unwrap();
+            assert_eq!(result.status, RunStatus::Completed);
+            let new = store.get_run(&receipt.run_id).await.unwrap().unwrap();
+            assert_ne!(old.claim_token, new.claim_token);
+        }
         assert_eq!(
             agent
                 .lookup_admission(&envelope.session, &envelope.key)
@@ -302,7 +321,7 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         };
         (receipt, expected)
     };
-    if expected > 0 || mode == "recover" {
+    if expected > 0 {
         let attempt = capture.observation_attempt.lock().unwrap().clone().unwrap();
         persist_attempt(path, &current, &attempt);
     }
@@ -310,6 +329,10 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         let events = capture.events.lock().unwrap();
         let models = capture.models.lock().unwrap();
         assert_eq!(models.len(), expected);
+        if mode == "recover" {
+            assert_eq!(*events, []);
+            assert!(capture.observation_attempt.lock().unwrap().is_none());
+        }
         assert!(
             events
                 .iter()
@@ -328,9 +351,9 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             "backend={} schema={} provider=fake session={} run={} attempt_trace={} attempt_span={} observation_attempt={} predecessor={} predecessor_span={} predecessor_attempt={} callbacks={} models={}",
             backend,
             match backend {
-                "postgres" => "5",
-                "sqlite" => "1",
-                _ => "not-applicable",
+                "postgres" => crabber::session::POSTGRES_SCHEMA_VERSION.to_string(),
+                "sqlite" => crabber::session::SQLITE_SCHEMA_VERSION.to_string(),
+                _ => "not-applicable".to_owned(),
             },
             envelope.session,
             receipt.run_id,
@@ -362,14 +385,13 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             )
             .unwrap();
         }
-        if matches!(mode, "resume" | "recover") {
+        if mode == "recover" {
+            // Refused ingress has no execution attempt or synthetic recovery span.
+            assert_eq!(payloads, [] as [Value; 0]);
+        }
+        if mode == "resume" {
             let prior: Vec<Value> = serde_json::from_slice(
-                &fs::read(path.parent().unwrap().join(if mode == "recover" {
-                    "loss-exports.json"
-                } else {
-                    "pause-exports.json"
-                }))
-                .unwrap(),
+                &fs::read(path.parent().unwrap().join("pause-exports.json")).unwrap(),
             )
             .unwrap();
             let root = |bodies: &[Value]| {
@@ -390,6 +412,80 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         }
     }
 }
+// Expiry revokes leases; it cannot make an already Started effect replayable.
+// This fixture deliberately provides no host outcome or resource-cleanup claim.
+async fn refused_started_recovery(
+    agent: &Agent,
+    store: &dyn Store,
+    run: &crabber::core::RunId,
+    current: &TraceContext,
+) {
+    let original = store.get_run(run).await.unwrap().unwrap();
+    assert!(original.lease_until <= crabber::core::Clock::now(&crabber::core::SystemClock));
+    let before = store.latest_execution_attempt(run).await.unwrap().unwrap();
+    assert_eq!(
+        before.attempt.state,
+        crabber::session::AttemptState::Started
+    );
+    assert_eq!(
+        before.attempt.cleanup,
+        crabber::session::AttemptCleanup::Pending
+    );
+    let phases_request = crabber::session::PhasePageRequest {
+        session_id: before.attempt.session_id.clone(),
+        run_id: run.clone(),
+        limit: 64,
+        after: None,
+        expected_revision: None,
+    };
+    let phases = agent
+        .list_tool_phases(phases_request.clone())
+        .await
+        .unwrap();
+    assert!(phases.next_after.is_none());
+    assert_eq!(phases.phases.len(), 1);
+    assert_eq!(phases.phases[0].target.attempt, before.attempt.target);
+    assert_eq!(
+        phases.phases[0].state,
+        crabber::session::PhaseState::Started
+    );
+    assert_eq!(
+        phases.phases[0].quiescence,
+        crabber::session::PhaseQuiescence::Pending
+    );
+    let calls = store.list_unfinished_tool_calls(run).await.unwrap();
+    assert_ne!(calls, []);
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.status == crabber::core::ToolCallStatus::Running)
+    );
+    assert!(matches!(
+        agent.resume_with_context(run, Some(current.clone())).await,
+        Err(crabber::RuntimeError::Attempt(
+            crabber::session::AttemptError::Busy
+        ))
+    ));
+    assert_eq!(
+        store
+            .latest_execution_attempt(run)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt,
+        before.attempt
+    );
+    assert_eq!(store.list_unfinished_tool_calls(run).await.unwrap(), calls);
+    assert_eq!(
+        agent.list_tool_phases(phases_request).await.unwrap().phases,
+        phases.phases
+    );
+    assert_eq!(
+        store.get_run(run).await.unwrap().unwrap().status,
+        RunStatus::Running
+    );
+}
+
 pub async fn memory(path: &Path) {
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     worker(store.clone(), path, "pause", "memory").await;

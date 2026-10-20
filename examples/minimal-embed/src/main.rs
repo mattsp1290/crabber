@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, EventKind, ExtensionError, FakeProvider, JsonToolExecutor,
+    PermissionDecision, Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{EventRecord, RunId, RunStatus, SessionId, ToolCallId, ToolInfo},
     extension::{Extension, GuardDecision, Registrar, Scope, ToolGuard},
     session::{MemoryStore, PostgresStore, SqliteStore, Store},
@@ -67,7 +67,7 @@ impl Extension for NativeExtension {
 }
 
 #[async_trait]
-impl ToolExecutor for EchoTool {
+impl JsonToolExecutor for EchoTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         if self.delay {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -118,10 +118,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     // crabber:glue-start
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .store(Arc::clone(&store))
         .provider(resolver)
         .config(AgentConfig::new(selection))
-        .extension(
+        .shared_extension(
             Arc::new(NativeExtension {
                 name: if wasm_enabled { "native-echo" } else { "echo" },
                 delay: interrupt_after_first_delta,
@@ -133,7 +134,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("--extension must be native".into());
     }
     if let Some(path) = wasm {
-        builder = builder.wasm_extension(wasm_module(&path)?);
+        builder = builder.shared_wasm_extension(wasm_module(&path)?);
     }
     let agent = builder.build()?;
     if let Some(run_id) = resume_id {

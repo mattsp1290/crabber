@@ -275,16 +275,20 @@ struct SafeEvent {
 impl SafeEvent {
     #[allow(clippy::too_many_lines)] // Construct the bounded allow-listed queue record together.
     fn from_event(e: &EventRecord, policy: &RedactionPolicy) -> Option<Self> {
-        if e.kind.is_live_only()
-            || matches!(
-                e.kind,
-                EventKind::TextDelta
-                    | EventKind::ReasoningDelta
-                    | EventKind::MessageCommitted
-                    | EventKind::TurnStarted
-                    | EventKind::TurnCompleted
-            )
-        {
+        // Keep the union of spans(), series() and log() before retaining any
+        // event fields. Other kinds produce no exported signal.
+        let exported = match &e.kind {
+            EventKind::RunAdmitted
+            | EventKind::RunStarted
+            | EventKind::RunResumed
+            | EventKind::RunSettled
+            | EventKind::ToolCallSettled
+            | EventKind::PermissionDecided
+            | EventKind::ContextEpochFinished => true,
+            EventKind::Custom { name } => matches!(name.as_str(), "model_call" | "wasm_call"),
+            _ => false,
+        };
+        if !exported {
             return None;
         }
         let safe = |name: &str| {
@@ -1261,6 +1265,7 @@ pub mod tracing_bridge {
 
 #[cfg(test)]
 mod tests {
+    mod event_filter;
     use super::*;
     use crabber_core::{RunId, SessionId};
     use flate2::read::GzDecoder;
@@ -2289,7 +2294,7 @@ mod tests {
     }
     struct EchoTool;
     #[async_trait::async_trait]
-    impl crabber_extension::ToolExecutor for EchoTool {
+    impl crabber_extension::JsonToolExecutor for EchoTool {
         async fn execute(&self, value: Value) -> Result<Value, crabber_extension::ExtensionError> {
             Ok(value)
         }
@@ -2354,6 +2359,7 @@ mod tests {
             executor: Arc::new(EchoTool),
         });
         let runtime = Orchestrator::builder()
+            .behavior_version("integration-fixture.v1")
             .store(Arc::new(MemoryStore::new()))
             .resolver(Arc::new(provider))
             .plan_provider(Arc::new(StaticPlanProvider::new(vec![tool], vec![])))
@@ -2363,6 +2369,9 @@ mod tests {
             .unwrap();
         let run = runtime
             .start(Request {
+                selection_policy: crabber_runtime::AdmissionSelectionPolicy::Explicit,
+                captured_revision: None,
+                input_envelope: None,
                 session_id: None,
                 workspace_id: "test".into(),
                 directory: ".".into(),
@@ -2457,6 +2466,7 @@ mod tests {
             c.logs_origin = Some(origin);
             let observer = DatadogObserver::new(&c);
             let runtime = Orchestrator::builder()
+                .behavior_version("integration-fixture.v1")
                 .store(Arc::new(MemoryStore::new()))
                 .resolver(Arc::new(FakeProvider::scripted(vec![deltas])))
                 .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))
@@ -2465,6 +2475,9 @@ mod tests {
                 .unwrap();
             let run = runtime
                 .start(Request {
+                    selection_policy: crabber_runtime::AdmissionSelectionPolicy::Explicit,
+                    captured_revision: None,
+                    input_envelope: None,
                     session_id: None,
                     workspace_id: "test".into(),
                     directory: ".".into(),

@@ -35,11 +35,15 @@ impl ToolPipeline for CompositionProbe {
         &self,
         context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
         self.record("pre-stage", context, &result);
         Ok(TransformOutput::new(
-            json!({"source": result, "secret": SECRET}),
+            crabber_core::ToolOutput::from_json(&(json!({"source": result, "secret": SECRET})))
+                .unwrap(),
         ))
     }
 }
@@ -173,10 +177,13 @@ async fn composed_path(class: ToolOutcomeClass) {
                         reducer_order,
                         "reduce",
                         Arc::new(move |context, result| {
-                            probe.record("reducer", &context, &result);
+                            probe.record("reducer", &context, &result.json_value().unwrap());
                             Box::pin(async move {
                                 Ok(TransformOutput::new(
-                                    json!({"reduced": REDUCED, "secret": SECRET}),
+                                    crabber_core::ToolOutput::from_json(
+                                        &(json!({"reduced": REDUCED, "secret": SECRET})),
+                                    )
+                                    .unwrap(),
                                 ))
                             })
                         }),
@@ -190,13 +197,16 @@ async fn composed_path(class: ToolOutcomeClass) {
                     r.on_final_redaction(
                         redactor_order,
                         "redact",
-                        Arc::new(move |context, mut result| {
-                            probe.record("redactor", &context, &result);
+                        Arc::new(move |context, result| {
+                            probe.record("redactor", &context, &result.json_value().unwrap());
                             Box::pin(async move {
+                                let mut result = result.json_value().unwrap();
                                 if let Some(object) = result.as_object_mut() {
                                     object.remove("secret");
                                 }
-                                Ok(TransformOutput::new(result))
+                                Ok(TransformOutput::new(
+                                    crabber_core::ToolOutput::from_json(&result).unwrap(),
+                                ))
                             })
                         }),
                     );

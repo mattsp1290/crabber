@@ -1,6 +1,5 @@
 //! Credential-free proofs against the in-memory store, public API only.
 
-use async_trait::async_trait;
 use crabber::{
     AdmissionKey, AdmissionOptions, InputFingerprint, RuntimeError,
     core::{CoreError, RunStatus},
@@ -10,16 +9,12 @@ use crabber::{
     FakeProvider, PermissionDecision, StaticPolicy,
     core::{EventKind, ManualClock},
     extension::{Registry, Scope},
-    runtime::{ApprovalRequester, INTERRUPT_SETTLEMENT_BOUND, Orchestrator, Request},
+    runtime::{INTERRUPT_SETTLEMENT_BOUND, Orchestrator, Request},
     session::Store,
 };
-use serde_json::Value;
 use std::sync::Arc;
-use std::{sync::Mutex, time::Duration};
-use tokio::{
-    sync::{Notify, oneshot},
-    time::timeout,
-};
+use std::time::Duration;
+use tokio::time::timeout;
 use workspace_context_pinned_probe::{
     CANCEL_TOOL, Identity, Observations, ProbeExtension, ROOT_TOOL, TOOL, config, host,
     host_with_policy, identity, named_tool_call, text, tool_call,
@@ -234,14 +229,12 @@ async fn cancellation_is_available_to_a_running_tool() {
         .await
         .expect("tool started");
     run.interrupt();
-    assert_eq!(
+    assert!(matches!(
         timeout(INTERRUPT_SETTLEMENT_BOUND, run.done())
             .await
-            .expect("interrupt settled")
-            .unwrap()
-            .status,
-        RunStatus::Interrupted
-    );
+            .expect("owned executor interruption returns within the bound"),
+        Err(RuntimeError::PhaseOutcomeUnknown { .. })
+    ));
     timeout(
         Duration::from_secs(2),
         seen.cancellation_observed.notified(),
@@ -258,23 +251,8 @@ async fn cancellation_is_available_to_a_running_tool() {
     assert!(!entries[0].cancelled_at_entry);
 }
 
-struct GatedApprover {
-    entered: Mutex<Option<oneshot::Sender<()>>>,
-    release: Arc<Notify>,
-}
-#[async_trait]
-impl ApprovalRequester for GatedApprover {
-    async fn approve(&self, _tool: &crabber::core::ToolInfo, _arguments: &Value) -> bool {
-        if let Some(sender) = self.entered.lock().unwrap().take() {
-            let _ = sender.send(());
-        }
-        self.release.notified().await;
-        true
-    }
-}
-
 #[tokio::test]
-async fn stale_fence_never_invokes_the_executor() {
+async fn replacement_fence_never_authorizes_pending_approval() {
     let now = time::OffsetDateTime::UNIX_EPOCH;
     let clock = Arc::new(ManualClock::new(now));
     let store = Arc::new(MemoryStore::with_clock(clock.clone()));
@@ -284,9 +262,8 @@ async fn stale_fence_never_invokes_the_executor() {
         .mount(Arc::new(ProbeExtension(seen.clone())), Scope::Global)
         .await
         .unwrap();
-    let (entered_tx, entered_rx) = oneshot::channel();
-    let release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(Arc::new(FakeProvider::scripted(vec![
             tool_call(),
@@ -296,14 +273,13 @@ async fn stale_fence_never_invokes_the_executor() {
         .clock(clock.clone())
         .heartbeat_interval(Duration::from_millis(10))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
-        .approver(Arc::new(GatedApprover {
-            entered: Mutex::new(Some(entered_tx)),
-            release: release.clone(),
-        }))
         .build()
         .unwrap();
     let run = runtime
         .start(Request {
+            selection_policy: Default::default(),
+            captured_revision: None,
+            input_envelope: None,
             session_id: None,
             workspace_id: "ws-fence".into(),
             directory: "/srv/fence".into(),
@@ -311,25 +287,22 @@ async fn stale_fence_never_invokes_the_executor() {
             text: "wait".into(),
             selection: config("ws-fence", "/srv/fence").selection,
             system_prompt: None,
+            max_output_tokens: None,
         })
         .await
         .unwrap();
     let session = run.session_id().clone();
     let run_id = run.run_id().clone();
-    timeout(Duration::from_secs(2), entered_rx)
-        .await
-        .expect("approval entered")
-        .unwrap();
+    assert_eq!(run.done().await.unwrap().status, RunStatus::Paused);
     clock.set(now + time::Duration::seconds(31));
     let replacement = store
         .claim_expired_run(&run_id, "replacement owner")
         .await
         .unwrap();
-    let result = timeout(Duration::from_secs(2), run.done())
-        .await
-        .expect("lease loss settled");
-    release.notify_one();
-    assert!(matches!(result, Err(RuntimeError::LeaseLost)));
+    assert!(matches!(
+        runtime.resume(&run_id).await,
+        Err(RuntimeError::DurableContinuationRequired { .. })
+    ));
     assert_eq!(seen.executions(), []);
     assert_eq!(
         seen.assemble(),
@@ -339,7 +312,7 @@ async fn stale_fence_never_invokes_the_executor() {
     assert!(
         events
             .iter()
-            .any(|event| event.kind == EventKind::PermissionRequested)
+            .any(|event| event.kind == EventKind::RunPaused)
     );
     assert!(
         !events

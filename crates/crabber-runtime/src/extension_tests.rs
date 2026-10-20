@@ -2,8 +2,8 @@ use crate::{Orchestrator, PermissionDecision, RuntimeError, StaticPolicy};
 use async_trait::async_trait;
 use crabber_core::{Message, Role, ToolCallId, ToolInfo};
 use crabber_extension::{
-    ContextAssemble, Extension, ExtensionError, GuardDecision, ModelRequestError, ModelStream,
-    Next, Point, Registrar, Registry, RunSettled, Scope, ToolDefinition, ToolExecute, ToolExecutor,
+    ContextAssemble, Extension, ExtensionError, GuardDecision, JsonToolExecutor, ModelRequestError,
+    ModelStream, Next, Point, Registrar, Registry, RunSettled, Scope, ToolDefinition, ToolExecute,
     ToolGuard, ToolResultTransform, ToolSettled, ToolStarted,
 };
 use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
@@ -19,7 +19,7 @@ struct CounterTool {
     fail: bool,
 }
 #[async_trait]
-impl ToolExecutor for CounterTool {
+impl JsonToolExecutor for CounterTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
@@ -109,7 +109,11 @@ impl Extension for TestExtension {
                     Arc::new(|mut value| {
                         Box::pin(async move {
                             if value["context"]["is_error"] == true {
-                                value["result"] = "[REDACTED]".into();
+                                value["result"] = serde_json::to_value(
+                                    crabber_core::ToolOutput::from_json(&json!("[REDACTED]"))
+                                        .unwrap(),
+                                )
+                                .unwrap();
                             }
                             Ok(value)
                         })
@@ -193,6 +197,9 @@ fn call_script(command: &str) -> Vec<StreamDelta> {
 }
 fn request() -> crate::Request {
     crate::Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
+        input_envelope: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: ".".into(),
@@ -236,6 +243,7 @@ async fn harness(
         .await
         .unwrap();
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))

@@ -1,7 +1,7 @@
 //! Typed, read-only context contract for tool result transforms.
 use crate::dispatch::Callback;
 use crate::plan::ExtensionError;
-use crabber_core::{RunId, SessionId, ToolCallId};
+use crabber_core::{RunId, SessionId, ToolCallId, ToolOutput};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::future::Future;
@@ -10,8 +10,8 @@ use std::time::Duration;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tokio_util::task::TaskTracker;
 
-/// Version of the result-transform contract. The untyped contract was version 1.
-pub const RESULT_TRANSFORM_CONTRACT_VERSION: u32 = 2;
+/// Version 3 carries typed completion content. Version 2 added protected context.
+pub const RESULT_TRANSFORM_CONTRACT_VERSION: u32 = 3;
 /// Deadline for final redactors, measured from the instant cancellation was
 /// observed. Enforced by the chain driver.
 pub const FINAL_REDACTION_DEADLINE: Duration = Duration::from_millis(500);
@@ -94,19 +94,19 @@ impl TransformPhase {
 /// escalation of success to error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransformOutput {
-    pub result: Value,
+    pub result: ToolOutput,
     pub mark_error: bool,
 }
 impl TransformOutput {
     #[must_use]
-    pub fn new(result: Value) -> Self {
+    pub fn new(result: ToolOutput) -> Self {
         Self {
             result,
             mark_error: false,
         }
     }
     #[must_use]
-    pub fn marked_error(result: Value) -> Self {
+    pub fn marked_error(result: ToolOutput) -> Self {
         Self {
             result,
             mark_error: true,
@@ -118,29 +118,35 @@ impl TransformOutput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolResultOutcome {
     /// Every handler ran; cancellation was not observed.
-    Completed { result: Value, is_error: bool },
+    Completed { result: ToolOutput, is_error: bool },
     /// A handler failed. Carries only the id of the failing handler.
     Failed { handler: String },
     /// Cancellation was observed. `Some` only when an accepted value passed
     /// every remaining final redactor (settlement precedence).
-    Interrupted { redacted: Option<Value> },
+    Interrupted { redacted: Option<ToolOutput> },
 }
 
 pub type ResultTransformCallback = Arc<
-    dyn Fn(ToolResultContext, Value) -> BoxFuture<'static, Result<TransformOutput, ExtensionError>>
+    dyn Fn(
+            ToolResultContext,
+            ToolOutput,
+        ) -> BoxFuture<'static, Result<TransformOutput, ExtensionError>>
         + Send
         + Sync,
 >;
 
 /// Handed to callbacks. Wraps a `TaskTracker` and a close signal.
 ///
-/// Spawn cleanup from within the callback. A clone kept outside it (in
-/// extension state or an untracked task) can spawn after the mount's close has
-/// drained, and that task is then not waited for.
+/// Spawn cleanup from within the callback. Legacy mount trackers permit late
+/// registration after close has drained. Explicit owned mount and native phase
+/// trackers seal registration at close and retain the actual task joins.
 #[derive(Debug, Clone)]
 pub struct CleanupTracker {
     tasks: TaskTracker,
     closing: CancellationToken,
+    resources: Option<crate::ToolResources>,
+    mount_tasks: Option<TaskTracker>,
+    mount_resources: Option<crate::ToolResources>,
 }
 impl CleanupTracker {
     /// A tracker with no owner: its close signal never fires and nothing joins it.
@@ -152,16 +158,104 @@ impl CleanupTracker {
     ///
     /// Used by `CleanupOwner` (crabber-2xrl), which keeps the other halves.
     pub(crate) fn from_parts(tasks: TaskTracker, closing: CancellationToken) -> Self {
-        Self { tasks, closing }
+        Self {
+            tasks,
+            closing,
+            resources: None,
+            mount_tasks: None,
+            mount_resources: None,
+        }
+    }
+    pub(crate) fn for_resources(
+        resources: crate::ToolResources,
+        closing: CancellationToken,
+    ) -> Self {
+        Self {
+            tasks: TaskTracker::new(),
+            closing,
+            resources: Some(resources),
+            mount_tasks: None,
+            mount_resources: None,
+        }
+    }
+    pub(crate) fn is_phase_scoped(&self) -> bool {
+        self.resources.is_some()
+    }
+    pub(crate) fn invocation_resources(&self) -> Option<crate::ToolResources> {
+        self.resources.clone()
+    }
+    pub(crate) fn for_handler_mount(&self, mount: &Self) -> Self {
+        let mut tracker = self.clone();
+        tracker.mount_tasks = Some(mount.tasks.clone());
+        tracker.mount_resources.clone_from(&mount.resources);
+        tracker
     }
     /// Spawns on the current Tokio runtime. The task is tracked until it
     /// finishes, whether or not the returned handle or the caller is dropped.
+    /// For an owned mount or native phase tracker, the owner retains the actual task join;
+    /// aborting the returned output handle does not abort cleanup.
+    /// The future's output is data, including a returned `Result`: use
+    /// [`Self::spawn_checked`] to report a declared cleanup failure.
+    ///
+    /// # Panics
+    /// Panics if called without a current Tokio runtime.
+    /// An owned mount or native phase tracker rejects registration after its scope is sealed
+    /// or its task capacity is reached, before spawning or polling the task.
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.tasks.spawn(task)
+        if let Some(resources) = &self.resources {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let mount_token = self.mount_tasks.as_ref().map(TaskTracker::token);
+            let task = self.tasks.track_future(async move {
+                let _mount_token = mount_token;
+                task.await
+            });
+            let cleanup = async move {
+                let output = task.await;
+                let _ = sender.send(output);
+                Ok(())
+            };
+            match &self.mount_resources {
+                Some(mount) => resources.spawn_shared(mount, cleanup),
+                None => resources.spawn(cleanup),
+            }
+            .expect("sealed cleanup registration rejected");
+            tokio::spawn(async move {
+                receiver
+                    .await
+                    .expect("native phase cleanup task did not return")
+            })
+        } else {
+            self.tasks.spawn(task)
+        }
+    }
+    /// Register cleanup whose declared failure remains visible in each sealed
+    /// owner's resource drain, together with task panics/cancellation.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` for legacy mount/host trackers. Owned mount and
+    /// native phase trackers reject sealed scopes and exhausted capacity before polling
+    /// the supplied future.
+    pub fn spawn_checked<F>(&self, task: F) -> Result<(), crate::ResourceRegistrationError>
+    where
+        F: Future<Output = Result<(), crate::ResourceFailure>> + Send + 'static,
+    {
+        let resources = self
+            .resources
+            .as_ref()
+            .ok_or(crate::ResourceRegistrationError::Unsupported)?;
+        let mount_token = self.mount_tasks.as_ref().map(TaskTracker::token);
+        let cleanup = self.tasks.track_future(async move {
+            let _mount_token = mount_token;
+            task.await
+        });
+        match &self.mount_resources {
+            Some(mount) => resources.spawn_shared(mount, cleanup),
+            None => resources.spawn(cleanup),
+        }
     }
     /// Resolves when the owner starts closing. `'static`, so it can move into a task.
     pub fn closing(&self) -> WaitForCancellationFutureOwned {
@@ -182,9 +276,10 @@ impl CleanupTracker {
 ///
 /// Anyone can construct a value, for example in tests. Only the instance the
 /// runtime builds is authoritative: the runtime never reads a context back from
-/// a handler, and the driver replaces phase, effective `is_error` and tracker
-/// for every handler it invokes. The cancellation token is never part of any
-/// JSON.
+/// a handler, and the driver sets phase and effective `is_error` for every
+/// handler it invokes. It preserves native phase cleanup ownership, otherwise
+/// supplying the handler's mount tracker. The cancellation token is never
+/// part of any JSON.
 #[derive(Debug, Clone)]
 pub struct ToolResultContext {
     tool_name: String,
@@ -226,6 +321,14 @@ impl ToolResultContext {
             cleanup: CleanupTracker::detached(),
         }
     }
+    /// Construct the host pre-stage snapshot from the immutable execution
+    /// context and validated completion. This preserves identity and class and
+    /// only escalates the effective error bit.
+    #[must_use]
+    pub fn for_completion(mut base: Self, output: &ToolOutput) -> Self {
+        base.is_error |= output.is_error();
+        base
+    }
     #[must_use]
     pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
         self.cancellation = cancellation;
@@ -266,7 +369,7 @@ impl ToolResultContext {
     pub fn class(&self) -> ToolOutcomeClass {
         self.class
     }
-    /// `class().is_error()`, or an earlier handler or the pre-stage set `mark_error`.
+    /// The immutable class, declared completion, or an earlier transform marked error.
     #[must_use]
     pub fn is_error(&self) -> bool {
         self.is_error
@@ -320,12 +423,13 @@ pub enum EnvelopeError {
     UnknownField,
     ContextChanged,
     MarkErrorNotBool,
+    InvalidOutput,
 }
 
 /// The JSON handler input: context, `result` and `mark_error: false`.
 #[must_use]
 #[allow(clippy::needless_pass_by_value)] // signature fixed by the design
-pub fn result_envelope(context: &ToolResultContext, result: Value) -> Value {
+pub fn result_envelope(context: &ToolResultContext, result: ToolOutput) -> Value {
     json!({
         "context": context.context_json(),
         "result": result,
@@ -364,17 +468,34 @@ pub fn parse_result_envelope(
     let Value::Bool(mark_error) = mark_error else {
         return Err(EnvelopeError::MarkErrorNotBool);
     };
+    let result = serde_json::from_value(result).map_err(|_| EnvelopeError::InvalidOutput)?;
     Ok(TransformOutput { result, mark_error })
 }
 
 /// The envelope adapter both JSON registrations use. Any envelope violation is
 /// an `Err`; its text is discarded by the driver.
+///
+/// # Panics
+/// The returned future panics after disposing a callback future whose poll or
+/// destructor panicked, so its invocation owner retains the observation failure.
 #[must_use]
 pub fn json_result_transform(cb: Callback) -> ResultTransformCallback {
     Arc::new(move |context, result| {
         let reply = cb(result_envelope(&context, result));
         Box::pin(async move {
-            let reply = reply.await?;
+            // Preserve construction timing while disposing this exact original
+            // future separately from a panic in its poll. The driver retains
+            // cancellation ownership through the adapter's outer future.
+            let reply = match crate::dispatch::original::original(
+                || reply,
+                |result| result,
+                &CancellationToken::new(),
+            )
+            .await
+            {
+                Ok(Some(result)) => result?,
+                _ => panic!("result envelope callback observation failed"),
+            };
             parse_result_envelope(&context, reply).map_err(|error| {
                 ExtensionError::Tool(format!("invalid result envelope: {error:?}"))
             })
@@ -462,7 +583,10 @@ mod tests {
 
     #[test]
     fn envelope_shape_is_exact() {
-        let envelope = result_envelope(&base(), json!("out"));
+        let envelope = result_envelope(
+            &base(),
+            crabber_core::ToolOutput::from_json(&(json!("out"))).unwrap(),
+        );
         assert_eq!(
             envelope,
             json!({
@@ -477,7 +601,7 @@ mod tests {
                     "is_error": false,
                     "phase": "ordinary"
                 },
-                "result": "out",
+                "result": {"content":[{"type":"text","text":"\"out\""}], "is_error":false},
                 "mark_error": false
             })
         );
@@ -487,7 +611,10 @@ mod tests {
             },
             ToolOutcomeClass::PrepareFailed,
         );
-        let envelope = result_envelope(&unavailable, json!(null));
+        let envelope = result_envelope(
+            &unavailable,
+            crabber_core::ToolOutput::from_json(&(json!(null))).unwrap(),
+        );
         assert_eq!(
             envelope["context"]["input"],
             json!({"kind": "unavailable", "reason": "unresolved"})
@@ -497,7 +624,10 @@ mod tests {
         let mut redaction = base();
         redaction.set_phase(TransformPhase::FinalRedaction);
         assert_eq!(
-            result_envelope(&redaction, json!(1))["context"]["phase"],
+            result_envelope(
+                &redaction,
+                crabber_core::ToolOutput::from_json(&(json!(1))).unwrap()
+            )["context"]["phase"],
             "final_redaction"
         );
     }
@@ -508,11 +638,17 @@ mod tests {
             for class in CLASSES {
                 let ctx = context(input.clone(), class);
                 let value = json!({"k": [1, null]});
-                let parsed = parse_result_envelope(&ctx, result_envelope(&ctx, value.clone()));
+                let parsed = parse_result_envelope(
+                    &ctx,
+                    result_envelope(
+                        &ctx,
+                        crabber_core::ToolOutput::from_json(&(value.clone())).unwrap(),
+                    ),
+                );
                 assert_eq!(
                     parsed,
                     Ok(TransformOutput {
-                        result: value,
+                        result: crabber_core::ToolOutput::from_json(&(value)).unwrap(),
                         mark_error: false
                     })
                 );
@@ -523,11 +659,16 @@ mod tests {
     #[test]
     fn mark_error_true_and_null_result_are_accepted() {
         let ctx = base();
-        let mut reply = result_envelope(&ctx, json!(null));
+        let mut reply = result_envelope(
+            &ctx,
+            crabber_core::ToolOutput::from_json(&(json!(null))).unwrap(),
+        );
         reply["mark_error"] = json!(true);
         assert_eq!(
             parse_result_envelope(&ctx, reply),
-            Ok(TransformOutput::marked_error(json!(null)))
+            Ok(TransformOutput::marked_error(
+                crabber_core::ToolOutput::from_json(&(json!(null))).unwrap()
+            ))
         );
     }
 
@@ -554,7 +695,10 @@ mod tests {
             ("phase", json!("final_redaction")),
         ];
         for (field, value) in tampers {
-            let mut reply = result_envelope(&ctx, json!("x"));
+            let mut reply = result_envelope(
+                &ctx,
+                crabber_core::ToolOutput::from_json(&(json!("x"))).unwrap(),
+            );
             reply["context"][field] = value;
             assert_eq!(
                 parse_result_envelope(&ctx, reply),
@@ -568,13 +712,19 @@ mod tests {
             },
             ToolOutcomeClass::PrepareFailed,
         );
-        let mut reply = result_envelope(&unavailable, json!("x"));
+        let mut reply = result_envelope(
+            &unavailable,
+            crabber_core::ToolOutput::from_json(&(json!("x"))).unwrap(),
+        );
         reply["context"]["input"]["reason"] = json!("unresolved");
         assert_eq!(
             parse_result_envelope(&unavailable, reply),
             Err(EnvelopeError::ContextChanged)
         );
-        let mut reply = result_envelope(&ctx, json!("x"));
+        let mut reply = result_envelope(
+            &ctx,
+            crabber_core::ToolOutput::from_json(&(json!("x"))).unwrap(),
+        );
         reply["context"]["extra"] = json!(1);
         assert_eq!(
             parse_result_envelope(&ctx, reply),
@@ -586,7 +736,10 @@ mod tests {
     fn malformed_envelopes_are_rejected() {
         let ctx = base();
         for field in ["result", "context", "mark_error"] {
-            let mut reply = result_envelope(&ctx, json!("x"));
+            let mut reply = result_envelope(
+                &ctx,
+                crabber_core::ToolOutput::from_json(&(json!("x"))).unwrap(),
+            );
             reply.as_object_mut().unwrap().remove(field);
             assert_eq!(
                 parse_result_envelope(&ctx, reply),
@@ -597,13 +750,19 @@ mod tests {
             parse_result_envelope(&ctx, json!("text")),
             Err(EnvelopeError::NotAnObject)
         );
-        let mut reply = result_envelope(&ctx, json!("x"));
+        let mut reply = result_envelope(
+            &ctx,
+            crabber_core::ToolOutput::from_json(&(json!("x"))).unwrap(),
+        );
         reply["is_error"] = json!(true);
         assert_eq!(
             parse_result_envelope(&ctx, reply),
             Err(EnvelopeError::UnknownField)
         );
-        let mut reply = result_envelope(&ctx, json!("x"));
+        let mut reply = result_envelope(
+            &ctx,
+            crabber_core::ToolOutput::from_json(&(json!("x"))).unwrap(),
+        );
         reply["mark_error"] = json!("true");
         assert_eq!(
             parse_result_envelope(&ctx, reply),
@@ -628,7 +787,7 @@ mod tests {
 
     #[test]
     fn constants_and_fixed_text() {
-        assert_eq!(RESULT_TRANSFORM_CONTRACT_VERSION, 2);
+        assert_eq!(RESULT_TRANSFORM_CONTRACT_VERSION, 3);
         assert_eq!(FINAL_REDACTION_DEADLINE, Duration::from_millis(500));
         assert_eq!(DEFAULT_MOUNT_CLOSE_TIMEOUT, Duration::from_secs(5));
         assert_eq!(
@@ -639,23 +798,42 @@ mod tests {
 
     #[test]
     fn transform_output_constructors() {
-        assert!(!TransformOutput::new(json!(1)).mark_error);
-        assert!(TransformOutput::marked_error(json!(1)).mark_error);
+        assert!(
+            !TransformOutput::new(crabber_core::ToolOutput::from_json(&(json!(1))).unwrap())
+                .mark_error
+        );
+        assert!(
+            TransformOutput::marked_error(
+                crabber_core::ToolOutput::from_json(&(json!(1))).unwrap()
+            )
+            .mark_error
+        );
     }
 
     #[tokio::test]
     async fn json_adapter_accepts_well_behaved_callback() {
         let cb: Callback = Arc::new(|mut envelope| {
             async move {
-                envelope["result"] = json!("redacted");
+                envelope["result"] =
+                    serde_json::to_value(ToolOutput::from_json(&json!("redacted")).unwrap())
+                        .unwrap();
                 envelope["mark_error"] = json!(true);
                 Ok(envelope)
             }
             .boxed()
         });
         let adapter = json_result_transform(cb);
-        let output = adapter(base(), json!("secret")).await;
-        assert_eq!(output, Ok(TransformOutput::marked_error(json!("redacted"))));
+        let output = adapter(
+            base(),
+            crabber_core::ToolOutput::from_json(&(json!("secret"))).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            output,
+            Ok(TransformOutput::marked_error(
+                crabber_core::ToolOutput::from_json(&(json!("redacted"))).unwrap()
+            ))
+        );
     }
 
     #[tokio::test]
@@ -668,23 +846,32 @@ mod tests {
             .boxed()
         });
         assert!(
-            json_result_transform(tamper)(base(), json!(1))
-                .await
-                .is_err()
+            json_result_transform(tamper)(
+                base(),
+                crabber_core::ToolOutput::from_json(&(json!(1))).unwrap()
+            )
+            .await
+            .is_err()
         );
         let legacy: Callback =
             Arc::new(|_| async { Ok(json!({"result": 1, "is_error": false})) }.boxed());
         assert!(
-            json_result_transform(legacy)(base(), json!(1))
-                .await
-                .is_err()
+            json_result_transform(legacy)(
+                base(),
+                crabber_core::ToolOutput::from_json(&(json!(1))).unwrap()
+            )
+            .await
+            .is_err()
         );
         let failing: Callback =
             Arc::new(|_| async { Err(ExtensionError::Tool("boom".into())) }.boxed());
         assert!(
-            json_result_transform(failing)(base(), json!(1))
-                .await
-                .is_err()
+            json_result_transform(failing)(
+                base(),
+                crabber_core::ToolOutput::from_json(&(json!(1))).unwrap()
+            )
+            .await
+            .is_err()
         );
     }
 

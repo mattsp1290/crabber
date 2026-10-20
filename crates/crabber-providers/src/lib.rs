@@ -8,6 +8,18 @@
 //! guidance. Public header, status, certificate, identity, and TLS
 //! types come from `reqwest` 0.12.
 
+mod binding;
+mod scripted;
+pub use binding::{
+    BoundProvider, ProviderBindingError, ProviderBindingFactory, ProviderReleaseHolds,
+    ProviderReleaseObserver, ProviderResourceContext, ProviderResourceContract,
+    ProviderResourceFailure, ProviderResourceHost, ProviderResourceRegistrationError,
+    ProviderResourceTask, ProviderServiceDependencies, ProviderServiceError, ProviderServiceHost,
+    ProviderServiceSource, VersionedAdapter, VersionedResolver,
+};
+use crabber_core::ProviderBindingDescriptor;
+pub use scripted::{ScriptedError, ScriptedProvider, ScriptedStream};
+
 use async_trait::async_trait;
 use crabber_core::{Message, RunId, SessionId, ToolCallId, ToolInfo, TurnId, Usage};
 use futures::{Stream, stream};
@@ -63,7 +75,9 @@ pub use real::{
     feature = "codex",
     feature = "opencode-go"
 ))]
-pub use real::{HttpAdapter, HttpResolver, Protocol};
+pub use real::{
+    HttpAdapter, HttpInputSupport, HttpMediaSupport, HttpResolver, MediaInputSource, Protocol,
+};
 #[cfg(all(test, feature = "all-providers"))]
 mod codec_tests;
 
@@ -98,6 +112,8 @@ pub struct RequestIdentity {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelRequest {
+    /// Explicit model-input data, separate from UI activity and system policy.
+    pub context: Vec<crabber_core::InputContext>,
     pub identity: RequestIdentity,
     pub selection: Selection,
     pub system: Option<String>,
@@ -131,10 +147,32 @@ pub struct ProviderError {
 pub enum StreamDelta {
     TextDelta(String),
     ReasoningDelta(String),
-    ToolCallStart { call_id: ToolCallId, name: String },
-    ToolCallArgsDelta { call_id: ToolCallId, text: String },
-    ToolCallDone { call_id: ToolCallId },
-    ProviderState { codec_id: String, payload: Value },
+    /// Explicit provider-boundary classification, scoped to one reasoning item.
+    Reasoning {
+        item_id: String,
+        provenance: crabber_core::ReasoningProvenance,
+        text: String,
+    },
+    /// Private signature fragments belong only to the exact thinking item.
+    ReasoningSignature {
+        item_id: String,
+        signature: String,
+    },
+    ToolCallStart {
+        call_id: ToolCallId,
+        name: String,
+    },
+    ToolCallArgsDelta {
+        call_id: ToolCallId,
+        text: String,
+    },
+    ToolCallDone {
+        call_id: ToolCallId,
+    },
+    ProviderState {
+        codec_id: String,
+        payload: Value,
+    },
     Usage(Usage),
     Completed,
     Error(ProviderError),
@@ -152,11 +190,173 @@ pub trait ProviderAdapter: Send + Sync {
     fn info(&self) -> ProviderInfo;
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError>;
     async fn build(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError>;
+    /// Return stable, nonsecret behavior/config identity without credential or
+    /// network I/O. Undeclared native bindings fail closed.
+    /// # Errors
+    /// Returns a typed unavailable/configuration failure.
+    fn binding_descriptor(
+        &self,
+        _selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Err(ProviderBindingError::Unavailable)
+    }
+    /// Pure ownership policy for bind/restore. None preserves legacy behavior
+    /// and supplies no cleanup coverage; this method must have no effects.
+    /// # Errors
+    /// Refuses invalid or unavailable declarations.
+    fn binding_resource_contract(
+        &self,
+        _selection: &Selection,
+    ) -> Result<Option<ProviderResourceContract>, ProviderBindingError> {
+        Ok(None)
+    }
+    /// Acquire only within pre-registered host capacity. Implementations must
+    /// register cleanup before effects, retain service dependencies separately,
+    /// and never fall back to unscoped acquisition.
+    /// # Errors
+    /// The default refuses; opting into a declaration requires this bridge.
+    async fn bind_owned(
+        &self,
+        _selection: &Selection,
+        _context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        Err(ProviderBindingError::ResourcesUnsupported)
+    }
+    /// Restore the exact declared route within owned capacity.
+    /// # Errors
+    /// Refuses changed configuration before acquisition or an unimplemented bridge.
+    async fn restore_binding_owned(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+        context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind_owned(&selection, context).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
+    /// Acquire and hold the implementation selected by this exact descriptor.
+    /// # Errors
+    /// Returns binding, selection or provider acquisition failures.
+    async fn bind(&self, selection: &Selection) -> Result<BoundProvider, ProviderBindingError> {
+        let descriptor = self.binding_descriptor(selection)?;
+        binding::validate_selection(selection, &descriptor)?;
+        BoundProvider::new(selection, descriptor, self.build(selection).await?)
+    }
+    /// Restore only the original backend/configuration; never substitute a route.
+    /// # Errors
+    /// A changed descriptor fails before acquiring the implementation.
+    async fn restore_binding(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind(&selection).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
 }
 
 #[async_trait]
 pub trait Resolver: Send + Sync {
     async fn resolve(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError>;
+    /// Return stable, nonsecret behavior/config identity without credential or
+    /// network I/O. Undeclared native bindings fail closed.
+    /// # Errors
+    /// Returns a typed unavailable/configuration failure.
+    fn binding_descriptor(
+        &self,
+        _selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Err(ProviderBindingError::Unavailable)
+    }
+    /// Pure ownership policy for bind/restore. None preserves legacy behavior
+    /// and supplies no cleanup coverage; this method must have no effects.
+    /// # Errors
+    /// Refuses invalid or unavailable declarations.
+    fn binding_resource_contract(
+        &self,
+        _selection: &Selection,
+    ) -> Result<Option<ProviderResourceContract>, ProviderBindingError> {
+        Ok(None)
+    }
+    /// Acquire only within pre-registered host capacity. Implementations must
+    /// register cleanup before effects, retain service dependencies separately,
+    /// and never fall back to unscoped acquisition.
+    /// # Errors
+    /// The default refuses; opting into a declaration requires this bridge.
+    async fn bind_owned(
+        &self,
+        _selection: &Selection,
+        _context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        Err(ProviderBindingError::ResourcesUnsupported)
+    }
+    /// Restore the exact declared route within owned capacity.
+    /// # Errors
+    /// Refuses changed configuration before acquisition or an unimplemented bridge.
+    async fn restore_binding_owned(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+        context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind_owned(&selection, context).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
+    /// Acquire and hold the implementation selected by this exact descriptor.
+    /// # Errors
+    /// Returns binding, selection or provider acquisition failures.
+    async fn bind(&self, selection: &Selection) -> Result<BoundProvider, ProviderBindingError> {
+        let descriptor = self.binding_descriptor(selection)?;
+        binding::validate_selection(selection, &descriptor)?;
+        BoundProvider::new(selection, descriptor, self.resolve(selection).await?)
+    }
+    /// Restore only the original backend/configuration; never substitute a route.
+    /// # Errors
+    /// A changed descriptor fails before acquiring the implementation.
+    async fn restore_binding(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind(&selection).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -172,6 +372,29 @@ impl FakeProvider {
             scripts: Arc::new(Mutex::new(scripts.into())),
             requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    fn descriptor(
+        selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        if selection.provider_id != "fake" {
+            return Err(ProviderBindingError::Unavailable);
+        }
+        ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "crabber.fake",
+            "1",
+            crabber_core::InputFingerprint::new(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            )
+            .expect("constant digest is valid"),
+            crabber_core::ProviderBindingLimits {
+                context_tokens: Some(8192),
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| ProviderBindingError::InvalidDescriptor)
     }
 
     #[must_use]
@@ -206,6 +429,13 @@ impl Streamer for FakeProvider {
 
 #[async_trait]
 impl Resolver for FakeProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Self::descriptor(selection)
+    }
+
     async fn resolve(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         if selection.provider_id != "fake" {
             return Err(ProviderError {
@@ -220,6 +450,13 @@ impl Resolver for FakeProvider {
 
 #[async_trait]
 impl ProviderAdapter for FakeProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Self::descriptor(selection)
+    }
+
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "fake".into(),

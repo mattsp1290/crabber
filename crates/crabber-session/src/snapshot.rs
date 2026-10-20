@@ -1,5 +1,8 @@
 //! Bounded, all-history reads independent of runtime context projection.
-use crabber_core::{ContentBlock, EventCursor, Message, SessionId, ToolCallRecord};
+use crabber_core::{
+    ContentBlock, EventCursor, ImportedMessageProvenance, ImportedToolCall, Message, SessionId,
+    ToolCallRecord,
+};
 use serde::{Deserialize, Serialize};
 
 /// Per-page caps. Zero is permitted and produces a limit if a record needs it.
@@ -48,11 +51,20 @@ pub enum SnapshotLimit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotPage {
+    /// Public revision captured with the first immutable history boundary.
+    /// Kept inside authenticated continuation tokens across every page.
+    pub captured_revision: crabber_core::SessionRevision,
     /// Immutable inclusive boundary. Read events strictly after this cursor.
     /// Zero represents a snapshot preceding every durable event.
     pub high_water: EventCursor,
     pub messages: Vec<Message>,
     pub tool_calls: Vec<ToolCallRecord>,
+    /// Non-executable copied call/result pairs, sharing the tool-call budget.
+    #[serde(default)]
+    pub imported_calls: Vec<ImportedToolCall>,
+    /// Public identity correspondence; charged to the encoded-byte allowance.
+    #[serde(default)]
+    pub imported_provenance: Vec<ImportedMessageProvenance>,
     pub usage: SnapshotUsage,
     /// None means complete. Keep the original high-water until every page is read.
     pub continuation: Option<SnapshotContinuation>,

@@ -43,7 +43,9 @@ impl tool_middleware_api::Guest for Fixture {
                 code: "decode".into(), message: "SECRET-DEPTH-ERROR".into(), retryable: false,
             }),
         };
-        let marker = envelope["result"].as_str().unwrap_or_default().to_owned();
+        let output: crabber_guest::ToolOutput = serde_json::from_value(envelope["result"].clone()).unwrap();
+        let value = output.json_value().unwrap();
+        let marker = value.as_str().unwrap_or_default().to_owned();
         match marker.as_str() {
             "__unchanged__" => return types::Replacement::Unchanged,
             "__error__" => return types::Replacement::Error(types::StructuredError {
@@ -67,7 +69,7 @@ impl tool_middleware_api::Guest for Fixture {
                 code: "input".into(), message: "SECRET-INPUT-ERROR".into(), retryable: false,
             }),
         };
-        envelope["result"] = json!({
+        let result = json!({
             "tool_name": tool_name,
             "tool_call_id": tool_call_id,
             "executed_input": input,
@@ -89,6 +91,7 @@ impl tool_middleware_api::Guest for Fixture {
                 "workspace_id": _turn.workspace_id,
             },
         });
+        envelope["result"] = serde_json::to_value(crabber_guest::ToolOutput::from_json(&result).unwrap()).unwrap();
         types::Replacement::Json(envelope.to_string())
     }
 }

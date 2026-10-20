@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, BuildError, FakeProvider, Selection, StreamDelta, ToolDefinition,
-    ToolExecutor,
+    Agent, AgentConfig, BuildError, FakeProvider, JsonToolExecutor, Selection, StreamDelta,
+    ToolDefinition,
     core::{RunStatus, ToolCallId, ToolInfo},
     extension::{Extension, ExtensionError, ModelStream, Next, Point, Registrar, Scope},
     runtime::{InterruptPolicy, PermissionDecision, PermissionPolicy},
@@ -39,7 +39,7 @@ fn tool_call() -> Vec<StreamDelta> {
 }
 struct Echo;
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         Ok(input)
     }
@@ -61,6 +61,7 @@ async fn default_cap_is_absent() {
     assert_eq!(config().max_output_tokens, None);
     let provider = Arc::new(FakeProvider::scripted(vec![text()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(provider.clone())
         .config(config())
@@ -79,10 +80,11 @@ async fn default_cap_is_absent() {
 async fn facade_cap_sets_every_turn_request() {
     let provider = Arc::new(FakeProvider::scripted(vec![tool_call(), text()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(provider.clone())
         .config(config().max_output_tokens(4096))
-        .tool(tool())
+        .shared_tool(tool())
         .build()
         .unwrap();
     agent
@@ -139,10 +141,11 @@ async fn around_hook_overrides_or_preserves_facade_cap() {
     ] {
         let provider = Arc::new(FakeProvider::scripted(vec![text()]));
         let agent = Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .memory()
             .provider(provider.clone())
             .config(config().max_output_tokens(4096))
-            .extension(Arc::new(CapHook(override_cap)), Scope::Global)
+            .shared_extension(Arc::new(CapHook(override_cap)), Scope::Global)
             .build()
             .unwrap();
         agent
@@ -158,6 +161,7 @@ async fn around_hook_overrides_or_preserves_facade_cap() {
 #[test]
 fn zero_cap_is_rejected_at_build() {
     let result = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(FakeProvider::scripted(vec![])))
         .config(config().max_output_tokens(0))
@@ -178,10 +182,11 @@ async fn cap_survives_pause_checkpoint_resume() {
     let store = Arc::new(MemoryStore::new());
     let provider = Arc::new(FakeProvider::scripted(vec![tool_call(), text()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(config().max_output_tokens(4096))
-        .tool(tool())
+        .shared_tool(tool())
         .policy(Arc::new(Pause))
         .build()
         .unwrap();
@@ -198,12 +203,15 @@ async fn cap_survives_pause_checkpoint_resume() {
         saved.checkpoint.unwrap()["request"]["max_output_tokens"],
         4096
     );
-    // A fresh host with a different config must restore the checkpoint's cap.
+    // Preserve the original policy registration so only the configured cap changes.
+    // A fresh host must restore the checkpoint's cap.
     let resumed = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider.clone())
         .config(config().max_output_tokens(64))
-        .tool(tool())
+        .shared_tool(tool())
+        .policy(Arc::new(Pause))
         .build()
         .unwrap();
     assert_eq!(

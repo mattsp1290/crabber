@@ -442,6 +442,7 @@ async fn model_middleware_workspace_resolver_is_scoped_to_exact_admitted_workspa
     });
     let fake = FakeProvider::scripted(vec![text_script("one"), text_script("two")]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(typed_registry(contexts.clone(), 32).await))
@@ -504,6 +505,7 @@ async fn model_middleware_workspace_resolver_denies_forged_context_without_host_
     });
     let fake = FakeProvider::scripted(vec![text_script("unused")]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))
@@ -543,6 +545,7 @@ async fn model_middleware_workspace_failures_are_sanitized_before_provider_dispa
         let fake = FakeProvider::scripted(vec![text_script("unused")]);
         let store = Arc::new(MemoryStore::new());
         let mut builder = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store.clone())
             .resolver(Arc::new(fake.clone()))
             .plan_provider(Arc::new(
@@ -579,6 +582,7 @@ async fn model_middleware_workspace_failures_are_sanitized_before_provider_dispa
 async fn model_middleware_workspace_rejects_nonconforming_reader_before_provider_dispatch() {
     let fake = FakeProvider::scripted(vec![text_script("unused")]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(

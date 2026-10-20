@@ -52,6 +52,7 @@ async fn unknown_tool_depth(store: Arc<dyn Store>) {
         StreamDelta::Completed,
     ];
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store))
         .resolver(Arc::new(FakeProvider::scripted(vec![
             script,
@@ -65,6 +66,9 @@ async fn unknown_tool_depth(store: Arc<dyn Store>) {
         .unwrap();
     let handle = runtime
         .start(Request {
+            selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
+            input_envelope: None,
             session_id: None,
             workspace_id: "test".into(),
             directory: ".".into(),

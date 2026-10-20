@@ -30,6 +30,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ag-ui-encoder"
+version = "0.2.0"
+source = "git+https://github.com/mattsp1290/ag-ui.git?rev=705303b26b6b900cdf9bdfa456fbd92a7003ca6b#705303b26b6b900cdf9bdfa456fbd92a7003ca6b"
+dependencies = [
+ "ag-ui-core",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -273,6 +283,7 @@ dependencies = [
  "crabber-runtime",
  "crabber-session",
  "crabber-wasm",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -282,6 +293,7 @@ name = "crabber-agui"
 version = "0.1.0"
 dependencies = [
  "ag-ui-core",
+ "ag-ui-encoder",
  "crabber-core",
  "serde",
  "serde_json",
@@ -292,10 +304,14 @@ dependencies = [
 name = "crabber-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "json-patch",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "time",
+ "url",
  "uuid",
 ]
 
@@ -319,6 +335,7 @@ dependencies = [
 name = "crabber-guest"
 version = "0.1.0"
 dependencies = [
+ "crabber-core",
  "crabber-guest-macros",
  "serde_json",
  "wit-bindgen 0.62.0",
@@ -354,6 +371,7 @@ dependencies = [
  "futures",
  "reqwest",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 
@@ -383,11 +401,15 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "crabber-core",
+ "crabber-extension",
+ "futures",
+ "jsonschema",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
  "time",
+ "tokio",
  "uuid",
 ]
 

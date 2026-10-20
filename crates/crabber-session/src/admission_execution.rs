@@ -14,6 +14,8 @@ pub enum AdmissionExecutionError {
     Unsupported,
     #[error("admission execution evidence is missing")]
     MissingEvidence,
+    #[error("admission is reserved by a preparation")]
+    PreparationBusy,
     #[error("admission owner has a live lease")]
     LiveLease,
     #[error("admission owner changed")]
@@ -31,6 +33,11 @@ pub enum AdmissionExecutionError {
 /// Session-owned wire request; excludes credentials and transient trace identity.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmissionRequestData {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::AdmissionSelectionPolicy::is_explicit"
+    )]
+    pub selection_policy: crate::AdmissionSelectionPolicy,
     pub session_id: SessionId,
     pub workspace_id: String,
     pub directory: String,
@@ -47,6 +54,8 @@ pub struct AdmissionRequestData {
 /// turn limit, tools, prompts, restrictions, components, guards, providers.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdmissionExecutionCapsule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_envelope: Option<crabber_core::InputEnvelope>,
     pub version: u32,
     pub request: AdmissionRequestData,
     pub runtime_semantics: Value,
@@ -87,8 +96,18 @@ impl AdmissionExecutionCapsule {
     pub fn validate(&self, keyed: &KeyedAdmitRequest) -> Result<(), StoreError> {
         use crabber_core::{ContentBlock, PartKind, Role};
         let r: &AdmitRequest = &keyed.request;
+        r.validate_messages()?;
         let data = &self.request;
+        data.selection_policy
+            .verify_components(&self.runtime_semantics)?;
         let semantics = self.runtime_semantics.as_array();
+        if let Some(input) = &self.input_envelope
+            && !self.request.text.is_empty()
+            && input.legacy_text() != Some(self.request.text.as_str())
+        {
+            return Err(StoreError::AdmissionConflict);
+        }
+
         let text_matches = r.user_message.role == Role::User
             && r.user_message.parent_id.is_none()
             && r.user_message.parts.len() == 1
@@ -98,13 +117,20 @@ impl AdmissionExecutionCapsule {
                 == ContentBlock::Text {
                     text: data.text.clone(),
                 };
-        if self.version != 1
+        let typed = self.version == 2 && self.input_envelope.is_some();
+        let resources =
+            crate::session_owner::preparation::resource_contract(&self.runtime_semantics)
+                .map_err(|_| StoreError::AdmissionConflict)?;
+        if !matches!(
+            (self.version, self.input_envelope.is_some()),
+            (1, false) | (2, true)
+        ) || self.input_envelope != r.input_envelope
             || r.session_id.as_ref() != Some(&data.session_id)
             || r.user_message.session_id != data.session_id
             || r.workspace_id != data.workspace_id
             || r.directory != data.directory
             || r.title != data.title
-            || !text_matches
+            || (!typed && (!text_matches || !r.additional_messages.is_empty()))
             || self.config_hash != r.config_hash
             || self.plan_fingerprint != r.plan_fingerprint
             || self.fingerprint != keyed.options.fingerprint
@@ -112,7 +138,7 @@ impl AdmissionExecutionCapsule {
             || self.semantic_digest != keyed.semantic_digest()?
             || admission_config_hash(&self.runtime_semantics) != self.config_hash
             || !semantics.is_some_and(|s| {
-                s.len() == 15
+                s.len() == 15 + usize::from(resources.is_some())
                     && s[0] == "crabber.runtime.admission.v1"
                     && s[1] == data.provider_id
                     && s[2] == data.model_id
@@ -170,6 +196,22 @@ pub struct ClaimedAdmission {
 }
 
 impl AdmissionExecutionRecord {
+    /// Encode bounded private evidence as lossless JSON text.
+    /// # Errors
+    /// Rejects oversized or malformed evidence without echoing input.
+    pub fn encode(&self) -> Result<String, StoreError> {
+        crate::execution_binding::encode_bounded(self)
+    }
+    /// Decode private evidence; authoritative row validation remains required.
+    /// # Errors
+    /// Rejects oversized or malformed evidence.
+    pub fn decode(encoded: &str) -> Result<Self, StoreError> {
+        if encoded.len() > 16 * 1024 * 1024 {
+            return Err(StoreError::AdmissionConflict);
+        }
+        serde_json::from_str(encoded).map_err(|_| StoreError::AdmissionConflict)
+    }
+
     /// Validate retained capsule, run and original user-message bindings.
     /// # Errors
     /// Returns sanitized `SemanticConflict` for inconsistent evidence.
@@ -178,31 +220,92 @@ impl AdmissionExecutionRecord {
         run: &Run,
         user: &crabber_core::Message,
     ) -> Result<(), AdmissionExecutionError> {
-        if self.receipt.run_id != run.id
-            || self.receipt.session_id != run.session_id
+        self.validate_messages(run, std::slice::from_ref(user))
+    }
+    /// Validate original keyed input without treating replay as execution authority.
+    /// # Errors
+    /// Rejects a missing/altered message or inconsistent receipt/capsule.
+    pub fn validate_messages(
+        &self,
+        run: &Run,
+        messages: &[crabber_core::Message],
+    ) -> Result<(), AdmissionExecutionError> {
+        self.validate_messages_scope(
+            &run.session_id,
+            &run.id,
+            &run.config_hash,
+            &run.plan_fingerprint,
+            &run.owner,
+            messages,
+        )
+    }
+    /// Authenticate retained input against actual narrow Run facts. This read
+    /// grants no execution authority and never materializes a private checkpoint.
+    pub(crate) fn validate_messages_scope(
+        &self,
+        session: &SessionId,
+        run_id: &crabber_core::RunId,
+        config: &str,
+        plan: &str,
+        owner: &str,
+        messages: &[crabber_core::Message],
+    ) -> Result<(), AdmissionExecutionError> {
+        if let Some(input) = &self.capsule.input_envelope {
+            input
+                .validate_message_projection(session, Some(run_id), messages)
+                .map_err(|_| AdmissionExecutionError::SemanticConflict)?;
+        } else if messages.len() != 1 {
+            return Err(AdmissionExecutionError::SemanticConflict);
+        }
+        let user = messages
+            .first()
+            .ok_or(AdmissionExecutionError::SemanticConflict)?;
+        if self.receipt.run_id != *run_id
+            || self.receipt.session_id != *session
             || self.receipt.user_message_id != user.id
-            || user.run_id.as_ref() != Some(&run.id)
-            || self.receipt.semantic_digest_version != 1
+            || user.run_id.as_ref() != Some(run_id)
+            || self.receipt.semantic_digest_version
+                != if self.capsule.input_envelope.is_some() {
+                    2
+                } else {
+                    1
+                }
             || self.receipt.fingerprint != self.capsule.fingerprint
             || self.receipt.semantic_digest != self.capsule.semantic_digest
-            || run.config_hash != self.capsule.config_hash
-            || run.plan_fingerprint != self.capsule.plan_fingerprint
+            || config != self.capsule.config_hash
+            || plan != self.capsule.plan_fingerprint
         {
             return Err(AdmissionExecutionError::SemanticConflict);
         }
         let data = &self.capsule.request;
         let mut user = user.clone();
         user.run_id = None;
+        let additional_messages = messages
+            .iter()
+            .skip(1)
+            .cloned()
+            .map(|mut record| {
+                record.run_id = None;
+                record
+            })
+            .collect();
         let keyed = KeyedAdmitRequest {
             request: AdmitRequest {
-                session_id: Some(run.session_id.clone()),
+                input_envelope: self.capsule.input_envelope.clone(),
+                additional_messages,
+                expected_revision: self
+                    .capsule
+                    .input_envelope
+                    .as_ref()
+                    .map(crabber_core::InputEnvelope::expected_revision),
+                session_id: Some(session.clone()),
                 workspace_id: data.workspace_id.clone(),
                 directory: data.directory.clone(),
                 title: data.title.clone(),
                 user_message: user,
-                config_hash: run.config_hash.clone(),
-                plan_fingerprint: run.plan_fingerprint.clone(),
-                owner: run.owner.clone(),
+                config_hash: config.to_owned(),
+                plan_fingerprint: plan.to_owned(),
+                owner: owner.to_owned(),
                 lease: Duration::from_secs(30),
             },
             options: crabber_core::AdmissionOptions {
@@ -210,7 +313,7 @@ impl AdmissionExecutionRecord {
                 fingerprint: self.capsule.fingerprint.clone(),
                 behavior_fingerprint: self.capsule.behavior_fingerprint.clone(),
             },
-            execution: None,
+            execution: Some(self.capsule.clone()),
         };
         self.capsule
             .validate(&keyed)

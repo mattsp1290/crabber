@@ -16,6 +16,22 @@ pub fn body(request: &ModelRequest, token_mode: TokenMode) -> Value {
         messages.push(json!({"role":"system","content":system}));
     }
     for message in &request.messages {
+        if message
+            .parts
+            .iter()
+            .any(|part| matches!(part.content, ContentBlock::MediaContent { .. }))
+        {
+            let content: Vec<_> = message
+                .parts
+                .iter()
+                .filter_map(|part| match &part.content {
+                    ContentBlock::Text { text } => Some(json!({"type":"text","text":text})),
+                    block => crate::real::outbound::chat_image(block),
+                })
+                .collect();
+            messages.push(json!({"role":"user","content":content}));
+            continue;
+        }
         let mut text = String::new();
         let mut calls = Vec::new();
         for part in &message.parts {
@@ -30,7 +46,12 @@ pub fn body(request: &ModelRequest, token_mode: TokenMode) -> Value {
             }
         }
         if message.role != Role::Tool && (!text.is_empty() || !calls.is_empty()) {
-            let mut entry = json!({"role":if message.role == Role::Assistant {"assistant"} else {"user"},"content":text});
+            let role = match message.role {
+                Role::System => "system",
+                Role::Assistant => "assistant",
+                Role::User | Role::Tool => "user",
+            };
+            let mut entry = json!({"role":role,"content":text});
             if !calls.is_empty() {
                 entry["tool_calls"] = json!(calls);
             }
@@ -84,6 +105,12 @@ impl Codec {
         if let Some(text) = delta["content"].as_str() {
             out.push(StreamDelta::TextDelta(text.into()));
         }
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(text) = delta[key].as_str() {
+                // Chat-compatible vendor fields carry no public-summary contract.
+                out.push(StreamDelta::ReasoningDelta(text.into()));
+            }
+        }
         if let Some(calls) = delta["tool_calls"].as_array() {
             for call in calls {
                 let index = call["index"].as_u64().unwrap_or(0);
@@ -125,6 +152,7 @@ mod tests {
 
     fn request() -> ModelRequest {
         ModelRequest {
+            context: Vec::new(),
             identity: RequestIdentity {
                 session_id: SessionId::from("session"),
                 run_id: RunId::from("run"),

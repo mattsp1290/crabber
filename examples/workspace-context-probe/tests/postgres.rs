@@ -108,7 +108,7 @@ async fn fresh_host_resumes_paused_run_with_the_persisted_workspace() {
     fresh_host(&dir.0, "drift");
     let (tool, assemble, cancelled) = observed(&dir.0, "rejected.json");
     assert_eq!((tool, assemble), (Vec::new(), Vec::new()));
-    assert!(cancelled.is_empty());
+    assert_eq!(cancelled, [] as [bool; 0]);
 }
 
 // Invoked by the parent test in a genuinely fresh OS process, never recursively.

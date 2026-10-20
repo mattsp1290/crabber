@@ -1,7 +1,12 @@
-//! Real-process proof of original-turn completion and conservative start ambiguity.
+//! Original-turn projection integration; authority boundaries have independent cases.
 use super::*;
 use crabber::session::{AdmissionExecutionError, AdmissionExecutionState};
-use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse};
+use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse_recorded};
+
+#[path = "recovery/authority.rs"]
+mod authority;
+#[path = "recovery/boundaries.rs"]
+mod boundaries;
 
 #[allow(clippy::too_many_lines)] // Fresh-process modes share one original request and receipt.
 pub(super) async fn child(
@@ -26,10 +31,14 @@ pub(super) async fn child(
             )
             .await;
         if mode == "commit-loss" {
+            let Err(error) = result else {
+                panic!("lost native acknowledgment")
+            };
             assert!(matches!(
-                result,
-                Err(RuntimeError::Store(StoreError::Validation(_)))
+                error.operation_error(),
+                RuntimeError::Store(StoreError::Validation(_))
             ));
+            assert!(error.preparation_reconciliation().is_some());
             assert_eq!(count(&dir.join("ledger"), "provider"), 0);
             return;
         }
@@ -65,14 +74,18 @@ pub(super) async fn child(
         assert_eq!(count(&dir.join("ledger"), "provider"), 0);
         return;
     }
-    if mode == "unstarted-replay" {
+    if mode == "unstarted-replay" || mode == "unstarted-replay-control" {
         assert!(
             matches!(agent.recover_admission(session.clone(), "process input", options()).await.unwrap(), Admission::Replayed(r) if r == receipt)
         );
-        project(store, &receipt).await;
+        if mode == "unstarted-replay" {
+            project(store, &receipt).await;
+        } else {
+            completed(store, &receipt).await;
+        }
         return;
     }
-    if mode == "unstarted-interrupt" {
+    if mode == "unstarted-native-absent" || mode == "unstarted-started-refuse" {
         assert!(matches!(
             agent
                 .recover_admission(session.clone(), "process input", options())
@@ -80,10 +93,11 @@ pub(super) async fn child(
                 .unwrap(),
             Admission::Replayed(_)
         ));
-        assert_eq!(
-            agent.resume(&receipt.run_id).await.unwrap().status,
-            RunStatus::Interrupted
-        );
+        if mode == "unstarted-native-absent" {
+            authority::resume_without_native(agent, store, &receipt).await;
+        } else {
+            authority::refuse_started(agent, store, &receipt).await;
+        }
         return;
     }
     let result = agent
@@ -95,11 +109,13 @@ pub(super) async fn child(
         )
         .await;
     if mode == "unstarted-claim-loss" {
+        let Err(error) = result else {
+            panic!("lost atomic recovery acknowledgment")
+        };
+        assert!(error.preparation_reconciliation().is_some());
         assert!(matches!(
-            result,
-            Err(RuntimeError::AdmissionExecution(
-                AdmissionExecutionError::UnknownStoreFailure
-            ))
+            error.operation_error(),
+            RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure)
         ));
         assert_eq!(count(&dir.join("ledger"), "provider"), 0);
         return;
@@ -126,7 +142,11 @@ pub(super) async fn child(
             assert_eq!(result.status, RunStatus::Completed);
             assert_eq!(result.run_id, receipt.run_id);
             assert_eq!(result.session_id, receipt.session_id);
-            project(store, &receipt).await;
+            if mode == "unstarted-complete-control" {
+                completed(store, &receipt).await;
+            } else {
+                project(store, &receipt).await;
+            }
         }
         Ok(Admission::Replayed(r)) if mode.starts_with("unstarted-race-") => {
             assert_eq!(r, receipt);
@@ -140,11 +160,28 @@ pub(super) async fn child(
         )) if mode.starts_with("unstarted-race-") => {
             fs::write(dir.join(format!("{mode}-denied")), "denied").unwrap();
         }
+        Err(error)
+            if mode.starts_with("unstarted-race-")
+                && error
+                    .preparation_reconciliation()
+                    .is_some_and(|p| &p.session_id == session)
+                && matches!(
+                    error.operation_error(),
+                    RuntimeError::PreparationRecoveryRequired
+                        | RuntimeError::Store(StoreError::AdmissionRecoveryRequired)
+                ) =>
+        {
+            fs::write(
+                dir.join(format!("{mode}-denied")),
+                "original preparation pending",
+            )
+            .unwrap();
+        }
         other => panic!("unexpected recovery: {other:?}"),
     }
 }
 
-async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
+async fn completed(store: &dyn Store, receipt: &AdmissionReceipt) -> Vec<Message> {
     let run = store.get_run(&receipt.run_id).await.unwrap().unwrap();
     assert_eq!(run.status, RunStatus::Completed);
     let history = store.list_all_messages(&receipt.session_id).await.unwrap();
@@ -158,6 +195,17 @@ async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
                     text: "original recovered output".into()
                 })
     );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .count(),
+        1
+    );
+    history
+}
+async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
+    let history = completed(store, receipt).await;
     let records = store
         .list_events(&receipt.session_id, None, 1000)
         .await
@@ -197,7 +245,11 @@ async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
             presentation.payload = serde_json::json!({"message_id": id, "outcome": "completed"});
             output.extend(projector.push(&presentation).unwrap());
         }
-        output.extend(projector.push(&record).unwrap());
+        output.extend(
+            projector
+                .push(&record)
+                .unwrap_or_else(|error| panic!("projection rejected {:?}: {error:?}", record.kind)),
+        );
     }
     output.extend(projector.finish(Completion::Completed).unwrap());
     let wire: Vec<_> = output
@@ -220,7 +272,7 @@ async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
         "original recovered output"
     );
     for event in output {
-        let frame = encode_sse(&event, 1_048_576).unwrap();
+        let frame = encode_sse_recorded(&event, 1_048_576).unwrap();
         assert!(frame.starts_with(b"data: "));
     }
 }
@@ -267,22 +319,23 @@ fn test_url() -> Option<String> {
 
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn postgres_unstarted_completion_and_uncertainty_journey() {
+async fn postgres_unstarted_completion_and_projection_journey() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else { return };
     crabber::session::PostgresStore::migrate(&url)
         .await
         .unwrap();
-    unstarted_journey(BackendKind::Postgres(url)).await;
+    projection_journey(BackendKind::Postgres(url)).await;
 }
 
 #[cfg(feature = "sqlite")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sqlite_unstarted_completion_and_uncertainty_journey() {
-    unstarted_journey(BackendKind::Sqlite).await;
+async fn sqlite_unstarted_completion_and_projection_journey() {
+    projection_journey(BackendKind::Sqlite).await;
 }
 
 #[allow(clippy::too_many_lines)]
-async fn unstarted_journey(kind: BackendKind) {
+async fn projection_journey(kind: BackendKind) {
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     let store = backend.connect().await;
@@ -342,70 +395,5 @@ async fn unstarted_journey(kind: BackendKind) {
         events,
         store.list_events(&session, None, 1000).await.unwrap()
     );
-    evidence(&backend, &dir.0, &session, 1, 0).await;
-    // Each uncertainty boundary starts from a real committed original admission.
-    for mode in [
-        "unstarted-claim-loss",
-        "unstarted-before-begin",
-        "unstarted-begin-fail",
-        "unstarted-begin-loss",
-        "unstarted-after-begin",
-    ] {
-        let (dir, session) = handoff();
-        let backend = kind.prepare(&dir.0).await;
-        let store = backend.connect().await;
-        fs::write(dir.0.join("text-only"), "yes").unwrap();
-        // These cases do not assert live eligibility: shorten the original lease,
-        // then wait for its durable real-clock expiry rather than editing SQL state.
-        fs::write(dir.0.join("short-admission-lease"), "yes").unwrap();
-        finish(spawn(&backend, &dir.0, "commit-loss")).await;
-        let receipt = original(&dir.0);
-        expired(store.as_ref(), &receipt).await;
-        let mut process = spawn(&backend, &dir.0, mode);
-        if mode == "unstarted-before-begin" || mode == "unstarted-after-begin" {
-            wait(&dir.0.join(if mode == "unstarted-before-begin" {
-                "claimed"
-            } else {
-                "begun"
-            }))
-            .await;
-            process.0.kill().unwrap();
-            process.0.wait().unwrap();
-        } else {
-            finish(process).await;
-        }
-        assert_eq!(count(&dir.0.join("ledger"), "provider"), 0);
-        expired(store.as_ref(), &receipt).await;
-        if mode == "unstarted-begin-loss" || mode == "unstarted-after-begin" {
-            assert_eq!(
-                store
-                    .load_admission_execution(&session, &options().key)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .state,
-                AdmissionExecutionState::Started
-            );
-            finish(spawn(&backend, &dir.0, "unstarted-interrupt")).await;
-            evidence(&backend, &dir.0, &session, 0, 0).await;
-        } else {
-            unstarted(store.as_ref(), &session).await;
-            finish(spawn(&backend, &dir.0, "unstarted-complete")).await;
-            finish(spawn(&backend, &dir.0, "unstarted-replay")).await;
-            evidence(&backend, &dir.0, &session, 1, 0).await;
-        }
-    }
-    // A provider stream actually began before death: Started cannot be retried.
-    let (dir, session) = handoff();
-    let backend = kind.prepare(&dir.0).await;
-    let store = backend.connect().await;
-    fs::write(dir.0.join("text-only"), "yes").unwrap();
-    let mut process = spawn(&backend, &dir.0, "unstarted-provider-loss");
-    wait(&dir.0.join("executing")).await;
-    process.0.kill().unwrap();
-    process.0.wait().unwrap();
-    let receipt = original(&dir.0);
-    expired(store.as_ref(), &receipt).await;
-    finish(spawn(&backend, &dir.0, "unstarted-interrupt")).await;
     evidence(&backend, &dir.0, &session, 1, 0).await;
 }

@@ -287,7 +287,7 @@ async fn model_middleware_fingerprint_ignores_unrelated_mount_sequence_and_callb
 }
 
 #[tokio::test]
-async fn model_middleware_fingerprint_preserves_legacy_fixture() {
+async fn model_middleware_fingerprint_pins_canonical_extension_metadata() {
     let registry = Registry::new();
     registry
         .mount(
@@ -313,7 +313,7 @@ async fn model_middleware_fingerprint_preserves_legacy_fixture() {
     );
     assert_eq!(
         plan.fingerprint.to_string(),
-        "43138ff5dfdff3bfd4179ede9cb4e5a457a156827be9cf07266033fe0554c8f2"
+        "a66dcd706006c99598efd8b901b648872d7d775cb5eb1140a165f622f36daf3c"
     );
 }
 

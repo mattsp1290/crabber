@@ -1,23 +1,57 @@
+#[path = "agent/close.rs"]
+mod close;
+pub use close::{HostCloseReport, HostExtensionClose};
+#[path = "agent/frontend_continuation.rs"]
+mod frontend_continuation;
+#[path = "agent/tool_continuation.rs"]
+mod tool_continuation;
+pub use crabber_runtime::ContinueTool;
+pub use crabber_runtime::{ContinueFrontend, RecoverFrontend};
+pub use tool_continuation::ToolContinuation;
+#[path = "agent/approval.rs"]
+mod approval;
+
+mod attempt_control;
+mod observers;
+use observers::AgentObservers;
+mod management;
+#[path = "agent/phase.rs"]
+mod phase;
+#[path = "agent/preparation.rs"]
+mod preparation;
+mod public_session;
+mod run_control;
+mod session_owner;
+use crate::ExecutionContext;
+pub use approval::Continuation;
 use async_trait::async_trait;
+#[cfg(test)]
+use crabber_core::EventRecord;
 use crabber_core::{
-    AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId, TraceContext,
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, RunId, SessionId, TraceContext,
 };
 use crabber_extension::{
-    Extension, ExtensionError, MountHandle, PromptSection, Registrar, Registry, Scope,
-    StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
+    ContextualPlanProvider, Extension, ExtensionError, ExtensionFactory, PromptSection, Registrar,
+    Registry, Scope, StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
 };
 use crabber_providers::{Resolver, Selection};
 use crabber_runtime::{
     CompactionPolicy, ExecutionMode, Observer, Orchestrator, PermissionPolicy, Request, RunResult,
     RuntimeError,
 };
+pub use crabber_runtime::{ContinueApproval, RecoverApproval};
 #[cfg(feature = "postgres")]
 use crabber_session::PostgresStore;
 #[cfg(feature = "sqlite")]
 use crabber_session::SqliteStore;
 use crabber_session::{MemoryStore, Store};
-use std::{sync::Arc, time::Duration};
-use tokio::sync::{OnceCell, broadcast};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 /// Host-owned settings frozen into each prompt request.
 #[derive(Debug, Clone)]
@@ -63,6 +97,7 @@ pub enum BuildError {
 }
 
 pub struct AgentBuilder {
+    behavior_fingerprint: Option<crabber_core::InputFingerprint>,
     observers: Vec<Arc<dyn Observer>>,
     monotonic_clock: Option<Arc<dyn crabber_runtime::MonotonicClock>>,
     store: Option<Arc<dyn Store>>,
@@ -75,12 +110,33 @@ pub struct AgentBuilder {
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogConfig>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
+    factories: Vec<Arc<dyn ExtensionFactory>>,
+    initialization_timeout: Duration,
     extension_close_timeout: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
 }
 
 impl AgentBuilder {
+    /// Declare the nonsecret version of native callbacks/policy for this host.
+    #[must_use]
+    pub fn behavior_fingerprint(mut self, fingerprint: crabber_core::InputFingerprint) -> Self {
+        self.behavior_fingerprint = Some(fingerprint);
+        self
+    }
+    /// Hash an explicit host behavior version; credentials are excluded.
+    /// # Panics
+    /// Panics only if a library SHA-256 digest ceases to be a valid fingerprint.
+    #[must_use]
+    pub fn behavior_version(self, version: &str) -> Self {
+        let fingerprint =
+            crabber_core::InputFingerprint::new(crabber_session::admission_config_hash(
+                &serde_json::json!(["crabber.host-behavior.v1", version]),
+            ))
+            .expect("SHA-256 is a valid fingerprint");
+        self.behavior_fingerprint(fingerprint)
+    }
+
     /// Injects execution timing independently of event/lease wall time.
     #[must_use]
     pub fn monotonic_clock(mut self, clock: Arc<dyn crabber_runtime::MonotonicClock>) -> Self {
@@ -94,11 +150,12 @@ impl AgentBuilder {
         self.observers.push(observer);
         self
     }
-    /// Mounts a SHA-256 verified Component Model extension.
+    /// Mount a SHA-256 verified Component Model extension shared by all contexts.
+    /// Its mutable state must support concurrent use across sessions/workspaces.
     #[cfg(feature = "wasm")]
     #[must_use]
-    pub fn wasm_extension(self, config: crabber_wasm::ModuleConfig) -> Self {
-        self.extension(
+    pub fn shared_wasm_extension(self, config: crabber_wasm::ModuleConfig) -> Self {
+        self.shared_extension(
             Arc::new(crabber_wasm::WasmExtension::new(config)),
             Scope::Global,
         )
@@ -182,7 +239,9 @@ impl AgentBuilder {
     }
 
     #[must_use]
-    pub fn tool(mut self, tool: Arc<ToolDefinition>) -> Self {
+    /// Register a tool whose captured state is safe to share across all contexts.
+    /// Use a contextual factory when tool state belongs to one workspace/session.
+    pub fn shared_tool(mut self, tool: Arc<ToolDefinition>) -> Self {
         self.tools.push(tool);
         self
     }
@@ -212,8 +271,45 @@ impl AgentBuilder {
     }
 
     #[must_use]
-    pub fn extension(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
+    /// Register one shared instance. Scope filters visibility; it does not isolate
+    /// mutable state. The instance must support concurrent use in every context
+    /// admitted by that scope. Use a factory for independently owned state.
+    pub fn shared_extension(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
         self.extensions.push((extension, scope));
+        self
+    }
+
+    /// Instantiate a fresh native extension/tool/service graph per declared owner.
+    #[must_use]
+    pub fn extension_factory(mut self, factory: Arc<dyn ExtensionFactory>) -> Self {
+        self.factories.push(factory);
+        self
+    }
+
+    /// Register explicitly shareable host capabilities with stable nonsecret
+    /// behavior/configuration identity. Scoped factories can override capabilities.
+    #[must_use]
+    pub fn shared_host_services(
+        self,
+        identity: crabber_extension::ComponentIdentity,
+        config_hash: crabber_core::InputFingerprint,
+        services: crabber_extension::HostServices,
+    ) -> Self {
+        self.shared_extension(
+            Arc::new(crate::host::SharedServices {
+                identity,
+                config_hash,
+                services,
+            }),
+            Scope::Global,
+        )
+    }
+
+    /// Bound the waiter for owned initialization. Timeout retains initialization;
+    /// it grants no execution plan and a later readiness/retry can reconcile it.
+    #[must_use]
+    pub fn initialization_timeout(mut self, bound: Duration) -> Self {
+        self.initialization_timeout = bound;
         self
     }
 
@@ -237,17 +333,18 @@ impl AgentBuilder {
                 "max_output_tokens must be positive",
             ));
         }
-        let (events, _) = broadcast::channel(256);
         #[cfg(feature = "datadog")]
         let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
-        let observer = Arc::new(EventBroadcaster {
+        let configured_observer = !self.observers.is_empty();
+        #[cfg(feature = "datadog")]
+        let configured_observer = configured_observer || datadog.is_some();
+        let observer = Arc::new(AgentObservers {
             observers: self.observers,
-            events: events.clone(),
             #[cfg(feature = "datadog")]
             datadog: datadog.clone(),
         });
         let extensions = self.extensions;
-        let has_extensions = !extensions.is_empty();
+        let has_extensions = !extensions.is_empty() || !self.factories.is_empty();
         let registry = has_extensions.then(|| {
             let observer = Arc::clone(&observer);
             Registry::new()
@@ -269,9 +366,22 @@ impl AgentBuilder {
                 ),
             );
         }
+        let contextual = registry
+            .as_ref()
+            .map(|registry| {
+                ContextualPlanProvider::new(
+                    registry.clone(),
+                    mounts,
+                    self.factories,
+                    self.initialization_timeout,
+                )
+            })
+            .transpose()
+            .map_err(RuntimeError::ExtensionPlan)?
+            .map(Arc::new);
         let plan_provider: Arc<dyn crabber_extension::RunPlanProvider> =
-            if let Some(registry) = &registry {
-                Arc::new(registry.clone())
+            if let Some(provider) = &contextual {
+                provider.clone()
             } else {
                 Arc::new(StaticPlanProvider::new(self.tools, self.prompts))
             };
@@ -280,8 +390,16 @@ impl AgentBuilder {
             .resolver(resolver)
             .plan_provider(plan_provider)
             .execution_mode(self.execution_mode)
-            .compaction(self.compaction)
-            .observer(observer);
+            .compaction(self.compaction);
+        if let Some(provider) = &contextual {
+            runtime = runtime.contextual_plan_provider(provider.clone());
+        }
+        if configured_observer {
+            runtime = runtime.observer(observer);
+        }
+        if let Some(behavior) = self.behavior_fingerprint {
+            runtime = runtime.behavior_fingerprint(behavior);
+        }
         if let Some(workspace_reader_resolver) = self.workspace_reader_resolver {
             runtime = runtime.workspace_reader_resolver(workspace_reader_resolver);
         }
@@ -294,110 +412,15 @@ impl AgentBuilder {
         Ok(Agent {
             runtime: runtime.build()?,
             config,
-            events,
             #[cfg(feature = "datadog")]
             datadog,
+            #[cfg(test)]
             registry,
-            extensions: mounts,
-            mounted: OnceCell::new(),
+            contextual,
+            extension_close_timeout: self.extension_close_timeout,
+            closed: AtomicBool::new(false),
+            close_observer: close::CloseCoordinator::default(),
         })
-    }
-}
-
-struct EventBroadcaster {
-    observers: Vec<Arc<dyn Observer>>,
-    events: broadcast::Sender<Arc<EventRecord>>,
-    #[cfg(feature = "datadog")]
-    datadog: Option<crabber_obs::DatadogObserver>,
-}
-
-impl Observer for EventBroadcaster {
-    fn mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout) {
-        for observer in &self.observers {
-            // A faulty local observer must not suppress the remaining observers.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                observer.mount_close_timed_out(timeout);
-            }));
-        }
-    }
-    fn operational_completed(&self, observation: &crabber_runtime::OperationalObservation) {
-        for observer in &self.observers {
-            observer.operational_completed(observation);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.operational_completed(observation);
-        }
-    }
-    fn operational_completed_in_attempt(
-        &self,
-        observation: &crabber_runtime::OperationalObservation,
-        context: Option<&TraceContext>,
-        attempt: &RunId,
-    ) {
-        for observer in &self.observers {
-            observer.operational_completed_in_attempt(observation, context, attempt);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.operational_completed_in_attempt(observation, context, attempt);
-        }
-    }
-    fn emit(&self, event: &EventRecord) {
-        self.emit_with_context(event, None);
-    }
-    fn model_completed(&self, event: &EventRecord) {
-        self.model_completed_with_context(event, None);
-    }
-    fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
-        let _ = self.events.send(Arc::new(event.clone()));
-        for observer in &self.observers {
-            observer.emit_with_context(event, context);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.emit_with_context(event, context);
-            crabber_obs::tracing_bridge::emit_with_context(event, context);
-        }
-    }
-    fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
-        for observer in &self.observers {
-            observer.model_completed_with_context(event, context);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.model_completed_with_context(event, context);
-        }
-    }
-    fn emit_in_attempt(
-        &self,
-        event: &EventRecord,
-        context: Option<&TraceContext>,
-        attempt: &RunId,
-    ) {
-        let _ = self.events.send(Arc::new(event.clone()));
-        for observer in &self.observers {
-            observer.emit_in_attempt(event, context, attempt);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.emit_in_attempt(event, context, attempt);
-            crabber_obs::tracing_bridge::emit_with_context(event, context);
-        }
-    }
-    fn model_completed_in_attempt(
-        &self,
-        event: &EventRecord,
-        context: Option<&TraceContext>,
-        attempt: &RunId,
-    ) {
-        for observer in &self.observers {
-            observer.model_completed_in_attempt(event, context, attempt);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.model_completed_in_attempt(event, context, attempt);
-        }
     }
 }
 
@@ -405,50 +428,100 @@ impl Observer for EventBroadcaster {
 pub struct Agent {
     runtime: Orchestrator,
     config: AgentConfig,
-    events: broadcast::Sender<Arc<EventRecord>>,
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogObserver>,
+    #[cfg(test)]
     registry: Option<Registry>,
-    extensions: Vec<(Arc<dyn Extension>, Scope)>,
-    mounted: OnceCell<Vec<MountHandle>>,
+    pub(crate) contextual: Option<Arc<ContextualPlanProvider>>,
+    extension_close_timeout: Duration,
+    closed: AtomicBool,
+    close_observer: close::CloseCoordinator,
 }
 
 impl Agent {
-    async fn initialize_extensions(&self) -> Result<(), RuntimeError> {
-        if let Some(registry) = &self.registry {
-            self.mounted
-                .get_or_try_init(|| async {
-                    let mut handles = Vec::new();
-                    for (extension, scope) in &self.extensions {
-                        match registry.mount(Arc::clone(extension), scope.clone()).await {
-                            Ok(handle) => handles.push(handle),
-                            Err(error) => {
-                                for handle in handles.iter().rev() {
-                                    let _ = handle.close().await;
-                                }
-                                return Err(RuntimeError::Extension(error.to_string()));
-                            }
-                        }
-                    }
-                    Ok(handles)
-                })
-                .await?;
+    /// Declared native behavior identity to retain with keyed requests.
+    #[must_use]
+    pub fn behavior_fingerprint(&self) -> &crabber_core::InputFingerprint {
+        self.runtime.behavior_fingerprint()
+    }
+
+    pub(crate) async fn initialize_extensions(&self) -> Result<(), RuntimeError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(RuntimeError::HostClosed);
         }
-        Ok(())
+        self.runtime
+            .initialize_extensions()
+            .await
+            .map_err(|error| match error {
+                RuntimeError::ExtensionPlan(ExtensionError::RegistryClosed) => {
+                    RuntimeError::HostClosed
+                }
+                error => error,
+            })
+    }
+
+    /// Await retained initial, keyed-recovery and resume worker joins within a deadline.
+    /// Dropping a run handle detaches its result subscription; it does not
+    /// cancel the worker. Stop ingress before draining. This does not cancel
+    /// work or certify external resource cleanup or durable settlement. Inspect
+    /// `pending`, `pending_preparations`, tool-task `resources`, `background_tasks`, and durable state.
+    pub async fn drain_execution_tasks(
+        &self,
+        bound: Duration,
+    ) -> crabber_runtime::ExecutionTaskDrain {
+        self.runtime.drain_execution_tasks(bound).await
+    }
+
+    /// Join retained local work for one session within a shared deadline.
+    /// Stop that session's ingress first. This does not cancel work, close
+    /// extensions, or certify durable cleanup across other controllers.
+    pub async fn drain_session_execution_tasks(
+        &self,
+        session: &SessionId,
+        bound: Duration,
+    ) -> crabber_runtime::ExecutionTaskDrain {
+        self.runtime
+            .drain_session_execution_tasks(session, bound)
+            .await
+    }
+
+    /// Observe or cooperatively cancel independent jobs for exactly one session.
+    /// Pending or uncertain owners remain retained after the deadline.
+    pub async fn drain_session_invocations(
+        &self,
+        session: &SessionId,
+        cancel: bool,
+        bound: Duration,
+    ) -> Vec<crabber_runtime::SessionInvocationReport> {
+        self.runtime
+            .drain_session_invocations(session, cancel, bound)
+            .await
     }
 
     /// Terminally closes the extension registry without interrupting live runs.
     /// Hosts should interrupt runs first. On timeout, extension-owned cleanup and
     /// retained plan leases keep the detached close task waiting until completion.
-    /// An agent without extensions remains usable.
+    /// New admissions and readiness are rejected once closing starts, including
+    /// for agents with no extensions. This does not join active executions.
     ///
     /// # Errors
-    /// Returns the first mount close error after attempting every mount.
+    /// Rejects contextual self-close before stopping intake, or reports retained
+    /// cleanup and the first observed mount error under the configured bound.
     pub async fn close_extensions(&self) -> Result<(), ExtensionError> {
-        if let Some(registry) = &self.registry {
-            registry.close_all().await
-        } else {
-            Ok(())
+        let bound = self.extension_close_timeout.saturating_mul(2);
+        let deadline = tokio::time::Instant::now().checked_add(bound);
+        // Preserve a rejected contextual self-close before changing intake.
+        let observation = self
+            .contextual
+            .as_ref()
+            .map(|provider| provider.begin_close_all(bound))
+            .transpose()?;
+        self.closed.store(true, Ordering::SeqCst);
+        self.runtime.seal_ingress();
+        match (observation, deadline) {
+            (None, _) => Ok(()),
+            (Some(observation), Some(deadline)) => observation.observe_until(deadline).await,
+            (Some(_), None) => Err(ExtensionError::ContextCleanupIncomplete),
         }
     }
 
@@ -485,6 +558,7 @@ impl Agent {
     #[must_use]
     pub fn builder() -> AgentBuilder {
         AgentBuilder {
+            behavior_fingerprint: None,
             observers: Vec::new(),
             monotonic_clock: None,
             store: None,
@@ -497,6 +571,8 @@ impl Agent {
             #[cfg(feature = "datadog")]
             datadog: None,
             extensions: Vec::new(),
+            factories: Vec::new(),
+            initialization_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             extension_close_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             execution_mode: ExecutionMode::Sequential,
             compaction: CompactionPolicy::default(),
@@ -525,18 +601,17 @@ impl Agent {
         text: impl Into<String>,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
-        self.initialize_extensions().await?;
-        let receiver = self.events.subscribe();
-        let inner = self
-            .runtime
-            .start_with_context(self.request(session_id, text.into()), context)
-            .await?;
-        Ok(RunHandle {
-            run_id: inner.run_id().clone(),
-            completion: inner.completion_signal(),
-            inner,
-            events: Some(receiver),
-        })
+        let request = self.request(session_id, text.into());
+        self.start_request(request, context).await
+    }
+
+    pub(crate) async fn start_request(
+        &self,
+        request: Request,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let inner = self.runtime.start_with_context(request, context).await?;
+        Ok(RunHandle::from_runtime(inner))
     }
 
     /// Starts one keyed prompt; identical retries return metadata only.
@@ -563,17 +638,25 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        self.initialize_extensions().await?;
-        let receiver = self.events.subscribe();
-        let admission = self
-            .runtime
-            .start_keyed_with_context(
-                self.request(Some(session_id), text.into()),
-                options,
-                context,
-            )
-            .await?;
-        Ok(Admission::from_runtime(admission, receiver))
+        self.start_keyed_request(
+            self.request(Some(session_id), text.into()),
+            options,
+            context,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_keyed_request(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        Ok(Admission::from_runtime(
+            self.runtime
+                .start_keyed_with_context(request, options, context)
+                .await?,
+        ))
     }
 
     /// Complete a retained Unstarted admission after its owner expires. Restore
@@ -599,27 +682,65 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        self.initialize_extensions().await?;
-        let receiver = self.events.subscribe();
-        let admission = self
-            .runtime
-            .recover_admission_with_context(
-                self.request(Some(session_id), text.into()),
-                options,
-                context,
-            )
-            .await?;
-        Ok(Admission::from_runtime(admission, receiver))
+        self.recover_request(
+            self.request(Some(session_id), text.into()),
+            options,
+            context,
+        )
+        .await
+    }
+
+    pub(crate) async fn recover_request(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        Ok(Admission::from_runtime(
+            self.runtime
+                .recover_admission_with_context(request, options, context)
+                .await?,
+        ))
+    }
+
+    pub(crate) fn context_request(&self, context: &ExecutionContext, text: String) -> Request {
+        self.request_at(
+            Some(context.session().session_id().clone()),
+            text,
+            context.session().workspace_id(),
+            context.session().directory(),
+            context.selection(),
+        )
     }
 
     fn request(&self, session_id: Option<SessionId>, text: String) -> Request {
-        Request {
+        self.request_at(
             session_id,
             text,
-            workspace_id: self.config.workspace_id.clone(),
-            directory: self.config.directory.clone(),
+            &self.config.workspace_id,
+            &self.config.directory,
+            &self.config.selection,
+        )
+    }
+
+    fn request_at(
+        &self,
+        session_id: Option<SessionId>,
+        text: String,
+        workspace_id: &str,
+        directory: &str,
+        selection: &Selection,
+    ) -> Request {
+        Request {
+            selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
+            input_envelope: None,
+            session_id,
+            text,
+            workspace_id: workspace_id.to_owned(),
+            directory: directory.to_owned(),
             title: self.config.title.clone(),
-            selection: self.config.selection.clone(),
+            selection: selection.clone(),
             system_prompt: self.config.system_prompt.clone(),
             max_output_tokens: self.config.max_output_tokens,
         }
@@ -636,6 +757,8 @@ impl Agent {
         self.runtime.lookup_admission(session, key).await
     }
 
+    /// Legacy-only settlement; native execution and durable approval barriers
+    /// require explicit reconciliation controls and are refused without mutation.
     /// Durably interrupts abandoned work without mounting extensions or executing
     /// providers, tools or hooks. The host must verify process/coordinator death
     /// before asserting `HostStoppedOwner`; a fence alone is not that evidence.
@@ -670,8 +793,33 @@ impl Agent {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunResult, RuntimeError> {
-        self.initialize_extensions().await?;
-        self.runtime.resume_with_context(run_id, context).await
+        self.resume_execution_with_context(run_id, context)
+            .await?
+            .done()
+            .await
+    }
+
+    /// Resume with the same bounded event/control/join handle as a fresh prompt.
+    /// Eligibility and claim are performed by its owned worker; handle creation
+    /// grants no execution authority. Dropping observation never cancels work.
+    /// # Errors
+    /// Returns initialization/identity errors; `done` reports claim and execution errors.
+    pub async fn resume_execution(&self, run_id: &RunId) -> Result<RunHandle, RuntimeError> {
+        self.resume_execution_with_context(run_id, None).await
+    }
+    /// Resume with explicit host correlation metadata and an owned stream.
+    /// # Errors
+    /// Returns the same failures as `resume_execution`.
+    pub async fn resume_execution_with_context(
+        &self,
+        run_id: &RunId,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let inner = self
+            .runtime
+            .resume_execution_with_context(run_id, context)
+            .await?;
+        Ok(RunHandle::from_runtime(inner))
     }
 
     /// Reclaims all expired unfinished runs and reports each expired run it
@@ -695,7 +843,6 @@ impl Agent {
     where
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {
-        self.initialize_extensions().await?;
         self.runtime.recover_with_context(context_for).await
     }
 }
@@ -709,22 +856,14 @@ pub enum Admission {
     Replayed(AdmissionReceipt),
 }
 impl Admission {
-    fn from_runtime(
-        admission: crabber_runtime::Admission,
-        receiver: broadcast::Receiver<Arc<EventRecord>>,
-    ) -> Self {
+    fn from_runtime(admission: crabber_runtime::Admission) -> Self {
         match admission {
             crabber_runtime::Admission::Started {
                 receipt,
                 handle: inner,
             } => Admission::Started {
                 receipt,
-                handle: RunHandle {
-                    run_id: inner.run_id().clone(),
-                    completion: inner.completion_signal(),
-                    inner,
-                    events: Some(receiver),
-                },
+                handle: RunHandle::from_runtime(inner),
             },
             crabber_runtime::Admission::Replayed(receipt) => Admission::Replayed(receipt),
         }
@@ -746,57 +885,27 @@ impl std::fmt::Debug for Admission {
     }
 }
 
-/// Filters one agent's event broadcast to a single run.
-pub struct RunEvents {
-    run_id: RunId,
-    receiver: broadcast::Receiver<Arc<EventRecord>>,
-    completion: tokio::sync::watch::Receiver<bool>,
-}
-
-impl RunEvents {
-    /// Receives the next event for this run, or `None` once the run task ends.
-    ///
-    /// # Errors
-    ///
-    /// Returns a broadcast lag or closure error if events cannot be read.
-    pub async fn recv(&mut self) -> Result<Option<Arc<EventRecord>>, broadcast::error::RecvError> {
-        loop {
-            if *self.completion.borrow() {
-                match self.receiver.try_recv() {
-                    Ok(event) if event.run_id == self.run_id => return Ok(Some(event)),
-                    Ok(_) => continue,
-                    Err(
-                        broadcast::error::TryRecvError::Empty
-                        | broadcast::error::TryRecvError::Closed,
-                    ) => return Ok(None),
-                    Err(broadcast::error::TryRecvError::Lagged(count)) => {
-                        return Err(broadcast::error::RecvError::Lagged(count));
-                    }
-                }
-            }
-            tokio::select! {
-                biased;
-                event = self.receiver.recv() => {
-                    let event = event?;
-                    if event.run_id == self.run_id { return Ok(Some(event)); }
-                }
-                changed = self.completion.changed() => {
-                    if changed.is_err() { return Ok(None); }
-                }
-            }
-        }
-    }
-}
+pub use crabber_runtime::RunEvents;
 
 /// A running prompt with a live event receiver and terminal result.
 pub struct RunHandle {
     run_id: RunId,
     inner: crabber_runtime::RunHandle,
-    events: Option<broadcast::Receiver<Arc<EventRecord>>>,
-    completion: tokio::sync::watch::Receiver<bool>,
 }
 
 impl RunHandle {
+    fn from_runtime(inner: crabber_runtime::RunHandle) -> Self {
+        Self {
+            run_id: inner.run_id().clone(),
+            inner,
+        }
+    }
+
+    /// Clone local control; the event receiver remains exclusive to this handle.
+    #[must_use]
+    pub fn control(&self) -> crabber_runtime::RunControl {
+        self.inner.control()
+    }
     pub fn interrupt(&self) {
         self.inner.interrupt();
     }
@@ -817,14 +926,11 @@ impl RunHandle {
     /// Panics if the receiver was already taken from this handle.
     #[must_use]
     pub fn events(&mut self) -> RunEvents {
-        RunEvents {
-            run_id: self.run_id.clone(),
-            receiver: self.events.take().expect("events receiver already taken"),
-            completion: self.completion.clone(),
-        }
+        self.inner.events()
     }
 
-    /// Waits for the run's terminal result.
+    /// Waits for the worker result and actual task join. Extension resource
+    /// cleanup and durable outcome reconciliation remain separate.
     ///
     /// # Errors
     ///
@@ -862,10 +968,14 @@ impl Extension for BuiltinExtension {
         "crabber/builtin"
     }
     fn version(&self) -> &'static str {
-        "1"
+        "2"
     }
     fn config_hash(&self) -> String {
-        String::new()
+        crabber_session::admission_config_hash(&serde_json::json!({
+            "contract": "crabber.builtin-registration.v1",
+            "tools": self.tools.iter().map(|tool| &tool.info).collect::<Vec<_>>(),
+            "prompts": self.prompts.iter().map(|prompt| (&prompt.name, prompt.order, &prompt.text)).collect::<Vec<_>>(),
+        }))
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         for tool in &self.tools {
@@ -933,6 +1043,62 @@ mod tests {
                 .map_err(|_| "utf8".into())
         }
     }
+
+    struct Uncalled;
+    #[async_trait]
+    impl crabber_extension::JsonToolExecutor for Uncalled {
+        async fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ExtensionError> {
+            panic!("metadata must not execute tools");
+        }
+    }
+    #[test]
+    fn builtin_registration_identity_binds_tool_schema_and_prompt_data() {
+        let tool = |parameters| {
+            Arc::new(ToolDefinition {
+                info: crabber_core::ToolInfo {
+                    name: "declared".into(),
+                    description: "description".into(),
+                    parameters,
+                    retry_safe: false,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(Uncalled),
+            })
+        };
+        let config = |parameters, text: &str| {
+            BuiltinExtension {
+                tools: vec![tool(parameters)],
+                prompts: vec![Arc::new(PromptSection {
+                    name: "prompt".into(),
+                    order: 0,
+                    text: text.into(),
+                })],
+            }
+            .config_hash()
+        };
+        let original = config(
+            serde_json::json!({"type":"object","additionalProperties":false}),
+            "first",
+        );
+        assert_eq!(
+            original,
+            config(
+                serde_json::json!({"additionalProperties":false,"type":"object"}),
+                "first"
+            )
+        );
+        assert_ne!(
+            original,
+            config(serde_json::json!({"type":"string"}), "first")
+        );
+        assert_ne!(
+            original,
+            config(
+                serde_json::json!({"type":"object","additionalProperties":false}),
+                "changed"
+            )
+        );
+    }
     struct BuilderExtension;
     #[async_trait]
     impl Extension for BuilderExtension {
@@ -969,6 +1135,7 @@ mod tests {
             StreamDelta::Completed,
         ]]);
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(fake.clone()))
             .config(AgentConfig::new(Selection {
@@ -976,7 +1143,7 @@ mod tests {
                 model_id: "scripted".into(),
             }))
             .workspace_reader_resolver(Arc::new(BuilderResolver(called.clone())))
-            .extension(Arc::new(BuilderExtension), Scope::Global)
+            .shared_extension(Arc::new(BuilderExtension), Scope::Global)
             .build()
             .unwrap();
         agent
@@ -1059,6 +1226,7 @@ mod tests {
         let second = Arc::new(CloseCapture::default());
         let bound = Duration::from_millis(50);
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![])))
             .config(AgentConfig::new(Selection {
@@ -1069,7 +1237,7 @@ mod tests {
             .observer(first.clone())
             .observer(second.clone())
             .extension_close_timeout(bound)
-            .extension(
+            .shared_extension(
                 Arc::new(CloseProbe {
                     ready: ready.clone(),
                     release: release.clone(),
@@ -1099,7 +1267,9 @@ mod tests {
         plan.dispatcher
             .transform_tool_result(
                 context,
-                crabber_extension::TransformOutput::new(serde_json::Value::Null),
+                crabber_extension::TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(serde_json::Value::Null)).unwrap(),
+                ),
             )
             .await;
         let closing = agent.close_extensions();
@@ -1110,7 +1280,7 @@ mod tests {
         }
         assert!(matches!(
             agent.prompt(None, "during close").await,
-            Err(RuntimeError::Extension(_))
+            Err(RuntimeError::HostClosed)
         ));
         assert!(
             matches!(closing.await, Err(ExtensionError::MountCloseTimeout { extension }) if extension == "close-probe")
@@ -1125,7 +1295,7 @@ mod tests {
         }
         assert!(matches!(
             agent.prompt(None, "after timeout").await,
-            Err(RuntimeError::Extension(_))
+            Err(RuntimeError::HostClosed)
         ));
         assert_eq!(stopped.available_permits(), 0);
         plan.release();
@@ -1140,8 +1310,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_without_extensions_keeps_agent_usable() {
+    async fn close_without_extensions_is_terminal() {
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
                 StreamDelta::TextDelta("done".into()),
@@ -1154,13 +1325,10 @@ mod tests {
             .build()
             .unwrap();
         agent.close_extensions().await.unwrap();
-        agent
-            .prompt(None, "hello")
-            .await
-            .unwrap()
-            .done()
-            .await
-            .unwrap();
+        assert!(matches!(
+            agent.prompt(None, "after close").await,
+            Err(RuntimeError::HostClosed)
+        ));
     }
 
     #[cfg(feature = "datadog")]
@@ -1189,6 +1357,7 @@ mod tests {
         config.timeout = Duration::from_millis(40);
         let capture = Arc::new(Capture(std::sync::atomic::AtomicU64::new(0)));
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
                 StreamDelta::Error(ProviderError {
@@ -1240,6 +1409,7 @@ mod tests {
             }),
         ]]);
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(provider))
             .config(AgentConfig::new(Selection {
@@ -1270,3 +1440,6 @@ mod tests {
         assert!(matches!(run.done().await, Err(RuntimeError::Provider(_))));
     }
 }
+
+mod queue;
+mod session_defaults;

@@ -3,8 +3,8 @@ use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use crabber::session::PostgresStore;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{
         Clock, ContentBlock, EventKind, EventRecord, ManualClock, Message, MessageId, Part, PartId,
         PartKind, Role, RunId, RunStatus, SessionId, SystemClock, ToolCallId, ToolCallRecord,
@@ -80,7 +80,7 @@ fn config() -> AgentConfig {
 struct CountTool(Arc<AtomicUsize>);
 
 #[async_trait]
-impl ToolExecutor for CountTool {
+impl JsonToolExecutor for CountTool {
     async fn execute(&self, _input: Value) -> Result<Value, ExtensionError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"value":"secret"}))
@@ -133,15 +133,16 @@ impl PermissionPolicy for PausePolicy {
 async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc<dyn Store>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let first = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store))
         .provider(Arc::new(provider(call("native-resume", &json!({})))))
         .config(config())
         .policy(Arc::new(PausePolicy))
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let paused = first
@@ -162,6 +163,7 @@ async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc
     drop(first);
 
     let second = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&resume_store))
         .provider(Arc::new(FakeProvider::scripted(vec![vec![
             StreamDelta::TextDelta("resumed".into()),
@@ -169,11 +171,11 @@ async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc
         ]])))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let result = second.resume(&paused.run_id).await.unwrap();
@@ -222,38 +224,54 @@ async fn freshly_connected_postgres_agent_resumes_native_and_wasm_plan() {
 async fn admit_expired_retry_safe_run(
     store: &Arc<dyn Store>,
     clock: &ManualClock,
-    fingerprint: String,
+    mut binding: crabber::session::ExecutionBindingCapsule,
 ) -> RunId {
     let session_id = SessionId::new();
     let message_id = MessageId::new();
     let now = clock.now();
+    binding.request.session_id = session_id.clone();
+    binding.request.workspace_id = "test".into();
+    binding.request.directory = ".".into();
+    binding.request.title = "recovery".into();
+    binding.request.text = "recover".into();
+    binding.input_envelope = Some(
+        crabber::core::InputEnvelope::text("recover", crabber::core::SessionRevision::INITIAL)
+            .unwrap(),
+    );
+    binding.input_fingerprint = binding.computed_input_fingerprint().unwrap();
     let admitted = store
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: "test".into(),
-            directory: ".".into(),
-            title: "recovery".into(),
-            user_message: Message {
-                id: message_id.clone(),
-                session_id,
-                run_id: None,
-                role: Role::User,
-                parent_id: None,
-                parts: vec![Part {
-                    id: PartId::new(),
-                    message_id,
-                    ordinal: 0,
-                    kind: PartKind::UserInputText,
-                    content: ContentBlock::Text {
-                        text: "recover".into(),
-                    },
-                }],
-                created_at: now,
+        .admit_bound_run(crabber::session::BoundAdmitRequest {
+            request: AdmitRequest {
+                input_envelope: binding.input_envelope.clone(),
+                additional_messages: Vec::new(),
+                expected_revision: Some(crabber::core::SessionRevision::INITIAL),
+                session_id: None,
+                workspace_id: "test".into(),
+                directory: ".".into(),
+                title: "recovery".into(),
+                user_message: Message {
+                    id: message_id.clone(),
+                    session_id,
+                    run_id: None,
+                    role: Role::User,
+                    parent_id: None,
+                    parts: vec![Part {
+                        id: PartId::new(),
+                        message_id,
+                        ordinal: 0,
+                        kind: PartKind::UserInputText,
+                        content: ContentBlock::Text {
+                            text: "recover".into(),
+                        },
+                    }],
+                    created_at: now,
+                },
+                config_hash: binding.config_hash.as_str().into(),
+                plan_fingerprint: binding.plan_fingerprint.as_str().into(),
+                owner: "expired".into(),
+                lease: Duration::from_secs(30),
             },
-            config_hash: "test".into(),
-            plan_fingerprint: fingerprint,
-            owner: "expired".into(),
-            lease: Duration::from_secs(30),
+            binding,
         })
         .await
         .unwrap();
@@ -290,24 +308,28 @@ async fn admit_expired_retry_safe_run(
     admitted.run.id
 }
 
-async fn fresh_agent_recovers_expired_running_run(
+async fn fresh_agent_refuses_raw_pending_recovery(
     store: Arc<dyn Store>,
     resume_store: Arc<dyn Store>,
     clock: Arc<ManualClock>,
 ) {
     let calls = Arc::new(AtomicUsize::new(0));
     let first = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store))
         .provider(Arc::new(FakeProvider::scripted(vec![vec![
             StreamDelta::TextDelta("seed".into()),
             StreamDelta::Completed,
         ]])))
         .config(config())
-        .extension(
+        // Recovery must retain the same callback inventory as the original;
+        // an explicit policy is distinct from the runtime default.
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let seed = first
@@ -324,25 +346,51 @@ async fn fresh_agent_recovers_expired_running_run(
         .unwrap()
         .plan_fingerprint;
     drop(first);
-    let run_id = admit_expired_retry_safe_run(&store, &clock, fingerprint.clone()).await;
+    let binding = store
+        .execution_binding(&seed.session_id, &seed.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .capsule;
+    let run_id = admit_expired_retry_safe_run(&store, &clock, binding).await;
 
     let second = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&resume_store))
         .provider(Arc::new(FakeProvider::scripted(Vec::new())))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
-    let recovered = second.recover().await.unwrap().recovered;
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].run_id, run_id);
-    assert_eq!(recovered[0].status, RunStatus::Interrupted);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let pending = resume_store
+        .list_unfinished_tool_calls(&run_id)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].status, ToolCallStatus::Pending);
+    // A raw retry-safe row is not an acknowledged native suspension. The
+    // fresh-agent paused-run tests above cover the legal native+WASM resume.
+    let report = second.recover().await.unwrap();
+    assert_eq!(report.recovered, Vec::<crabber::runtime::RunResult>::new());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].run_id, run_id);
+    assert_eq!(
+        report.skipped[0].reason,
+        crabber::RecoverySkipReason::Attempt(crabber::session::AttemptError::InvalidTransition)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        resume_store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap(),
+        pending
+    );
     assert_eq!(
         resume_store
             .get_run(&run_id)
@@ -355,12 +403,12 @@ async fn fresh_agent_recovers_expired_running_run(
 }
 
 #[tokio::test]
-async fn fresh_agent_recovers_native_and_wasm_plan() {
+async fn fresh_agent_refuses_raw_pending_native_and_wasm_recovery() {
     let clock = Arc::new(ManualClock::new(
         SystemClock.now() - Duration::from_hours(24),
     ));
     let store: Arc<dyn Store> = Arc::new(MemoryStore::with_clock(clock.clone()));
-    fresh_agent_recovers_expired_running_run(Arc::clone(&store), store, clock).await;
+    fresh_agent_refuses_raw_pending_recovery(Arc::clone(&store), store, clock).await;
 }
 
 #[tokio::test]
@@ -368,11 +416,12 @@ async fn echo_executes_through_runtime() {
     let fake = provider(call("echo", &json!({"value":"hello"})));
     let store = Arc::new(MemoryStore::new());
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let result = agent
@@ -391,12 +440,13 @@ async fn policy_denies_dangerous_tool() {
     let fake = provider(call("dangerous", &json!({})));
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(native_tool("dangerous", &calls))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_tool(native_tool("dangerous", &calls))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     agent
@@ -413,12 +463,13 @@ async fn policy_denies_dangerous_tool() {
 async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
     let calls = Arc::new(AtomicUsize::new(0));
     let allow_agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(provider(call("safe", &json!({})))))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
-        .tool(native_tool("safe", &calls))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_tool(native_tool("safe", &calls))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     allow_agent
@@ -431,12 +482,13 @@ async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let ask_agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(provider(call("ask_me", &json!({})))))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(native_tool("ask_me", &calls))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_tool(native_tool("ask_me", &calls))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     ask_agent
@@ -455,15 +507,16 @@ async fn policy_guest_receives_permission_and_run_context() {
     let mut info = native_tool("contextual", &calls).info.clone();
     info.required_permissions = vec!["network".into()];
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(provider(call("contextual", &json!({})))))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info,
             executor: Arc::new(CountTool(Arc::clone(&calls))),
         }))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     agent
@@ -487,12 +540,13 @@ async fn policy_guest_state_persists_across_runs() {
     let store = Arc::new(MemoryStore::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
-        .tool(native_tool("stateful", &calls))
-        .wasm_extension(fixture("all-in-one"))
+        .shared_tool(native_tool("stateful", &calls))
+        .shared_wasm_extension(fixture("all-in-one"))
         .build()
         .unwrap();
     let first = agent
@@ -530,10 +584,11 @@ async fn prompt_section_renders_for_each_run_with_its_run_id() {
         vec![StreamDelta::TextDelta("two".into()), StreamDelta::Completed],
     ]);
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(fake.clone()))
         .config(config())
-        .wasm_extension(fixture("all-in-one"))
+        .shared_wasm_extension(fixture("all-in-one"))
         .build()
         .unwrap();
     let first = agent.prompt(None, "first").await.unwrap();
@@ -568,10 +623,11 @@ async fn banner_reaches_model_request() {
         StreamDelta::Completed,
     ]]);
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(fake.clone()))
         .config(config())
-        .wasm_extension(fixture("banner-context"))
+        .shared_wasm_extension(fixture("banner-context"))
         .build()
         .unwrap();
     agent
@@ -596,12 +652,13 @@ async fn middleware_rewrites_tool_output() {
     let store = Arc::new(MemoryStore::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(native_tool("native", &calls))
-        .wasm_extension(fixture("redact-middleware"))
+        .shared_tool(native_tool("native", &calls))
+        .shared_wasm_extension(fixture("redact-middleware"))
         .build()
         .unwrap();
     let result = agent

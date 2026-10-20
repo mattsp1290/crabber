@@ -1,236 +1,17 @@
 use super::*;
 use async_trait::async_trait;
 use crabber::{core::*, session::*};
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::sync::Notify;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Fault {
-    AdmissionLost,
-    AdmissionDelayed,
-    ClaimLost,
-    BeginLost,
-    BeginRejected,
-    BeforeBegin,
-}
-struct FaultStore {
-    inner: Arc<MemoryStore>,
-    fault: Fault,
-    entered: Arc<Notify>,
-    release: Arc<Notify>,
-}
-struct FaultExecution {
-    inner: Box<dyn ExecutionStore>,
-    fault: Fault,
-    entered: Arc<Notify>,
-    release: Arc<Notify>,
-}
-#[async_trait]
-impl Store for FaultStore {
-    async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        self.inner.admit_run(request).await
-    }
-    async fn admit_keyed_run(
-        &self,
-        request: KeyedAdmitRequest,
-    ) -> Result<KeyedAdmitOutcome, StoreError> {
-        let outcome = self.inner.admit_keyed_run(request).await?;
-        if self.fault == Fault::AdmissionLost {
-            return Err(StoreError::Validation("unknown admission response".into()));
-        }
-        if self.fault == Fault::AdmissionDelayed {
-            self.entered.notify_one();
-            self.release.notified().await;
-        }
-        Ok(outcome)
-    }
-    async fn load_admission_execution(
-        &self,
-        session: &SessionId,
-        key: &crabber_core::AdmissionKey,
-    ) -> Result<
-        Option<crabber_session::AdmissionExecutionRecord>,
-        crabber_session::AdmissionExecutionError,
-    > {
-        self.inner.load_admission_execution(session, key).await
-    }
-    async fn claim_unstarted_admission(
-        &self,
-        request: ClaimUnstartedAdmissionRequest,
-    ) -> Result<ClaimedAdmission, AdmissionExecutionError> {
-        let outcome = self.inner.claim_unstarted_admission(request).await?;
-        if self.fault == Fault::ClaimLost {
-            return Err(AdmissionExecutionError::UnknownStoreFailure);
-        }
-        Ok(outcome)
-    }
-    async fn lookup_admission(
-        &self,
-        session: &SessionId,
-        key: &AdmissionKey,
-    ) -> Result<Option<AdmissionReceipt>, StoreError> {
-        self.inner.lookup_admission(session, key).await
-    }
-    async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        Ok(Box::new(FaultExecution {
-            inner: self.inner.execution(fence).await?,
-            fault: self.fault,
-            entered: self.entered.clone(),
-            release: self.release.clone(),
-        }))
-    }
-    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError> {
-        self.inner.get_session(id).await
-    }
-    async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        self.inner.get_run(id).await
-    }
-    async fn list_messages(
-        &self,
-        id: &SessionId,
-        epoch: Option<EpochId>,
-    ) -> Result<Vec<Message>, StoreError> {
-        self.inner.list_messages(id, epoch).await
-    }
-    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
-        self.inner.list_all_messages(id).await
-    }
-    async fn list_events(
-        &self,
-        id: &SessionId,
-        after: Option<EventCursor>,
-        limit: usize,
-    ) -> Result<Vec<EventRecord>, StoreError> {
-        self.inner.list_events(id, after, limit).await
-    }
-    async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        self.inner.list_unfinished_runs().await
-    }
-    async fn list_unfinished_tool_calls(
-        &self,
-        run: &RunId,
-    ) -> Result<Vec<ToolCallRecord>, StoreError> {
-        self.inner.list_unfinished_tool_calls(run).await
-    }
-    async fn admission_execution_state(
-        &self,
-        run: &RunId,
-    ) -> Result<Option<crabber_session::AdmissionExecutionState>, StoreError> {
-        self.inner.admission_execution_state(run).await
-    }
-    async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        self.inner.claim_expired_run(run, owner).await
-    }
-    async fn get_extension_state(
-        &self,
-        extension_id: &str,
-        session: &SessionId,
-    ) -> Result<BTreeMap<String, String>, StoreError> {
-        self.inner.get_extension_state(extension_id, session).await
-    }
-    async fn enqueue_inbox(
-        &self,
-        session: &SessionId,
-        kind: InboxKind,
-        message: Message,
-    ) -> Result<(), StoreError> {
-        self.inner.enqueue_inbox(session, kind, message).await
-    }
-}
-
-#[async_trait]
-impl ExecutionStore for FaultExecution {
-    async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
-        self.inner.renew_lease(until).await
-    }
-    async fn begin_admission_execution(&self) -> Result<(), AdmissionExecutionError> {
-        if self.fault == Fault::BeforeBegin {
-            self.entered.notify_one();
-            self.release.notified().await;
-        }
-        if self.fault == Fault::BeginRejected {
-            return Err(AdmissionExecutionError::UnknownStoreFailure);
-        }
-        self.inner.begin_admission_execution().await?;
-        if self.fault == Fault::BeginLost {
-            return Err(AdmissionExecutionError::UnknownStoreFailure);
-        }
-        Ok(())
-    }
-    async fn append_message(&self, message: Message) -> Result<(), StoreError> {
-        self.inner.append_message(message).await
-    }
-    async fn append_part(&self, part: Part) -> Result<(), StoreError> {
-        self.inner.append_part(part).await
-    }
-    async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
-        self.inner.append_event(event).await
-    }
-    async fn create_tool_call(
-        &self,
-        call: ToolCallRecord,
-        pending_event: EventRecord,
-    ) -> Result<(), StoreError> {
-        self.inner.create_tool_call(call, pending_event).await
-    }
-    async fn claim_tool_call(
-        &self,
-        id: &ToolCallId,
-        running_event: EventRecord,
-    ) -> Result<(), StoreError> {
-        self.inner.claim_tool_call(id, running_event).await
-    }
-    async fn settle_tool_call(
-        &self,
-        id: &ToolCallId,
-        result: ToolResult,
-        result_message: Message,
-        terminal_event: EventRecord,
-    ) -> Result<(), StoreError> {
-        self.inner
-            .settle_tool_call(id, result, result_message, terminal_event)
-            .await
-    }
-    async fn start_epoch(&self, epoch: ContextEpoch) -> Result<(), StoreError> {
-        self.inner.start_epoch(epoch).await
-    }
-    async fn finish_epoch(&self, id: &EpochId, summary: Message) -> Result<(), StoreError> {
-        self.inner.finish_epoch(id, summary).await
-    }
-    async fn pause_run(
-        &self,
-        checkpoint: serde_json::Value,
-        event: EventRecord,
-    ) -> Result<(), StoreError> {
-        self.inner.pause_run(checkpoint, event).await
-    }
-    async fn settle_run(
-        &self,
-        status: RunStatus,
-        error: Option<String>,
-        usage: Usage,
-        event: EventRecord,
-    ) -> Result<(), StoreError> {
-        self.inner.settle_run(status, error, usage, event).await
-    }
-    async fn put_extension_state(
-        &self,
-        extension_id: &str,
-        entries: Vec<(String, Option<String>)>,
-    ) -> Result<(), StoreError> {
-        self.inner.put_extension_state(extension_id, entries).await
-    }
-    async fn claim_inbox(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
-        self.inner.claim_inbox(kind).await
-    }
-    async fn claim_inbox_into_history(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
-        self.inner.claim_inbox_into_history(kind).await
-    }
-}
+#[path = "memory_recovery/fault_store.rs"]
+mod fault_store;
+use fault_store::{Fault, FaultStore};
 
 fn host(store: Arc<dyn Store>, provider: Arc<FakeProvider>) -> Agent {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider)
         .config(config())
@@ -361,6 +142,15 @@ async fn lost_admission_reply_completes_original_turn_and_replays_only_metadata(
                 | AdmissionExecutionError::AlreadyStarted
                 | AdmissionExecutionError::AlreadyTerminal,
             )) => (),
+            Err(error)
+                if error
+                    .preparation_reconciliation()
+                    .is_some_and(|p| p.session_id == session)
+                    && matches!(
+                        error.operation_error(),
+                        RuntimeError::PreparationRecoveryRequired
+                            | RuntimeError::Store(StoreError::AdmissionRecoveryRequired)
+                    ) => {}
             other => panic!("{other:?}"),
         }
     }
@@ -438,11 +228,13 @@ async fn claim_response_loss_and_begin_rollback_preserve_unstarted_liveness() {
             .recover_admission(session.clone(), "hello", options())
             .await;
         if kind == Fault::ClaimLost {
+            let Err(error) = result else {
+                panic!("lost atomic recovery acknowledgment")
+            };
+            assert!(error.preparation_reconciliation().is_some());
             assert!(matches!(
-                result,
-                Err(RuntimeError::AdmissionExecution(
-                    AdmissionExecutionError::UnknownStoreFailure
-                ))
+                error.operation_error(),
+                RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure)
             ));
         } else {
             let Admission::Started { handle, .. } = result.unwrap() else {
@@ -479,7 +271,7 @@ async fn claim_response_loss_and_begin_rollback_preserve_unstarted_liveness() {
 }
 
 #[tokio::test]
-async fn lost_begin_acknowledgement_never_executes_and_generic_recovery_interrupts() {
+async fn lost_admission_begin_ack_requires_a_fresh_guarded_native_start() {
     let (clock, store, provider, session) = fixture();
     let Admission::Started { handle, receipt } =
         host(fault(store.clone(), Fault::BeginLost), provider.clone())
@@ -511,9 +303,19 @@ async fn lost_begin_acknowledgement_never_executes_and_generic_recovery_interrup
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     assert_eq!(
         agent.resume(&receipt.run_id).await.unwrap().status,
-        RunStatus::Interrupted
+        RunStatus::Completed
     );
-    assert_eq!(provider.requests().len(), 0);
+    assert_eq!(provider.requests().len(), 1);
+    let attempt = store
+        .latest_execution_attempt(&receipt.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .attempt;
+    assert_eq!(attempt.state, AttemptState::Completed);
+    assert_eq!(attempt.cleanup, AttemptCleanup::Complete);
+    assert!(agent.resume(&receipt.run_id).await.is_err());
+    assert_eq!(provider.requests().len(), 1);
 }
 
 #[tokio::test]
@@ -541,6 +343,7 @@ async fn semantic_drift_conflicts_before_claim_and_after_terminal_replay() {
                 _ => (),
             }
             let mut builder = Agent::builder()
+                .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
                 .store(store.clone())
                 .provider(provider.clone())
                 .config(cfg);
@@ -652,10 +455,11 @@ async fn failed_begin_blocks_business_hooks_but_allows_pre_admission_setup() {
         let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let agent = Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(fault(store.clone(), kind))
             .provider(provider.clone())
             .config(config())
-            .extension(
+            .shared_extension(
                 Arc::new(HookCounter {
                     installs: installs.clone(),
                     effects: effects.clone(),
@@ -700,6 +504,9 @@ async fn missing_and_legacy_evidence_never_invent_an_initial_executor() {
             execution: None,
             options: options(),
             request: AdmitRequest {
+                input_envelope: None,
+                additional_messages: Vec::new(),
+                expected_revision: None,
                 session_id: Some(session.clone()),
                 workspace_id: cfg.workspace_id,
                 directory: cfg.directory,
@@ -740,7 +547,6 @@ async fn missing_and_legacy_evidence_never_invent_an_initial_executor() {
 
 #[tokio::test]
 async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_work() {
-    use crabber::extension::{RunPlanProvider, StaticPlanProvider};
     let (clock, store, provider, session) = fixture();
     let receipt = lost(store.clone(), provider.clone(), &session).await;
     let before = store.get_run(&receipt.run_id).await.unwrap();
@@ -757,37 +563,35 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
         order: 0,
         text: "changed plan".into(),
     });
-    let ordinary_session = SessionId::new();
-    let plan = StaticPlanProvider::new(Vec::new(), vec![section.clone()])
-        .acquire_plan(&ordinary_session)
-        .await
+    // Create a real current-library ordinary admission, then lose its reply
+    // before spawn. This retains the actual registration and plan fingerprints.
+    let ordinary_agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
+        .store(fault(store.clone(), Fault::UnkeyedAdmissionLost))
+        .provider(provider.clone())
+        .config(config())
+        .prompt_section(section.clone())
+        .build()
         .unwrap();
-    let mut user = messages[0].clone();
-    user.id = MessageId::new();
-    user.session_id = ordinary_session;
-    user.run_id = None;
-    for part in &mut user.parts {
-        part.id = PartId::new();
-        part.message_id = user.id.clone();
-    }
+    let Err(error) = ordinary_agent.prompt(None, "ordinary").await else {
+        panic!("lost ordinary acknowledgment")
+    };
+    assert!(matches!(
+        error.operation_error(),
+        RuntimeError::Store(CoreError::Validation(_))
+    ));
+    assert!(error.preparation_reconciliation().is_some());
     let ordinary = store
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: "test".into(),
-            directory: "/tmp".into(),
-            title: "ordinary".into(),
-            user_message: user,
-            config_hash: "ordinary".into(),
-            plan_fingerprint: plan.fingerprint().to_string(),
-            owner: "ordinary-host".into(),
-            lease: Duration::from_secs(30),
-        })
+        .list_unfinished_runs()
         .await
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id != receipt.run_id)
         .unwrap();
-    plan.release();
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     // The public facade wrapper must forward classification as well as claim.
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(fault(store.clone(), Fault::BeginRejected))
         .provider(provider.clone())
         .config(config())
@@ -800,8 +604,8 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
     ));
     let recovered = agent.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].run_id, ordinary.run.id);
-    assert_eq!(recovered[0].status, RunStatus::Interrupted);
+    assert_eq!(recovered[0].run_id, ordinary.id);
+    assert_eq!(recovered[0].status, RunStatus::Completed);
     assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
     assert_eq!(
         store
@@ -825,7 +629,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
         store.list_events(&session, None, 100).await.unwrap(),
         Vec::new()
     );
-    assert_eq!(provider.requests().len(), 0);
+    assert_eq!(provider.requests().len(), 1);
 }
 
 struct UnavailablePlan(Arc<std::sync::atomic::AtomicUsize>);
@@ -850,6 +654,7 @@ async fn generic_unstarted_classification_does_not_acquire_an_unavailable_plan()
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     let runtime = crabber::runtime::Orchestrator::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(provider.clone())
         .clock(clock)

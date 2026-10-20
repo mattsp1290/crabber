@@ -63,6 +63,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ag-ui-encoder"
+version = "0.2.0"
+source = "git+https://github.com/mattsp1290/ag-ui.git?rev=705303b26b6b900cdf9bdfa456fbd92a7003ca6b#705303b26b6b900cdf9bdfa456fbd92a7003ca6b"
+dependencies = [
+ "ag-ui-core",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "agents-md-middleware"
 version = "0.1.0"
 dependencies = [
@@ -470,6 +480,8 @@ dependencies = [
  "crabber-session",
  "crabber-wasm",
  "flate2",
+ "futures",
+ "jsonschema",
  "serde",
  "serde_json",
  "sha2",
@@ -485,7 +497,10 @@ dependencies = [
 name = "crabber-agui"
 version = "0.1.0"
 dependencies = [
+ "ag-ui-client",
  "ag-ui-core",
+ "ag-ui-encoder",
+ "async-trait",
  "crabber",
  "crabber-core",
  "crabber-session",
@@ -519,10 +534,14 @@ dependencies = [
 name = "crabber-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "json-patch",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "time",
+ "url",
  "uuid",
 ]
 
@@ -546,6 +565,7 @@ dependencies = [
 name = "crabber-guest"
 version = "0.1.0"
 dependencies = [
+ "crabber-core",
  "crabber-guest-macros",
  "serde_json",
  "wit-bindgen 0.62.0",
@@ -600,6 +620,7 @@ dependencies = [
  "futures",
  "reqwest",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
 ]
@@ -634,7 +655,10 @@ dependencies = [
  "async-trait",
  "crabber",
  "crabber-core",
+ "crabber-extension",
+ "futures",
  "hmac",
+ "jsonschema",
  "serde",
  "serde_json",
  "sha2",
@@ -2923,6 +2947,20 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "server-host-probe"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
 ]
 
 [[package]]

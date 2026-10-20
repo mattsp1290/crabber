@@ -9,6 +9,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         StreamDelta::Completed,
     ]]);
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider))
         .config(AgentConfig::new(Selection {

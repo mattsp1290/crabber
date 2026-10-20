@@ -31,7 +31,7 @@ enum Case {
 
 struct PrivateSource;
 #[async_trait]
-impl ToolExecutor for PrivateSource {
+impl JsonToolExecutor for PrivateSource {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         Ok(json!(SEED))
     }
@@ -50,12 +50,17 @@ impl ToolPipeline for Pipeline {
         &self,
         context: &ToolResultContext,
         _: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
         if self.case == Case::PreStage {
             self.gate.pass(&json!({"call": context.call_id()})).await;
         }
-        Ok(TransformOutput::new(result))
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 
@@ -115,7 +120,7 @@ fn transforms(
                         log.lock().unwrap().push((
                             context.tool_name().to_owned(),
                             stage,
-                            value.clone(),
+                            (value.clone()).json_value().unwrap(),
                             context.cancellation().is_cancelled(),
                         ));
                         // At next entry the predecessor's output has been committed. Hold the
@@ -130,7 +135,7 @@ fn transforms(
                             gate.pass(&json!({"call": context.call_id()})).await;
                         }
                         Ok(TransformOutput::new(if stage == "first" {
-                            json!(ACCEPTED)
+                            crabber_core::ToolOutput::from_json(&(json!(ACCEPTED))).unwrap()
                         } else {
                             value
                         }))
@@ -165,7 +170,7 @@ fn register_finals(
                         stages.lock().unwrap().push((
                             context.tool_name().to_owned(),
                             stage,
-                            value,
+                            (value).json_value().unwrap(),
                             context.cancellation().is_cancelled(),
                         ));
                         if context.tool_name() == TARGET {
@@ -197,11 +202,16 @@ fn register_finals(
                                 gate.pass(&json!({"stage": stage})).await;
                             }
                         }
-                        Ok(TransformOutput::new(json!(if stage == "final-one" {
-                            PARTIAL
-                        } else {
-                            PROTECTED
-                        })))
+                        Ok(TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(
+                                &(json!(if stage == "final-one" {
+                                    PARTIAL
+                                } else {
+                                    PROTECTED
+                                })),
+                            )
+                            .unwrap(),
+                        ))
                     })
                 }),
             );
@@ -230,6 +240,7 @@ async fn assert_sibling_waiting(
 fn install_observer(harness: &mut Harness, mode: ExecutionMode, returned: Arc<SiblingReturned>) {
     harness.runtime = Some(
         Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(harness.store.clone())
             .resolver(Arc::new(harness.fake.clone()))
             .plan_provider(harness.registry.clone())

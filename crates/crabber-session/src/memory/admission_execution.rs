@@ -1,80 +1,62 @@
+#[path = "admission_execution/inspection.rs"]
+mod inspection;
+#[path = "admission_execution/prepared.rs"]
+mod prepared;
+#[path = "admission_execution/recovery.rs"]
+mod recovery;
 use super::{MemoryExecution, MemoryStore};
-use crate::{
-    AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
-    ClaimUnstartedAdmissionRequest, ClaimedAdmission,
-};
-use crabber_core::{AdmissionKey, RunFence, SessionId};
+use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
+use crabber_core::{AdmissionKey, SessionId};
+pub(super) use inspection::{validate_source, validate_source_with_proof};
 
 impl MemoryStore {
     pub(super) fn load_execution_record(
         &self,
         session: &SessionId,
         key: &AdmissionKey,
-    ) -> Option<AdmissionExecutionRecord> {
+    ) -> Result<Option<AdmissionExecutionRecord>, crate::StoreError> {
         let state = self.state.lock().expect("memory store poisoned");
-        let receipt = state.receipts.get(&(session.clone(), key.clone()))?;
-        state.admission_executions.get(&receipt.run_id).cloned()
+        let Some(receipt) = state.receipts.get(&(session.clone(), key.clone())) else {
+            return Ok(None);
+        };
+        super::admission_journal::verify(&state, &receipt.run_id)?;
+        Ok(state.admission_executions.get(&receipt.run_id).cloned())
     }
-    pub(super) fn claim_admission(
-        &self,
-        claim: ClaimUnstartedAdmissionRequest,
-    ) -> Result<ClaimedAdmission, Error> {
-        self.transact(|state| {
-            let run = state
-                .runs
-                .get_mut(&claim.expected_fence.run_id)
-                .ok_or(Error::MissingEvidence)?;
-            let record = state
-                .admission_executions
-                .get(&run.id)
-                .ok_or(Error::MissingEvidence)?;
-            let user = state
-                .messages
-                .iter()
-                .find(|m| m.id == record.receipt.user_message_id)
-                .ok_or(Error::SemanticConflict)?;
-            record.validate_binding(run, user)?;
-            if state
-                .receipts
-                .get(&(claim.session_id.clone(), claim.key.clone()))
-                != Some(&record.receipt)
-            {
-                return Err(Error::SemanticConflict);
-            }
-            record.verify_claim(&claim, run)?;
-            let now = self.clock.now();
-            if run.lease_until > now {
-                return Err(Error::LiveLease);
-            }
-            let lease =
-                time::Duration::try_from(claim.lease).map_err(|_| Error::SemanticConflict)?;
-            if lease <= time::Duration::ZERO {
-                return Err(Error::SemanticConflict);
-            }
-            run.owner = claim.owner;
-            run.claim_token = uuid::Uuid::new_v4().to_string();
-            run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
-            run.updated_at = now;
-            crate::ensure_storable(run).map_err(|_| Error::UnknownStoreFailure)?;
-            Ok(ClaimedAdmission {
-                record: record.clone(),
-                run: run.clone(),
-                fence: RunFence {
-                    run_id: run.id.clone(),
-                    claim_token: run.claim_token.clone(),
-                },
-            })
-        })
-    }
+}
+
+fn require_raw_origin(
+    state: &super::State,
+    run: &crabber_core::Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let enrollment = super::native_enrollment::original(state, &run.session_id, &run.id, proof)
+        .map_err(|_| Error::UnknownStoreFailure)?;
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)
 }
 
 impl MemoryExecution {
     pub(super) fn begin_admission(&self) -> Result<(), Error> {
-        self.store.transact(|state| {
+        self.begin_admission_with_proof(&mut crate::public_session::v2::proof::Proof::bounded(
+            32 << 20,
+        ))
+    }
+    pub(super) fn begin_admission_with_proof(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        proof
+            .measure(&self.fence)
+            .map_err(|_| Error::UnknownStoreFailure)?;
+        let result = self.store.transact(|state| {
+            super::admission_journal::verify_with_proof(state, &self.fence.run_id, proof)
+                .map_err(|_| Error::UnknownStoreFailure)?;
             let run = state
                 .runs
                 .get(&self.fence.run_id)
                 .ok_or(Error::MissingEvidence)?;
+            proof.measure(run).map_err(|_| Error::UnknownStoreFailure)?;
+            require_raw_origin(state, run, proof)?;
+            let run = run.clone();
             if run.claim_token != self.fence.claim_token {
                 return Err(Error::StaleOwner);
             }
@@ -88,12 +70,26 @@ impl MemoryExecution {
                 .admission_executions
                 .get(&run.id)
                 .ok_or(Error::MissingEvidence)?;
-            let user = state
+            let count = record
+                .capsule
+                .input_envelope
+                .as_ref()
+                .map_or(1, |input| input.messages().len());
+            let messages: Vec<_> = state
                 .messages
                 .iter()
-                .find(|m| m.id == record.receipt.user_message_id)
-                .ok_or(Error::SemanticConflict)?;
-            record.validate_binding(run, user)?;
+                .filter(|message| {
+                    message.run_id.as_ref() == Some(&run.id) && message.session_id == run.session_id
+                })
+                .take(count)
+                .map(|message| {
+                    proof
+                        .measure(message)
+                        .map_err(|_| Error::UnknownStoreFailure)?;
+                    Ok(message.clone())
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            record.validate_messages(&run, &messages)?;
             if state
                 .receipts
                 .get(&(run.session_id.clone(), record.key.clone()))
@@ -101,18 +97,55 @@ impl MemoryExecution {
             {
                 return Err(Error::SemanticConflict);
             }
+            if record.state != AdmissionExecutionState::Unstarted {
+                return Err(Error::AlreadyStarted);
+            }
+            let sources = super::admission_journal::begin_captured_with_proof(
+                state,
+                &self.fence.run_id,
+                proof,
+            )
+            .map_err(|_| Error::UnknownStoreFailure)?;
             let record = state
                 .admission_executions
-                .get_mut(&run.id)
+                .get_mut(&self.fence.run_id)
                 .ok_or(Error::MissingEvidence)?;
-            if record.receipt.run_id != run.id || record.receipt.session_id != run.session_id {
+            if record.receipt.run_id != self.fence.run_id {
                 return Err(Error::SemanticConflict);
             }
             if record.state != AdmissionExecutionState::Unstarted {
                 return Err(Error::AlreadyStarted);
             }
             record.state = AdmissionExecutionState::Started;
+            super::native_enrollment::record_raw_native(
+                state,
+                crate::native_enrollment::caller::Caller::Raw,
+                &crate::native_enrollment::caller::Fresh::AdmissionBegin(
+                    crate::native_enrollment::caller::AdmissionBegin {
+                        fence: &self.fence,
+                        run: &run,
+                        record: state
+                            .admission_executions
+                            .get(&run.id)
+                            .ok_or(Error::MissingEvidence)?,
+                        sources: sources.as_ref().map(|(init, begin)| (init, begin)),
+                    },
+                ),
+                proof,
+                #[cfg(test)]
+                &self.store.native_raw_probe,
+            )
+            .map_err(|_| Error::UnknownStoreFailure)?;
             Ok(())
-        })
+        });
+        #[cfg(test)]
+        if result.is_ok() && self.store.native_raw_probe.after_begin(&self.fence.run_id) {
+            return Err(Error::UnknownStoreFailure);
+        }
+        result
     }
 }
+
+#[cfg(test)]
+#[path = "admission_execution/source_tests.rs"]
+mod source_tests;

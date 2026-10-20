@@ -1,4 +1,6 @@
 //! Shared contract for initial admission authority and denial of effect writes.
+#[path = "admission_execution_contract/inspection.rs"]
+pub(crate) mod inspection;
 use crate::*;
 use crabber_core::*;
 use std::{sync::Arc, time::Duration};
@@ -25,6 +27,9 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
     ]);
     let mut keyed = KeyedAdmitRequest {
         request: AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: Some(session.clone()),
             workspace_id: "workspace-secret".into(),
             directory: "/private/secret".into(),
@@ -59,8 +64,10 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
         execution: None,
     };
     keyed.execution = Some(AdmissionExecutionCapsule {
+        input_envelope: None,
         version: 1,
         request: AdmissionRequestData {
+            selection_policy: crate::AdmissionSelectionPolicy::Explicit,
             session_id: session.clone(),
             workspace_id: keyed.request.workspace_id.clone(),
             directory: keyed.request.directory.clone(),
@@ -141,6 +148,59 @@ async fn denied_writes(
         error
     );
     assert_eq!(execution.append_event(ev.clone()).await.unwrap_err(), error);
+    assert_eq!(
+        execution
+            .mutate_attempt(
+                crate::AttemptMutation {
+                    id: crabber_core::ControlId::new(),
+                    expected_revision: crabber_core::SessionRevision::INITIAL,
+                    command: crate::AttemptCommand::Reserve {
+                        target: crate::AttemptTarget {
+                            id: crabber_core::AttemptId::new(),
+                            generation: crabber_core::AttemptGeneration::INITIAL,
+                        }
+                    },
+                },
+                None
+            )
+            .await
+            .unwrap_err(),
+        crate::AttemptError::StaleOwner
+    );
+    let target = crate::PhaseTarget {
+        id: crabber_core::PhaseId::new(),
+        generation: crabber_core::PhaseGeneration::INITIAL,
+        call_id: ToolCallId::new(),
+        attempt: crate::AttemptTarget {
+            id: crabber_core::AttemptId::new(),
+            generation: crabber_core::AttemptGeneration::INITIAL,
+        },
+    };
+    assert_eq!(
+        execution
+            .mutate_phase(
+                crate::PhaseMutation {
+                    id: crabber_core::ControlId::new(),
+                    expected_revision: crabber_core::SessionRevision::INITIAL,
+                    command: crate::PhaseCommand::Claim { target }
+                },
+                None
+            )
+            .await
+            .unwrap_err(),
+        crate::PhaseError::StaleOwner
+    );
+    assert_eq!(
+        execution
+            .mutate_public_state(crate::PublicStateMutation {
+                id: crabber_core::ControlId::new(),
+                expected_revision: crabber_core::SessionRevision::INITIAL,
+                contents: crabber_core::PublicStateContents::default(),
+            })
+            .await
+            .unwrap_err(),
+        crate::PublicStateError::StaleOwner
+    );
     assert_eq!(
         execution
             .create_tool_call(call, ev.clone())
@@ -448,4 +508,5 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .unwrap()
             .is_none()
     );
+    Box::pin(inspection::run(&store, &clock)).await;
 }

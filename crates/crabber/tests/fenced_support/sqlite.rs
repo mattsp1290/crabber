@@ -28,6 +28,9 @@ async fn public_sqlite_pending_running_paused_zero_execution() {
 async fn fixture(store: &dyn Store) -> (crabber::session::AdmitOutcome, AbandonRequest) {
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             ..admit_request(&SessionId::new())
         })

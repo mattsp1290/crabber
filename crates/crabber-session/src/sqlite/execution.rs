@@ -21,6 +21,95 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn stage_frontend_call(
+        &self,
+        request: crate::FrontendCallStaging,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::FrontendStagingReceipt, crate::ToolContinuationError> {
+        self.stage_frontend(request, authority).await
+    }
+    async fn suspend_tool_continuation(
+        &self,
+        batch: crate::ToolContinuationSuspension,
+        authority: crate::ToolSuspensionAuthority,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.suspend_tools(batch, authority).await
+    }
+
+    async fn observe_run_controls(
+        &self,
+        turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crate::RunControlBoundary, crate::RunControlError> {
+        self.control_boundary(turn).await
+    }
+
+    async fn start_tool_phase(
+        &self,
+        start: crate::PhaseStart,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.start_phase(&start, authority).await
+    }
+
+    async fn suspend_for_approval(
+        &self,
+        batch: crate::ApprovalSuspension,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.suspend_approval(batch, &authority).await
+    }
+
+    async fn conclude_attempt(
+        &self,
+        conclusion: crate::AttemptConclusion,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.conclude_owned_attempt(conclusion, authority).await
+    }
+
+    async fn settle_tool_phase(
+        &self,
+        settlement: crate::PhaseSettlement,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.settle_phase(&settlement, authority).await
+    }
+
+    async fn mutate_phase(
+        &self,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.change_phase(request, authority).await
+    }
+
+    async fn mutate_attempt(
+        &self,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.change_attempt(request, authority).await
+    }
+
+    async fn mutate_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        if matches!(&authority, crate::PublicSourceAuthority::Invocation(_)) {
+            return Err(crate::PublicStateError::Unsupported);
+        }
+        self.store
+            .write_public_source(mutation, authority, Some(&self.fence))
+            .await
+    }
+    async fn mutate_public_state(
+        &self,
+        mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.change_public_state(mutation).await
+    }
+
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
         admission_execution::begin(self).await
     }
@@ -37,6 +126,7 @@ impl ExecutionStore for SqliteExecution {
             run.lease_until = until;
             run.updated_at = now;
             save_run(&mut tx, &run).await?;
+            super::attempt::renew(&mut tx, &run).await?;
             Ok(())
         }
         .await;
@@ -90,6 +180,7 @@ impl ExecutionStore for SqliteExecution {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+            super::records::bump_public_revision(&mut tx, &run.session_id).await?;
             Ok(())
         }
         .await;
@@ -113,11 +204,30 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
+            if super::frontend::declared(&mut tx, &run, &call.name)
+                .await
+                .map_err(|_| {
+                    StoreError::Validation("frontend declaration integrity failure".into())
+                })?
+            {
+                return Err(StoreError::Validation(
+                    "frontend calls require atomic staging".into(),
+                ));
+            }
             if call.run_id != run.id || call.status != ToolCallStatus::Pending {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }
             insert_event(&mut tx, &run, &pending_event).await?;
             text(&call)?;
+            let imported: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imported_tool_calls WHERE id=$1)")
+                    .bind(&call.id.0)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            if imported {
+                return Err(StoreError::Conflict);
+            }
             let accounting = snapshot::call_record(&call)?;
             sqlx::query(
                 "INSERT INTO \
@@ -144,27 +254,14 @@ impl ExecutionStore for SqliteExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.store.begin_write().await?;
-        let result = async {
-            let run = self.store.fenced(&mut tx, &self.fence).await?;
-            let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1")
-                .bind(&id.0)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?
-                .ok_or(StoreError::NotFound)?;
-            let mut call: ToolCallRecord = decode_row(&row, "data")?;
-            if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-                return Err(StoreError::Conflict);
-            }
-            insert_event(&mut tx, &run, &running_event).await?;
-            call.status = ToolCallStatus::Running;
-            save_call(&mut tx, id, &call).await?;
-            Ok(())
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+        self.claim_legacy_with_proof(
+            id,
+            &running_event,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
     }
+
     async fn settle_tool_call(
         &self,
         id: &ToolCallId,
@@ -175,6 +272,7 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
+            super::phase::legacy_guard(&mut tx, &run, id).await?;
             let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1")
                 .bind(&id.0)
                 .fetch_optional(&mut *tx)
@@ -227,6 +325,7 @@ impl ExecutionStore for SqliteExecution {
                 .map_err(db)?;
             run.epoch_id = epoch.id;
             save_run(&mut tx, &run).await?;
+            super::records::bump_public_revision(&mut tx, &run.session_id).await?;
             Ok(())
         }
         .await;
@@ -276,6 +375,17 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let mut run = self.store.fenced(&mut tx, &self.fence).await?;
+            let native: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
+            )
+            .bind(&run.id.0)
+            .bind(&run.session_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if native {
+                return Err(StoreError::Conflict);
+            }
             insert_event(&mut tx, &run, &event).await?;
             let now = self.store.clock.now();
             run.status = RunStatus::Paused;
@@ -298,6 +408,17 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let mut run = self.store.fenced(&mut tx, &self.fence).await?;
+            let native: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
+            )
+            .bind(&run.id.0)
+            .bind(&run.session_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if native {
+                return Err(StoreError::Conflict);
+            }
             if !status_value.is_terminal() {
                 return Err(StoreError::Validation(
                     "run settlement must be terminal".into(),
@@ -317,7 +438,7 @@ impl ExecutionStore for SqliteExecution {
                 .await
                 .map_err(db)?
                 .is_some();
-                if pending {
+                if pending || super::run_control::pending(&mut tx, &run).await.map_err(crate::run_control::store_error)? {
                     return Err(StoreError::PendingInput);
                 }
             }
@@ -327,6 +448,7 @@ impl ExecutionStore for SqliteExecution {
             run.usage = usage;
             run.updated_at = self.store.clock.now();
             save_run(&mut tx, &run).await?;
+            super::run_control::finalize(&mut tx, &run, self.store.clock.now()).await.map_err(crate::run_control::store_error)?;
             Ok(())
         }
         .await;
@@ -430,6 +552,9 @@ impl SqliteExecution {
                     .await
                     .map_err(db)?;
                 claimed.push(message);
+            }
+            if !into_history && !claimed.is_empty() {
+                super::records::bump_public_revision(&mut tx, &run.session_id).await?;
             }
             Ok(claimed)
         }

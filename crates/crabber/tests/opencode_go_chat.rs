@@ -1,7 +1,7 @@
 #![cfg(feature = "opencode-go")]
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, Selection, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, JsonToolExecutor, Selection, ToolDefinition,
     core::{RunStatus, ToolInfo},
     extension::ExtensionError,
     providers::{HttpAdapter, HttpResolver, Protocol},
@@ -74,6 +74,7 @@ fn builder(url: &str) -> crabber::AgentBuilder {
         .try_with_user_agent_product("crabber-channels/0.1.0")
         .unwrap();
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(HttpResolver::new().with_adapter(adapter)))
         .config(
@@ -114,7 +115,7 @@ async fn facade_cap_and_product_token_reach_opencode_chat_wire() {
 }
 struct Echo;
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, value: Value) -> Result<Value, ExtensionError> {
         Ok(value)
     }
@@ -133,7 +134,7 @@ async fn facade_cap_persists_on_tool_call_turn() {
         },
         executor: Arc::new(Echo),
     });
-    let agent = builder(&url).tool(tool).build().unwrap();
+    let agent = builder(&url).shared_tool(tool).build().unwrap();
     let result = timeout(LIMIT, async {
         agent
             .prompt(None, "hi")

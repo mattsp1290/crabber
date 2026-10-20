@@ -6,8 +6,11 @@ license.workspace = true
 
 [dependencies]
 crabber-core = { path = "../crabber-core" }
+crabber-extension = { path = "../crabber-extension" }
 async-trait = "0.1"
+futures = "0.3"
 thiserror = "2"
+jsonschema = { version = "0.58", default-features = false }
 # Canonical records must deserialize to the same finite f64 bits and byte size.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
@@ -16,18 +19,18 @@ time = "0.3"
 uuid = { version = "1", features = ["v4"] }
 serde = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"], optional = true }
-tokio = { version = "1", features = ["time"], optional = true }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]
 default = []
 postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
-sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac", "dep:tokio"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 
 [dev-dependencies]
 tempfile = "3"
 allocation-counter = "0.8.1"
 crabber = { path = "../crabber" }
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time", "net", "io-util"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,356 @@
+mod admission;
+mod capacity;
+mod inspection;
+pub(in crate::postgres) mod protocol;
+pub(super) mod public;
+pub(super) mod reads;
+mod selection;
+use super::{PostgresStore, db};
+use crate::postgres::transaction::Transaction;
+use crate::{
+    StoreError,
+    queue::{
+        AdmissionGuard, Audit, MAX_PENDING, MAX_PENDING_BYTES, QueueAction, QueueAuthority,
+        QueueMutation, QueueOutcome, QueueReceipt, Record, complete, corrupt, encode, invalid,
+        target,
+    },
+};
+use crabber_core::SessionRevision;
+use sqlx::Postgres;
+impl PostgresStore {
+    pub(super) async fn queue_mutate(
+        &self,
+        request: QueueMutation,
+    ) -> Result<QueueOutcome, StoreError> {
+        let digest = request.fingerprint()?;
+        let mut tx = self.session_transaction(&request.session_id).await?;
+        if let Some(saved) = reads::receipt(&mut tx, &request.session_id, &request.id).await? {
+            if saved.semantic_digest != digest {
+                return Err(StoreError::AdmissionConflict);
+            }
+            tx.commit().await.map_err(db)?;
+            return Ok(QueueOutcome::Replayed(saved));
+        }
+        let result = Box::pin(self.queue_apply_guarded(
+            &mut tx,
+            request,
+            digest,
+            None,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        ))
+        .await?;
+        #[cfg(test)]
+        crate::binding_fault::trip(&self.queue_fault, 1)?;
+        tx.commit().await.map_err(db)?;
+        #[cfg(test)]
+        crate::binding_fault::trip(&self.queue_fault, 2)?;
+        Ok(result)
+    }
+    pub(super) async fn queue_apply_guarded(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: QueueMutation,
+        digest: crabber_core::InputFingerprint,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<QueueOutcome, StoreError> {
+        let now = self.clock.now();
+        protocol::routing(tx, &request.session_id, read_proof)
+            .await
+            .map_err(protocol::domain)?;
+        let (session, metadata, revision) =
+            reads::current_with_proof(tx, &request.session_id, read_proof)
+                .await
+                .map_err(protocol::domain)?
+                .ok_or(StoreError::NotFound)?;
+        let summary = crate::management::summary(&session, metadata, revision);
+        let head = reads::head(tx, &request.session_id).await?;
+        let id = target(&request.action).or_else(|| head.as_ref().map(|r| &r.queue_id));
+        let original = if let Some(id) = id {
+            reads::record_with_proof(tx, &request.session_id, id, read_proof).await?
+        } else {
+            None
+        };
+        self.queue_guards(tx, &request, read_proof).await?;
+        let sequence = if matches!(request.action, QueueAction::Enqueue { .. }) {
+            let previous: Option<i64> =
+                sqlx::query_scalar("SELECT MAX(sequence) FROM future_queue WHERE session_id=$1")
+                    .bind(&request.session_id.0)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(db)?;
+            let sequence = u64::try_from(previous.unwrap_or(0))
+                .map_err(|_| corrupt())?
+                .checked_add(1)
+                .ok_or_else(invalid)?;
+            i64::try_from(sequence).map_err(|_| invalid())?;
+            sequence
+        } else {
+            0
+        };
+        let (projection, mut originals) = match original {
+            Some(loaded) => (Some(loaded.projection), Some(loaded.originals)),
+            None => (None, None),
+        };
+        // Move the already authenticated actual head; do not reread or clone it.
+        let previous = originals.as_mut().and_then(|selected| selected.head.take());
+        let prepared = match (&projection, &originals) {
+            (Some(record), Some(originals)) => originals.prepared(record)?,
+            (None, None) => None,
+            _ => return Err(corrupt()),
+        };
+        let change = crate::queue::apply_guarded(
+            &request,
+            &summary,
+            head.as_ref(),
+            projection.map(|record| (record, prepared)),
+            sequence,
+            now,
+            preparation,
+        )?;
+        Box::pin(self.queue_admit_and_publish(
+            tx,
+            (request, digest, previous, now),
+            change,
+            prepared,
+            preparation,
+            read_proof,
+        ))
+        .await
+    }
+    async fn queue_guards(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: &QueueMutation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), StoreError> {
+        if let QueueAction::Enqueue { input, .. } = &request.action {
+            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND admission_key=$2) OR EXISTS(SELECT 1 FROM admission_receipts WHERE session_id=$1 AND admission_key=$2)").bind(&request.session_id.0).bind(input.admission.key.as_str()).fetch_one(&mut **tx).await.map_err(db)?;
+            if exists {
+                return Err(StoreError::AdmissionConflict);
+            }
+        }
+        if matches!(
+            request.action,
+            QueueAction::Enqueue { .. } | QueueAction::Prepare { .. }
+        ) {
+            let (count, bytes) = capacity::pending(tx, &request.session_id, proof).await?;
+            // Enqueue reserves a separate bounded slot for the FIFO head's
+            // prepared capsule, so a full backlog can still make progress.
+            let budget = if matches!(request.action, QueueAction::Prepare { .. }) {
+                MAX_PENDING_BYTES + crate::queue::MAX_RECORD
+            } else {
+                MAX_PENDING_BYTES
+            };
+            if (matches!(request.action, QueueAction::Enqueue { .. }) && count >= MAX_PENDING)
+                || bytes
+                    .checked_add(encode(request)?.len())
+                    .ok_or_else(invalid)?
+                    > budget
+            {
+                return Err(StoreError::Busy);
+            }
+        }
+        if matches!(
+            request.action,
+            QueueAction::Claim { .. } | QueueAction::Prepare { .. }
+        ) {
+            let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
+                .bind(&request.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
+            if super::admission_reads::pending(tx, &request.session_id, proof).await? || busy {
+                return Err(StoreError::Busy);
+            }
+        }
+        Ok(())
+    }
+}
+async fn publish_queue_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &QueueMutation,
+    digest: crabber_core::InputFingerprint,
+    summary: crate::QueueSummary,
+) -> Result<QueueReceipt, StoreError> {
+    super::bump_public_revision(tx, &request.session_id).await?;
+    let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+        .bind(&request.session_id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+    let saved = QueueReceipt {
+        session_id: request.session_id.clone(),
+        operation_id: request.id.clone(),
+        semantic_digest: digest,
+        revision: SessionRevision::new(u64::try_from(raw).map_err(|_| corrupt())?)?,
+        summary,
+    };
+    Ok(saved)
+}
+
+async fn write_projection(
+    tx: &mut Transaction<'_, Postgres>,
+    audit: &Audit,
+    record: &Record,
+    fresh: bool,
+) -> Result<(), StoreError> {
+    let request = &audit.request;
+    let saved = &audit.receipt;
+    record.validate(
+        &request.session_id,
+        &saved.summary.queue_id,
+        saved.summary.sequence,
+    )?;
+    let seq = i64::try_from(record.summary.sequence).map_err(|_| invalid())?;
+    if fresh {
+        sqlx::query("INSERT INTO future_queue(session_id,queue_id,sequence,state,prepared,summary_json,data_json,admission_key,source_protocol) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1)")
+            .bind(&request.session_id.0).bind(&record.summary.queue_id.0).bind(seq).bind(format!("{:?}",record.summary.state)).bind(record.summary.prepared).bind(encode(&record.summary)?).bind(encode(record)?).bind(record.input.admission.key.as_str()).execute(&mut **tx).await.map_err(db)?;
+    } else {
+        let changed = sqlx::query("UPDATE future_queue SET state=$3,prepared=$4,summary_json=$5,data_json=$6 WHERE session_id=$1 AND queue_id=$2")
+            .bind(&request.session_id.0).bind(&record.summary.queue_id.0).bind(format!("{:?}",record.summary.state)).bind(record.summary.prepared).bind(encode(&record.summary)?).bind(encode(record)?).execute(&mut **tx).await.map_err(db)?;
+        if changed.rows_affected() != 1 {
+            return Err(corrupt());
+        }
+    }
+    Ok(())
+}
+
+async fn save(
+    tx: &mut Transaction<'_, Postgres>,
+    audit: &Audit,
+    record: &mut Record,
+    original_prepared: Option<&crate::BoundKeyedAdmitRequest>,
+    previous: Option<crate::queue::source::Source>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    let request = &audit.request;
+    let saved = &audit.receipt;
+    let fresh = matches!(request.action, QueueAction::Enqueue { .. });
+    // The real first cohort references its current row. Prepare already has
+    // that row, so its actual Source can publish before the compact reference.
+    if fresh {
+        record.former_encoded_len(None)?;
+        write_projection(tx, audit, record, true).await?;
+    }
+    let source = protocol::publish(tx, audit, previous, fresh, proof)
+        .await
+        .map_err(protocol::domain)?;
+    if matches!(request.action, QueueAction::Prepare { .. }) {
+        record.prepared = Some(crate::queue::PreparedReference::published(
+            audit,
+            source.as_ref(),
+            proof,
+        )?);
+    }
+    let prepared = match &request.action {
+        QueueAction::Prepare { prepared, .. } => Some(prepared.as_ref()),
+        _ => original_prepared,
+    };
+    record.former_encoded_len(prepared)?;
+    if !fresh {
+        write_projection(tx, audit, record, false).await?;
+    }
+    sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'future_queue',$3,NULL,$4)")
+        .bind(&request.session_id.0).bind(&request.id.0).bind(saved.semantic_digest.as_str()).bind(encode(saved)?).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query(
+        "INSERT INTO future_queue_audit(session_id,operation_id,queue_id,revision,data_json) VALUES($1,$2,$3,$4,$5)",
+    )
+    .bind(&request.session_id.0)
+    .bind(&request.id.0)
+    .bind(&record.summary.queue_id.0)
+    .bind(i64::try_from(saved.revision.get()).map_err(|_| invalid())?)
+    .bind(encode(audit)?)
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod process_tests;
+
+#[cfg(test)]
+mod corruption_tests;
+
+impl PostgresStore {
+    pub(super) async fn queue_replay(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: &QueueMutation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Option<QueueOutcome>, StoreError> {
+        if let Some(saved) =
+            reads::receipt_with_proof(tx, &request.session_id, &request.id, proof).await?
+        {
+            if saved.semantic_digest != request.fingerprint()? {
+                return Err(StoreError::AdmissionConflict);
+            }
+            return Ok(Some(QueueOutcome::Replayed(saved)));
+        }
+        Ok(None)
+    }
+    pub(super) async fn queue_preparation_context(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        authority: &QueueAuthority,
+        intent: &crabber_core::InputFingerprint,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), StoreError> {
+        reads::current_with_proof(tx, &authority.session_id, proof)
+            .await
+            .map_err(protocol::domain)?
+            .ok_or(StoreError::NotFound)?;
+        protocol::routing(tx, &authority.session_id, proof)
+            .await
+            .map_err(protocol::domain)?;
+        let saved = reads::record_with_proof(tx, &authority.session_id, &authority.queue_id, proof)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        if !protocol::protocol(
+            tx,
+            &crate::queue::source::Scope {
+                session: authority.session_id.clone(),
+                queue: authority.queue_id.clone(),
+            },
+            proof,
+        )
+        .await
+        .map_err(protocol::domain)?
+        {
+            return Err(StoreError::HostUnsupported);
+        }
+        if let Some(prepared) = saved.prepared()?
+            && crate::session_owner::preparation::queue_admission_intent(prepared)
+                .map_err(|_| StoreError::AdmissionConflict)?
+                != *intent
+        {
+            return Err(StoreError::AdmissionConflict);
+        }
+        let claim = saved.claim.as_ref().ok_or(StoreError::Conflict)?;
+        if saved.summary.state != crate::QueueState::Claimed
+            || claim.authority != *authority
+            || claim.expires <= self.clock.now()
+            || reads::head(tx, &authority.session_id)
+                .await?
+                .is_none_or(|head| head.queue_id != authority.queue_id)
+        {
+            return Err(StoreError::Conflict);
+        }
+        let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
+            .bind(&authority.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
+        if busy || super::admission_reads::pending(tx, &authority.session_id, proof).await? {
+            return Err(StoreError::Busy);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod publication_tests;
+
+#[cfg(test)]
+mod migration_tests;
+
+#[cfg(test)]
+mod compact_tests;

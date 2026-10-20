@@ -2,6 +2,11 @@
 
 The `postgres` feature uses `sqlx` with Tokio, rustls, and a PostgreSQL pool. It targets PostgreSQL 14 or newer and requires a dedicated database. Migrations create the Crabber tables in the default schema, so do not run them in a shared application schema.
 
+Current bundled storage requires PostgreSQL 24 / SQLite 20, defined by
+`POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION` in [lib.rs](src/lib.rs).
+Numbered schema introductions below are historical; they are not the versions
+accepted by current `connect`.
+
 The host calls `PostgresStore::migrate(url)` before `PostgresStore::connect(url)`. Connect verifies the schema version without changing it. The default build does not include the PostgreSQL driver.
 
 The `sqlite` feature exposes `SqliteStore`. Call `SqliteStore::migrate(path)` then
@@ -12,7 +17,11 @@ backup and restore.
 
 Set `CRABBER_TEST_POSTGRES_URL` to run the live contract tests. Set `CRABBER_REQUIRE_POSTGRES=1` to fail if that URL is missing.
 
-## Keyed admission (MemoryStore and PostgreSQL)
+New Raw Runs also retain their original execution birth. These records preserve
+negative enrollment facts and do not certify a main-task join or resource policy.
+See [native execution enrollment](../../docs/native-execution-enrollment.md).
+
+## Keyed admission (MemoryStore, PostgreSQL and SQLite)
 
 `SqliteStore` provides the same keyed contract (`sqlite_admission_contract`).
 
@@ -47,11 +56,19 @@ keyed requests to unkeyed starts. Forward both methods in wrappers.
 
 PostgreSQL schema version 2 adds retained receipts and their semantic digests in a
 forward, idempotent migration that preserves existing sessions, runs and messages.
-Per-session transaction locks serialize keyed and unkeyed admission. Receipt,
+Per-session transaction locks serialize all mutations, including keyed/unkeyed
+admission, lease renewal, recovery, inbox and abandonment. PostgreSQL locks the
+session advisory gate before run rows, dependent rows and event/revision rows;
+unrelated sessions remain independent. Receipt,
 run, epoch and user message commit together. Lookup is read-only; replay never
 changes lease ownership. PostgreSQL receipts survive pool and process restarts.
 
 ### Version 1 fingerprint contract
+
+This subsection describes the retained legacy v1 format. Current bound typed
+admissions use binding capsule v3, keyed execution capsule v2 and canonical input
+digest v2, described under [atomic binding admission](#experimental-atomic-binding-admission).
+Older payloads are not rewritten into the new execution format.
 
 The host supplies a lowercase 64-character SHA-256 claimed fingerprint of its
 canonical semantic input envelope. Keys accept 1–128 ASCII letters, digits, dash,
@@ -65,8 +82,17 @@ compaction ratio/tail count, turn limit, acquired tool schemas/metadata, ordered
 prompt sections, restrictions, component identities, guard IDs and provider IDs/names.
 The runtime admission semantics array has 15 ordered elements. Local capsules
 and pause checkpoints created before the output-cap field was introduced are
-invalid. Reset or re-migrate local PostgreSQL data when applying or reverting
-this change; the admission domain and capsule version remain version 1.
+invalid under that legacy contract. The v1 domain and capsule remain legacy
+formats; their original introduction is not the current deployment version.
+Use explicit migration and a matching backup/binary for storage changes.
+
+The runtime includes a `contract:crabber/registration-profile.v1` component that
+binds frozen declaration metadata and the plan provider's original fingerprint.
+This additional component preserves the existing capsule and admission digest
+formats. It enables committed request verification before contextual setup;
+actual acquired instance schemas are still checked for Unstarted restoration.
+Runtime replay requires this evidence. Bare receipt lookup remains available for
+older capsules without the component.
 
 The acquired plan fingerprint is also retained. The store's
 `KeyedAdmitRequest::semantic_digest` hashes domain `crabber.admission.v1`, immutable
@@ -104,6 +130,20 @@ Keep using the same key; never invent a replacement key to resolve uncertainty.
 Receipts establish admission, not completion or exactly-once external tool effects.
 Existing fenced resume/recover rules remain responsible for execution recovery.
 
+Native stores can return the actual rotating issuer for owned Approval, Tool and
+Frontend claim/recovery completions through
+`complete_preparation_with_driver_source`. Exact retries return metadata without
+a fresh locator or grant. `inspect_prepared_tool_driver` authenticates the full
+original Tool/Frontend source and accepted inputs; its receipt and locator are
+safe metadata, and do not provide dispatch permission. `PendingSuccessorTask`
+uses those actual completions and inspectors before registering and activating
+Tool/Frontend claim and recovery drivers in the same original task. These tags
+share the existing 64-task supervisor with initial, Queue and other successor
+work. Exact replay never dispatches business work again; unknown acknowledgments
+retain their original task. Source and task observations leave native execution
+enrollment and complete resource ownership as separate requirements. External
+Store implementations default to unsupported.
+
 
 A PostgreSQL transport/commit failure is currently sanitized as
 `StoreError::Validation("PostgreSQL operation failed")`. The `Validation` variant
@@ -122,8 +162,10 @@ semantic outcome, reconcile it as unknown using the original key and payload. Se
 
 `Agent::abandon(AbandonRequest { expected, expected_owner, authority })` calls the
 store directly, without resolving providers, mounting extension plans or invoking
-tools or lifecycle hooks. It handles persisted Pending, Running and Paused runs
-even when their executable configuration is unavailable. Existing live
+tools or lifecycle hooks. It handles eligible legacy Pending, Running and Paused
+runs even when their executable configuration is unavailable. Any native attempt
+or phase evidence, or an active session approval barrier, causes
+`AbandonError::NativeReconciliationRequired` without mutation. Existing live
 `RunHandle::interrupt` and resume/recover behavior remain available.
 
 Use `AbandonAuthority::ExpiredLease` for an observed expired owner. The store
@@ -138,12 +180,16 @@ authoritative process exit/wait or coordinator evidence, stop its renewal loop,
 and prevent a replacement worker from using that ownership. An expected fence,
 a timeout, a paused checkpoint or an owner string does not establish process
 death. Crabber checks the exact expected owner and token atomically; it cannot
-verify external process death. This authority may revoke an unexpired lease.
+verify external process death. This authority may revoke an unexpired lease for
+eligible legacy work. Neither process death nor lease expiry establishes an
+uncertain external result or proves native resource cleanup. Native work requires
+explicit reconciliation; legacy abandonment cannot replace that outcome or
+release unresolved cleanup.
 
 MemoryStore rotates the claim token before settlement inside a rollback-safe
-transaction. PostgreSQL provides the same contract in one transaction, locking
-the run row before reading its clock or checking ownership; renewal and recovery
-claims serialize on that lock. Every Pending or Running tool call becomes Interrupted with one
+transaction. PostgreSQL provides the same contract in one transaction, taking
+the session gate then the run row before reading its clock or checking ownership;
+renewal and recovery claims use that same order. Every Pending or Running tool call becomes Interrupted with one
 matching result message and ToolCallSettled event. The run becomes Interrupted
 with one durable RunSettled event. All old ExecutionStore writes are fenced out.
 Completed tool records/results, history, usage, checkpoint, admission receipts
@@ -184,8 +230,9 @@ assertion that required-service tests reject a missing database URL.
 `SqliteStore` provides the same retained evidence and fenced-begin contract
 (`sqlite_admission_execution_contract`).
 
-Keyed runtime admission atomically retains a version-1, redacted-Debug execution
-capsule with the receipt, run, original user message and epoch. It includes original
+Keyed runtime admission atomically retains a redacted-Debug execution capsule
+with the receipt, run, original user message and epoch. Current bound admissions
+use version 2; version 1 is the retained legacy format. It includes original
 request/configuration/plan and opaque behavior identity, never credentials or
 transport context. Receipt JSON/Debug and public lookup remain prompt-free.
 
@@ -197,8 +244,9 @@ under the run lock, rotates the token and leaves Unstarted intact. One-shot
 execution effects. Unknown claim/begin acknowledgements never authorize work.
 All effect-bearing ExecutionStore writes deny Unstarted, while lease maintenance
 remains allowed. Generic `claim_expired_run` returns `AdmissionRecoveryRequired`;
-explicit abandonment can terminally settle it. Started and missing evidence retain
-conservative recovery semantics. A replay never creates or upgrades evidence.
+explicit abandonment can terminally settle it only when there is no native
+attempt/phase evidence or active session approval barrier. Started and missing
+evidence retain conservative recovery semantics. A replay never creates or upgrades evidence.
 
 Custom adapters default to typed Unsupported until they implement the complete
 load/claim/begin contract. `KeyedAdmitRequest::execution = None` supports legacy
@@ -206,9 +254,299 @@ safety-only direct admissions; Some is validated before any write or replay. Sto
 trait source changes require updating struct literals and forwarding wrappers.
 Memory state survives host recreation only while the shared store exists.
 
-Schema 5 adds retained private execution records without backfilling legacy runs.
-Stop writers, back up, migrate explicitly and deploy the matching binary. Connect
-is read-only and rejects other schemas; mixed v4/v5 writers are unsupported.
+Historical introduction: PostgreSQL schema 5 added retained private execution
+records without backfilling legacy runs. Current storage requires PostgreSQL 24 /
+SQLite 20 (`POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION`). Stop writers, back
+up, migrate explicitly and deploy the matching binary. Connect is read-only and
+rejects other schemas; mixed-version writers are unsupported.
 Rollback requires backup restore or forward repair. No receipt/capsule pruning,
 TTL or retained-key reuse is introduced. See the [full host contract](../../docs/admission-receipts.md)
 for eligibility classifications, original behavior restoration and process proofs.
+
+
+### Experimental atomic binding admission
+
+`admit_bound_run` and `admit_bound_keyed_run` commit immutable provider-binding
+records with the original message/run and, when keyed, receipt/Unstarted capsule.
+Never implement this by calling legacy admission and then writing the binding.
+The bundled stores reuse their transaction-only admission helpers. PostgreSQL
+uses the session gate first; SQLite explicitly completes its write transaction;
+Memory publishes its cloned state only after all writes succeed.
+
+`ExecutionBindingCapsule` version 3 retains the original validated `InputEnvelope`
+with binding evidence; legacy version 2 remains metadata-only for the runtime.
+New keyed execution capsules and canonical semantic digests use version 2. Their
+configuration must contain exactly one `PROVIDER_BINDING_COMPONENT` whose version
+encodes the complete descriptor and one `HOST_BEHAVIOR_COMPONENT` whose version is
+the declared opaque behavior fingerprint. The store hashes the complete runtime
+semantics and checks original input, selected route, limits, configuration and
+behavior rather than trusting the caller's claimed fingerprint. Credentials and
+transport correlation do not belong in these declarations. The runtime uses
+this capability for typed and text-adapted ordinary/keyed admission and recovery.
+`AdmitRequest.expected_revision` is checked under the same session lock, after
+identity and exact receipt lookup; stale new admissions change no input or owner.
+The typed envelope includes that revision in its canonical semantics. The legacy
+raw text guard remains a precondition separately from its v1 digest.
+
+All ordered message records commit with admission. Supplied message and part IDs
+are preserved and must be unique across the entire shared store, including other
+sessions and tenants. A collision fails closed as `StoreError::Conflict`, which
+also represents other conditions; it is not a collision-specific error. Hosts
+that accept wire histories must compare them with host-owned canonical history,
+then admit only a new suffix with globally unique storage IDs. Do not strip IDs
+from a retry or silently regenerate its input; retain the exact original envelope
+and key after uncertainty. Generated IDs never change the typed digest. Scoped
+private reads authenticate their selected original records; this does not mean
+every read verifies all retained history. Model-input media has an explicit part
+kind, separate
+from custom display activity; it is never removed by the conversation projector.
+`typed_admission_contract::run_contract` qualifies this capability, including
+context/state JSON that requires lossless TEXT rather than PostgreSQL JSONB.
+Historical introduction: PostgreSQL schema 7 added that private text carrier and
+SQLite schema 3 introduced its fresh-file representation. Current SQLite 20 still
+initializes only fresh files and refuses every older version.
+
+Custom adapters can use `KeyedAdmitRequest::validated_digest` before taking locks,
+`ExecutionBindingCapsule::validate`/`validate_keyed`, and the bounded
+`RetainedExecutionBinding` codec and row validator. Recheck persisted identity and
+receipt under the session lock. Replay compares the original binding, even after
+Started, terminal settlement or lease changes, and never inserts missing evidence
+or grants another fence. Missing/inconsistent binding evidence returns a conflict;
+legacy receipt lookup still returns metadata. Default methods return
+`HostUnsupported` rather than silently dropping the binding.
+
+`execution_binding(session, run)` is a scoped private read, not a public snapshot.
+It checks immutable run fields and the original committed input in a coherent
+read transaction. The SQL projection omits private worker tokens and bounds its
+payload before decoding. Both writers and readers cap private encoded records at
+16 MiB; configuration nesting is capped at 64. Debug output is redacted. The
+public `execution_binding_contract::run_contract` qualifies adapters; bundled
+fault/process tests cover rollback, lost acknowledgement and killed writers for
+both keyed and unkeyed admission, without dispatching a provider or tool.
+
+### Experimental uncertain phase resolution
+
+`Store::resolve_uncertain_phase(PhaseResolution)` targets an exact session, run,
+call, phase and generation at the captured session revision. The request embeds
+`PhaseCommand::ResolveUncertain`, including the host's asserted resolver identity
+and authority claim. The library records that assertion; the host verifies it.
+Success requires a supplied non-error `ToolOutput`. Failure records the supplied
+output as an error, or an empty error when omitted. Refusal leaves the phase and
+logical call uncertain. Supplied output must already satisfy host protection
+policy: resolution never executes tools or reruns result middleware.
+
+Memory, PostgreSQL and SQLite commit the native outcome, canonical logical tool
+result/message/source event when applicable, audit, revision and receipt in one
+transaction. They reconcile the original operation key before fresh eligibility
+checks. Identical retries return metadata, including after lease expiry or later
+cleanup; changed scope, choice, output or authority claim conflicts. Generated
+message/part/turn IDs and timing do not change retry semantics. Retain the entire
+original request when an acknowledgement is lost. The shared operation-key
+namespace distinguishes this compound control from historical metadata writes;
+fresh metadata-only `ResolveUncertain` requests are rejected.
+
+This host control requires no worker fence and returns no execution authority.
+It accepts only an already uncertain exact phase and preserves its current
+quiescence, parent attempt, run ownership and approval barrier. A known outcome
+with incomplete cleanup remains incomplete; resolution neither releases retained
+resources nor resumes or retires the run. `PhaseResolution::fingerprint`,
+`materialize` and `verify_replay` support custom transactional adapters, whose
+default Store method remains explicitly Unsupported. Receipt verification also
+requires its persisted audit event. No schema migration is introduced.
+Session management is a pure Store/Agent control path: `manage_session` creates an
+empty session under a host-generated stable SessionId and ControlId, or renames,
+changes selected defaults, or reversibly archives one using SessionRevision CAS.
+Create binds workspace/directory permanently. Exact retries replay the original
+summary before current revision/visibility checks; changed semantics conflict.
+Reconcile unknown outcomes with the original operation key and complete request.
+An absent lookup while a request may be in flight is not proof of rejection.
+
+`session_summary` and workspace-filtered `list_sessions` expose bounded display
+metadata and revisions, without runtime fences, leases, checkpoints or outputs.
+Lists use session ID keysets, with limits 1–100 and cursors bound to workspace
+and archive visibility. Pages reflect current committed rows, rather than a
+frozen multi-page snapshot; use the separate snapshot contract for history.
+Sessions created by ordinary admission lazily read as unarchived with empty
+selected defaults, without migration rewrites.
+
+Archive changes visibility and rejects fresh ordinary admissions under the same
+session transaction. It permits exact admission retries and existing approval,
+continuation and reconciliation controls; it does not cancel work. Selected
+provider/model identifiers are persisted host preferences. `Agent::prompt_session` and its
+default-selected variants resolve stored preferences with configured fallbacks;
+explicit execution contexts retain their immutable admitted selection. `ForkSession` creates nonexecuting
+imported history at a verified closed boundary. V2 aggregate snapshots compose
+that history with bounded authenticated control metadata. `delete_session` requires
+positively verified creation and complete native readiness. Quiet managed/fork
+sessions remain supported. Memory also supports managed sessions whose retained
+runs and owner history are entirely covered by completed `FixedMemoryInitialHost`
+scripted tasks. Extra generic/Raw runs, incomplete sources or uncovered owners
+remain blocked with `OwnershipUnknown`; active work keeps its specific blocker.
+See the [fixed Memory workflow](../../docs/server-host.md#fixed-memory-scripted-sessions)
+and [offline probe](../../examples/server-host-probe/README.md).
+
+PostgreSQL schema 9 adds session metadata and session-only audit records, sharing
+ControlId uniqueness with all other controls. Management audit never fabricates
+a RunId. PostgreSQL migration is additive/idempotent and connect remains read
+only. SQLite schema 5 creates this representation only on fresh files and refuses
+older files; its schema assembly replaces the still-empty legacy receipt table
+so management receipts may reference their separate session audit. Existing run
+control receipts retain their mandatory run-event relationship.
+
+
+### Waiting approval cancellation and expiry
+
+`Store::terminate_approval` and its Runtime/Agent delegates accept an exact
+session/run/continuation generation, revision, operation key and host resolver
+claim. The host authenticates administrative authority separately from permission
+to execute. These pure controls remain available after extension shutdown.
+Cancellation selects `Interrupted`; expiry selects `Failed` and requires a named,
+unanswered interaction whose Store-clock deadline has passed. Accepted answers
+remain recorded and unconsumed. Other unanswered questions become expired only
+when their own deadlines passed; otherwise they become cancelled.
+
+Fresh approval reads and controls authenticate continuation creation time against
+the original suspension audit and source turn/time against the committed native
+pause. Coherent private changes to creation time and question deadlines cannot
+extend or shorten the decision window. Generated presentation fields may differ
+on an original-key retry; its committed receipt still replays as metadata.
+
+Only a waiting batch whose latest suspended attempt has fully joined is eligible.
+Adapters verify the frozen suspension and answer receipts, pending call bindings,
+absence of native phases for prepared calls, and every historical phase's
+terminal output and complete cleanup. The transaction writes a fixed empty error
+result for each prepared call in original order, terminal source events, run
+outcome and revoked fence, barrier release, audit and receipt. It invokes no tool,
+provider or middleware and does not invent a native execution outcome. Claimed,
+started and uncertain work require their separate ownership controls.
+
+Retain the entire original request when acknowledgement is lost. Exact retries
+replay metadata before current eligibility checks, including after another run
+is admitted. Changed scope, choice or authority conflicts. Memory, PostgreSQL
+and SQLite support the same atomic contract; custom Store defaults return
+`Unsupported`. No schema migration is added by this control.
+
+Parent reconciliation uses two keyed host controls. `mark_attempt_uncertain`
+revokes the exact latest Started attempt and run authority, preserving every
+child outcome and cleanup state. Expiry/revocation permits detecting uncertainty;
+it never proves that an external resource stopped. A host-stopped assertion is
+an explicit authenticated-host obligation, bound to the exact attempt target.
+
+After independently reconciling all effects and cleanup, `retire_attempt` selects
+Failed or Interrupted for the latest OutcomeUnknown attempt and logical run.
+The host must assert that the whole matching worker and attempt-owned resources
+actually joined. Every run phase must have a known terminal outcome and Complete
+quiescence, with matching logical results and immutable call bindings. Pending
+calls block retirement unless `CancelNeverStarted` explicitly selects fixed
+Interrupted results for bounded calls that never owned any phase. Running,
+Claimed, Started, Suspended and Uncertain effects are never bulk-interrupted.
+
+Retirement preserves usage and binding, closes any durably identified open turn
+once, and commits result/source records, terminal run, attempt cleanup, eligible
+claimed-barrier release and audit/receipt atomically. Waiting approvals require
+their dedicated termination control. Both operations return metadata only and
+remain available after extension close, without factories, providers or tools.
+Retain the original key and request after an unknown acknowledgement; exact
+retries and `lookup_attempt_mutation` reconcile without restoring authority.
+These controls do not implement durable cancel requests or orderly host close.
+
+`Store::public_run_state(session, max_bytes)` reads the latest admitted run's
+public identity, status, usage and creation time with the session revision captured
+in the same native read. It returns `run: None` for an existing empty session,
+`NotFound` for a missing session, and `Limited` when the complete metadata JSON
+exceeds the supplied budget (at most 8 KiB). SQL formatting overhead may require
+a conservatively larger budget. Native implementations project and bound safe
+fields before transferring or cloning them; private checkpoints, configuration,
+errors, leases and owner tokens are never decoded by this read. This primitive
+must be combined with other reads only at matching captured revisions.
+
+`Store::public_history` projects a bounded history page for public display. It
+omits reasoning and provider-state blocks recursively, including nested tool
+results, and preserves message/part/call identities and original ordinals.
+`read_usage` charges the original raw read before redaction, so private records
+still consume the requested allocation budget and may produce `Limited`.
+Runtime `snapshot` remains the raw inspection path. The public history page
+retains its authenticated captured revision and history cutoff; it is a history
+projection, not a coherent session/control metadata snapshot.
+
+The public run summary omits the mutable `Run.updated_at` timestamp: lease
+renewals and ownership updates can change it without a public revision. A private
+heartbeat therefore cannot change a revision-captured public run summary or
+invalidate history pagination.
+
+`Store::public_session_snapshot(PublicSessionRequest)` combines the native latest
+run, session management, attempt, pre-effect approval/barrier, explicit public UI
+state and redacted history at one authenticated public revision. It returns
+`Invalidated` if a constituent read or a continuation observes another revision;
+assemble all history pages before treating the view as complete. Metadata changes
+invalidate continuations even when history has not changed. No execution authority,
+private approval prompt, raw checkpoint, resolver claim or owner token is returned.
+Version 1 explicitly covers these native records; durable queue and later frontend
+or checkpoint continuation summaries require their integration checkpoints.
+
+The caller separately bounds safe header bytes (maximum 2 MiB), private approval
+proof bytes (maximum 32 MiB), interactions (maximum 64) and the existing history
+counts/bytes. Native readers preflight proof carriers before fetching or decoding
+them; a small public header with a large private proof may return `ProofBytes`.
+SQL adapters conservatively charge duplicate proof reads and formatting overhead.
+`header.read_usage` includes the run and control reads; history retains its raw
+pre-redaction accounting. The outer response envelope and continuation token are
+outside those byte counters. A limit returns no partial aggregate header. Custom
+stores must implement or forward the native bounded header/run/history and revision
+contracts; the default fails closed when any constituent is unsupported.
+
+`PublicSessionSubscription` is host-owned polling state, with no task or channel.
+Call `poll` (or Agent/Runtime `poll_public_session`) on a host timer or notification
+wake. It checks durable revisions even when no notification arrived. On revision
+change, invalidation or a reported notification overflow, discard previous pages
+and assemble the next `reset: true` page. Limits can be changed with `set_limits`,
+which also resets assembly. A completed unchanged view returns `Unchanged` with its
+revision/history cutoff; a terminal run is included on the first attachment.
+This is a current-state resynchronization primitive, not delivery of every
+intermediate mutation. Agent reads and polling remain available after extension
+close without acquiring factories, providers or tools.
+
+
+## Explicit native tool checkpoints
+
+PostgreSQL schema 11 and fresh SQLite schema 7 add private versioned native tool
+checkpoint records, immutable required interaction/phase indexes, and a session
+admission barrier. PostgreSQL migration is idempotent and preserves older rows;
+SQLite refuses prior-version files. Connecting verifies versions without changes.
+Custom Stores opt in explicitly; defaults return Unsupported before tools execute.
+See [explicit tool continuations](../../docs/explicit-tool-continuations.md) for the
+start/resume contract, host answers, metadata-only replay, and positive-Unstarted
+recovery. Checkpoints never become tool result output or public snapshots.
+
+## Durable run controls
+
+PostgreSQL schema 12 and fresh SQLite schema 8 add exact-target cancel/steer
+records, immutable progress indexes and private native suspension proofs. Native
+Stores atomically persist acceptance, ordered input incorporation and explicit
+waiting cancellation with their events/revisions. Terminating a waiting tool
+continuation records its own immutable host proof and retains prior answers and
+native Suspended+Complete history. Unsupported or unproven waiting states refuse
+without manufacturing cleanup. See [durable run controls](../../docs/durable-run-controls.md)
+for host request/retry/supervisor APIs and the status versus task-join distinction.
+
+### Session owner ledger (PostgreSQL 13 / SQLite 9)
+
+All native stores implement pre-session resource reservation, exact native-parent
+handoff, private lease renewal, explicit join and resolver receipts. SQL source
+proofs survive controller restarts; metadata retries never return authority.
+See [session resource ownership](../../docs/session-owners.md) for the admission
+identity guards, cleanup semantics, bounds and host responsibilities.
+
+
+### Public adapter conformance suites
+
+Custom adapters can invoke `session_management_contract::run_contract` with a
+Store, and `control_contract::run_contract` / `interaction_contract::run_contract`
+with a factory that installs the supplied `ManualClock`. These are the actual
+shared transactional harnesses. The prior `management_contract`,
+`run_control_contract` and `tool_continuation_contract` import paths reexport the
+same implementations; no duplicate tests or alternate protocol are introduced.
+The public [probe conformance target](../../examples/server-host-probe/tests/conformance.rs)
+runs them against an injected forwarding adapter on Memory, SQLite and PostgreSQL.
+A forwarding adapter must retain the complete native transactional capability
+contract; a new storage backend must implement and independently qualify it.

@@ -24,10 +24,18 @@ does not provide a transaction spanning that database and its own store.
 | Lookup `Some(receipt)` | Acceptance is durable; exact retry can verify matching input. Lookup by itself does not validate a new payload. |
 | `AdmissionConflict` | Same retained key has different input/behavior; surface the conflict. Never overwrite the original acceptance. |
 | `SessionIdentityMismatch` | Correct the session/workspace/directory mismatch; a retry cannot change identity. |
+| `StoreError::Conflict` | Ambiguous across supplied-ID collisions, archived sessions and stale ownership. Inspect canonical history, session metadata and the original receipt; never infer a collision or a safe new admission from this variant alone. |
 | `Busy` | An absent/different key reached a currently active session. Retain the queued item's key/input and apply host dispatch policy. An identical retained key replays before Busy. |
 | Lookup `None` | No committed receipt was visible at that instant. An original admission may still commit; retry the exact original request or continue reconciliation. |
 | Timeout, cancellation, transport error, or other outcome without a documented rejection guarantee | Outcome is unknown. Lookup and/or exact retry, with backoff as appropriate. Never invent a replacement key to resolve uncertainty. |
 | `AdmissionUnsupported` | The Store has not implemented the required transaction. Fix the adapter; never fall back to an unkeyed prompt. |
+
+Supplied message and part IDs are store-global, including across sessions and
+tenants. Validate incoming histories against host-owned canonical history before
+admitting only a new suffix with globally unique storage IDs. Keep the exact
+original `InputEnvelope`, key and captured revision after uncertainty; stripping
+or regenerating IDs changes the request rather than reconciling it. A collision
+fails closed; the `Conflict` variant alone does not identify its cause.
 
 Do not classify rejection from error text. In particular PostgreSQL connection and
 commit errors are sanitized as `StoreError::Validation("PostgreSQL operation failed")`.
@@ -49,11 +57,12 @@ user message and receipt; consume the handle to establish actual completion.
 | Recovery result | Host action |
 | --- | --- |
 | `Started { receipt, handle }` | Consume the handle and observe completed output. Ownership transfer alone does not establish completion. |
-| `Replayed(receipt)` | Terminal or Started evidence grants no new execution authority. Observe durable state; ordinary resume/recover may conservatively settle expired Started work. |
+| `Replayed(receipt)` | Terminal or Started evidence grants no new execution authority. Observe durable state. Native Started work remains unresolved until the host reconciles its actual outcome and cleanup; ordinary recovery does not manufacture an Interrupted result. |
 | `AdmissionExecutionError::LiveLease` | Wait or observe the current owner. No ownership change occurred. |
 | `StaleOwner`, `AlreadyStarted`, `AlreadyTerminal` | A race advanced ownership/state. Reconcile the original key; never replace the request. |
 | `AdmissionConflict` / `SemanticConflict` | Restore the exact original input, reflected plan/configuration and opaque behavior version, or surface conflict. Verification also precedes terminal replay. |
 | `MissingEvidence` / `Unsupported` | Legacy or adapter evidence cannot authorize fresh initial execution. Running status and checkpoint/event absence are insufficient. |
+| `RuntimeError::PhaseOutcomeUnknown { run_id, phase, operation_id, .. }` from `RunHandle::done()` | An executing native tool was interrupted without a proven outcome. Keep the run unsettled; inspect `list_tool_phases` / `Store::tool_phase`, reconcile original mutations with `lookup_phase_mutation`, and use `resolve_uncertain_phase` only for an already uncertain exact target after host verification. Record actual resource joins separately; never blindly resume or fabricate `Interrupted` success. |
 | `UnknownStoreFailure`, timeout, cancellation or transport loss | Spawn nothing. Reconcile the original key. A committed claim remains Unstarted until begin, and can be replaced only after its lease expires. |
 
 Before the first execution hook, lifecycle notification, state sink callback,
@@ -61,16 +70,26 @@ provider resolution or provider/tool call, the executor commits a one-shot fence
 `Unstarted -> Started` marker. Repeating begin never grants a second permission.
 A lost begin acknowledgement permits **zero execution** by that caller, even if
 it committed. Started identifies uncertainty, not proof that an effect happened;
-a crash there remains conservative and ordinary recovery may interrupt it.
+a crash there remains conservative. Native Started recovery refuses fresh work;
+eligible legacy record handling does not authorize replay of a native effect.
 There is no blind initial provider retry once Started. Paused tool continuation
 retains existing retry-safety and fencing rules. External tool effects are not
 exactly-once.
 
-Plan acquisition and global extension initialization are pre-admission setup,
-including on replay. They must not perform provider/tool business effects; the
-execution boundary does not promise exactly-once arbitrary plugin initialization.
-Generic `resume` returns `AdmissionRecoveryRequired` for Unstarted, and bulk
-`recover` skips such records so their completion route remains available. Explicit
+An already committed request is verified against its retained input, runtime
+settings and frozen registration declarations before plan acquisition or extension
+initialization. Started/terminal recovery uses this same metadata path. Configured
+hosts retain those declarations after close, and a temporarily unavailable factory
+does not prevent matching receipt replay. Eligible Unstarted recovery restores and
+checks the complete acquired plan and capsule before claiming ownership.
+
+An initially absent key can commit concurrently with pre-admission setup. Setup
+must remain free of provider/tool business effects; the execution boundary does
+not promise exactly-once arbitrary plugin initialization.
+Generic `resume` returns `AdmissionRecoveryRequired` for Unstarted. After
+successful whole-set discovery, bulk `recover` can report such a run as skipped so
+its completion route remains available. Discovery itself can refuse the complete
+set; see [recovery discovery limits](server-host.md#proof-and-recovery-discovery-limits). Explicit
 abandonment may settle them terminally when the host chooses not to execute.
 
 ## Fingerprints, retention and Store adapters
@@ -85,10 +104,22 @@ behavior must change this fingerprint. The host must retain the original version
 for exact retries; silently applying a new deployment's behavior is not equivalent.
 
 The library independently hashes inspectable semantics and rejects changed payloads
-even when the host reuses stale claimed hashes. It cannot detect a host lying about
-opaque code. JSON objects are sorted recursively; array order remains meaningful.
+even when the host reuses stale claimed hashes. Shared extensions must include
+registration-affecting inputs, such as schemas and prompt data, in their pure
+`config_hash` declaration (or change their version). Factories must likewise
+version all inputs that determine their registrations. Matching metadata replay
+does not initialize extensions or create instances to inspect hidden changes;
+actual acquired schemas are independently checked before restored execution.
+The library cannot detect falsely unchanged native declarations or opaque code. JSON objects are sorted recursively; array order remains meaningful.
 See the [versioned fingerprint contract](../crates/crabber-session/README.md#version-1-fingerprint-contract)
 for the precise fields and domain separators.
+
+The library adds a `contract:crabber/registration-profile.v1` component that binds
+frozen declarations and the provider's original plan fingerprint. Actual acquired
+schemas remain a separate restoration check. This is an additional configuration
+component in the existing capsule format. Capsules without this declaration cannot
+verify runtime request replay and return `MissingEvidence`; `lookup_admission`
+continues to return their metadata. No configuration or old capsule is rewritten.
 
 Keys are unique within a session for the **entire retained session lifetime**,
 including terminal, expired and recovered runs. No TTL, automatic pruning or key
@@ -97,8 +128,8 @@ PostgreSQL survives process restarts. Use opaque correlation IDs, not secrets:
 receipt metadata contains IDs and fingerprints, never prompt/history, private
 paths, claim tokens, checkpoints or execution fences.
 
-Custom Store adapters must override `admit_keyed_run` and `lookup_admission`;
-defaults fail closed. Validate message/part/session and immutable identity before
+Custom Store adapters must implement `admit_keyed_run`, `lookup_admission` and
+`load_admission_execution` for verified runtime replay; defaults fail closed. Validate message/part/session and immutable identity before
 replay; independently compute `KeyedAdmitRequest::semantic_digest`; compare both
 claimed fingerprint and semantic digest; resolve replay/conflict before Busy.
 Serialize admission for each session and commit receipt/run/message/epoch as one
@@ -111,7 +142,10 @@ is validated before replay/fresh insertion and committed atomically; `None`
 retains safety-only direct admission and cannot be upgraded by replay.
 Effect-bearing execution writes deny Unstarted; only begin and lease maintenance
 may mutate its live execution ownership. PostgreSQL claim/begin/renew/writes and
-abandonment serialize on the run row, without session-first lock inversion.
+abandonment first acquire the same per-session advisory mutation gate, then the
+run row, dependent records and event/revision rows. Run-ID operations discover
+immutable session routing without a row lock and verify it after acquiring the
+gate. No provider/tool/network operation runs while these locks are held.
 Retain private capsules and markers for the same session lifetime as receipts.
 Forward the entire contract in wrappers. Run the shared
 `admission_contract::run_contract`, `storetest::run_contract`, and
@@ -127,7 +161,7 @@ These are repository assertions and documented boundaries, not an Agentcraft mig
 | Public host key + input fingerprint, atomic admit-or-return and lookup | Public facade `concurrent_and_terminal_retries_execute_once`; external-consumer fixture compiles/calls the receipt API with `serde_json/preserve_order`; shared store admission contract. |
 | Concurrent identical starts: one run/user message and same receipt | Memory's 24 concurrent facade tasks; PostgreSQL `independent_pools_and_saturated_existing_session`; facade `postgres_public_facade_fault_restart_journey` starts two gated independent OS processes and compares their receipt JSON, SQL run/receipt counts and user-message count. |
 | Different payload under same key explicitly conflicts | `stale_claim_cannot_hide_changed_inspectable_semantics` changes 12 payload/config/plan inputs; shared Memory/Postgres contract covers honest and stale fingerprints, session-local uniqueness and Busy ordering. |
-| Response loss after commit reconciles by receipt after restart | Facade journey's `commit-loss` adapter calls the real PostgreSQL commit then discards the outcome before runtime sees it. The host process exits; new lookup/retry/recovery processes perform public lookup/exact retry. `postgres_unstarted_completion_and_uncertainty_journey` races fresh expired-owner
+| Response loss after commit reconciles by receipt after restart | Facade journey's `commit-loss` adapter calls the real PostgreSQL commit then discards the outcome before runtime sees it. The host process exits; new lookup/retry/recovery processes perform public lookup/exact retry. `postgres_unstarted_completion_and_projection_journey` races fresh expired-owner
 claimants with the winner gated after begin, completes the original run, and
 asserts one receipt/run/user message/provider request, zero tools and actual
 assistant output. Fresh-process AG-UI replay reconstructs live-only presentation
@@ -150,14 +184,23 @@ inferred from successful receipt lookup. The store's
 `process_crash_before_commit_rolls_back_every_record` separately kills a transaction
 before commit and asserts zero partially admitted records.
 
-## Schema 5 rollout and acceptance
+## Storage rollout and acceptance
 
 Stop writers, back up the database, explicitly migrate, then deploy the matching
-schema-5 binary. Connect verifies schema 5 read-only. Do not mix v4/v5 writers.
-Migration is transactional and idempotent, retaining v1-v4 sessions, receipts,
-history, usage, checkpoints, snapshots, inbox and abandonment evidence. It never
-backfills Unstarted from legacy records. Rollback requires restoring the backup
-or forward repair; an old binary cannot connect to v5.
+current binary. Bundled storage versions are PostgreSQL 24 and SQLite 20, defined
+by `POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION` in `crabber-session`.
+Connect verifies the complete version history read-only. Do not mix writers from
+different storage versions. PostgreSQL migrates explicitly; SQLite initializes
+only fresh current files and refuses older ones.
+
+Historical introductions: PostgreSQL schema 5 added the version-1 admission capsule;
+schema 6 added independent binding, attempt/phase, public state and receipt
+storage. Later migrations and codecs retain legacy data without promoting its
+execution evidence. Current runtime bindings use capsule version 3, keyed
+execution capsules use version 2, and legacy metadata alone cannot authorize execution.
+Finish or settle old paused work with its matching binary before upgrading. No
+legacy checkpoint is promised to execute under a new host format. Rollback
+requires the matching backup and binary; there is no in-place downgrade.
 
 Library proof includes shared Memory/Postgres/SQLite execution contracts
 (`sqlite_admission_execution_contract`), live process

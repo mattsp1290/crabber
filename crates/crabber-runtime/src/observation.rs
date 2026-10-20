@@ -76,7 +76,9 @@ pub(crate) fn result_reason(result: &Result<RunResult, RuntimeError>) -> Termina
         Err(RuntimeError::LeaseLost) => TerminalReason::LeaseLost,
         Err(RuntimeError::Interrupted) => TerminalReason::Cancelled,
         Err(RuntimeError::Paused) => TerminalReason::Paused,
-        Err(RuntimeError::Provider(_)) => TerminalReason::ProviderError,
+        Err(RuntimeError::Provider(_) | RuntimeError::ProviderBinding(_)) => {
+            TerminalReason::ProviderError
+        }
         Err(_) => TerminalReason::RuntimeError,
     }
 }

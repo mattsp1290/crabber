@@ -1,0 +1,230 @@
+use super::*;
+
+#[tokio::test]
+async fn interruption_requires_acknowledged_terminal_commit() {
+    for fault in [1, 2] {
+        missing_terminal_ack(true, fault, false).await;
+    }
+}
+#[tokio::test]
+async fn failed_execution_exposes_unknown_terminal_persistence() {
+    for fault in [1, 2] {
+        missing_terminal_ack(false, fault, true).await;
+    }
+}
+#[tokio::test]
+async fn successful_execution_does_not_retry_an_unknown_terminal_write() {
+    for fault in [1, 2] {
+        missing_terminal_ack(false, fault, false).await;
+    }
+}
+async fn missing_terminal_ack(interrupted: bool, fault: usize, provider_error: bool) {
+    let inner = Arc::new(MemoryStore::new());
+    let gate = Arc::new(SettlementGate::default());
+    gate.terminal_fault.store(fault, Ordering::SeqCst);
+    let capture = Arc::new(OperationalCapture::default());
+    let clock = Arc::new(OperationalClock::default());
+    let mut stream = operational_stream(clock);
+    stream.startup_error = provider_error;
+    stream.block_end = interrupted;
+    stream.script = vec![(1, StreamDelta::TextDelta("partial".into()))];
+    if !interrupted && !provider_error {
+        stream.script.push((2, StreamDelta::Completed));
+    }
+    let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
+        .store(Arc::new(DelayedTerminalStore {
+            inner: inner.clone(),
+            gate: gate.clone(),
+        }))
+        .resolver(Arc::new(stream))
+        .observer(capture.clone())
+        .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    let session = handle.session_id().clone();
+    if interrupted {
+        tokio::time::timeout(std::time::Duration::from_secs(5), capture.text.notified())
+            .await
+            .unwrap();
+        handle.interrupt();
+    }
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
+        .await
+        .unwrap()
+        .unwrap_err();
+    let RuntimeError::AttemptBoundaryUnknown {
+        run_id: uncertain_run,
+        reason,
+    } = error
+    else {
+        panic!("terminal acknowledgement failure must remain explicit: {error:?}");
+    };
+    assert_eq!(uncertain_run, run_id);
+    assert_eq!(reason, crabber_session::AttemptError::UnknownStoreOutcome);
+    assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
+    let expected = if interrupted {
+        RunStatus::Interrupted
+    } else if provider_error {
+        RunStatus::Failed
+    } else {
+        RunStatus::Completed
+    };
+    assert_eq!(
+        inner.get_run(&run_id).await.unwrap().unwrap().status,
+        if fault == 1 {
+            RunStatus::Running
+        } else {
+            expected
+        }
+    );
+    let events = inner.list_events(&session, None, 100).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::RunSettled)
+            .count(),
+        usize::from(fault == 2)
+    );
+    assert!(
+        !capture
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == EventKind::RunSettled)
+    );
+    assert_eq!(
+        capture.values.lock().unwrap().last().unwrap().reason,
+        crate::TerminalReason::RuntimeError
+    );
+}
+
+#[tokio::test]
+async fn resumed_executor_interruption_does_not_attempt_terminal_settlement() {
+    for fault in [1, 2] {
+        resumed_missing_terminal_ack(fault, true).await;
+    }
+}
+#[tokio::test]
+async fn resumed_success_does_not_retry_an_unknown_terminal_write() {
+    for fault in [1, 2] {
+        resumed_missing_terminal_ack(fault, false).await;
+    }
+}
+#[allow(clippy::too_many_lines)]
+async fn resumed_missing_terminal_ack(fault: usize, interrupted: bool) {
+    let inner = Arc::new(MemoryStore::new());
+    let gate = Arc::new(SettlementGate::default());
+    gate.terminal_fault.store(fault, Ordering::SeqCst);
+    let capture = Arc::new(OperationalCapture::default());
+    let (entered, ready) = oneshot::channel();
+    let release = Arc::new(Notify::new());
+    let runtime = Orchestrator::builder()
+        .behavior_version("resumed-terminal-test.v1")
+        .store(Arc::new(DelayedTerminalStore {
+            inner: inner.clone(),
+            gate: gate.clone(),
+        }))
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), r#"{"text":"pending"}"#),
+            vec![
+                StreamDelta::TextDelta("done".into()),
+                StreamDelta::Completed,
+            ],
+        ])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(CancellableTool {
+                entered: Mutex::new(Some(entered)),
+                release: release.clone(),
+                completed: Arc::new(AtomicUsize::new(0)),
+            }))],
+            vec![],
+        )))
+        .policy(Arc::new(PausePolicy))
+        .observer(capture.clone())
+        .build()
+        .unwrap();
+    let initial = runtime.start(request()).await.unwrap();
+    let run = initial.run_id().clone();
+    let session = initial.session_id().clone();
+    assert_eq!(initial.done().await.unwrap().status, RunStatus::Paused);
+    let mut resumed = runtime.resume_execution(&run).await.unwrap();
+    let mut events = resumed.events();
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    if interrupted {
+        resumed.control().interrupt();
+    } else {
+        release.notify_one();
+    }
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), resumed.done())
+        .await
+        .unwrap()
+        .unwrap_err();
+    if interrupted {
+        let RuntimeError::PhaseOutcomeUnknown { phase, .. } = error else {
+            panic!("active resumed executor requires phase reconciliation")
+        };
+        assert_eq!(gate.settlements.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            inner.get_run(&run).await.unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        assert_eq!(
+            inner.tool_phase(&run, &phase.id).await.unwrap().phase.state,
+            crabber_session::PhaseState::Uncertain
+        );
+        assert!(
+            !inner
+                .list_events(&session, None, 1000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| matches!(
+                    event.kind,
+                    EventKind::ToolCallSettled | EventKind::RunSettled
+                ))
+        );
+        while let Some(event) = events.recv().await.unwrap() {
+            assert_ne!(event.kind, EventKind::RunSettled);
+        }
+        return;
+    }
+    assert!(matches!(error, RuntimeError::AttemptBoundaryUnknown { run_id, .. } if run_id == run));
+    assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        inner.get_run(&run).await.unwrap().unwrap().status,
+        if fault == 1 {
+            // The fresh reservation activates the run before its Begin.
+            RunStatus::Running
+        } else if interrupted {
+            RunStatus::Interrupted
+        } else {
+            RunStatus::Completed
+        }
+    );
+    let durable = inner.list_events(&session, None, 1000).await.unwrap();
+    assert_eq!(
+        durable
+            .iter()
+            .filter(|event| event.kind == EventKind::RunSettled)
+            .count(),
+        usize::from(fault == 2)
+    );
+    while let Some(event) = events.recv().await.unwrap() {
+        assert_ne!(event.kind, EventKind::RunSettled);
+    }
+    assert!(
+        !capture
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == EventKind::RunSettled)
+    );
+}

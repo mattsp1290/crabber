@@ -18,6 +18,7 @@ let provider = FakeProvider::scripted(vec![vec![
     StreamDelta::Completed,
 ]]);
 let agent = Agent::builder()
+    .behavior_version("my-host.v1")
     .memory()
     .provider(Arc::new(provider))
     .config(AgentConfig::new(Selection {
@@ -38,6 +39,26 @@ run.done().await?;
 # }
 ```
 
+Each handle owns one bounded event receiver. Take it once with `events()`;
+lag ends that observation path and requires reconciliation from the Store.
+Dropping the receiver or handle leaves the retained worker running. Unrelated
+workers have separate event queues, including resumed workers with the same `RunId`.
+
+`Agent::resume_execution(&run_id)` returns the same handle for an eligible retained
+run; `resume()` waits for its result directly. Eligibility and frozen-binding
+checks run under retained ownership, so await `done()` for their outcome. Clone
+`handle.control()` to interrupt a worker independently of its receiver. This is a
+local cancellation signal; it does not acknowledge a durable cancellation request.
+
+For persisted cross-controller cancellation and ordered user input at the next
+context boundary, use [durable run controls](docs/durable-run-controls.md).
+
+`done()` awaits the worker result and actual task join. Event EOF and the control's
+completion signal do not prove terminal persistence or external resource cleanup.
+If a terminal write fails or loses its acknowledgement, the result is
+`RuntimeError::TerminalOutcomeUnknown`; reconcile durable state before deciding
+what happened. A terminal event is published only after persistence acknowledges it.
+
 ## Host-authorized `AGENTS.md` middleware
 
 Model middleware can append bounded system-prompt text. The first-party recipe has
@@ -53,11 +74,12 @@ use std::sync::Arc;
 
 let resolver: Arc<dyn WorkspaceReaderResolver> = host_authorized_resolver();
 let agent = Agent::builder()
+    .behavior_version("my-host.v1")
     .memory()
     .provider(provider)
     .config(config) // persists the exact workspace ID/directory used for routing
     .workspace_reader_resolver(resolver)
-    .extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
+    .shared_extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
     .build()?;
 ```
 
@@ -102,8 +124,10 @@ dies before spawning execution can complete its original turn through
 `Agent::recover_admission(session, original_text, original_options)` after the
 original owner expires. Restore the original configuration and behavior version.
 The store requires durable Unstarted evidence and a one-shot fenced begin before
-execution effects; Started/legacy ambiguity remains conservative. PostgreSQL
-schema 5 requires a coordinated stop/backup/migrate/deploy, with no mixed writers.
+execution effects; Started/legacy ambiguity remains conservative. Current PostgreSQL
+storage requires a coordinated stop/backup/migrate/deploy, with no mixed-version
+writers; see the current [storage versions](docs/server-host.md#configured-server-host-contracts)
+and `POSTGRES_SCHEMA_VERSION` in `crabber-session`.
 
 The [host algorithm and verification map](docs/admission-receipts.md) explain
 unknown outcomes, retention, custom stores and process fault/restart assertions.
@@ -164,7 +188,7 @@ cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
 Run from a clean, committed checkout. The fake-data modes verify bounded allocation,
 settled tool relations and concurrent continuation; PostgreSQL also resumes in a fresh
 process; SQLite does too (`sqlite_embedding_independent_stores_and_fresh_process`). See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
-for ordering, token durability, errors and current schema-5 maintenance requirements.
+for ordering, token durability, errors and current storage maintenance requirements.
 
 The [host tracing embedding](examples/host-trace/README.md) demonstrates explicit
 validated 64/128-bit context, composed callbacks and broadcasts, real Datadog
@@ -181,14 +205,72 @@ Run the complete operational host check with
 `cargo run -p operational-telemetry -- --check`; see
 [the example](examples/operational-telemetry/README.md) for offline fixtures and adoption.
 
-Hosts can settle stopped or expired work through `Agent::abandon` without running
-persisted providers, tools or extensions. See the [Memory/PostgreSQL abandonment and
-administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
+Hosts can settle eligible stopped or expired legacy work through `Agent::abandon`
+without running persisted providers, tools or extensions. Runs with native attempt
+or phase evidence, or a session approval barrier, return
+`AbandonError::NativeReconciliationRequired` without mutation. See the
+[Memory/PostgreSQL abandonment and administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
 for ownership checks, the host's process-stop duty and retry semantics.
 
+For a waiting approval batch, `Agent::terminate_approval` cancels it or explicitly
+expires an unanswered question after its deadline. The Store requires the
+suspended worker and its resources to have joined, then atomically records fixed
+error results, the terminal run, barrier release and a replayable receipt. It
+executes no tools and grants no worker authority.
+
+Use `Agent::prompt_session` or `prompt_session_keyed` to consume stored session
+provider/model defaults for a new ordinary admission in the configured workspace.
+The corresponding `*_in` methods take a host-admitted `SessionContext`, allowing
+one configured Agent to serve distinct workspaces without inferring root
+authorization from stored metadata. Each absent value falls
+back independently to `AgentConfig.selection`; an invalid configured pair fails
+provider binding instead of selecting another backend. Typed counterparts take
+an `InputEnvelope` whose expected revision must match the captured defaults.
+The defaults and input share one admission revision precondition, so a concurrent
+management change rejects preparation or admission. Explicit `ExecutionContext`
+methods keep their supplied selection. Existing text convenience methods use
+`AgentConfig.selection` directly.
+
+Keyed default-selected retries reconcile the original immutable binding before
+reading current defaults, including after the Agent closes or its configured
+fallback selection changes. Keep the original input for retries. `recover_session_admission`
+and its typed counterpart restore only eligible retained Unstarted work with
+that binding. Defaults changed later affect new ordinary admissions; active runs,
+paused resumes and approval continuations retain their admitted selection.
+Default-consuming methods return unsupported when the Store lacks management
+reads. They can create the first session through keyed admission and also work
+with ordinary sessions that have no explicit management metadata.
+
+For an already uncertain native tool phase, `Agent::resolve_uncertain_phase`
+records the host's asserted resolver identity, authority claim and selected
+external outcome. Supply final protected output for success, select failure, or
+refuse to leave the phase uncertain. Keep the original request and operation key
+for retries. Resolution atomically records its receipt, audit and any logical
+tool result; it preserves resource cleanup and grants no execution handle.
+`Agent::mark_phase_uncertain` separately records loss of the exact original owner
+(using Store-clock expiry or parent-token revocation), or the host's assertion
+that it stopped. Expiry alone supplies no external outcome or cleanup proof.
+`Agent::record_phase_cleanup` records the host's evidence about the exact phase's
+resources after actual joins or external reconciliation. Outcome and cleanup
+can be reconciled in either order; neither retires the parent attempt or run.
+`Agent::list_tool_phases` exposes bounded, coherent metadata pages; carry the
+returned session revision into subsequent pages and restart on revision conflict.
+It returns no output bodies or worker tokens.
+These controls remain available after extensions close. Parent attempt cleanup,
+run retirement and subsequent execution require separate lifecycle controls.
+
+`Agent::mark_attempt_uncertain` revokes the exact latest Started parent attempt
+without selecting any child outcome. Once all phases have known results and
+complete cleanup, `Agent::retire_attempt` can select Failed or Interrupted after
+the host verifies that the whole worker and attempt resources joined. Explicit
+`CancelNeverStarted` can settle bounded pending calls that never owned a phase;
+started or uncertain effects require their own reconciliation first. The controls
+preserve usage, close the original open turn once, and atomically record terminal
+state and eligible barrier release. Exact retries return metadata after close.
+
 The [fenced abandonment host protocol and acceptance map](docs/fenced-abandon.md)
-cover unknown-response retry, authoritative worker stop, retained session/inbox
-behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
+cover legacy settlement, unknown-response retry, authoritative worker stop,
+retained session/inbox behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
 with `CRABBER_POSTGRES_URL` configured, run
 `cargo run --quiet -p fenced-abandon --features postgres -- --postgres` for durable
 fresh-process readback. SQLite needs no variable:
@@ -211,7 +293,7 @@ Tool result transforms receive read-only call context and return
 register any protective redactor in the final phase:
 
 ```rust,no_run
-use crabber::extension::{Registrar, ToolInput, TransformOutput};
+use crabber::{core::ToolOutput, ExtensionError, extension::{Registrar, ToolInput, TransformOutput}};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -223,7 +305,10 @@ fn register_redactor(registrar: &mut Registrar) {
                 && matches!(context.input(), ToolInput::Normalized(input)
                     if input["command"] == "echo hello")
             {
-                result["private"] = json!("[REDACTED]");
+                // This shell tool deliberately produces JSON-to-text output.
+                let mut value = result.json_value().map_err(|_| ExtensionError::Tool("JSON shell result required".into()))?;
+                value["private"] = json!("[REDACTED]");
+                result = ToolOutput::from_json(&value).map_err(|_| ExtensionError::Tool("invalid JSON shell result".into()))?;
             }
             Ok(TransformOutput::new(result))
         })
@@ -241,7 +326,11 @@ contract](docs/embedding.md#tool-result-transform-context) and the runnable
 
 Adoption is a clean contract break: update JSON callbacks to preserve the full
 envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
-Schema 5 stays unchanged, but old frozen plans fail with `PlanChanged`.
+Result-transform contract version 3 carries typed `ToolOutput`; WASM extensions
+use `crabber:extensions@0.2.0`. Old frozen plans fail with `PlanChanged`. Typed
+completion itself adds no storage migration. Current bundled storage requires
+PostgreSQL 24 / SQLite 20; see the constants in
+[crabber-session](crates/crabber-session/src/lib.rs).
 Finish or settle unfinished runs before upgrading or rolling back; rollback
 pins the previous host revision and compatible guests. Await
 `Agent::close_extensions()` on a Tokio runtime after interrupting runs as

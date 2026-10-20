@@ -1,4 +1,4 @@
-package crabber:extensions@0.1.0;
+package crabber:extensions@0.2.0;
 
 interface types {
   record structured-error { code: string, message: string, retryable: bool }
@@ -101,6 +101,7 @@ interface tool-api {
   use types.{structured-error, tool-metadata, turn-metadata};
   tools: func() -> list<tool-metadata>;
   permission-pattern: func(tool-name: string, input-json: string) -> result<string, structured-error>;
+  /// Returns a version-1 ToolOutput completion envelope, never arbitrary JSON.
   execute: func(tool-name: string, tool-call-id: string, input-json: string, turn: turn-metadata) -> result<string, structured-error>;
 }
 

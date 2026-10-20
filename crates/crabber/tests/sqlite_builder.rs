@@ -11,7 +11,11 @@ use std::sync::Arc;
 async fn sqlite_builder_requires_migration_and_persists_a_completed_prompt() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("builder.sqlite");
-    let Err(error) = Agent::builder().sqlite(&path).await else {
+    let Err(error) = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
+        .sqlite(&path)
+        .await
+    else {
         panic!("missing store must be rejected");
     };
     assert_eq!(
@@ -21,6 +25,7 @@ async fn sqlite_builder_requires_migration_and_persists_a_completed_prompt() {
     assert!(!path.exists());
     SqliteStore::migrate(&path).await.unwrap();
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .sqlite(&path)
         .await
         .unwrap()

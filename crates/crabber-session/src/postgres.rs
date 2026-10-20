@@ -4,25 +4,75 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v5.
+//! connect remains read-only and requires explicit migration through
+//! `crate::POSTGRES_SCHEMA_VERSION`.
+#[path = "postgres/admission_reads.rs"]
+mod admission_reads;
+#[path = "postgres/continuation_handoff.rs"]
+mod continuation_handoff;
+#[path = "postgres/continuation_input.rs"]
+mod continuation_input;
+#[path = "postgres/credential_access.rs"]
+mod credential_access;
+#[path = "postgres/expired.rs"]
+mod expired;
+#[path = "postgres/read_proof.rs"]
+mod read_proof;
+#[path = "postgres/run_facts.rs"]
+mod run_facts;
+
 mod abandon;
+mod abandon_history;
 mod admission_execution;
-use crate::{
-    AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
-    Store, StoreError,
-};
-use async_trait::async_trait;
+mod admission_journal;
+mod approval;
+mod attempt;
+#[cfg(test)]
+mod begin_cancellation_tests;
+mod connection;
+mod deletion;
+mod execution;
+mod execution_binding;
+mod extension_state;
+mod inbox;
+mod legacy_execution;
+#[cfg(test)]
+mod lock_order_tests;
+mod management;
+mod migration;
+mod native_enrollment;
+mod native_parent;
+mod ownership_origin;
+mod phase;
+mod public_continuation_source;
+mod public_header;
+mod public_run;
+mod public_state;
+mod session_owner;
+mod store_impl;
+mod store_reads;
+mod tool_result;
+mod transaction;
+
+mod fork;
+mod frontend;
+mod queue;
+mod run_control;
+mod tool_continuation;
+#[cfg(test)]
+use crate::Store;
+use crate::postgres::transaction::Transaction;
+use crate::{AdmitOutcome, AdmitRequest, InboxKind, StoreError};
 use crabber_core::{
     AdmissionKey, AdmissionReceipt, ByteLimits, Clock, ContextEpoch, EpochId, EventCursor,
-    EventRecord, Message, MessageId, Part, PartKind, Run, RunFence, RunId, RunStatus, Session,
-    SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult,
-    ToolResultStatus, Usage,
+    EventRecord, Message, MessageId, Part, Run, RunFence, RunId, RunStatus, Session, SessionId,
+    ToolCallRecord, ToolCallStatus, Usage,
 };
+#[cfg(test)]
+use crabber_core::{PartKind, ToolCallId, ToolResult, ToolResultStatus};
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::{
-    PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions, types::Json,
-};
-use std::{collections::BTreeMap, sync::Arc};
+use sqlx::{PgConnection, PgPool, Postgres, Row, types::Json};
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -32,6 +82,30 @@ pub struct PostgresStore {
     limits: ByteLimits,
     #[cfg(test)]
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    management_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    native_raw_probe: Arc<crate::native_enrollment::caller::Probe>,
+    #[cfg(test)]
+    phase_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    approval_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    binding_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    queue_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    deletion_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    control_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -41,6 +115,9 @@ struct PostgresExecution {
 #[allow(clippy::needless_pass_by_value)] // Required by map_err.
 fn db(error: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(ref detail) = error {
+        if detail.message() == "crabber_session_deleted" {
+            return StoreError::SessionDeleted;
+        }
         if detail.code().as_deref() == Some("23505") {
             return StoreError::Conflict;
         }
@@ -83,6 +160,7 @@ fn status(status: RunStatus) -> &'static str {
 }
 fn call_status(status: ToolCallStatus) -> &'static str {
     match status {
+        ToolCallStatus::Waiting => "waiting",
         ToolCallStatus::Pending => "pending",
         ToolCallStatus::Running => "running",
         ToolCallStatus::Completed => "completed",
@@ -90,7 +168,83 @@ fn call_status(status: ToolCallStatus) -> &'static str {
         ToolCallStatus::Interrupted => "interrupted",
     }
 }
+// Mutation order: session advisory gate -> run rows -> dependent rows ->
+// events/revision. Every existing and new write path must enter through this
+// gate, including lease renewal and keyed replay. No external I/O under locks.
+async fn lock_session(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    lock_session_scope(tx, session).await?;
+    deletion::ensure_live(tx, session).await
+}
+async fn lock_session_scope(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&session.0)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
 async fn save_run(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), StoreError> {
+    save_run_with_completion(tx, run, None).await
+}
+async fn save_run_with_completion(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+) -> Result<(), StoreError> {
+    save_run_with_proof(
+        tx,
+        run,
+        source,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+async fn save_run_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
+    update_run_row(tx, run).await
+}
+async fn save_run_captured_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, StoreError> {
+    save_run_publication_with_proof(
+        tx,
+        run,
+        source,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .await
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+async fn save_run_publication_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, StoreError> {
+    let captured =
+        native_parent::record_run_publication_with_proof(tx, run, false, source, proof, capture)
+            .await?;
+    update_run_row(tx, run).await?;
+    Ok(captured)
+}
+
+async fn update_run_row(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), StoreError> {
     sqlx::query("UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE id=$1")
         .bind(&run.id.0)
         .bind(status(run.status))
@@ -101,6 +255,27 @@ async fn save_run(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), S
         .await
         .map_err(db)?;
     Ok(())
+}
+async fn load_run_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    id: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Run, StoreError> {
+    read_proof::charge(
+        tx,
+        sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM runs WHERE id=$1")
+            .bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(|_| StoreError::Validation("native run proof allowance".into()))?;
+    let row = sqlx::query("SELECT CASE WHEN octet_length(data::text)<=33554432 THEN data END AS data FROM runs WHERE id=$1 FOR UPDATE")
+        .bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+    decode(
+        row.try_get::<Option<sqlx::types::Json<serde_json::Value>>, _>("data")
+            .map_err(db)?
+            .ok_or_else(|| StoreError::Validation("native run proof carrier".into()))?,
+    )
 }
 async fn load_run(
     tx: &mut Transaction<'_, Postgres>,
@@ -120,6 +295,20 @@ async fn load_run(
         .ok_or(StoreError::NotFound)?;
     decode(row.get("data"))
 }
+async fn bump_public_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    let changed = sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1 AND public_revision<9223372036854775807")
+        .bind(&session.0).execute(&mut **tx).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(StoreError::Validation(
+            "public session revision exhausted".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn insert_message(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
@@ -152,6 +341,7 @@ async fn insert_message(
     for part in &message.parts {
         insert_part(tx, part).await?;
     }
+    bump_public_revision(tx, &run.session_id).await?;
     Ok(())
 }
 async fn insert_part(tx: &mut Transaction<'_, Postgres>, part: &Part) -> Result<(), StoreError> {
@@ -170,30 +360,33 @@ async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
-    if event.live_only || event.kind.is_live_only() {
-        return Err(StoreError::Validation(
-            "live-only events cannot be persisted".into(),
-        ));
-    }
-    if event.session_id != run.session_id || event.run_id != run.id {
-        return Err(StoreError::Validation(
-            "event belongs to another run".into(),
-        ));
-    }
+    insert_event_captured(tx, run, event).await.map(|_| ())
+}
+async fn insert_event_captured(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    event: &EventRecord,
+) -> Result<crabber_core::EventCursor, StoreError> {
+    crate::event_persistence::validate(run, event)?;
     // Lock before identity allocation: cursor order follows session commit order.
     sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
         .bind(&run.session_id.0)
         .fetch_one(&mut **tx)
         .await
         .map_err(db)?;
-    sqlx::query("INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3)")
-        .bind(&run.session_id.0)
-        .bind(&run.id.0)
-        .bind(json(event)?)
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
-    Ok(())
+    let seq: i64 = sqlx::query_scalar(
+        "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
+    )
+    .bind(&run.session_id.0)
+    .bind(&run.id.0)
+    .bind(json(event)?)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    bump_public_revision(tx, &run.session_id).await?;
+    Ok(crabber_core::EventCursor(u64::try_from(seq).map_err(
+        |_| StoreError::Validation("invalid event cursor".into()),
+    )?))
 }
 async fn messages(
     connection: &mut PgConnection,
@@ -251,42 +444,18 @@ async fn project(
         None
     };
     let all = messages(connection, id).await?;
-    let selected = if let Some(epoch) = selected.filter(|epoch| epoch.summary_message_id.is_some())
-    {
-        let summary_id = epoch.summary_message_id.as_ref().expect("checked");
-        let summary = all
-            .iter()
-            .find(|message| &message.id == summary_id)
-            .ok_or(StoreError::NotFound)?
-            .clone();
-        let mut selected = vec![summary];
-        if let Some(tail) = epoch.tail_start_message_id {
-            let index = all
-                .iter()
-                .position(|message| message.id == tail)
-                .ok_or(StoreError::NotFound)?;
-            selected.extend(
-                all[index..]
-                    .iter()
-                    .filter(|message| &message.id != summary_id)
-                    .cloned(),
-            );
-        }
-        selected
-    } else {
-        all
-    };
-    Ok(selected
-        .into_iter()
-        .filter_map(|mut message| {
-            message
-                .parts
-                .retain(|part| !matches!(part.kind, PartKind::Custom { .. }));
-            (!message.parts.is_empty()).then_some(message)
-        })
-        .collect())
+    crate::context_projection::project(all, selected)
 }
 
+pub(super) async fn lookup_receipt_with_proof(
+    tx: &mut transaction::Transaction<'_, Postgres>,
+    session: &SessionId,
+    key: &AdmissionKey,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<AdmissionReceipt>, StoreError> {
+    read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|_| StoreError::Conflict)?;
+    lookup_receipt(tx, session, key).await
+}
 async fn lookup_receipt(
     connection: &mut PgConnection,
     session: &SessionId,
@@ -303,107 +472,121 @@ async fn lookup_receipt(
 }
 
 impl PostgresStore {
-    /// Opens an already migrated dedicated database. The URL is never included in errors.
-    /// # Errors
-    /// Returns an error when connection or schema verification fails.
-    pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .connect(url)
-            .await
-            .map_err(db)?;
-        let version: i32 =
-            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
-                .fetch_optional(&pool)
-                .await
-                .map_err(db)?
-                .ok_or(StoreError::Validation(
-                    "unsupported PostgreSQL schema version".into(),
-                ))?;
-        if version != 5 {
-            return Err(StoreError::Validation(
-                "unsupported PostgreSQL schema version".into(),
-            ));
-        }
-        Ok(Self {
-            pool,
-            clock: Arc::new(SystemClock),
-            limits: ByteLimits::default(),
-            #[cfg(test)]
-            abandon_fault: Arc::default(),
-        })
-    }
-    /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
-    /// # Errors
-    /// Returns a sanitized error on connection or migration failure.
-    pub async fn migrate(url: &str) -> Result<(), StoreError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(url)
-            .await
-            .map_err(db)?;
-        let mut tx = pool.begin().await.map_err(db)?;
-        sqlx::query("SELECT pg_advisory_xact_lock(751302919)")
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        for statement in concat!(
-            include_str!("../migrations/0001_initial.sql"),
-            "\n",
-            include_str!("../migrations/0002_admission_receipts.sql")
-        )
-        .split(';')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        {
-            sqlx::query(statement).execute(&mut *tx).await.map_err(db)?;
-        }
-        snapshot::migrate(&mut tx).await?;
-        sqlx::raw_sql(include_str!("../migrations/0004_abandonment_commits.sql"))
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        sqlx::raw_sql(include_str!("../migrations/0005_admission_execution.sql"))
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)?;
-        pool.close().await;
-        Ok(())
-    }
-    /// Replaces the clock, primarily for deterministic lease tests.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = clock;
-        self
-    }
-    #[must_use]
-    pub fn with_limits(mut self, limits: ByteLimits) -> Self {
-        self.limits = limits;
-        self
-    }
-    async fn admission_transaction(
+    async fn session_transaction(
         &self,
         session: &SessionId,
     ) -> Result<Transaction<'_, Postgres>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        // Serializes first and subsequent admissions without blocking unrelated sessions.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(&session.0)
-            .execute(&mut *tx)
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(db)?;
+        lock_session(&mut tx, session).await?;
         Ok(tx)
     }
-    #[allow(clippy::too_many_lines)] // One atomic admission transaction.
-    async fn admit_transaction(
+    // Discover immutable routing without a row lock, then take the session
+    // mutation gate before any run/call/event lock. Verify the relational and
+    // serialized identity agree before granting write authority.
+    async fn run_transaction(
+        &self,
+        id: &RunId,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
+        let session: String = sqlx::query_scalar("SELECT session_id FROM runs WHERE id=$1")
+            .bind(&id.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(StoreError::NotFound)?;
+        lock_session(&mut tx, &SessionId(session.clone())).await?;
+        let run = load_run(&mut tx, id, true).await?;
+        if run.id != *id || run.session_id.0 != session {
+            return Err(StoreError::Validation(
+                "stored run identity is invalid".into(),
+            ));
+        }
+        Ok((tx, run))
+    }
+    async fn run_transaction_with_proof(
+        &self,
+        id: &RunId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
+        read_proof::charge(
+            &mut tx,
+            sqlx::query_scalar(
+                "SELECT CAST(octet_length(session_id) AS BIGINT) FROM runs WHERE id=$1",
+            )
+            .bind(&id.0),
+            proof,
+        )
+        .await
+        .map_err(|_| StoreError::Validation("native routing proof allowance".into()))?;
+        let session: Option<String> = sqlx::query_scalar("SELECT CASE WHEN octet_length(session_id)<=512 THEN session_id END FROM runs WHERE id=$1")
+            .bind(&id.0).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+        let session =
+            session.ok_or_else(|| StoreError::Validation("invalid native routing".into()))?;
+        lock_session(&mut tx, &SessionId(session.clone())).await?;
+        let run = load_run_with_proof(&mut tx, id, proof).await?;
+        if run.id != *id || run.session_id.0 != session {
+            return Err(StoreError::Validation(
+                "stored run identity is invalid".into(),
+            ));
+        }
+        Ok((tx, run))
+    }
+    pub(super) async fn admit_transaction_guarded_with_proof(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        request: AdmitRequest,
+        request: &AdmitRequest,
         allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<AdmitOutcome, StoreError> {
+        let captured = self
+            .admit_transaction_captured(
+                tx,
+                request,
+                allow_create,
+                guard,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
+                read_proof,
+            )
+            .await?;
+        self.finish_initial(
+            tx,
+            crate::native_enrollment::caller::initial::Input::Ordinary(request),
+            captured,
+            read_proof,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_lines)] // Existing atomic admission body, shared with verified queue admission.
+    pub(super) async fn admit_transaction_captured(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: &AdmitRequest,
+        allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+        caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::native_enrollment::caller::initial::CapturedAdmission, StoreError> {
+        let birth = caller.birth();
+        caller
+            .input_request(request, read_proof)
+            .map_err(|_| StoreError::Conflict)?;
+        guard.verify(request)?;
+        if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
+            request.validate_messages()?;
+        }
         let now = self.clock.now();
-        let lease = time::Duration::try_from(request.lease)
+        let (owner, requested_lease) = guard.owner_and_lease(request);
+        let lease = time::Duration::try_from(requested_lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
         if lease <= time::Duration::ZERO {
             return Err(StoreError::Validation("lease must be positive".into()));
@@ -417,14 +600,25 @@ impl PostgresStore {
                 "user message has wrong session".into(),
             ));
         }
-        let existing = sqlx::query("SELECT data FROM sessions WHERE id=$1")
-            .bind(&session_id.0)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db)?;
+        session_owner::context_with_proof(
+            tx,
+            &session_id,
+            &request.workspace_id,
+            &request.directory,
+            read_proof,
+        )
+        .await
+        .map_err(|error| {
+            if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                StoreError::SessionIdentityMismatch
+            } else {
+                StoreError::Validation("session ownership proof unavailable".into())
+            }
+        })?;
+        let existing = admission_reads::session(tx, &session_id, read_proof).await?;
         let had_session = existing.is_some();
-        let session: Session = if let Some(row) = existing {
-            let existing: Session = decode(row.get("data"))?;
+        let current_revision = existing.as_ref().map_or(0, |(_, revision)| *revision);
+        let session: Session = if let Some((existing, _)) = existing {
             existing.ensure_identity(&request.workspace_id, &request.directory)?;
             existing
         } else if request.session_id.is_some() && !allow_create {
@@ -439,6 +633,23 @@ impl PostgresStore {
                 updated_at: now,
             }
         };
+        if guard.is_ordinary()
+            && let Some(expected) = guard.expected_revision(request.expected_revision)
+        {
+            let current = u64::try_from(current_revision)
+                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
+            if expected.get() != current {
+                return Err(StoreError::AdmissionRevisionConflict);
+            }
+        }
+        if guard.is_ordinary() && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND state='Claimed' AND prepared=true)").bind(&session_id.0).fetch_one(&mut **tx).await.map_err(db)? { return Err(StoreError::Busy); }
+        if management::admission_archived_with_proof(tx, &session_id, read_proof).await? {
+            return Err(StoreError::Conflict);
+        }
+        let barrier = admission_reads::pending(tx, &session_id, read_proof).await?;
+        if barrier {
+            return Err(StoreError::Busy);
+        }
         let busy = sqlx::query(
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
         )
@@ -450,15 +661,13 @@ impl PostgresStore {
         if busy {
             return Err(StoreError::Busy);
         }
+        request.validate_messages()?;
         let prior_history = if had_session {
-            project(tx, &session_id, None).await?
+            admission_reads::project(tx, &session_id, read_proof).await?
         } else {
             Vec::new()
         };
-        let previous = sqlx::query("SELECT e.data FROM runs r JOIN epochs e ON e.id = r.data->>'epoch_id' WHERE r.session_id=$1 ORDER BY r.seq DESC LIMIT 1")
-            .bind(&session_id.0).fetch_optional(&mut **tx).await.map_err(db)?;
-        let previous: Option<ContextEpoch> =
-            previous.map(|row| decode(row.get("data"))).transpose()?;
+        let previous = admission_reads::previous_epoch(tx, &session_id, read_proof).await?;
         let run_id = RunId::new();
         let epoch_id = EpochId::new();
         let token = uuid::Uuid::new_v4().to_string();
@@ -466,12 +675,12 @@ impl PostgresStore {
             id: run_id.clone(),
             session_id: session_id.clone(),
             status: RunStatus::Running,
-            owner: request.owner,
+            owner: owner.to_owned(),
             claim_token: token.clone(),
             lease_until: now + lease,
             epoch_id: epoch_id.clone(),
-            config_hash: request.config_hash,
-            plan_fingerprint: request.plan_fingerprint,
+            config_hash: request.config_hash.clone(),
+            plan_fingerprint: request.plan_fingerprint.clone(),
             checkpoint: None,
             error: None,
             usage: Usage::default(),
@@ -502,15 +711,29 @@ impl PostgresStore {
             next_policy: previous.and_then(|value| value.next_policy),
         };
         if !had_session {
-            sqlx::query("INSERT INTO sessions(id,data) VALUES($1,$2)")
+            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol,owner_scope_protocol,native_run_protocol) VALUES($1,$2,$3,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),0),COALESCE((SELECT native_run_protocol FROM session_owner_contexts WHERE session_id=$1),1))")
                 .bind(&session.id.0)
                 .bind(json(&session)?)
+                .bind(i32::from(guard.has_owned_resources()))
                 .execute(&mut **tx)
                 .await
                 .map_err(db)?;
         }
-        sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) VALUES($1,$2,$3,$4,$5,$6)")
+        sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol,execution_enrollment_protocol,execution_enrollment_origin_id) VALUES($1,$2,$3,$4,$5,$6,1,1,$1)")
             .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
+        if !guard.has_owned_resources()
+            && matches!(
+                &birth,
+                crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(_)
+            )
+        {
+            return Err(StoreError::Conflict);
+        }
+        let raw_first = if guard.has_owned_resources() {
+            None
+        } else {
+            Some(native_parent::record_initial_run_with_proof(tx, &run, read_proof).await?)
+        };
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
             .bind(&session_id.0)
@@ -519,33 +742,62 @@ impl PostgresStore {
             .execute(&mut **tx)
             .await
             .map_err(db)?;
-        let mut user = request.user_message;
+        let mut user = request.user_message.clone();
         user.run_id = Some(run_id.clone());
         insert_message(tx, &run, &user).await?;
-        Ok(AdmitOutcome {
-            session,
-            run,
-            fence: RunFence {
-                run_id,
-                claim_token: token,
+        for original in &request.additional_messages {
+            let mut message = original.clone();
+            message.run_id = Some(run_id.clone());
+            insert_message(tx, &run, &message).await?;
+        }
+        let owned_first = ownership_origin::record_admission(
+            tx,
+            &session,
+            &run,
+            !had_session,
+            guard,
+            &birth,
+            read_proof,
+        )
+        .await?;
+        let ((Some(first), None) | (None, Some(first))) = (raw_first, owned_first) else {
+            return Err(StoreError::Conflict);
+        };
+        Ok(
+            crate::native_enrollment::caller::initial::CapturedAdmission {
+                first,
+                admitted: AdmitOutcome {
+                    session,
+                    run,
+                    fence: RunFence {
+                        run_id,
+                        claim_token: token,
+                    },
+                    assistant_placeholder: MessageId::new(),
+                    epoch: epoch_id,
+                    prior_history,
+                },
             },
-            assistant_placeholder: MessageId::new(),
-            epoch: epoch_id,
-            prior_history,
-        })
+        )
     }
     async fn ownership_fenced(
         &self,
         fence: &RunFence,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        let run = load_run(&mut tx, &fence.run_id, true).await?;
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        proof
+            .measure(fence)
+            .map_err(crate::native_enrollment::access::failure)?;
+        let (mut tx, run) = self
+            .run_transaction_with_proof(&fence.run_id, &mut proof)
+            .await?;
         if run.claim_token != fence.claim_token
             || run.status.is_terminal()
             || run.lease_until <= self.clock.now()
         {
             return Err(StoreError::Conflict);
         }
+        credential_access::check_current(&mut tx, &run, &mut proof).await?;
         Ok((tx, run))
     }
     async fn fenced(
@@ -565,858 +817,13 @@ impl PostgresStore {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
-#[async_trait]
-impl Store for PostgresStore {
-    async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        let session = request
-            .session_id
-            .as_ref()
-            .unwrap_or(&request.user_message.session_id);
-        let mut tx = self.admission_transaction(session).await?;
-        let admitted = self.admit_transaction(&mut tx, request, false).await?;
-        tx.commit().await.map_err(db)?;
-        Ok(admitted)
-    }
-
-    async fn admit_keyed_run(
-        &self,
-        keyed: KeyedAdmitRequest,
-    ) -> Result<KeyedAdmitOutcome, StoreError> {
-        let request = &keyed.request;
-        let session = request.session_id.as_ref().ok_or_else(|| {
-            StoreError::Validation("keyed admission requires a stable session ID".into())
-        })?;
-        if request.user_message.session_id != *session
-            || request.user_message.run_id.is_some()
-            || request
-                .user_message
-                .parts
-                .iter()
-                .any(|part| part.message_id != request.user_message.id)
-        {
-            return Err(StoreError::Validation(
-                "invalid admission message identity".into(),
-            ));
-        }
-        let digest = keyed.semantic_digest()?;
-        if let Some(capsule) = &keyed.execution {
-            capsule.validate(&keyed)?;
-        }
-        let mut tx = self.admission_transaction(session).await?;
-        if let Some(row) = sqlx::query("SELECT data FROM sessions WHERE id=$1")
-            .bind(&session.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-        {
-            let existing: Session = decode(row.get("data"))?;
-            existing.ensure_identity(&request.workspace_id, &request.directory)?;
-        }
-        if let Some(receipt) = lookup_receipt(&mut tx, session, &keyed.options.key).await? {
-            if receipt.fingerprint != keyed.options.fingerprint || receipt.semantic_digest != digest
-            {
-                return Err(StoreError::AdmissionConflict);
-            }
-            tx.commit().await.map_err(db)?;
-            return Ok(KeyedAdmitOutcome::Replayed(receipt));
-        }
-        let session_id = session.clone();
-        let user_message_id = request.user_message.id.clone();
-        let admitted = self.admit_transaction(&mut tx, keyed.request, true).await?;
-        let receipt = AdmissionReceipt {
-            session_id,
-            run_id: admitted.run.id.clone(),
-            user_message_id,
-            fingerprint: keyed.options.fingerprint,
-            semantic_digest_version: 1,
-            semantic_digest: digest,
-        };
-        sqlx::query("INSERT INTO admission_receipts(session_id,admission_key,run_id,user_message_id,data) VALUES($1,$2,$3,$4,$5)")
-            .bind(&receipt.session_id.0).bind(keyed.options.key.as_str()).bind(&receipt.run_id.0).bind(&receipt.user_message_id.0).bind(json(&receipt)?)
-            .execute(&mut *tx).await.map_err(db)?;
-        if let Some(capsule) = keyed.execution {
-            let record = crate::AdmissionExecutionRecord {
-                receipt: receipt.clone(),
-                key: keyed.options.key.clone(),
-                capsule,
-                state: crate::AdmissionExecutionState::Unstarted,
-            };
-            sqlx::query("INSERT INTO admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data) VALUES($1,$2,$3,1,'Unstarted',$4)")
-                .bind(&receipt.run_id.0).bind(&receipt.session_id.0).bind(keyed.options.key.as_str())
-                .bind(json(&record)?).execute(&mut *tx).await.map_err(db)?;
-        }
-        tx.commit().await.map_err(db)?;
-        Ok(KeyedAdmitOutcome::Started {
-            receipt,
-            admitted: Box::new(admitted),
-        })
-    }
-
-    async fn lookup_admission(
-        &self,
-        session: &SessionId,
-        key: &AdmissionKey,
-    ) -> Result<Option<AdmissionReceipt>, StoreError> {
-        lookup_receipt(&mut *self.pool.acquire().await.map_err(db)?, session, key).await
-    }
-    async fn load_admission_execution(
-        &self,
-        session: &SessionId,
-        key: &AdmissionKey,
-    ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
-        let receipt = lookup_receipt(&mut tx, session, key)
-            .await
-            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
-        let record = if let Some(receipt) = receipt {
-            admission_execution::load_record(&mut tx, &receipt.run_id)
-                .await
-                .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?
-        } else {
-            None
-        };
-        tx.commit()
-            .await
-            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
-        Ok(record)
-    }
-    async fn claim_unstarted_admission(
-        &self,
-        request: crate::ClaimUnstartedAdmissionRequest,
-    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
-        admission_execution::claim(self, request).await
-    }
-    async fn abandon_run(
-        &self,
-        request: crabber_core::AbandonRequest,
-    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
-        abandon::abandon(self, request).await
-    }
-    async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        let (tx, _) = self.ownership_fenced(&fence).await?;
-        tx.rollback().await.map_err(db)?;
-        Ok(Box::new(PostgresExecution {
-            store: self.clone(),
-            fence,
-        }))
-    }
-    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError> {
-        sqlx::query("SELECT data FROM sessions WHERE id=$1")
-            .bind(&id.0)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db)?
-            .map(|row| decode(row.get("data")))
-            .transpose()
-    }
-    async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        sqlx::query("SELECT data FROM runs WHERE id=$1")
-            .bind(&id.0)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db)?
-            .map(|row| decode(row.get("data")))
-            .transpose()
-    }
-    async fn list_messages(
-        &self,
-        id: &SessionId,
-        epoch: Option<EpochId>,
-    ) -> Result<Vec<Message>, StoreError> {
-        project(&mut *self.pool.acquire().await.map_err(db)?, id, epoch).await
-    }
-    async fn snapshot(
-        &self,
-        request: crate::SnapshotRequest,
-    ) -> Result<crate::SnapshotOutcome, StoreError> {
-        self.read_snapshot(request).await
-    }
-    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
-        messages(&mut *self.pool.acquire().await.map_err(db)?, id).await
-    }
-    async fn list_events(
-        &self,
-        id: &SessionId,
-        after: Option<EventCursor>,
-        limit: usize,
-    ) -> Result<Vec<EventRecord>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT seq,data FROM events WHERE session_id=$1 AND seq>$2 ORDER BY seq LIMIT $3",
-        )
-        .bind(&id.0)
-        .bind(after.map_or(0, |value| i64::try_from(value.0).unwrap_or(i64::MAX)))
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        rows.into_iter()
-            .map(|row| {
-                let mut event: EventRecord = decode(row.get("data"))?;
-                event.cursor = Some(EventCursor(
-                    u64::try_from(row.get::<i64, _>("seq"))
-                        .map_err(|_| StoreError::Validation("invalid event cursor".into()))?,
-                ));
-                Ok(event)
-            })
-            .collect()
-    }
-    async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        sqlx::query(
-            "SELECT data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?
-        .into_iter()
-        .map(|row| decode(row.get("data")))
-        .collect()
-    }
-    async fn list_unfinished_tool_calls(
-        &self,
-        run: &RunId,
-    ) -> Result<Vec<ToolCallRecord>, StoreError> {
-        sqlx::query("SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id")
-            .bind(&run.0).fetch_all(&self.pool).await.map_err(db)?.into_iter().map(|row| decode_record(&row.get::<String, _>("snapshot_record"))).collect()
-    }
-    async fn admission_execution_state(
-        &self,
-        run: &RunId,
-    ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        let state = admission_execution::load_record(&mut tx, run)
-            .await?
-            .map(|record| record.state);
-        tx.commit().await.map_err(db)?;
-        Ok(state)
-    }
-
-    async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        let mut run = load_run(&mut tx, id, true).await?;
-        if admission_execution::load_record(&mut tx, id)
-            .await?
-            .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-        {
-            return Err(StoreError::AdmissionRecoveryRequired);
-        }
-        let now = self.clock.now();
-        if run.status.is_terminal() || run.lease_until > now {
-            return Err(StoreError::Conflict);
-        }
-        run.owner = owner.into();
-        run.claim_token = uuid::Uuid::new_v4().to_string();
-        run.lease_until = now + time::Duration::seconds(30);
-        run.updated_at = now;
-        save_run(&mut tx, &run).await?;
-        tx.commit().await.map_err(db)?;
-        Ok(RunFence {
-            run_id: id.clone(),
-            claim_token: run.claim_token,
-        })
-    }
-    async fn get_extension_state(
-        &self,
-        extension_id: &str,
-        session: &SessionId,
-    ) -> Result<BTreeMap<String, String>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT key,value FROM extension_state WHERE session_id=$1 AND extension_id=$2",
-        )
-        .bind(&session.0)
-        .bind(extension_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| (row.get("key"), row.get("value")))
-            .collect())
-    }
-    async fn enqueue_inbox(
-        &self,
-        session: &SessionId,
-        kind: InboxKind,
-        message: Message,
-    ) -> Result<(), StoreError> {
-        if message.session_id != *session {
-            return Err(StoreError::Validation(
-                "inbox message has wrong session".into(),
-            ));
-        }
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
-            .bind(&session.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
-        let record = serde_json::to_string(&message)
-            .map_err(|_| StoreError::Validation("record encoding failed".into()))?;
-        sqlx::query("INSERT INTO inbox(session_id,kind,data,snapshot_record) VALUES($1,$2,$3,$4)")
-            .bind(&session.0)
-            .bind(inbox_kind(kind))
-            .bind(json(&message)?)
-            .bind(record)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-}
-
-#[async_trait]
-impl ExecutionStore for PostgresExecution {
-    async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
-        admission_execution::begin(self).await
-    }
-    async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
-        let (mut tx, mut run) = self.store.ownership_fenced(&self.fence).await?;
-        let now = self.store.clock.now();
-        if until <= now {
-            return Err(StoreError::Validation(
-                "lease must extend into the future".into(),
-            ));
-        }
-        run.lease_until = until;
-        run.updated_at = now;
-        save_run(&mut tx, &run).await?;
-        tx.commit().await.map_err(db)
-    }
-    async fn append_message(&self, message: Message) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        insert_message(&mut tx, &run, &message).await?;
-        tx.commit().await.map_err(db)
-    }
-    async fn append_part(&self, part: Part) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT snapshot_record FROM messages WHERE id=$1 FOR UPDATE")
-            .bind(&part.message_id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
-        let mut message: Message = decode_record(&row.get::<String, _>("snapshot_record"))?;
-        if message.session_id != run.session_id || message.run_id.as_ref() != Some(&run.id) {
-            return Err(StoreError::Validation("part belongs to another run".into()));
-        }
-        if message
-            .parts
-            .iter()
-            .any(|old| old.id == part.id || old.ordinal == part.ordinal)
-        {
-            return Err(StoreError::Conflict);
-        }
-        insert_part(&mut tx, &part).await?;
-        message.parts.push(part);
-        message.parts.sort_by_key(|part| part.ordinal);
-        let accounting = snapshot::message_record(&message)?;
-        sqlx::query("UPDATE messages SET data=$2,snapshot_record=$3,snapshot_parts=$4,snapshot_text=$5,snapshot_bytes=$6 WHERE id=$1")
-            .bind(&message.id.0)
-            .bind(json(&message)?)
-            .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-    async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        insert_event(&mut tx, &run, &event).await?;
-        tx.commit().await.map_err(db)
-    }
-    async fn create_tool_call(
-        &self,
-        call: ToolCallRecord,
-        pending_event: EventRecord,
-    ) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-            return Err(StoreError::Validation("invalid new tool call".into()));
-        }
-        insert_event(&mut tx, &run, &pending_event).await?;
-        let accounting = snapshot::call_record(&call)?;
-        sqlx::query("INSERT INTO tool_calls(id,run_id,status,data,snapshot_record,snapshot_parts,snapshot_text,snapshot_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(&call.id.0)
-            .bind(&run.id.0)
-            .bind(call_status(call.status))
-            .bind(json(&call)?)
-            .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-    async fn claim_tool_call(
-        &self,
-        id: &ToolCallId,
-        running_event: EventRecord,
-    ) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT snapshot_record FROM tool_calls WHERE id=$1 FOR UPDATE")
-            .bind(&id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
-        let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
-        if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-            return Err(StoreError::Conflict);
-        }
-        insert_event(&mut tx, &run, &running_event).await?;
-        call.status = ToolCallStatus::Running;
-        let accounting = snapshot::call_record(&call)?;
-        sqlx::query("UPDATE tool_calls SET status=$2,data=$3,snapshot_record=$4,snapshot_parts=$5,snapshot_text=$6,snapshot_bytes=$7 WHERE id=$1")
-            .bind(&id.0)
-            .bind(call_status(call.status))
-            .bind(json(&call)?)
-            .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-    async fn settle_tool_call(
-        &self,
-        id: &ToolCallId,
-        result: ToolResult,
-        result_message: Message,
-        terminal_event: EventRecord,
-    ) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT snapshot_record FROM tool_calls WHERE id=$1 FOR UPDATE")
-            .bind(&id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
-        let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
-        if call.run_id != run.id || call.status != ToolCallStatus::Running {
-            return Err(StoreError::Conflict);
-        }
-        if !result_message.parts.iter().any(|part| matches!(&part.content, crabber_core::ContentBlock::ToolResult { call_id, .. } if call_id == id)) { return Err(StoreError::Validation("tool result message lacks matching result part".into())); }
-        insert_message(&mut tx, &run, &result_message).await?;
-        insert_event(&mut tx, &run, &terminal_event).await?;
-        call.status = match result.status {
-            ToolResultStatus::Completed => ToolCallStatus::Completed,
-            ToolResultStatus::Failed => ToolCallStatus::Failed,
-            ToolResultStatus::Interrupted => ToolCallStatus::Interrupted,
-        };
-        call.result = Some(result);
-        let accounting = snapshot::call_record(&call)?;
-        sqlx::query("UPDATE tool_calls SET status=$2,data=$3,snapshot_record=$4,snapshot_parts=$5,snapshot_text=$6,snapshot_bytes=$7 WHERE id=$1")
-            .bind(&id.0)
-            .bind(call_status(call.status))
-            .bind(json(&call)?)
-            .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-    async fn start_epoch(&self, epoch: ContextEpoch) -> Result<(), StoreError> {
-        let (mut tx, mut run) = self.store.fenced(&self.fence).await?;
-        if epoch.run_id != run.id
-            || epoch.session_id != run.session_id
-            || epoch.parent.as_ref() != Some(&run.epoch_id)
-        {
-            return Err(StoreError::Validation("invalid context epoch".into()));
-        }
-        sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
-            .bind(&epoch.id.0)
-            .bind(&epoch.session_id.0)
-            .bind(&run.id.0)
-            .bind(json(&epoch)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        run.epoch_id = epoch.id;
-        save_run(&mut tx, &run).await?;
-        tx.commit().await.map_err(db)
-    }
-    async fn finish_epoch(&self, id: &EpochId, summary: Message) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT data FROM epochs WHERE id=$1 FOR UPDATE")
-            .bind(&id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
-        let mut epoch: ContextEpoch = decode(row.get("data"))?;
-        if epoch.run_id != run.id || epoch.summary_message_id.is_some() || run.epoch_id != *id {
-            return Err(StoreError::Conflict);
-        }
-        if !summary
-            .parts
-            .iter()
-            .any(|part| part.kind == PartKind::CompactionSummary)
-        {
-            return Err(StoreError::Validation(
-                "summary message lacks compaction part".into(),
-            ));
-        }
-        insert_message(&mut tx, &run, &summary).await?;
-        epoch.summary_message_id = Some(summary.id);
-        sqlx::query("UPDATE epochs SET data=$2 WHERE id=$1")
-            .bind(&id.0)
-            .bind(json(&epoch)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-    async fn pause_run(
-        &self,
-        checkpoint: serde_json::Value,
-        event: EventRecord,
-    ) -> Result<(), StoreError> {
-        let (mut tx, mut run) = self.store.fenced(&self.fence).await?;
-        insert_event(&mut tx, &run, &event).await?;
-        let now = self.store.clock.now();
-        run.status = RunStatus::Paused;
-        run.checkpoint = Some(checkpoint);
-        run.lease_until = now;
-        run.updated_at = now;
-        save_run(&mut tx, &run).await?;
-        tx.commit().await.map_err(db)
-    }
-    async fn settle_run(
-        &self,
-        status_value: RunStatus,
-        error: Option<String>,
-        usage: Usage,
-        event: EventRecord,
-    ) -> Result<(), StoreError> {
-        let (mut tx, mut run) = self.store.fenced(&self.fence).await?;
-        if !status_value.is_terminal() {
-            return Err(StoreError::Validation(
-                "run settlement must be terminal".into(),
-            ));
-        }
-        if status_value == RunStatus::Completed {
-            sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
-                .bind(&run.session_id.0)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db)?;
-            let pending = sqlx::query(
-                "SELECT 1 FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL LIMIT 1",
-            )
-            .bind(&run.session_id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .is_some();
-            if pending {
-                return Err(StoreError::PendingInput);
-            }
-        }
-        insert_event(&mut tx, &run, &event).await?;
-        run.status = status_value;
-        run.error = error;
-        run.usage = usage;
-        run.updated_at = self.store.clock.now();
-        save_run(&mut tx, &run).await?;
-        tx.commit().await.map_err(db)
-    }
-    async fn put_extension_state(
-        &self,
-        extension_id: &str,
-        entries: Vec<(String, Option<String>)>,
-    ) -> Result<(), StoreError> {
-        crate::storable::ensure_storable_text(extension_id)?;
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        for (key, value) in entries {
-            crate::storable::ensure_storable_text(&key)?;
-            if let Some(value) = &value {
-                crate::storable::ensure_storable_text(value)?;
-            }
-            if let Some(value) = value {
-                sqlx::query("INSERT INTO extension_state(session_id,extension_id,key,value) VALUES($1,$2,$3,$4) ON CONFLICT(session_id,extension_id,key) DO UPDATE SET value=excluded.value")
-                    .bind(&run.session_id.0).bind(extension_id).bind(&key).bind(&value).execute(&mut *tx).await.map_err(db)?;
-            } else {
-                sqlx::query("DELETE FROM extension_state WHERE session_id=$1 AND extension_id=$2 AND key=$3")
-                    .bind(&run.session_id.0).bind(extension_id).bind(&key).execute(&mut *tx).await.map_err(db)?;
-            }
-        }
-        let rows = sqlx::query(
-            "SELECT key,value FROM extension_state WHERE session_id=$1 AND extension_id=$2",
-        )
-        .bind(&run.session_id.0)
-        .bind(extension_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(db)?;
-        if rows.len() > self.store.limits.max_state_entries
-            || rows
-                .iter()
-                .map(|row| row.get::<String, _>("key").len() + row.get::<String, _>("value").len())
-                .sum::<usize>()
-                > self.store.limits.max_state_bytes
-        {
-            return Err(StoreError::Limit("extension state".into()));
-        }
-        tx.commit().await.map_err(db)
-    }
-    async fn claim_inbox(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
-        self.claim(kind, false).await
-    }
-    async fn claim_inbox_into_history(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
-        self.claim(kind, true).await
-    }
-}
-impl PostgresExecution {
-    async fn claim(&self, kind: InboxKind, into_history: bool) -> Result<Vec<Message>, StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let rows = sqlx::query("SELECT seq,snapshot_record FROM inbox WHERE session_id=$1 AND kind=$2 AND consumed_by_run IS NULL ORDER BY seq FOR UPDATE")
-            .bind(&run.session_id.0).bind(inbox_kind(kind)).fetch_all(&mut *tx).await.map_err(db)?;
-        let mut claimed = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut message: Message = decode_record(&row.get::<String, _>("snapshot_record"))?;
-            if into_history {
-                message.run_id = Some(run.id.clone());
-                insert_message(&mut tx, &run, &message).await?;
-            }
-            sqlx::query("UPDATE inbox SET consumed_by_run=$2 WHERE seq=$1")
-                .bind(row.get::<i64, _>("seq"))
-                .bind(&run.id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
-            claimed.push(message);
-        }
-        tx.commit().await.map_err(db)?;
-        Ok(claimed)
-    }
+#[cfg(test)]
+pub(crate) fn test_lock() -> &'static tokio::sync::Mutex<()> {
+    &tests::TEST_LOCK
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crabber_core::{ContentBlock, ManualClock, PartId, Role};
-    use std::time::Duration;
-    pub(super) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    pub(super) fn test_url() -> Option<String> {
-        match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-            Ok(value) => Some(value),
-            Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_))
-                if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
-            {
-                panic!("CRABBER_TEST_POSTGRES_URL is required")
-            }
-            Err(_error) => {
-                eprintln!("skipping PostgreSQL tests: CRABBER_TEST_POSTGRES_URL is unset");
-                None
-            }
-        }
-    }
-    pub(super) fn input(session_id: &SessionId, text: &str) -> Message {
-        let id = MessageId::new();
-        Message {
-            id: id.clone(),
-            session_id: session_id.clone(),
-            run_id: None,
-            role: Role::User,
-            parent_id: None,
-            parts: vec![Part {
-                id: PartId::new(),
-                message_id: id,
-                ordinal: 0,
-                kind: PartKind::UserInputText,
-                content: ContentBlock::Text { text: text.into() },
-            }],
-            created_at: OffsetDateTime::now_utc(),
-        }
-    }
-    pub(super) fn request(session: &SessionId) -> AdmitRequest {
-        AdmitRequest {
-            session_id: None,
-            workspace_id: "test".into(),
-            directory: "/tmp".into(),
-            title: "test".into(),
-            user_message: input(session, "hello"),
-            config_hash: "config".into(),
-            plan_fingerprint: "plan".into(),
-            owner: "test".into(),
-            lease: Duration::from_secs(30),
-        }
-    }
-    #[tokio::test]
-    async fn postgres_contract() {
-        let Some(url) = test_url() else { return };
-        let _guard = TEST_LOCK.lock().await;
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
-        sqlx::query("TRUNCATE sessions CASCADE")
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        crate::storetest::run_contract(|clock: Arc<ManualClock>| store.clone().with_clock(clock))
-            .await;
-    }
-    #[tokio::test]
-    async fn postgres_storable_record_contract() {
-        let Some(url) = test_url() else { return };
-        let _guard = TEST_LOCK.lock().await;
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
-        sqlx::query("TRUNCATE sessions CASCADE")
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        crate::storetest::run_storable_record_contract(|clock: Arc<ManualClock>| {
-            store.clone().with_clock(clock)
-        })
-        .await;
-    }
-    #[tokio::test]
-    async fn postgres_workspace_identity_contract() {
-        let Some(url) = test_url() else { return };
-        let _guard = TEST_LOCK.lock().await;
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
-        sqlx::query("TRUNCATE sessions CASCADE")
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        crate::storetest::run_workspace_identity_contract(|clock: Arc<ManualClock>| {
-            store.clone().with_clock(clock)
-        })
-        .await;
-
-        // A second pool reads the identity the first one persisted, and a
-        // stored row that no longer decodes fails closed with a typed error.
-        let session = SessionId::new();
-        let admitted = store.admit_run(request(&session)).await.unwrap();
-        let fresh = PostgresStore::connect(&url).await.unwrap();
-        let stored = fresh.get_session(&session).await.unwrap().unwrap();
-        assert_eq!(
-            (stored.workspace_id.as_str(), stored.directory.as_str()),
-            ("test", "/tmp")
-        );
-        assert_eq!(stored, admitted.session);
-        sqlx::query("UPDATE sessions SET data = data - 'workspace_id' WHERE id=$1")
-            .bind(&session.0)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        let invalid = StoreError::Validation("stored record is invalid".into());
-        assert_eq!(fresh.get_session(&session).await.unwrap_err(), invalid);
-        let mut again = request(&session);
-        again.session_id = Some(session.clone());
-        assert_eq!(fresh.admit_run(again).await.unwrap_err(), invalid);
-        sqlx::query("TRUNCATE sessions CASCADE")
-            .execute(&store.pool)
-            .await
-            .unwrap();
-    }
-    #[tokio::test]
-    async fn migrate_reopen_and_concurrent_sessions() {
-        let Some(url) = test_url() else { return };
-        let _guard = TEST_LOCK.lock().await;
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
-        let before: Vec<i32> =
-            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version")
-                .fetch_all(&store.pool)
-                .await
-                .unwrap();
-        PostgresStore::migrate(&url).await.unwrap();
-        let after: Vec<i32> =
-            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version")
-                .fetch_all(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(before, after);
-        let first = SessionId::new();
-        let second = SessionId::new();
-        let a = store.admit_run(request(&first)).await.unwrap();
-        let first_execution = store.execution(a.fence.clone()).await.unwrap();
-
-        // Hold this run's row lock until the other session has admitted and written.
-        // A global store mutex would prevent the bounded operation below from finishing.
-        let mut held = store.pool.begin().await.unwrap();
-        sqlx::query("SELECT id FROM runs WHERE id=$1 FOR UPDATE")
-            .bind(&a.run.id.0)
-            .fetch_one(&mut *held)
-            .await
-            .unwrap();
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let first_run = a.run.id.clone();
-        let blocked_write = tokio::spawn(async move {
-            let mut value = input(&first, "a");
-            value.run_id = Some(first_run);
-            started_tx.send(()).unwrap();
-            first_execution.append_message(value).await
-        });
-        started_rx.await.unwrap();
-        let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-            .fetch_one(&mut *held)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let blocked: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT data FROM runs WHERE id=%FOR UPDATE%')"
-                )
-                .bind(blocker_pid).fetch_one(&store.pool).await.unwrap();
-                if blocked { break; }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("first writer must reach the held row lock");
-
-        let b = tokio::time::timeout(Duration::from_secs(10), async {
-            let b = store.admit_run(request(&second)).await?;
-            let mut value = input(&second, "b");
-            value.run_id = Some(b.run.id.clone());
-            store
-                .execution(b.fence.clone())
-                .await?
-                .append_message(value)
-                .await?;
-            let mut busy_request = request(&a.session.id);
-            busy_request.session_id = Some(a.session.id.clone());
-            assert_eq!(
-                store.admit_run(busy_request).await.unwrap_err(),
-                StoreError::Busy
-            );
-            Ok::<_, StoreError>(b)
-        })
-        .await
-        .expect("independent session must finish before first lock releases")
-        .unwrap();
-        assert!(
-            !blocked_write.is_finished(),
-            "first write must wait for its row lock"
-        );
-        held.commit().await.unwrap();
-        blocked_write.await.unwrap().unwrap();
-        assert_eq!(
-            store.list_all_messages(&b.session.id).await.unwrap().len(),
-            2
-        );
-        let reopened = PostgresStore::connect(&url).await.unwrap();
-        assert_eq!(
-            store.list_messages(&a.session.id, None).await.unwrap(),
-            reopened.list_messages(&a.session.id, None).await.unwrap()
-        );
-        assert_eq!(
-            reopened
-                .list_all_messages(&a.session.id)
-                .await
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod admission_tests;
@@ -1427,3 +834,11 @@ mod snapshot;
 mod abandon_tests;
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+pub(crate) async fn pending_initial_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    tests::TEST_LOCK.lock().await
+}
+
+#[cfg(test)]
+mod pending_initial_fixture;

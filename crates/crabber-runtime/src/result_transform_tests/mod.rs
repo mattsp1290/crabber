@@ -17,8 +17,8 @@ mod recovery;
 mod tamper;
 
 use crate::{
-    ApprovalRequester, ExecutionMode, Orchestrator, PermissionDecision, PermissionPolicy, Request,
-    RunHandle, ToolPipeline,
+    ExecutionMode, Orchestrator, PermissionDecision, PermissionPolicy, Request, RunHandle,
+    ToolPipeline,
 };
 use async_trait::async_trait;
 use crabber_core::{
@@ -26,8 +26,8 @@ use crabber_core::{
     ToolCallRecord, ToolCallStatus, ToolInfo,
 };
 use crabber_extension::{
-    Extension, ExtensionError, Point, Registrar, Registry, RunPlanProvider, Scope, ToolDefinition,
-    ToolExecutor, ToolGuard, ToolPrepare, ToolResultContext, ToolResultTransform,
+    Extension, ExtensionError, JsonToolExecutor, Point, Registrar, Registry, RunPlanProvider,
+    Scope, ToolDefinition, ToolGuard, ToolPrepare, ToolResultContext, ToolResultTransform,
 };
 use crabber_providers::{FakeProvider, ModelRequest, Resolver, Selection, StreamDelta};
 use crabber_session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
@@ -35,6 +35,18 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{Semaphore, oneshot};
+
+/// The fixture tools deliberately produce JSON-to-text results. Decode that
+/// content for data assertions without changing the actual typed wire envelope.
+pub(super) fn fixture_envelope(mut envelope: Value) -> Value {
+    let output: crabber_core::ToolOutput =
+        serde_json::from_value(envelope["result"].clone()).unwrap();
+    envelope["result"] = output.json_value().unwrap();
+    envelope
+}
+pub(super) fn fixture_output(value: &Value) -> Value {
+    serde_json::to_value(crabber_core::ToolOutput::from_json(value).unwrap()).unwrap()
+}
 
 /// Tool whose executor echoes its input.
 pub(super) const ECHO: &str = "echo";
@@ -60,7 +72,7 @@ struct TextTool {
     probe: Arc<Probe>,
 }
 #[async_trait]
-impl ToolExecutor for TextTool {
+impl JsonToolExecutor for TextTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         self.probe
             .executed
@@ -249,10 +261,11 @@ impl Extension for RecordingExtension {
             Arc::new(move |value| {
                 let probe = Arc::clone(&probe);
                 Box::pin(async move {
-                    probe.results.lock().unwrap().push(value.clone());
+                    let observed = fixture_envelope(value.clone());
+                    probe.results.lock().unwrap().push(observed.clone());
                     let gate = probe.gate.lock().unwrap().clone();
                     if let Some(gate) = gate {
-                        gate.pass(&value).await;
+                        gate.pass(&observed).await;
                     }
                     Ok(value)
                 })
@@ -284,6 +297,11 @@ impl PermissionPolicy for AskAndRefuse {
             PermissionDecision::Allow
         }
     }
+}
+// Host fixture decisions are made after the durable worker has returned.
+#[async_trait]
+pub(super) trait ApprovalRequester: Send + Sync {
+    async fn approve(&self, tool: &ToolInfo, arguments: &Value) -> bool;
 }
 struct Refuse;
 #[async_trait]
@@ -358,6 +376,9 @@ pub(super) fn one_turn(calls: &[&ScriptedCall]) -> Vec<Vec<StreamDelta>> {
 
 fn request() -> Request {
     Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
+        input_envelope: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: ".".into(),
@@ -541,6 +562,7 @@ impl Harness {
     /// As [`Harness::fresh_runtime`], with a different model resolver (e.g. new scripted turns).
     pub(super) fn fresh_runtime_with(&self, resolver: Arc<dyn Resolver>) -> Orchestrator {
         let mut builder = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(Arc::clone(&self.store) as Arc<dyn Store>)
             .resolver(resolver)
             .plan_provider(Arc::clone(&self.registry) as Arc<dyn RunPlanProvider>)
@@ -551,9 +573,6 @@ impl Harness {
                     contexts.lock().unwrap().push(context.clone());
                 })
             });
-        if let Some(approver) = &self.approver {
-            builder = builder.approver(Arc::clone(approver));
-        }
         if let Some(pipeline) = &self.pipeline {
             builder = builder.tool_pipeline(Arc::clone(pipeline));
         }
@@ -579,12 +598,87 @@ impl Harness {
     pub(super) async fn start(&self) -> RunHandle {
         self.runtime().start(request()).await.unwrap()
     }
+    async fn answer_and_continue(&self, session: &SessionId, run: &RunId) {
+        use crabber_session::{ApprovalAnswer, ApprovalReply, ApprovalResolverClaim, CallApproval};
+        let snapshot = self
+            .store
+            .approval_snapshot(session, run)
+            .await
+            .unwrap()
+            .unwrap();
+        let calls = self.store.list_unfinished_tool_calls(run).await.unwrap();
+        let mut revision = snapshot.revision;
+        for prepared in &snapshot.calls {
+            let CallApproval::Ask { id, description } = &prepared.decision else {
+                continue;
+            };
+            let call = calls
+                .iter()
+                .find(|call| call.id == prepared.target.call_id)
+                .unwrap();
+            let info = ToolInfo {
+                name: call.name.clone(),
+                description: String::new(),
+                parameters: json!({}),
+                retry_safe: false,
+                required_permissions: vec![],
+            };
+            let grant = match &self.approver {
+                Some(host) => host.approve(&info, &call.arguments).await,
+                None => false,
+            };
+            let receipt = self
+                .store
+                .answer_approval(ApprovalAnswer {
+                    id: crabber_core::ControlId::new(),
+                    expected_revision: revision,
+                    session_id: session.clone(),
+                    run_id: run.clone(),
+                    continuation: snapshot.continuation.clone(),
+                    interaction_id: id.clone(),
+                    resolver: ApprovalResolverClaim {
+                        resolver_id: "test-host".into(),
+                        authority: description.authority().clone(),
+                        authority_claim: "fixture host decision".into(),
+                    },
+                    reply: if grant {
+                        ApprovalReply::Grant
+                    } else {
+                        ApprovalReply::Deny
+                    },
+                })
+                .await
+                .unwrap();
+            revision = receipt.revision;
+        }
+        let crate::Continuation::Started { handle, .. } = self
+            .runtime()
+            .continue_approval(crate::ContinueApproval {
+                id: crabber_core::ControlId::new(),
+                session_id: session.clone(),
+                run_id: run.clone(),
+                continuation: snapshot.continuation,
+                expected_revision: revision,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("fresh host continuation")
+        };
+        assert_eq!(
+            handle.done().await.unwrap().status,
+            crabber_core::RunStatus::Completed
+        );
+    }
     /// Run to completion and return handles for reading everything back.
     pub(super) async fn run(&self) -> Finished<'_> {
         let handle = self.start().await;
         let session_id = handle.session_id().clone();
         let run_id = handle.run_id().clone();
-        handle.done().await.unwrap();
+        let result = handle.done().await.unwrap();
+        if result.status == crabber_core::RunStatus::Paused {
+            self.answer_and_continue(&session_id, &run_id).await;
+        }
         Finished {
             harness: self,
             session_id,
@@ -1055,7 +1149,7 @@ async fn typed_result_chain_preserves_structured_output_and_error_classes() {
                     assert_eq!(context.call_id(), &id);
                     Box::pin(async move {
                         Ok(crabber_extension::TransformOutput::marked_error(
-                            json!({"safe": true}),
+                            crabber_core::ToolOutput::from_json(&(json!({"safe": true}))).unwrap(),
                         ))
                     })
                 }),
@@ -1094,7 +1188,7 @@ async fn result_chain_failures_persist_only_fixed_handler_message() {
                             "context" => value["context"]["tool_name"] = json!("SECRET-CONTEXT"),
                             _ => return Ok(json!("SECRET-MALFORMED")),
                         }
-                        value["result"] = json!("SECRET-INTERMEDIATE");
+                        value["result"] = fixture_output(&json!("SECRET-INTERMEDIATE"));
                         Ok(value)
                     })
                 }),

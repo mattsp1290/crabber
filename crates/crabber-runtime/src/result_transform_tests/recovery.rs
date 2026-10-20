@@ -6,7 +6,7 @@ use crabber_core::{ManualClock, MessageId, Part, PartId, PartKind, RunStatus, To
 use crabber_extension::{
     InputUnavailable, ToolInput, ToolOutcomeClass, TransformOutput, TransformPhase,
 };
-use crabber_session::AdmitRequest;
+use crabber_session::ExecutionStore;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy)]
@@ -24,6 +24,12 @@ impl Entry {
             Self::Resume => runtime.resume(run).await,
             Self::Recover => {
                 let report = runtime.recover().await?;
+                if report.skipped.len() == 1
+                    && let crate::RecoverySkipReason::Attempt(reason) = report.skipped[0].reason
+                {
+                    assert_eq!(report.recovered, Vec::new());
+                    return Err(RuntimeError::Attempt(reason));
+                }
                 assert_eq!(report.skipped, [] as [crate::SkippedRun; 0]);
                 assert_eq!(report.recovered.len(), 1);
                 let result = report.recovered.into_iter().next().unwrap();
@@ -51,13 +57,15 @@ impl ToolPipeline for ReplayPipeline {
         &self,
         context: &ToolResultContext,
         _: &ToolInfo,
-        value: Value,
+        value: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         self.seen
             .lock()
             .unwrap()
-            .push(("pre-stage", context.clone(), value));
-        Ok(TransformOutput::new(json!("SECRET-PRE-STAGE")))
+            .push(("pre-stage", context.clone(), value.json_value().unwrap()));
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(json!("SECRET-PRE-STAGE"))).unwrap(),
+        ))
     }
 }
 
@@ -74,8 +82,12 @@ fn recording_chain(seen: Observations) -> Arc<ClosureExtension> {
                 Arc::new(move |context, value| {
                     let seen = Arc::clone(&seen);
                     Box::pin(async move {
-                        seen.lock().unwrap().push((label, context, value));
-                        Ok(TransformOutput::new(json!(output)))
+                        seen.lock()
+                            .unwrap()
+                            .push((label, context, (value).json_value().unwrap()));
+                        Ok(TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&(json!(output))).unwrap(),
+                        ))
                     })
                 }),
             );
@@ -88,33 +100,16 @@ fn recording_chain(seen: Observations) -> Arc<ClosureExtension> {
             Arc::new(move |context, value| {
                 let seen = Arc::clone(&seen);
                 Box::pin(async move {
-                    seen.lock().unwrap().push(("final", context, value));
-                    Ok(TransformOutput::new(json!({"safe": true})))
+                    seen.lock()
+                        .unwrap()
+                        .push(("final", context, (value).json_value().unwrap()));
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(json!({"safe": true}))).unwrap(),
+                    ))
                 })
             }),
         );
     })
-}
-
-fn user_message(session: SessionId, now: time::OffsetDateTime) -> Message {
-    let message_id = MessageId::new();
-    Message {
-        id: message_id.clone(),
-        session_id: session,
-        run_id: None,
-        role: Role::User,
-        parent_id: None,
-        created_at: now,
-        parts: vec![Part {
-            id: PartId::new(),
-            message_id,
-            ordinal: 0,
-            kind: PartKind::UserInputText,
-            content: ContentBlock::Text {
-                text: "hello".into(),
-            },
-        }],
-    }
 }
 
 struct Fixture {
@@ -146,38 +141,37 @@ impl Fixture {
         harness.store = Arc::new(MemoryStore::with_clock(clock.clone()));
         let session = SessionId::new();
         let plan = harness.registry.acquire_plan(&session).await.unwrap();
-        let fingerprint = admitted_fingerprint
-            .map_or_else(|| plan.fingerprint().to_string(), |stale| stale(&plan));
+        let stale = admitted_fingerprint.map(|stale| stale(&plan));
         plan.release();
-        let admitted = harness
-            .store
-            .admit_run(AdmitRequest {
-                session_id: None,
-                workspace_id: "test".into(),
-                directory: ".".into(),
-                title: "test".into(),
-                user_message: user_message(session, now),
-                config_hash: "test".into(),
-                plan_fingerprint: fingerprint,
-                owner: "crashed".into(),
-                lease: std::time::Duration::from_secs(30),
-            })
-            .await
+        let runtime = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
+            .store(harness.store.clone() as Arc<dyn Store>)
+            .resolver(Arc::new(harness.fake.clone()))
+            .plan_provider(harness.registry.clone() as Arc<dyn RunPlanProvider>)
+            .policy(Arc::clone(&harness.policy))
+            .tool_pipeline(pipeline.clone())
+            .clock(clock.clone())
+            .build()
             .unwrap();
+        let mut original = request();
+        original.session_id = Some(session);
+        let (plan, mut prepared, _) = runtime.prepare_admission(&original).await.unwrap();
+        plan.release();
+        prepared.request.session_id = None;
+        if let Some(stale) = stale {
+            prepared.request.plan_fingerprint.clone_from(&stale);
+            prepared.binding.plan_fingerprint = crabber_core::InputFingerprint::new(stale).unwrap();
+            prepared.binding.input_fingerprint =
+                prepared.binding.computed_input_fingerprint().unwrap();
+        }
+        let input_digest = crabber_session::admission_config_hash(&serde_json::json!(
+            prepared.binding.input_envelope.as_ref().unwrap()
+        ));
+        let admitted = harness.store.admit_bound_run(prepared).await.unwrap();
         let session = admitted.session.id;
         let run = admitted.run.id;
         let execution = harness.store.execution(admitted.fence).await.unwrap();
-        let event = |kind| EventRecord {
-            cursor: None,
-            session_id: session.clone(),
-            run_id: run.clone(),
-            turn_id: None,
-            kind,
-            payload: Value::Null,
-            correlation: None,
-            live_only: false,
-            created_at: now,
-        };
+        let event = |kind| stored_event(&session, &run, kind, now);
         let mut call = ToolCallRecord {
             id: ToolCallId::new(),
             run_id: run.clone(),
@@ -187,6 +181,7 @@ impl Fixture {
             retry_safe,
             result: None,
         };
+        persisted_parent(execution.as_ref(), &session, &run, &call, now).await;
         execution
             .create_tool_call(call.clone(), event(EventKind::ToolCallPending))
             .await
@@ -199,17 +194,23 @@ impl Fixture {
             call.status = ToolCallStatus::Running;
         }
         if paused {
-            execution
-                .pause_run(
-                    json!({"request": {
+            if running {
+                execution
+                    .pause_run(json!({"legacy": true}), event(EventKind::RunPaused))
+                    .await
+                    .unwrap();
+            } else {
+                crate::tests::native_attempt::suspend_fixture(harness.store.as_ref(), execution.as_ref(), &session,
+                    json!({"version":4,"turns_used":1,"pending_calls":[call.id],"request": {
+                        "version": 2, "input_digest": input_digest,
                         "workspace_id": "test", "directory": ".", "title": "test", "text": "hello",
                         "provider_id": "fake", "model_id": "scripted", "system_prompt": null, "max_output_tokens": null
                     }}),
-                    event(EventKind::RunPaused),
-                )
-                .await
-                .unwrap();
+                    now,
+                ).await;
+            }
         }
+
         clock.set(now + time::Duration::seconds(31));
         Self {
             harness,
@@ -223,6 +224,7 @@ impl Fixture {
 
     fn fresh_runtime(&self) -> Orchestrator {
         Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(self.harness.store.clone() as Arc<dyn Store>)
             .resolver(Arc::new(self.harness.fake.clone()))
             .plan_provider(self.harness.registry.clone() as Arc<dyn RunPlanProvider>)
@@ -358,7 +360,7 @@ fn pre_contract_fingerprint(plan: &crabber_extension::RunPlan) -> String {
 }
 
 #[tokio::test]
-async fn public_entrypoints_apply_the_full_d10_state_matrix() {
+async fn public_entrypoints_require_native_suspension_before_replaying_pending_calls() {
     for entry in [Entry::Resume, Entry::Recover] {
         for paused in [false, true] {
             for running in [false, true] {
@@ -367,6 +369,44 @@ async fn public_entrypoints_apply_the_full_d10_state_matrix() {
                     let arguments = json!({"text": PREPARE_REJECTED});
                     let fixture =
                         Fixture::new(paused, running, safe, ECHO, arguments.clone(), None).await;
+                    if !paused || running {
+                        let before = fixture
+                            .harness
+                            .store
+                            .list_events(&fixture.session, None, 1000)
+                            .await
+                            .unwrap();
+                        let result = entry.invoke(&fixture.fresh_runtime(), &fixture.run).await;
+                        if paused && running {
+                            // This raw legacy pause has no native continuation
+                            // or consumed-turn budget and cannot authorize replay.
+                            assert!(matches!(
+                                result,
+                                Err(RuntimeError::Store(
+                                    crabber_session::StoreError::HostUnsupported
+                                ))
+                            ));
+                        } else {
+                            assert!(matches!(
+                                result,
+                                Err(RuntimeError::Attempt(
+                                    crabber_session::AttemptError::InvalidTransition
+                                ))
+                            ));
+                        }
+                        assert_eq!(fixture.harness.probe.executed(), Vec::new());
+                        assert!(fixture.pipeline.seen.lock().unwrap().is_empty());
+                        assert_eq!(
+                            before,
+                            fixture
+                                .harness
+                                .store
+                                .list_events(&fixture.session, None, 1000)
+                                .await
+                                .unwrap()
+                        );
+                        continue;
+                    }
                     let result = entry
                         .invoke(&fixture.fresh_runtime(), &fixture.run)
                         .await
@@ -611,5 +651,59 @@ async fn old_contract_fingerprint_is_refused_without_mutation() {
             assert_eq!(fixture.pipeline.prepares.load(Ordering::SeqCst), 0);
             assert_eq!(fixture.harness.fake.requests(), [] as [ModelRequest; 0]);
         }
+    }
+}
+
+// Model the actual assistant message persisted before the crash. Its declared
+// provider input is independent of the normalized business record under test;
+// replay must still derive its execution class and input only from that record.
+async fn persisted_parent(
+    execution: &dyn ExecutionStore,
+    session: &SessionId,
+    run: &RunId,
+    call: &ToolCallRecord,
+    now: time::OffsetDateTime,
+) {
+    let id = MessageId::new();
+    execution
+        .append_message(Message {
+            id: id.clone(),
+            session_id: session.clone(),
+            run_id: Some(run.clone()),
+            role: Role::Assistant,
+            parent_id: None,
+            created_at: now,
+            parts: vec![Part {
+                id: PartId::new(),
+                message_id: id,
+                ordinal: 0,
+                kind: PartKind::FunctionToolCall,
+                content: ContentBlock::ToolCall {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: json!({"text":"original provider presentation"}),
+                },
+            }],
+        })
+        .await
+        .unwrap();
+}
+
+fn stored_event(
+    session: &SessionId,
+    run: &RunId,
+    kind: EventKind,
+    now: time::OffsetDateTime,
+) -> EventRecord {
+    EventRecord {
+        cursor: None,
+        session_id: session.clone(),
+        run_id: run.clone(),
+        turn_id: None,
+        kind,
+        payload: Value::Null,
+        correlation: None,
+        live_only: false,
+        created_at: now,
     }
 }

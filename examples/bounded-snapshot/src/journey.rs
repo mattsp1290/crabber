@@ -124,6 +124,9 @@ fn event(session: &SessionId, run: &RunId, index: usize) -> EventRecord {
 async fn admit(store: &dyn Store, session: &SessionId, first: &str) -> AdmitOutcome {
     store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "fixture".into(),
             directory: "fixture".into(),
@@ -510,6 +513,8 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
         status: ToolResultStatus::Completed,
         content: vec![
             ContentBlock::Reasoning {
+                provenance: crabber::core::ReasoningProvenance::Unspecified,
+                item_id: None,
                 text: "é nested result".into(),
                 provider_state: None,
             },

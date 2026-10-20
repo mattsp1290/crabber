@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ],
     ]);
     let agent = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider))
         .config(AgentConfig::new(Selection {
@@ -66,8 +67,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .wasm_extension(module("echo-tool", "external_guest.wasm")?)
-        .wasm_extension(module("external-controls", "external_controls.wasm")?)
+        .shared_wasm_extension(module("echo-tool", "external_guest.wasm")?)
+        .shared_wasm_extension(module("external-controls", "external_controls.wasm")?)
         .build()?;
     let result = agent.prompt(None, "Echo a message").await?.done().await?;
     println!("WASM extension run: {:?}", result.status);

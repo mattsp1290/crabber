@@ -1,22 +1,54 @@
 # Public result-transform probe
 
-This standalone Rust 2024 crate has its own workspace and lockfile. It consumes
-only the public `crabber` facade from
-`ssh://git@github.com/mattsp1290/crabber.git`. The pin is the `rev` of the
-`crabber` dependency in `Cargo.toml`; it is valid once that commit is reachable
-from `origin/main`. The crate has no path dependencies, workspace test helpers,
-WASM, provider calls, or runtime credentials. Existing authorized SSH Git
-access fetches the private source; `.cargo/config.toml` uses the Git CLI.
+## Source and acceptance
 
-From this directory, run exactly:
+This standalone Rust 2024 workspace uses only public `crabber` facade APIs.
+Its `Cargo.toml` and committed `Cargo.lock` must resolve the Crabber dependency
+to the published crate-content candidate **C**,
+`04e31b1cf7110f44fe1bbc73668111884f291508`. No development path override is used. Authorized Git
+access is required; the scripted tests use no provider credentials.
+
+Record the actual checkout revision, `rustc --version`, `cargo --version`, locked
+commands/results and resolved Crabber Git SHA with the qualification evidence.
+These instructions describe the checks; they do not themselves record a pass.
+`--locked` rejects a manifest/lockfile mismatch rather than silently rewriting it.
+
+From the Crabber repository root, `cargo xtask check-probes` is a separate local
+static API check. It copies the actual probe source, tests and manifest into
+disposable outside-repository workspaces and changes only the disposable
+`crabber` dependency to the local checkout path. It seeds resolution from the
+workspace `Cargo.lock`; additional registry dependencies may still resolve.
+It checks all targets with default features, without running the probes or
+fetching their tracked Crabber Git dependency. PostgreSQL cfg is off. With all
+dependencies cached it can run with `CARGO_NET_OFFLINE=true`; cold CI may access
+the registry without provider credentials. It does not modify the tracked probe
+manifests or locks, and is not Git-source, runtime or PostgreSQL acceptance.
+
+## Commands
+
+From `testdata/result-transform-probe/` in the clean maintenance checkout:
 
 ```sh
 cargo test --locked
 ```
 
-No task-specific environment variables are required. A complete run reports
-10 passed tests: 2 in `public_contract`, 5 in `paths_binding_tamper` and 3 in
-`interruption`. Fewer means the checkout predates these proofs.
+The default run needs no task-specific environment. For actual PostgreSQL
+interruption coverage, set `CRABBER_TEST_POSTGRES_URL` to a nonempty disposable
+PostgreSQL 14+ database URL, then run:
+
+```sh
+CRABBER_REQUIRE_POSTGRES=1 cargo test --locked --features postgres -- --nocapture
+```
+
+This probe's PostgreSQL tests do not skip: when that URL is empty or absent,
+they start their own `postgres:14` container and require a reachable Docker
+daemon. These tests do not read `CRABBER_REQUIRE_POSTGRES`: a nonempty URL
+selects the configured service; an absent URL selects Docker. The container
+handle/watchdog removes it at normal exit or Ctrl-C; SIGKILL can leave a
+container for manual removal.
+The process-gone assertion uses `/proc` and runs on Linux only.
+
+## Runtime assertions
 
 The tests run real `Agent`/`Orchestrator` execution with public
 `FakeProvider`, `MemoryStore`, extensions and tools. The runtime contains
@@ -55,56 +87,43 @@ the callbacks recorded and from durable state.
 `tests/interruption.rs`:
 
 - `run_interrupt_with_active_child_settles_interrupted_fixed_text`: the reducer
-  starts a child process and hands it to its mount's cleanup tracker. After the
-  child reports ready the test calls `RunHandle::interrupt`. The call settles
-  `Interrupted` with the fixed text within `INTERRUPT_SETTLEMENT_BOUND`; the
-  permit stays held until the child is reaped; `Agent::close_extensions` joins
-  the cleanup; the PID is gone (Linux) and the pipe is closed.
+  starts a child process tracked by both its native phase and mount. After the
+  child reports ready the test calls `RunHandle::interrupt`. While reaping is
+  held, the call has no result and its phase is not quiescent. The test releases
+  reaping before awaiting `Interrupted` with the fixed text. The permit returns
+  only after the child is reaped and its pipe closes. Mount shutdown also waits
+  for this cleanup; a cleanup timeout retains uncertainty and the real join.
 - `run_interrupt_after_accepted_fallback_persists_only_final_redaction`: a value
   accepted before cancellation persists only as the final redactor's output,
   still with status `Interrupted`.
 - `interruption_support::child::reduction_child` is the child's entry point and
   does nothing when run as an ordinary test.
 
-For the durable PostgreSQL proofs of both interruption cases, run:
+The interruption proofs observe the run handle only after actual cleanup and
+durable settlement. The fixture keeps `INTERRUPT_SETTLEMENT_BOUND` (1 second)
+separate from the driver's `FINAL_REDACTION_DEADLINE` (500 milliseconds). The
+accepted-only redaction case pauses Tokio time after real child readiness, with
+a wall-clock watchdog and RAII resume before Store/reaper joins; it does not
+assert a 500ms live-child wall-clock duration. Existing paused driver unit tests
+pin the shared final-redaction deadline. Repository tests separately exercise
+slow redactors and incomplete cleanup. The process-gone check uses `/proc` and
+runs on Linux only.
+
+## Clean-checkout verification
+
+The exact dependency pin above identifies the crate code under test. The
+repository checkout may be a later maintenance revision whose manifest selects
+that pin. Record both the checkout commit and the resolved Crabber dependency
+SHA with the actual command results.
+
+Set `PROBE_CHECKOUT_COMMIT` to the reviewed published checkout revision:
 
 ```sh
-cargo test --locked --features postgres -- --nocapture
+git clone git@github.com:mattsp1290/crabber.git /path/to/unique-clean-clone
+git -C /path/to/unique-clean-clone checkout --detach "$PROBE_CHECKOUT_COMMIT"
 ```
 
-The `interruption` binary then reports 5 passed tests, and each PostgreSQL
-test prints which database it used. With `CRABBER_TEST_POSTGRES_URL` set to a
-non-empty value, the tests use that disposable PostgreSQL 14+ database.
-Without it they start their own `postgres:14` container, which needs a
-reachable Docker daemon; the container is removed when the test ends or the
-run is interrupted with Ctrl-C (an interrupt during container start-up takes
-effect once the start completes). A killed run (`SIGKILL`) can leave a
-`postgres:14` container to remove by hand. They never skip: with neither a
-database nor Docker, they fail.
-
-The interruption proofs time `interrupt()` to the run handle resolving, which
-happens after durable settlement, and print the measured time. They require
-it to stay within `INTERRUPT_SETTLEMENT_BOUND` (1 second), and within
-`FINAL_REDACTION_DEADLINE` (500 milliseconds) when a fallback was accepted.
-This shows a prompt bounded settlement; that the runtime enforces the
-redaction deadline against a slow redactor is proven by the tests in the
-repository, not here. Use a database on the same host or network; a slow link
-to a remote database can exceed the bounds. The process-gone check uses
-`/proc` and runs on Linux only.
-
-`--locked` makes a lockfile that disagrees with the manifest an error instead
-of a silent rewrite.
-
-This probe is excluded from `cargo xtask check` and from CI. Run it at the
-merge commit that published the pin, not at the pinned commit itself, whose
-manifest still names the earlier `rev`. Confirm the tested revision with:
-
-```sh
-cargo tree -i crabber
-```
-
-The pin is the last content commit before the commit that changes only the
-manifest `rev` and the lockfile (`docs/embedding.md`, Recorded answer 6). The
-pull request is merged with a merge commit so the pin stays reachable from
-`main`. Merge, tags or releases, the request reply and acceptance are human
-gates.
+Enter this probe directory and run the locked commands above without a path
+override. Inspect the resolved source with `cargo tree --locked -i crabber` and
+`cargo metadata --locked --format-version 1`. The local static API check is
+separate from these Git-source/runtime results.

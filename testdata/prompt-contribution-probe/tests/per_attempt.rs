@@ -7,8 +7,8 @@ mod refresh;
 use async_trait::async_trait;
 use crabber::core::{RunStatus, ToolCallId, ToolInfo};
 use crabber::extension::{
-    Extension, ExtensionError, ModelRequestError, Point, PromptAttemptContext, PromptContributor,
-    PromptSection, Registrar, Registry, Scope, ToolDefinition, ToolExecutor,
+    Extension, ExtensionError, JsonToolExecutor, ModelRequestError, Point, PromptAttemptContext,
+    PromptContributor, PromptSection, Registrar, Registry, Scope, ToolDefinition,
 };
 use crabber::providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
 use crabber::runtime::{Orchestrator, PermissionDecision, Request, StaticPolicy};
@@ -58,6 +58,9 @@ async fn mount(
 }
 fn request() -> Request {
     Request {
+        selection_policy: Default::default(),
+        captured_revision: None,
+        input_envelope: None,
         session_id: None,
         workspace_id: "workspace".into(),
         directory: "/workspace".into(),
@@ -68,6 +71,7 @@ fn request() -> Request {
             model_id: "scripted".into(),
         },
         system_prompt: Some("base".into()),
+        max_output_tokens: None,
     }
 }
 fn text_script(text: &str) -> Vec<StreamDelta> {
@@ -98,6 +102,7 @@ fn error_script(kind: ProviderErrorKind) -> Vec<StreamDelta> {
 }
 fn runtime(store: Arc<MemoryStore>, fake: &FakeProvider, registry: Registry) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_version("example-host.v1")
         .store(store)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))
@@ -121,7 +126,7 @@ fn constant(value: &str) -> PromptContributor {
 }
 struct RewriteTool(PathBuf);
 #[async_trait]
-impl ToolExecutor for RewriteTool {
+impl JsonToolExecutor for RewriteTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         std::fs::write(&self.0, "v2").unwrap();
         Ok(json!("done"))

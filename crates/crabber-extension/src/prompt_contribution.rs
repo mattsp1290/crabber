@@ -141,9 +141,11 @@ pub struct MountedPromptContributor {
     pub name: String,
     pub order: i32,
     pub(crate) mount_id: u64,
+    pub(crate) frame: crate::dispatch::MountFrame,
     pub(crate) mount_seq: u64,
     pub(crate) cleanup: CleanupTracker,
     pub(crate) identity: PromptContributorIdentity,
+    pub(crate) invocation: Option<crate::registry::InvocationSource>,
     callback: MountedPromptCallback,
 }
 
@@ -158,6 +160,69 @@ pub(crate) enum PromptContributorIdentity {
 enum MountedPromptCallback {
     Legacy(PromptContributor),
     SystemPrompt(Arc<dyn SystemPromptMiddleware>),
+    Product(Arc<crate::contextual::product::prompt::facade::Prompt>),
+    ProductTemplate,
+}
+
+impl MountedPromptCallback {
+    fn product_creator(
+        &self,
+        source: Option<&crate::registry::InvocationSource>,
+    ) -> Result<Option<crate::CallbackInvocationCapability>, ()> {
+        if !matches!(self, Self::Product(_) | Self::ProductTemplate) {
+            return Ok(None);
+        }
+        let creator = crate::registry::current_callback_invocations().ok_or(())?;
+        if !creator.matches_current() || source.is_none() {
+            return Err(());
+        }
+        Ok(Some(creator))
+    }
+}
+
+async fn invoke_prompt(
+    callback: MountedPromptCallback,
+    invocation: PromptAttemptContext,
+    resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
+    creator: Option<crate::CallbackInvocationCapability>,
+) -> Result<Option<String>, ()> {
+    if let MountedPromptCallback::Product(callback) = &callback {
+        return callback
+            .invoke(invocation, resolver, &creator.ok_or(())?)
+            .await;
+    }
+    let cancellation = invocation.cancellation().clone();
+    let observed = match callback {
+        MountedPromptCallback::Legacy(callback) => {
+            crate::dispatch::original::original(
+                || callback(invocation),
+                |result| result.map_err(|_| ()),
+                &cancellation,
+            )
+            .await
+        }
+        MountedPromptCallback::SystemPrompt(callback) => {
+            let typed = ModelAttemptContext::from_prompt_attempt(&invocation, resolver)
+                .with_cancellation(invocation.cancellation().clone())
+                .with_cleanup(invocation.cleanup().clone());
+            crate::dispatch::original::original(
+                || callback.contribute(typed),
+                |result| result.map_err(|_| ()),
+                &cancellation,
+            )
+            .await
+        }
+        MountedPromptCallback::Product(_) | MountedPromptCallback::ProductTemplate => {
+            return Err(());
+        }
+    };
+    match observed {
+        Ok(Some(result)) => result,
+        Ok(None) => Err(()),
+        // The retained Source must remember original observation failure;
+        // ordinary callback errors above remain successful task observations.
+        Err(()) => panic!("original prompt future observation failed"),
+    }
 }
 
 impl MountedPromptContributor {
@@ -166,9 +231,11 @@ impl MountedPromptContributor {
             name,
             order,
             mount_id: 0,
+            frame: crate::dispatch::MountFrame::UNREGISTERED,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             identity: PromptContributorIdentity::Legacy,
+            invocation: None,
             callback: MountedPromptCallback::Legacy(callback),
         }
     }
@@ -183,13 +250,42 @@ impl MountedPromptContributor {
             name,
             order,
             mount_id: 0,
+            frame: crate::dispatch::MountFrame::UNREGISTERED,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             identity: PromptContributorIdentity::SystemPrompt(descriptor),
+            invocation: None,
             callback: MountedPromptCallback::SystemPrompt(callback),
         }
     }
 
+    pub(crate) fn product_template(
+        name: String,
+        order: i32,
+        identity: PromptContributorIdentity,
+    ) -> Self {
+        Self {
+            name,
+            order,
+            identity,
+            mount_id: 0,
+            frame: crate::dispatch::MountFrame::UNREGISTERED,
+            mount_seq: 0,
+            cleanup: CleanupTracker::detached(),
+            invocation: None,
+            callback: MountedPromptCallback::ProductTemplate,
+        }
+    }
+    pub(crate) fn product(
+        name: String,
+        order: i32,
+        identity: PromptContributorIdentity,
+        callback: Arc<crate::contextual::product::prompt::facade::Prompt>,
+    ) -> Self {
+        let mut projected = Self::product_template(name, order, identity);
+        projected.callback = MountedPromptCallback::Product(callback);
+        projected
+    }
     #[allow(dead_code)]
     pub(crate) fn middleware_descriptor(&self) -> Option<&MiddlewareDescriptor> {
         match &self.identity {
@@ -249,21 +345,23 @@ pub async fn collect_prompt_contributions_with_resolver(
             .with_cancellation(child.clone())
             .with_cleanup(contributor.cleanup.clone());
         let callback = contributor.callback.clone();
+        let Ok(creator) = callback.product_creator(contributor.invocation.as_ref()) else {
+            return failed();
+        };
+        let outward_creator = creator.clone();
         let resolver = workspace_reader_resolver.clone();
+        let source = contributor.invocation.clone();
         let deadline =
             attempt_deadline.min(tokio::time::Instant::now() + PROMPT_CONTRIBUTION_DEADLINE);
         let mut future = InFlight::new(
-            AssertUnwindSafe(with_mount(contributor.mount_id, async move {
-                match callback {
-                    MountedPromptCallback::Legacy(callback) => {
-                        callback(invocation).await.map_err(|_| ())
-                    }
-                    MountedPromptCallback::SystemPrompt(callback) => {
-                        let typed = ModelAttemptContext::from_prompt_attempt(&invocation, resolver)
-                            .with_cancellation(invocation.cancellation().clone())
-                            .with_cleanup(invocation.cleanup().clone());
-                        callback.contribute(typed).await.map_err(|_| ())
-                    }
+            AssertUnwindSafe(with_mount(contributor.frame, async move {
+                let construct = move || -> BoxFuture<'static, _> {
+                    Box::pin(invoke_prompt(callback, invocation, resolver, creator))
+                };
+                if let Some(source) = source {
+                    source.invoke(construct).await.map_err(|_| ())?
+                } else {
+                    construct().await
                 }
             }))
             .catch_unwind(),
@@ -293,6 +391,14 @@ pub async fn collect_prompt_contributions_with_resolver(
         let Ok(Ok(text)) = output else {
             return failed();
         };
+        // Source::invoke returned only after its SAME original task was joined.
+        // This creator check is separate from the body's literal-Drop boundary.
+        if outward_creator
+            .as_ref()
+            .is_some_and(|creator| !creator.matches_current())
+        {
+            return failed();
+        }
         if let Some(text) = text {
             if text.len() > MAX_PROMPT_CONTRIBUTION_BYTES {
                 return failed();
@@ -343,6 +449,7 @@ mod tests {
     fn contributor(name: &str, callback: PromptContributor) -> MountedPromptContributor {
         let mut contributor = MountedPromptContributor::legacy(name.into(), 0, callback);
         contributor.mount_id = 42;
+        contributor.frame = crate::dispatch::MountFrame::fixture(42);
         contributor.mount_seq = 42;
         contributor
     }
@@ -615,7 +722,7 @@ mod tests {
             let cb = {
                 let close = close.clone();
                 Arc::new(move |_| {
-                    assert!(is_active_mount(42));
+                    assert!(is_active_mount(crate::dispatch::MountFrame::fixture(42)));
                     close.cancel();
                     Box::pin(futures::future::pending()) as BoxFuture<'static, _>
                 })

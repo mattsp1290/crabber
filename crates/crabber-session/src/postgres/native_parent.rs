@@ -1,0 +1,248 @@
+//! Native Begin witnesses bound to independent Run fence issuance.
+#[path = "native_parent/run.rs"]
+mod run;
+#[path = "native_parent/source_protocol.rs"]
+pub(super) mod source_protocol;
+use crate::native_parent::{Error, Kind, Witness};
+use crate::postgres::transaction::Transaction;
+use crabber_core::{EventCursor, EventRecord, Run};
+pub(super) use run::change_captured_with_proof as record_run_captured_with_proof;
+pub(super) use run::change_with_proof as record_run_with_proof;
+pub(super) use run::initial_with_proof as record_initial_run_with_proof;
+pub(super) use run::publication_with_proof as record_run_publication_with_proof;
+use sqlx::{Postgres, Row};
+
+pub(super) async fn record_attempt(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    request: &crate::AttemptMutation,
+    attempt: &crate::attempt::AttemptRecord,
+    receipt: &crate::AttemptReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::AttemptError> {
+    if matches!(request.command, crate::AttemptCommand::Begin { .. }) {
+        let Some(issuance) = source_protocol::current(tx, &run.session_id, &run.id, proof)
+            .await
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
+        else {
+            return Ok(());
+        };
+        let witness = Witness::attempt(run, attempt, receipt, &issuance)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+        save(tx, &witness)
+            .await
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    }
+    Ok(())
+}
+pub(super) async fn record_phase(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    phase: &crate::phase::PhaseRecord,
+    receipt: &crate::PhaseReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::PhaseError> {
+    if receipt.operation == crate::PhaseOperation::Begin {
+        let attempt = super::attempt::load_host_attempt_with_proof(
+            tx,
+            &run.id,
+            Some(&phase.snapshot.target.attempt.id),
+            proof,
+        )
+        .await
+        .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        .ok_or(crate::PhaseError::UnknownStoreOutcome)?
+        .0;
+        let Some(issuance) = source_protocol::current(tx, &run.session_id, &run.id, proof)
+            .await
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        else {
+            return Ok(());
+        };
+        let witness = Witness::phase(run, &attempt, phase, receipt, &issuance)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+        save(tx, &witness)
+            .await
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+    }
+    Ok(())
+}
+async fn save(tx: &mut Transaction<'_, Postgres>, witness: &Witness) -> Result<(), Error> {
+    witness.validate()?;
+    sqlx::query("INSERT INTO native_parent_witnesses(event_seq,session_id,run_id,kind,operation_id,data_json) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(i64::try_from(witness.source.event_cursor.0).map_err(|_| Error)?)
+        .bind(&witness.source.session_id.0).bind(&witness.source.run_id.0)
+        .bind(kind(witness.source.kind)).bind(&witness.source.operation_id.0)
+        .bind(serde_json::to_string(witness).map_err(|_| Error)?)
+        .execute(&mut **tx).await.map_err(|_| Error)?;
+    Ok(())
+}
+fn kind(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Attempt => "attempt",
+        Kind::Phase => "phase",
+    }
+}
+
+pub(super) async fn verify_attempt(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+) -> Result<Witness, Error> {
+    let row = source(tx, run, Kind::Attempt, None).await?;
+    let receipt: crate::AttemptReceipt = decode(&row, "receipt")?;
+    let event = event(&row)?;
+    let witness: Witness = decode(&row, "witness")?;
+    let issuance = run::latest(tx, run).await?.ok_or(Error)?;
+    witness.verify_attempt(run, attempt, &receipt, &event, &issuance)?;
+    Ok(witness)
+}
+pub(super) async fn verify_phase(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+    phase: &crate::phase::PhaseRecord,
+) -> Result<Witness, Error> {
+    verify_attempt(tx, run, attempt).await?;
+    let row = source(tx, run, Kind::Phase, Some(&phase.snapshot.target.call_id.0)).await?;
+    let receipt: crate::PhaseReceipt = decode(&row, "receipt")?;
+    let event = event(&row)?;
+    let witness: Witness = decode(&row, "witness")?;
+    let issuance = run::latest(tx, run).await?.ok_or(Error)?;
+    witness.verify_phase(run, attempt, phase, &receipt, &event, &issuance)?;
+    Ok(witness)
+}
+async fn source(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    kind_: Kind,
+    call: Option<&str>,
+) -> Result<sqlx::postgres::PgRow, Error> {
+    sqlx::query(SOURCE)
+        .bind(&run.session_id.0)
+        .bind(&run.id.0)
+        .bind(match kind_ {
+            Kind::Attempt => "execution_attempt_changed",
+            Kind::Phase => "tool_phase_changed",
+        })
+        .bind(call)
+        .bind(kind(kind_))
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| Error)?
+        .ok_or(Error)
+}
+fn decode<T: serde::de::DeserializeOwned>(
+    row: &sqlx::postgres::PgRow,
+    field: &str,
+) -> Result<T, Error> {
+    let value: String = row
+        .try_get::<Option<String>, _>(field)
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
+    serde_json::from_str(&value).map_err(|_| Error)
+}
+fn event(row: &sqlx::postgres::PgRow) -> Result<EventRecord, Error> {
+    let value: serde_json::Value = decode(row, "event")?;
+    let mut event =
+        crate::public_state::decode_event(sqlx::types::Json(value)).map_err(|_| Error)?;
+    let cursor = EventCursor(
+        u64::try_from(row.try_get::<i64, _>("seq").map_err(|_| Error)?).map_err(|_| Error)?,
+    );
+    if event.cursor.is_some_and(|value| value != cursor) {
+        return Err(Error);
+    }
+    event.cursor = Some(cursor);
+    Ok(event)
+}
+
+/// Authenticate the exact current issuer for preparation source inspection.
+pub(super) async fn current_issuance(
+    tx: &mut Transaction<'_, Postgres>,
+    native: &Run,
+) -> Result<crate::native_parent::RunIssuance, Error> {
+    let value = run::latest(tx, native).await?.ok_or(Error)?;
+    value.verify(native)?;
+    Ok(value)
+}
+
+pub(super) async fn current_issuance_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    native: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_parent::RunIssuance, Error> {
+    if !proof.active() {
+        return current_issuance(tx, native).await;
+    }
+    let value = source_protocol::current(tx, &native.session_id, &native.id, proof)
+        .await
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
+    value.verify(native)?;
+    Ok(value)
+}
+
+const SOURCE: &str = r#"WITH decoded AS (SELECT e.seq,e.data,(CASE WHEN e.data->>'encoding'='crabber.event.json-text.v1' THEN CASE WHEN split_part(e.data->>'record', ',"payload":',1) ~ ',"kind":"(execution_attempt_changed|tool_phase_changed)"$' THEN (e.data->>'record')::json ELSE '{}'::json END ELSE e.data::json END) AS d FROM events e WHERE e.session_id=$1 AND e.run_id=$2), latest AS (SELECT * FROM decoded WHERE d #>> '{kind}'=$3 AND (CAST($4 AS TEXT) IS NULL OR d #>> '{payload,phase,target,call_id}'=$4) ORDER BY seq DESC LIMIT 1) SELECT l.seq,CASE WHEN octet_length(l.data::text)<=65536 THEN l.data::text END AS event,CASE WHEN octet_length(r.data_json)<=8192 AND r.kind=$5 AND r.event_seq=l.seq THEN r.data_json END AS receipt,CASE WHEN octet_length(w.data_json)<=8192 AND w.session_id=$1 AND w.run_id=$2 AND w.kind=$5 AND w.operation_id=l.d #>> '{correlation}' THEN w.data_json END AS witness FROM latest l LEFT JOIN operation_receipts r ON r.session_id=$1 AND r.operation_id=l.d #>> '{correlation}' LEFT JOIN native_parent_witnesses w ON w.event_seq=l.seq"#;
+
+pub(super) async fn verify_public_source(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+    phase: Option<&crate::phase::PhaseRecord>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let issuance = source_protocol::current(tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
+    issuance.verify(run)?;
+    let row = public_source_row(tx, run, Kind::Attempt, None, proof).await?;
+    let receipt: crate::AttemptReceipt = decode(&row, "receipt")?;
+    let selected_event = event(&row)?;
+    let witness: Witness = decode(&row, "witness")?;
+    witness.verify_attempt(run, attempt, &receipt, &selected_event, &issuance)?;
+    if let Some(phase) = phase {
+        let row = public_source_row(
+            tx,
+            run,
+            Kind::Phase,
+            Some(&phase.snapshot.target.call_id.0),
+            proof,
+        )
+        .await?;
+        let receipt: crate::PhaseReceipt = decode(&row, "receipt")?;
+        let selected_event = event(&row)?;
+        let witness: Witness = decode(&row, "witness")?;
+        witness.verify_phase(run, attempt, phase, &receipt, &selected_event, &issuance)?;
+    }
+    Ok(())
+}
+async fn public_source_row(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    kind_: Kind,
+    call: Option<&str>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<sqlx::postgres::PgRow, Error> {
+    // The existing reader materializes the database carrier, decoder text and
+    // parsed record. Precharge all three before fetching any selected body.
+    let query = format!(
+        "SELECT CAST(3*(coalesce(octet_length(event),0)+coalesce(octet_length(receipt),0)+coalesce(octet_length(witness),0)) AS BIGINT) FROM ({SOURCE}) AS selected"
+    );
+    let bytes: i64 = sqlx::query_scalar(&query)
+        .bind(&run.session_id.0)
+        .bind(&run.id.0)
+        .bind(match kind_ {
+            Kind::Attempt => "execution_attempt_changed",
+            Kind::Phase => "tool_phase_changed",
+        })
+        .bind(call)
+        .bind(kind(kind_))
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|_| Error)?;
+    proof
+        .charge(usize::try_from(bytes).map_err(|_| Error)?)
+        .map_err(|_| Error)?;
+    source(tx, run, kind_, call).await
+}

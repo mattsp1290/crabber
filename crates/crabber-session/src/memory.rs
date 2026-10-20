@@ -1,7 +1,76 @@
+#[path = "memory/admission.rs"]
+mod admission;
+#[path = "memory/approval.rs"]
+mod approval;
+#[path = "memory/continuation_handoff.rs"]
+mod continuation_handoff;
+#[path = "memory/continuation_input.rs"]
+mod continuation_input;
+#[path = "memory/credential_access.rs"]
+mod credential_access;
+#[path = "memory/deletion.rs"]
+mod deletion;
+#[path = "memory/events.rs"]
+mod events;
+#[path = "memory/fork.rs"]
+mod fork;
+#[path = "memory/frontend.rs"]
+mod frontend;
+#[path = "memory/tool_continuation.rs"]
+mod tool_continuation;
+use events::EventLog;
+#[path = "memory/history.rs"]
+mod history;
+use history::SessionSequence;
 #[path = "memory/abandon.rs"]
 mod abandon;
 #[path = "memory/admission_execution.rs"]
 mod admission_execution;
+#[path = "memory/admission_journal.rs"]
+mod admission_journal;
+#[path = "memory/attempt.rs"]
+mod attempt;
+#[path = "memory/execution_binding.rs"]
+mod execution_binding;
+#[path = "memory/expired.rs"]
+mod expired;
+#[path = "memory/initial_consumer.rs"]
+mod initial_consumer;
+#[path = "memory/legacy_execution.rs"]
+mod legacy_execution;
+#[path = "memory/management.rs"]
+mod management;
+#[path = "memory/native_enrollment.rs"]
+mod native_enrollment;
+#[path = "memory/native_parent.rs"]
+mod native_parent;
+#[path = "memory/pending_initial.rs"]
+mod pending_initial;
+#[path = "memory/phase.rs"]
+mod phase;
+native_pending_initial_items! {
+    #[path = "memory/public_continuation_source.rs"]
+    mod public_continuation_source;
+}
+#[path = "memory/public_header.rs"]
+mod public_header;
+#[path = "memory/public_run.rs"]
+mod public_run;
+#[path = "memory/public_state.rs"]
+mod public_state;
+#[path = "memory/session_owner.rs"]
+mod session_owner;
+#[path = "memory/tool_result.rs"]
+mod tool_result;
+
+#[path = "memory/queue.rs"]
+mod queue;
+#[path = "memory/run_control.rs"]
+mod run_control;
+
+#[cfg(test)]
+#[path = "memory/transaction_cost_tests.rs"]
+mod transaction_cost_tests;
 
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -10,12 +79,11 @@ use crate::{
 use async_trait::async_trait;
 use crabber_core::{
     AdmissionKey, AdmissionReceipt, ByteLimits, Clock, ContextEpoch, EpochId, EventCursor,
-    EventRecord, Message, MessageId, Part, PartKind, Run, RunFence, RunId, RunStatus, Session,
-    SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult,
-    ToolResultStatus, Usage,
+    EventRecord, Message, Part, PartKind, Run, RunFence, RunId, RunStatus, Session, SessionId,
+    SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult, ToolResultStatus, Usage,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 use time::OffsetDateTime;
@@ -29,28 +97,128 @@ pub struct MemoryStore {
     clock: Arc<dyn Clock>,
     limits: ByteLimits,
     snapshot_key: String,
+    #[cfg(test)]
+    pending_initial_test_state: crate::pending_initial_test_state::TestState,
+    #[cfg(test)]
+    public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    management_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    native_raw_probe: Arc<crate::native_enrollment::caller::Probe>,
+    #[cfg(test)]
+    phase_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    approval_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    binding_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    queue_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    deletion_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    control_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
 struct State {
+    tombstones: BTreeMap<SessionId, crate::deletion::Tombstone>,
+    ownership_origins: BTreeMap<SessionId, crate::deletion::origin::OwnershipOrigin>,
+    preparation_admissions: BTreeMap<RunId, crate::session_owner::preparation::admission::Witness>,
+    preparation_admission_joins:
+        BTreeMap<(SessionId, crabber_core::SessionOwnerOperationId), RunId>,
+    ownership_protocol_sessions: BTreeSet<SessionId>,
+    native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
+    native_session_protocols: BTreeSet<SessionId>,
+    native_run_protocols: BTreeSet<(SessionId, RunId)>,
+    native_run_sources:
+        BTreeMap<(SessionId, RunId, u64), crate::native_parent::source_protocol::JournalSource>,
+    native_run_source_heads:
+        BTreeMap<(SessionId, RunId), crate::native_parent::source_protocol::JournalHead>,
+    pending_initial: crate::native_enrollment::pending_initial::Ledger,
+    initial_consumer: crate::native_enrollment::initial_consumer::Ledger,
+    initial_consumer_cohorts: BTreeMap<
+        crate::native_enrollment::initial_consumer::SourceKey,
+        Arc<crate::native_enrollment::initial_consumer::Origin>,
+    >,
+    #[cfg(test)]
+    pending_initial_carrier_observations: Arc<Mutex<Vec<(SessionId, usize)>>>,
+    pending_initial_protocols: BTreeMap<
+        crate::native_enrollment::pending_initial::SourceKey,
+        crate::native_enrollment::pending_initial::SourceSlot,
+    >,
+    execution_enrollment_protocols: BTreeSet<(SessionId, RunId)>,
+    execution_enrollment_origins: BTreeMap<(SessionId, RunId), crate::native_enrollment::Origin>,
+    execution_enrollment_unclassified:
+        BTreeMap<(SessionId, RunId), crate::native_enrollment::Unclassified>,
+    native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
+    suspension_proofs: BTreeMap<RunId, crate::run_control::SuspensionProof>,
+    run_controls: BTreeMap<(SessionId, crabber_core::ControlId), crate::run_control::Record>,
+    run_control_audits:
+        BTreeMap<(SessionId, crabber_core::ControlId, u64), crate::RunControlSummary>,
+    frontend_origins: BTreeMap<ToolCallId, crate::frontend_continuation::FrontendOriginRecord>,
+    queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
+    queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
+    continuation_inputs: crate::continuation_input::Ledger,
+    queue_publications: crate::queue::source::Ledger,
+    tool_continuations:
+        BTreeMap<crabber_core::ContinuationId, crate::tool_continuation::ToolContinuationRecord>,
+    tool_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
     #[cfg(test)]
     abandon_fail_after_tools: bool,
     #[cfg(test)]
     abandon_fault_boundary: u8,
+    approvals: BTreeMap<crabber_core::ContinuationId, crate::approval::ApprovalRecord>,
+    approval_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
     abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
     admission_executions: BTreeMap<RunId, crate::AdmissionExecutionRecord>,
+    admission_execution_protocols: std::collections::BTreeSet<RunId>,
+    admission_execution_sources:
+        BTreeMap<(RunId, crate::admission_journal::Kind), crate::admission_journal::Source>,
+    execution_bindings: BTreeMap<RunId, String>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
+    session_owners: crate::session_owner::Ledger,
+    management: BTreeMap<SessionId, crate::management::Metadata>,
+    management_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::management::Audit>,
+    fork_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::fork::Audit>,
+    imported_calls: SessionSequence<crabber_core::ImportedToolCall>,
+    imported_call_ids: std::collections::BTreeSet<ToolCallId>,
+    imported_provenance: SessionSequence<crabber_core::ImportedMessageProvenance>,
     runs: BTreeMap<RunId, Run>,
     run_order: Vec<RunId>,
-    messages: Vec<Message>,
-    events: Vec<EventRecord>,
+    messages: SessionSequence<Message>,
+    events: EventLog,
     calls: BTreeMap<ToolCallId, ToolCallRecord>,
-    call_order: Vec<ToolCallId>,
+    call_order: SessionSequence<ToolCallId>,
     snapshot_revisions: BTreeMap<SessionId, u64>,
+    public_revisions: BTreeMap<SessionId, crabber_core::SessionRevision>,
+    public_contents: BTreeMap<SessionId, crabber_core::PublicStateContents>,
+    operation_receipts: BTreeMap<(SessionId, crabber_core::ControlId), OperationReceipt>,
+    attempts: BTreeMap<crabber_core::AttemptId, crate::attempt::AttemptRecord>,
+    phases: BTreeMap<crabber_core::PhaseId, crate::phase::PhaseRecord>,
     epochs: BTreeMap<EpochId, ContextEpoch>,
     inbox: Vec<InboxRow>,
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+enum OperationReceipt {
+    Fork(crate::ForkReceipt),
+    RunControl(crate::RunControlReceipt),
+    FrontendStaging(crate::FrontendStagingReceipt),
+    Queue(crate::QueueReceipt),
+    ToolContinuation(crate::ToolContinuationReceipt),
+    Management(crate::ManagementReceipt),
+    Approval(crate::ApprovalReceipt),
+    PublicState(crate::PublicStateReceipt),
+    Attempt(crate::AttemptReceipt),
+    Phase(crate::PhaseReceipt),
 }
 
 #[derive(Clone)]
@@ -86,6 +254,32 @@ impl MemoryStore {
             clock,
             limits: ByteLimits::default(),
             snapshot_key: uuid::Uuid::new_v4().to_string(),
+            #[cfg(test)]
+            pending_initial_test_state: crate::pending_initial_test_state::TestState::default(),
+            #[cfg(test)]
+            public_state_fault: Arc::default(),
+            #[cfg(test)]
+            management_fault: Arc::default(),
+            #[cfg(test)]
+            session_owner_fault: Arc::default(),
+            #[cfg(test)]
+            attempt_fault: Arc::default(),
+            #[cfg(test)]
+            native_raw_probe: Arc::default(),
+            #[cfg(test)]
+            phase_fault: Arc::default(),
+            #[cfg(test)]
+            approval_fault: Arc::default(),
+            #[cfg(test)]
+            binding_fault: Arc::default(),
+            #[cfg(test)]
+            queue_fault: Arc::default(),
+            #[cfg(test)]
+            deletion_fault: Arc::default(),
+            #[cfg(test)]
+            tool_continuation_fault: Arc::default(),
+            #[cfg(test)]
+            control_fault: Arc::default(),
         }
     }
 
@@ -97,6 +291,42 @@ impl MemoryStore {
 
     fn transact<T, E>(&self, operation: impl FnOnce(&mut State) -> Result<T, E>) -> Result<T, E> {
         let mut guard = self.state.lock().expect("memory store poisoned");
+        let mut next = guard.clone();
+        let output = operation(&mut next)?;
+        *guard = next;
+        Ok(output)
+    }
+
+    // Selected borrowed carriers are charged under the same lock before the
+    // inherited whole-State clone. This does not bound that entire clone.
+    fn transact_selected<T, E>(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+        selected: impl FnOnce(
+            &State,
+            &mut crate::public_session::v2::proof::Proof,
+        ) -> Result<Option<T>, E>,
+        operation: impl FnOnce(&mut State, &mut crate::public_session::v2::proof::Proof) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        if let Some(replayed) = selected(&guard, proof)? {
+            return Ok(replayed);
+        }
+        let mut next = guard.clone();
+        let output = operation(&mut next, proof)?;
+        *guard = next;
+        Ok(output)
+    }
+
+    fn transact_or_replay<T, E>(
+        &self,
+        before: impl FnOnce(&State) -> Result<Option<T>, E>,
+        operation: impl FnOnce(&mut State) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        if let Some(replayed) = before(&guard)? {
+            return Ok(replayed);
+        }
         let mut next = guard.clone();
         let output = operation(&mut next)?;
         *guard = next;
@@ -121,7 +351,23 @@ impl MemoryStore {
             {
                 return Err(StoreError::Conflict);
             }
-            operation(state, &run)
+            credential_access::check(
+                state,
+                &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )?;
+            let previous = crate::native_parent::RunState::from_run(&run).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            let output = operation(state, &run)?;
+            let updated = state.runs.get(&run.id).ok_or(StoreError::NotFound)?;
+            let updated = crate::native_parent::RunState::from_run(updated).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            native_parent::record_run_states(state, Some(&previous), updated).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            Ok(output)
         })
     }
     fn fenced<T>(
@@ -130,6 +376,7 @@ impl MemoryStore {
         operation: impl FnOnce(&mut State, &Run) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         self.ownership_fenced(fence, |state, run| {
+            admission_journal::verify(state, &run.id)?;
             if state
                 .admission_executions
                 .get(&run.id)
@@ -140,6 +387,25 @@ impl MemoryStore {
             operation(state, run)
         })
     }
+}
+
+fn has_pending_continuation(state: &State, session: &SessionId) -> Result<bool, StoreError> {
+    approval::verify_session(state, session)
+        .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
+    let pending = tool_continuation::pending_in_session(state, session)
+        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    Ok(state.approval_barriers.contains_key(session) || pending)
+}
+fn bump_public_revision(state: &mut State, session: &SessionId) -> Result<(), StoreError> {
+    let current = state
+        .public_revisions
+        .get(session)
+        .copied()
+        .unwrap_or(crabber_core::SessionRevision::INITIAL);
+    state
+        .public_revisions
+        .insert(session.clone(), current.next()?);
+    Ok(())
 }
 
 fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), StoreError> {
@@ -158,26 +424,41 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
             ));
         }
     }
+    let mut part_ids = std::collections::BTreeSet::new();
+    for part in &message.parts {
+        if !part_ids.insert(&part.id) {
+            return Err(StoreError::Conflict);
+        }
+    }
+    if state
+        .messages
+        .iter()
+        .flat_map(|stored| &stored.parts)
+        .any(|old| part_ids.contains(&old.id))
+    {
+        return Err(StoreError::Conflict);
+    }
     crate::ensure_storable(&message)?;
-    state.messages.push(message);
+    bump_public_revision(state, &run.session_id)?;
+    state.messages.push(message.session_id.clone(), message);
     Ok(())
 }
 
-fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<(), StoreError> {
-    if event.live_only || event.kind.is_live_only() {
-        return Err(StoreError::Validation(
-            "live-only events cannot be persisted".into(),
-        ));
-    }
-    if event.session_id != run.session_id || event.run_id != run.id {
-        return Err(StoreError::Validation(
-            "event belongs to another run".into(),
-        ));
-    }
-    event.cursor = Some(EventCursor(state.events.len() as u64 + 1));
+fn insert_event(state: &mut State, run: &Run, event: EventRecord) -> Result<(), StoreError> {
+    insert_event_captured(state, run, event).map(|_| ())
+}
+fn insert_event_captured(
+    state: &mut State,
+    run: &Run,
+    mut event: EventRecord,
+) -> Result<EventCursor, StoreError> {
+    crate::event_persistence::validate(run, &event)?;
+    let cursor = state.events.next_cursor()?;
+    event.cursor = Some(cursor);
     crate::ensure_storable(&event)?;
-    state.events.push(event);
-    Ok(())
+    bump_public_revision(state, &run.session_id)?;
+    state.events.append(event)?;
+    Ok(cursor)
 }
 
 fn project_messages(
@@ -284,180 +565,821 @@ fn initial_epoch(
     }
 }
 
-fn admit_transaction(
-    state: &mut State,
-    request: &AdmitRequest,
-    now: OffsetDateTime,
-    allow_create: bool,
-) -> Result<AdmitOutcome, StoreError> {
-    let lease = time::Duration::try_from(request.lease)
-        .map_err(|_| StoreError::Validation("lease is too large".into()))?;
-    if lease <= time::Duration::ZERO {
-        return Err(StoreError::Validation("lease must be positive".into()));
-    }
-    let session_id = request
-        .session_id
-        .clone()
-        .unwrap_or_else(|| request.user_message.session_id.clone());
-    let session = if let Some(existing) = state.sessions.get(&session_id) {
-        existing.ensure_identity(&request.workspace_id, &request.directory)?;
-        existing.clone()
-    } else if request.session_id.is_some() && !allow_create {
-        return Err(StoreError::NotFound);
-    } else {
-        Session {
-            id: session_id.clone(),
-            workspace_id: request.workspace_id.clone(),
-            directory: request.directory.clone(),
-            title: request.title.clone(),
-            created_at: now,
-            updated_at: now,
-        }
-    };
-    if state
-        .runs
-        .values()
-        .any(|run| run.session_id == session_id && !run.status.is_terminal())
-    {
-        return Err(StoreError::Busy);
-    }
-    if request.user_message.session_id != session_id {
-        return Err(StoreError::Validation(
-            "user message has wrong session".into(),
-        ));
-    }
-    let prior_history = if state.sessions.contains_key(&session_id) {
-        project_messages(state, &session_id, None)?
-    } else {
-        Vec::new()
-    };
-    let previous_epoch = state
-        .run_order
-        .iter()
-        .rev()
-        .find_map(|id| {
-            state
-                .runs
-                .get(id)
-                .filter(|run| run.session_id == session_id)
-        })
-        .map(|run| state.epochs.get(&run.epoch_id).ok_or(StoreError::NotFound))
-        .transpose()?
-        .cloned();
-    let run_id = RunId::new();
-    let epoch_id = EpochId::new();
-    let token = uuid::Uuid::new_v4().to_string();
-    let run = Run {
-        id: run_id.clone(),
-        session_id: session_id.clone(),
-        status: RunStatus::Running,
-        owner: request.owner.clone(),
-        claim_token: token.clone(),
-        lease_until: now + lease,
-        epoch_id: epoch_id.clone(),
-        config_hash: request.config_hash.clone(),
-        plan_fingerprint: request.plan_fingerprint.clone(),
-        checkpoint: None,
-        error: None,
-        usage: Usage::default(),
-        created_at: now,
-        updated_at: now,
-    };
-    let mut user_message = request.user_message.clone();
-    user_message.run_id = Some(run_id.clone());
-    crate::ensure_storable(&session)?;
-    crate::ensure_storable(&run)?;
-    insert_message(state, &run, user_message)?;
-    state.sessions.insert(session_id.clone(), session.clone());
-    state.runs.insert(run_id.clone(), run.clone());
-    state.run_order.push(run_id.clone());
-    let epoch = initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch);
-    crate::ensure_storable(&epoch)?;
-    state.epochs.insert(epoch_id.clone(), epoch);
-    Ok(AdmitOutcome {
-        session,
-        run,
-        fence: RunFence {
-            run_id,
-            claim_token: token,
-        },
-        assistant_placeholder: MessageId::new(),
-        epoch: epoch_id,
-        prior_history,
-    })
-}
-
 #[async_trait]
 impl Store for MemoryStore {
+    async fn pending_initial_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.apply_pending_initial(call)
+    }
+
+    async fn pending_initial_consumer_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialConsumerNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialConsumerNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.apply_pending_initial_consumer(call)
+    }
+
+    async fn frontend_call_origin(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        call: &ToolCallId,
+    ) -> Result<Option<crate::FrontendCallOrigin>, crate::ToolContinuationError> {
+        crate::tool_continuation::canonical::identity(&session.0, 512)?;
+        crate::tool_continuation::canonical::identity(&run.0, 128)?;
+        crate::tool_continuation::canonical::identity(&call.0, 512)?;
+        let state = self.state.lock().expect("memory store poisoned");
+        let run = state
+            .runs
+            .get(run)
+            .filter(|run| run.session_id == *session)
+            .ok_or(crate::ToolContinuationError::NotFound)?;
+        frontend::origin(&state, run, call)?
+            .map(|record| {
+                Ok(crate::FrontendCallOrigin {
+                    call_id: record.request.call.id.clone(),
+                    descriptor: record.request.descriptor.clone(),
+                    descriptor_fingerprint: record.request.descriptor_fingerprint.clone(),
+                    call_binding: crate::phase::call_binding(&record.request.call)
+                        .map_err(|_| crate::ToolContinuationError::UnknownStoreOutcome)?,
+                })
+            })
+            .transpose()
+    }
+    async fn lookup_frontend_staging(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::FrontendStagingReceipt>, crate::ToolContinuationError> {
+        crate::tool_continuation::canonical::identity(&session.0, 512)?;
+        crate::tool_continuation::canonical::identity(&id.0, 128)?;
+        frontend::receipt(
+            &self.state.lock().expect("memory store poisoned"),
+            session,
+            id,
+        )
+    }
+
+    async fn public_history_v2(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicHistoryOutcome, StoreError> {
+        Ok(self
+            .read_snapshot_profile(
+                &self.state.lock().unwrap(),
+                &request,
+                crate::snapshot_profile::Profile::AggregateV2,
+            )?
+            .into())
+    }
+    async fn public_control_header_v2(
+        &self,
+        request: crate::PublicHeaderRequestV2,
+    ) -> Result<crate::PublicHeaderOutcomeV2, crate::PublicSessionError> {
+        self.read_public_header_v2(&request)
+    }
+    async fn public_control_header(
+        &self,
+        request: crate::PublicHeaderRequest,
+    ) -> Result<crate::PublicHeaderOutcome, crate::PublicSessionError> {
+        self.read_public_header(&request)
+    }
+
+    async fn settle_waiting_cancellation(
+        &self,
+        request: crate::WaitingCancellation,
+    ) -> Result<crate::RunControlSummary, crate::RunControlError> {
+        self.control_settle_waiting(&request)
+    }
+
+    async fn run_control_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<crate::RunControlBinding, crate::RunControlError> {
+        self.control_binding(session, run)
+    }
+
+    fn supports_run_controls(&self) -> bool {
+        true
+    }
+    async fn control_run(
+        &self,
+        request: crate::RunControlRequest,
+    ) -> Result<crate::RunControlOutcome, crate::RunControlError> {
+        self.control_accept(request)
+    }
+    async fn lookup_run_control(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::RunControlReceipt>, crate::RunControlError> {
+        self.control_lookup(session, id)
+    }
+    async fn run_controls(
+        &self,
+        target: &crate::RunControlTarget,
+    ) -> Result<crate::RunControlPage, crate::RunControlError> {
+        self.control_page(target)
+    }
+
+    async fn mark_attempt_uncertain(
+        &self,
+        request: crate::AttemptUncertainty,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        self.host_attempt(&crate::attempt_control::Control::Uncertain(request))
+    }
+    async fn retire_attempt(
+        &self,
+        request: crate::AttemptRetirement,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        self.host_attempt(&crate::attempt_control::Control::Retire(request))
+    }
+
+    async fn queue_preparation_snapshot(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, StoreError> {
+        self.queue_session_snapshot(session)
+    }
+    fn supports_future_queue(&self) -> bool {
+        true
+    }
+    fn supports_owned_queue_preparation_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_owned_queue_preparation(
+        &self,
+        context: &crabber_core::SessionContext,
+        authority: &crate::QueueAuthority,
+        expected_revision: crabber_core::SessionRevision,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_owned_inspection(context, authority, expected_revision)
+    }
+    async fn mutate_queue(
+        &self,
+        request: crate::QueueMutation,
+    ) -> Result<crate::QueueOutcome, StoreError> {
+        self.queue_mutate(&request)
+    }
+    async fn lookup_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::QueueReceipt>, StoreError> {
+        self.queue_lookup(session, id)
+    }
+    async fn list_queue(
+        &self,
+        request: crate::QueuePageRequest,
+    ) -> Result<crate::QueuePage, StoreError> {
+        self.queue_list(&request)
+    }
+    async fn get_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::QueueSummary, StoreError> {
+        self.queue_get(session, id)
+    }
+    async fn retained_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_private(session, id)
+    }
+
+    fn supports_session_owners(&self) -> bool {
+        true
+    }
+    async fn reserve_session_owner(
+        &self,
+        request: crate::session_owner::ReserveSessionOwner,
+        parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.reserve_owner(&request, parent.as_ref())
+    }
+    fn supports_queue_preparation_admission_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_queue_preparation_admission(
+        &self,
+        original: &crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crate::QueueReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.inspect_queue_admission(original)
+    }
+    fn supports_initial_preparation_admission_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_initial_preparation_admission(
+        &self,
+        original: &crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationAdmissionReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.inspect_initial_admission(original)
+    }
+    fn supports_preparation_protocol(&self) -> bool {
+        true
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.reserve_preparation(&request)
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &SessionId,
+        key: &crate::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationReconciliation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        let state = self.state.lock().unwrap();
+        deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
+        state.session_owners.preparation_metadata(session, key)
+    }
+    fn supports_successor_execution_drivers(&self) -> bool {
+        true
+    }
+    fn supports_successor_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+        matches!(
+            origin,
+            Origin::AdmissionRecovery
+                | Origin::ExpiredRun
+                | Origin::ApprovalClaim
+                | Origin::ApprovalRecovery
+                | Origin::ToolClaim
+                | Origin::ToolRecovery
+                | Origin::FrontendClaim
+                | Origin::FrontendRecovery
+        )
+    }
+    async fn register_successor_execution_driver(
+        &self,
+        request: crate::session_owner::driver::RegisterSuccessorExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::SuccessorExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_successor_driver(&request)
+    }
+    fn supports_execution_drivers(&self) -> bool {
+        true
+    }
+    async fn register_execution_driver(
+        &self,
+        request: crate::session_owner::driver::RegisterExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::ExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_driver(&request)
+    }
+    fn supports_preparation_resources(&self) -> bool {
+        true
+    }
+    fn supports_session_service_dependencies(&self) -> bool {
+        true
+    }
+    async fn register_session_service_dependency(
+        &self,
+        request: crate::session_owner::service::RegisterSessionServiceDependency,
+    ) -> Result<
+        crate::session_owner::service::SessionServiceDependencyOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_service(&request)
+    }
+    async fn check_session_service_dependency_access(
+        &self,
+        request: crate::session_owner::service::SessionServiceDependencyAccess,
+    ) -> Result<(), crate::session_owner::SessionOwnerError> {
+        self.check_service_access(&request)
+    }
+    async fn retain_preparation_resources(
+        &self,
+        grant: crate::session_owner::preparation::PreparationGrant,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationResourceOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.retain_preparation_resources(&grant)
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.complete_preparation(&joined)
+    }
+    async fn complete_preparation_with_driver_source(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedDriverCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        crate::session_owner::preparation::driver_completion::validate_original(&joined)?;
+        self.complete_preparation_captured(&joined, true)
+    }
+    async fn inspect_pending_approval_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectPendingApprovalPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PendingApprovalPreparationMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_pending_approval(&request)
+    }
+    async fn inspect_pending_tool_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectPendingToolPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PendingToolPreparationMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_pending_tool(&request)
+    }
+    fn supports_pending_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+        matches!(
+            origin,
+            Origin::AdmissionRecovery
+                | Origin::ExpiredRun
+                | Origin::ApprovalClaim
+                | Origin::ApprovalRecovery
+                | Origin::ToolClaim
+                | Origin::ToolRecovery
+                | Origin::FrontendClaim
+                | Origin::FrontendRecovery
+        )
+    }
+    async fn inspect_prepared_approval_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedApprovalDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedApprovalDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_approval_driver(&request)
+    }
+    async fn inspect_prepared_tool_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedToolDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedToolDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_tool_driver(&request)
+    }
+
+    fn supports_session_owner_cancellation(&self) -> bool {
+        true
+    }
+    async fn request_session_owner_cancel(
+        &self,
+        request: crate::session_owner::RequestSessionOwnerCancel,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.request_owner_cancel(&request)
+    }
+    async fn observe_session_owner_cancel(
+        &self,
+        request: crate::session_owner::ObserveSessionOwnerCancel,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.observe_owner_cancel(&request, &authority)
+    }
+    async fn pending_session_owner_cancel(
+        &self,
+        authority: &crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerCancellation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.pending_owner_cancel(authority)
+    }
+    fn supports_owned_scopes(&self) -> bool {
+        true
+    }
+    /// Activate only an already registered exact local gate. Fresh Applied is
+    /// the sole source of a dispatch permit; replay and unknown ACK never grant.
+    async fn publish_owned_scope_activation(
+        &self,
+        request: crate::session_owner::owned_scope::OwnedScopeActivation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+        parent: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.publish_owned_scope_activation(&request, &authority, parent.as_ref())
+    }
+    /// Report exact observed main and sealed resource joins. Receipt replay
+    /// never grants work and no lease expiry, timeout or Drop supplies proof.
+    async fn join_owned_scope(
+        &self,
+        proof: crate::session_owner::owned_scope::JoinedOwnedScope,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.join_owned_scope(&proof, &authority)
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crate::session_owner::MutateSessionOwner,
+        authority: Option<crate::session_owner::SessionOwnerAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.mutate_owner(&request, authority.as_ref())
+    }
+    async fn get_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerId,
+    ) -> Result<crate::session_owner::SessionOwnerSnapshot, crate::session_owner::SessionOwnerError>
+    {
+        let state = self.state.lock().unwrap();
+        deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
+        state.session_owners.snapshot(session, id)
+    }
+    async fn lookup_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        let state = self.state.lock().unwrap();
+        deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
+        state.session_owners.receipt(session, id)
+    }
+
+    async fn delete_session(
+        &self,
+        request: crate::DeleteSession,
+    ) -> Result<crate::DeletionOutcome, crate::DeletionError> {
+        self.guarded_delete(request)
+    }
+    async fn lookup_session_deletion(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::DeletionReceipt>, crate::DeletionError> {
+        self.deletion_receipt(session, id)
+    }
+    async fn session_disposition(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionDisposition, crate::DeletionError> {
+        self.disposition(session)
+    }
+    async fn fork_session(
+        &self,
+        request: crate::ForkSession,
+    ) -> Result<crate::ForkOutcome, crate::ForkError> {
+        self.fork(request)
+    }
+    async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ForkReceipt>, crate::ForkError> {
+        self.fork_receipt(target, id)
+    }
+    async fn manage_session(
+        &self,
+        request: crate::ManageSession,
+    ) -> Result<crate::ManagementReceipt, crate::ManagementError> {
+        self.manage(request)
+    }
+    async fn lookup_public_source_publication(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicSourcePublication>, crate::PublicStateError> {
+        self.read_public_source_publication(session, id)
+    }
+    async fn mutate_bound_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(mutation, &authority, None)
+    }
+    async fn mutate_invocation_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(
+            mutation,
+            &crate::PublicSourceAuthority::Invocation(authority),
+            None,
+        )
+    }
+    async fn lookup_session_management(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
+        self.management_receipt(session, id)
+    }
+    async fn public_run_state(
+        &self,
+        session: &SessionId,
+        max_bytes: usize,
+    ) -> Result<crate::PublicRunOutcome, StoreError> {
+        self.read_public_run(session, max_bytes)
+    }
+    async fn session_summary(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, crate::ManagementError> {
+        self.read_summary(session)
+    }
+    async fn list_sessions(
+        &self,
+        request: crate::ListSessions,
+    ) -> Result<crate::SessionListPage, crate::ManagementError> {
+        self.summaries(&request)
+    }
+
+    async fn approval_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ApprovalSnapshot>, crate::ApprovalError> {
+        self.read_approval(session, run)
+    }
+    async fn original_approval_plan(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        target: &crate::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crate::ApprovalError> {
+        self.read_original_approval_plan(session, run, target)
+    }
+    async fn lookup_approval(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ApprovalReceipt>, crate::ApprovalError> {
+        self.read_approval_receipt(session, id)
+    }
+    async fn answer_approval(
+        &self,
+        answer: crate::ApprovalAnswer,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.answer_approval_inner(&answer)
+    }
+    async fn terminate_approval(
+        &self,
+        request: crate::ApprovalTermination,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.end_approval(&request)
+    }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crate::ApprovalContinuationRecovery,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        self.recover_approval(&request)
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crate::ApprovalContinuationClaim,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        self.claim_approval(&claim)
+    }
+
+    fn supports_owned_attempts(&self) -> bool {
+        true
+    }
+    fn supports_owned_tool_phases(&self) -> bool {
+        true
+    }
+    fn supports_tool_continuations(&self) -> bool {
+        true
+    }
+    async fn tool_continuation_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
+        self.read_tools(session, run)
+    }
+    async fn original_tool_continuation_plan(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        target: &crate::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crate::ToolContinuationError> {
+        self.read_original_tool_plan(session, run, target)
+    }
+    async fn lookup_tool_continuation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ToolContinuationReceipt>, crate::ToolContinuationError> {
+        self.tool_receipt(session, id)
+    }
+    async fn answer_tool_interaction(
+        &self,
+        answer: crate::ToolInteractionAnswer,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.answer_tools(&answer)
+    }
+    async fn recover_tool_continuation(
+        &self,
+        request: crate::ToolContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_tools(&request)
+    }
+    async fn claim_tool_continuation(
+        &self,
+        claim: crate::ToolContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_tools(&claim)
+    }
+    async fn claim_frontend_continuation(
+        &self,
+        claim: crate::FrontendContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_frontend(&claim)
+    }
+    fn supports_frontend_tools(&self) -> bool {
+        true
+    }
+    async fn recover_frontend_continuation(
+        &self,
+        request: crate::FrontendContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_frontend(&request)
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        true
+    }
+
+    async fn tool_phase(
+        &self,
+        run: &RunId,
+        id: &crabber_core::PhaseId,
+    ) -> Result<crate::VersionedPhase, crate::PhaseError> {
+        self.read_phase(run, id)
+    }
+    async fn mark_phase_uncertain(
+        &self,
+        request: crate::PhaseUncertainty,
+    ) -> Result<crate::PhaseControlOutcome, crate::PhaseError> {
+        request.fingerprint()?;
+        self.host_phase(
+            &request.run_id,
+            &request.mutation(),
+            crate::phase::PhaseEffect::Uncertainty(&request),
+        )
+    }
+    async fn record_phase_cleanup(
+        &self,
+        request: crate::PhaseCleanup,
+    ) -> Result<crate::PhaseControlOutcome, crate::PhaseError> {
+        request.fingerprint()?;
+        self.host_phase(
+            &request.run_id,
+            &request.mutation(),
+            crate::phase::PhaseEffect::Cleanup(&request),
+        )
+    }
+    async fn list_tool_phases(
+        &self,
+        request: crate::PhasePageRequest,
+    ) -> Result<crate::PhasePage, crate::PhaseError> {
+        self.phase_page(&request)
+    }
+    async fn resolve_uncertain_phase(
+        &self,
+        resolution: crate::PhaseResolution,
+    ) -> Result<crate::PhaseResolutionOutcome, crate::PhaseError> {
+        self.resolve_phase(&resolution)
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PhaseReceipt>, crate::PhaseError> {
+        self.phase_receipt(session, id)
+    }
+    async fn execution_attempt(
+        &self,
+        run: &RunId,
+        id: &crabber_core::AttemptId,
+    ) -> Result<crate::VersionedAttempt, crate::AttemptError> {
+        self.read_attempt(run, Some(id))?
+            .ok_or(crate::AttemptError::NotFound)
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crate::VersionedAttempt>, crate::AttemptError> {
+        self.read_attempt(run, None)
+    }
+    async fn lookup_attempt_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::AttemptReceipt>, crate::AttemptError> {
+        self.attempt_receipt(session, id)
+    }
+
+    async fn public_continuation_source(
+        &self,
+        fence: &RunFence,
+        authority: &crate::AttemptAuthority,
+    ) -> Result<crabber_core::continuation_source::ResumeSnapshot, crate::PublicStateError> {
+        self.read_continuation_source(fence, authority)
+    }
+    async fn public_state(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
+        self.read_public_state(session)
+    }
+    async fn lookup_public_state_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicStateReceipt>, crate::PublicStateError> {
+        self.public_receipt(session, id)
+    }
+
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        let state = self.state.lock().expect("memory store poisoned");
+        deletion::ensure_live(&state, session)?;
+        if !state.sessions.contains_key(session) {
+            return Err(StoreError::NotFound);
+        }
+        Ok(state
+            .public_revisions
+            .get(session)
+            .copied()
+            .unwrap_or(crabber_core::SessionRevision::INITIAL))
+    }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        self.transact(|state| admit_transaction(state, &request, self.clock.now(), false))
+        self.admit_raw(&request)
     }
 
     async fn admit_keyed_run(
         &self,
         keyed: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        let request = &keyed.request;
-        let session_id = request.session_id.as_ref().ok_or_else(|| {
-            StoreError::Validation("keyed admission requires a stable session ID".into())
-        })?;
-        if request.user_message.session_id != *session_id
-            || request.user_message.run_id.is_some()
-            || request
-                .user_message
-                .parts
-                .iter()
-                .any(|part| part.message_id != request.user_message.id)
-        {
-            return Err(StoreError::Validation(
-                "invalid admission message identity".into(),
-            ));
-        }
-        let digest = keyed.semantic_digest()?;
-        if let Some(capsule) = &keyed.execution {
-            capsule.validate(&keyed)?;
-        }
-        self.transact(|state| {
-            if let Some(session) = state.sessions.get(session_id) {
-                session.ensure_identity(&request.workspace_id, &request.directory)?;
-            }
-            let key = (session_id.clone(), keyed.options.key.clone());
-            if let Some(receipt) = state.receipts.get(&key) {
-                if receipt.fingerprint != keyed.options.fingerprint
-                    || receipt.semantic_digest != digest
-                {
-                    return Err(StoreError::AdmissionConflict);
-                }
-                return Ok(KeyedAdmitOutcome::Replayed(receipt.clone()));
-            }
-            let admitted = admit_transaction(state, request, self.clock.now(), true)?;
-            let receipt = AdmissionReceipt {
-                session_id: session_id.clone(),
-                run_id: admitted.run.id.clone(),
-                user_message_id: request.user_message.id.clone(),
-                fingerprint: keyed.options.fingerprint.clone(),
-                semantic_digest_version: 1,
-                semantic_digest: digest,
-            };
-            crate::ensure_storable(&receipt)?;
-            if let Some(capsule) = keyed.execution.clone() {
-                let execution = crate::AdmissionExecutionRecord {
-                    receipt: receipt.clone(),
-                    key: keyed.options.key.clone(),
-                    capsule,
-                    state: crate::AdmissionExecutionState::Unstarted,
-                };
-                crate::ensure_storable(&execution)?;
-                state
-                    .admission_executions
-                    .insert(admitted.run.id.clone(), execution);
-            }
-            state.receipts.insert(key, receipt.clone());
-            Ok(KeyedAdmitOutcome::Started {
-                receipt,
-                admitted: Box::new(admitted),
-            })
-        })
+        self.admit_keyed_raw(&keyed)
+    }
+    async fn admit_bound_run(
+        &self,
+        request: crate::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.admit_with_binding(&request)
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        request: crate::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        self.admit_keyed_with_binding(&request)
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::RetainedExecutionBinding>, StoreError> {
+        self.read_execution_binding(session, run)
     }
 
     async fn lookup_admission(
@@ -465,13 +1387,9 @@ impl Store for MemoryStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
-            .receipts
-            .get(&(session.clone(), key.clone()))
-            .cloned())
+        let state = self.state.lock().expect("memory store poisoned");
+        deletion::ensure_live(&state, session)?;
+        Ok(state.receipts.get(&(session.clone(), key.clone())).cloned())
     }
 
     async fn load_admission_execution(
@@ -479,13 +1397,43 @@ impl Store for MemoryStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        Ok(self.load_execution_record(session, key))
+        self.load_execution_record(session, key)
+            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)
+    }
+    async fn lookup_expired_run_preparation(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        issuance: u64,
+    ) -> Result<
+        Option<crate::session_owner::preparation::ExpiredRunReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.lookup_expired_source(session, run, issuance)
+    }
+    async fn inspect_expired_run_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectExpiredRunPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::ExpiredRunPreparation,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_expired_source(request)
+    }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crate::session_owner::preparation::AdmissionRecoveryPreparation,
+        crate::AdmissionExecutionError,
+    > {
+        self.inspect_admission_source(request)
     }
     async fn claim_unstarted_admission(
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,
     ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
-        self.claim_admission(request)
+        self.claim_admission(&request)
     }
     async fn abandon_run(
         &self,
@@ -496,7 +1444,7 @@ impl Store for MemoryStore {
     }
 
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        self.ownership_fenced(&fence, |_, _| Ok(()))?;
+        self.raw_execution_access(&fence)?;
         Ok(Box::new(MemoryExecution {
             store: self.clone(),
             fence,
@@ -514,13 +1462,7 @@ impl Store for MemoryStore {
     }
 
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
-            .runs
-            .get(id)
-            .cloned())
+        self.raw_run(id)
     }
 
     async fn snapshot(
@@ -567,15 +1509,7 @@ impl Store for MemoryStore {
     }
 
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
-            .runs
-            .values()
-            .filter(|run| !run.status.is_terminal())
-            .cloned()
-            .collect())
+        self.raw_unfinished_runs()
     }
 
     async fn list_unfinished_tool_calls(
@@ -592,7 +1526,7 @@ impl Store for MemoryStore {
                 &call.run_id == run
                     && matches!(
                         call.status,
-                        ToolCallStatus::Pending | ToolCallStatus::Running
+                        ToolCallStatus::Pending | ToolCallStatus::Running | ToolCallStatus::Waiting
                     )
             })
             .cloned()
@@ -603,39 +1537,20 @@ impl Store for MemoryStore {
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
+        let state = self.state.lock().expect("memory store poisoned");
+        admission_journal::verify(&state, run)?;
+        Ok(state
             .admission_executions
             .get(run)
             .map(|record| record.state))
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        self.transact(|state| {
-            let now = self.clock.now();
-            if state
-                .admission_executions
-                .get(id)
-                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-            {
-                return Err(StoreError::AdmissionRecoveryRequired);
-            }
-            let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
-            if run.status.is_terminal() || run.lease_until > now {
-                return Err(StoreError::Conflict);
-            }
-            owner.clone_into(&mut run.owner);
-            run.claim_token = uuid::Uuid::new_v4().to_string();
-            run.lease_until = now + time::Duration::seconds(30);
-            run.updated_at = now;
-            crate::ensure_storable(run)?;
-            Ok(RunFence {
-                run_id: id.clone(),
-                claim_token: run.claim_token.clone(),
-            })
-        })
+        self.claim_legacy_expired_with_proof(
+            id,
+            owner,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
     }
 
     async fn get_extension_state(
@@ -643,10 +1558,9 @@ impl Store for MemoryStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
+        let state = self.state.lock().expect("memory store poisoned");
+        deletion::ensure_live(&state, session)?;
+        Ok(state
             .extension_values
             .get(&(session.clone(), extension_id.to_owned()))
             .cloned()
@@ -660,6 +1574,7 @@ impl Store for MemoryStore {
         message: Message,
     ) -> Result<(), StoreError> {
         self.transact(|state| {
+            deletion::ensure_live(state, session)?;
             if !state.sessions.contains_key(session) {
                 return Err(StoreError::NotFound);
             }
@@ -675,6 +1590,7 @@ impl Store for MemoryStore {
                 message,
                 consumed_by_run: None,
             });
+            bump_public_revision(state, session)?;
             Ok(())
         })
     }
@@ -682,6 +1598,94 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn stage_frontend_call(
+        &self,
+        request: crate::FrontendCallStaging,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::FrontendStagingReceipt, crate::ToolContinuationError> {
+        self.stage_frontend(&request, &authority)
+    }
+
+    async fn suspend_tool_continuation(
+        &self,
+        batch: crate::ToolContinuationSuspension,
+        authority: crate::ToolSuspensionAuthority,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.suspend_tools(&batch, &authority)
+    }
+
+    async fn observe_run_controls(
+        &self,
+        turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crate::RunControlBoundary, crate::RunControlError> {
+        self.control_boundary(turn)
+    }
+
+    async fn start_tool_phase(
+        &self,
+        start: crate::PhaseStart,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.start_phase(&start, authority)
+    }
+
+    async fn suspend_for_approval(
+        &self,
+        batch: crate::ApprovalSuspension,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.suspend_approval(&batch, &authority)
+    }
+
+    async fn conclude_attempt(
+        &self,
+        conclusion: crate::AttemptConclusion,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.conclude_owned_attempt(&conclusion, authority.as_ref())
+    }
+
+    async fn settle_tool_phase(
+        &self,
+        settlement: crate::PhaseSettlement,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.settle_phase(&settlement, authority)
+    }
+
+    async fn mutate_phase(
+        &self,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.change_phase(&request, authority.as_ref())
+    }
+    async fn mutate_attempt(
+        &self,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.change_attempt(&request, authority.as_ref())
+    }
+
+    async fn mutate_public_state(
+        &self,
+        mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.change_public_state(mutation)
+    }
+    async fn mutate_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        if matches!(&authority, crate::PublicSourceAuthority::Invocation(_)) {
+            return Err(crate::PublicStateError::Unsupported);
+        }
+        self.store
+            .write_public_source(mutation, &authority, Some(&self.fence))
+    }
+
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
         self.begin_admission()
     }
@@ -696,6 +1700,13 @@ impl ExecutionStore for MemoryExecution {
             let entry = state.runs.get_mut(&run.id).expect("fenced run exists");
             entry.lease_until = until;
             entry.updated_at = now;
+            for attempt in state
+                .attempts
+                .values_mut()
+                .filter(|a| a.snapshot.run_id == run.id && a.run_token == run.claim_token)
+            {
+                attempt.lease_until = until;
+            }
             Ok(())
         })
     }
@@ -730,6 +1741,7 @@ impl ExecutionStore for MemoryExecution {
                 .snapshot_revisions
                 .entry(run.session_id.clone())
                 .or_default() += 1;
+            bump_public_revision(state, &run.session_id)?;
             Ok(())
         })
     }
@@ -748,12 +1760,22 @@ impl ExecutionStore for MemoryExecution {
             if call.run_id != run.id
                 || call.status != ToolCallStatus::Pending
                 || state.calls.contains_key(&call.id)
+                || state.imported_call_ids.contains(&call.id)
             {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }
+            if frontend::declared(state, run, &call.name)
+                .map_err(|_| StoreError::Validation("invalid frontend origin evidence".into()))?
+            {
+                return Err(StoreError::Validation(
+                    "frontend calls require atomic staging".into(),
+                ));
+            }
             crate::ensure_storable(&call)?;
             insert_event(state, run, pending_event)?;
-            state.call_order.push(call.id.clone());
+            state
+                .call_order
+                .push(run.session_id.clone(), call.id.clone());
             state.calls.insert(call.id.clone(), call);
             Ok(())
         })
@@ -764,23 +1786,11 @@ impl ExecutionStore for MemoryExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
-        self.store.fenced(&self.fence, |state, run| {
-            let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
-            if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-                return Err(StoreError::Conflict);
-            }
-            insert_event(state, run, running_event)?;
-            state
-                .calls
-                .get_mut(id)
-                .expect("validated call exists")
-                .status = ToolCallStatus::Running;
-            *state
-                .snapshot_revisions
-                .entry(run.session_id.clone())
-                .or_default() += 1;
-            Ok(())
-        })
+        self.claim_legacy_with_proof(
+            id,
+            &running_event,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
     }
 
     async fn settle_tool_call(
@@ -791,6 +1801,12 @@ impl ExecutionStore for MemoryExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         self.store.fenced(&self.fence, |state, run| {
+            if frontend::origin(state, run, id).map_err(|_| StoreError::Validation("frontend origin integrity failure".into()))?.is_some() {
+                return Err(StoreError::Conflict);
+            }
+            if state.phases.values().any(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == *id) {
+                return Err(StoreError::Conflict);
+            }
             let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
             if call.run_id != run.id || call.status != ToolCallStatus::Running { return Err(StoreError::Conflict); }
             let status = match result.status {
@@ -828,6 +1844,7 @@ impl ExecutionStore for MemoryExecution {
                 .epoch_id = epoch.id.clone();
             crate::ensure_storable(&epoch)?;
             state.epochs.insert(epoch.id.clone(), epoch);
+            bump_public_revision(state, &run.session_id)?;
             Ok(())
         })
     }
@@ -865,6 +1882,19 @@ impl ExecutionStore for MemoryExecution {
     ) -> Result<(), StoreError> {
         let now = self.store.clock.now();
         self.store.fenced(&self.fence, |state, run| {
+            if state
+                .attempts
+                .values()
+                .any(|record| record.snapshot.run_id == run.id)
+                || state
+                    .phases
+                    .values()
+                    .any(|record| record.snapshot.run_id == run.id)
+                || state.approval_barriers.contains_key(&run.session_id)
+                || state.tool_barriers.contains_key(&run.session_id)
+            {
+                return Err(StoreError::Conflict);
+            }
             insert_event(state, run, event)?;
             let entry = state.runs.get_mut(&run.id).expect("fenced run exists");
             entry.status = RunStatus::Paused;
@@ -885,16 +1915,29 @@ impl ExecutionStore for MemoryExecution {
     ) -> Result<(), StoreError> {
         let now = self.store.clock.now();
         self.store.fenced(&self.fence, |state, run| {
+            if state
+                .attempts
+                .values()
+                .any(|record| record.snapshot.run_id == run.id)
+                || state
+                    .phases
+                    .values()
+                    .any(|record| record.snapshot.run_id == run.id)
+                || state.approval_barriers.contains_key(&run.session_id)
+                || state.tool_barriers.contains_key(&run.session_id)
+            {
+                return Err(StoreError::Conflict);
+            }
             if !status.is_terminal() {
                 return Err(StoreError::Validation(
                     "run settlement must be terminal".into(),
                 ));
             }
             if status == RunStatus::Completed
-                && state
-                    .inbox
-                    .iter()
-                    .any(|row| row.session_id == run.session_id && row.consumed_by_run.is_none())
+                && (run_control::pending(state, run).map_err(crate::run_control::store_error)?
+                    || state.inbox.iter().any(|row| {
+                        row.session_id == run.session_id && row.consumed_by_run.is_none()
+                    }))
             {
                 return Err(StoreError::PendingInput);
             }
@@ -905,6 +1948,8 @@ impl ExecutionStore for MemoryExecution {
             entry.usage = usage;
             entry.updated_at = now;
             crate::ensure_storable(entry)?;
+            let terminal = entry.clone();
+            run_control::finalize(state, &terminal, now)?;
             Ok(())
         })
     }
@@ -958,6 +2003,9 @@ impl ExecutionStore for MemoryExecution {
                     row.consumed_by_run = Some(run.id.clone());
                     claimed.push(row.message.clone());
                 }
+            }
+            if !claimed.is_empty() {
+                bump_public_revision(state, &run.session_id)?;
             }
             Ok(claimed)
         })
@@ -1016,6 +2064,7 @@ mod atomic_claim_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // Full rollback and reclaimed-owner fixture.
     async fn failed_claim_append_rolls_back_and_reclaimed_owner_can_retry() {
         let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
         let clock = Arc::new(ManualClock::new(now));
@@ -1024,6 +2073,9 @@ mod atomic_claim_tests {
         let user = input(&session_id, "first", now);
         let admitted = store
             .admit_run(AdmitRequest {
+                input_envelope: None,
+                additional_messages: Vec::new(),
+                expected_revision: None,
                 session_id: None,
                 workspace_id: "test".into(),
                 directory: "/tmp".into(),
@@ -1131,7 +2183,12 @@ mod snapshot_impl;
 #[async_trait]
 impl crate::abandonment_contract::FixtureStore for MemoryStore {
     async fn seed_run(&self, run: Run) {
-        self.state.lock().unwrap().runs.insert(run.id.clone(), run);
+        let mut state = self.state.lock().unwrap();
+        let previous = state.runs.get(&run.id).cloned();
+        // This helper establishes an intentional fixture state, unlike the
+        // direct private-row corruption probes that must leave audits intact.
+        native_parent::record_run(&mut state, previous.as_ref(), &run).unwrap();
+        state.runs.insert(run.id.clone(), run);
     }
     async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
         self.state
@@ -1169,4 +2226,26 @@ async fn untrusted_terminal_markers_are_never_replay_authority() {
         &clock,
     )
     .await;
+}
+
+#[cfg(test)]
+#[path = "memory/run_control_tests.rs"]
+mod run_control_tests;
+
+#[cfg(test)]
+impl MemoryStore {
+    pub(crate) fn tool_ack_test_records(
+        &self,
+        target: &crate::PhaseTarget,
+    ) -> (crate::attempt::AttemptRecord, crate::phase::PhaseRecord) {
+        let state = self.state.lock().unwrap();
+        (
+            state.attempts.get(&target.attempt.id).unwrap().clone(),
+            state.phases.get(&target.id).unwrap().clone(),
+        )
+    }
+    pub(crate) fn tool_ack_test_forget_inputs(&self) {
+        self.state.lock().unwrap().continuation_inputs =
+            crate::continuation_input::Ledger::default();
+    }
 }

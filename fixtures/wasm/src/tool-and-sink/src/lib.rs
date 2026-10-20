@@ -41,7 +41,7 @@ impl tool_api::Guest for Fixture {
         input_json: String,
         _turn: types::TurnMetadata,
     ) -> Result<String, types::StructuredError> {
-        Ok(input_json)
+        Ok(crabber_guest::json_tool_output(&crabber_guest::serde_json::from_str(&input_json).unwrap()).unwrap())
     }
 }
 

@@ -1,30 +1,59 @@
-use std::process::Command;
-fn main() {
-    // HEAD is resolved by Git for worktrees too. Track the ref and working tree
-    // files so changing commits rebuilds the embedded identity.
-    let reference = Command::new("git")
-        .args(["symbolic-ref", "HEAD"])
-        .output()
-        .unwrap();
-    let reference = String::from_utf8(reference.stdout).unwrap();
-    for argument in ["HEAD", reference.trim()] {
-        let path = Command::new("git")
-            .args(["rev-parse", "--git-path", argument])
-            .output()
-            .unwrap();
-        println!(
-            "cargo:rerun-if-changed={}",
-            String::from_utf8(path.stdout).unwrap().trim()
-        );
-    }
-    println!("cargo:rerun-if-changed=src/main.rs");
+use std::{path::PathBuf, process::Command};
+fn git(root: &std::path::Path, args: &[&str]) -> String {
     let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
+        .arg("-C")
+        .arg(root)
+        .args(args)
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert!(output.status.success(), "Git identity unavailable");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+fn main() {
+    let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let sha = git(&root, &["rev-parse", "HEAD"]);
+    println!("cargo:rustc-env=CRABBER_COMPILED_SHA={sha}");
+    // Worktree HEAD, loose branch refs and packed refs live in different Git dirs.
+    for name in ["HEAD", "packed-refs"] {
+        let path = git(
+            &root,
+            &["rev-parse", "--path-format=absolute", "--git-path", name],
+        );
+        println!("cargo:rerun-if-changed={path}");
+    }
+    let reference = git(&root, &["rev-parse", "--symbolic-full-name", "HEAD"]);
+    if reference.starts_with("refs/") {
+        let path = git(
+            &root,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                &reference,
+            ],
+        );
+        println!("cargo:rerun-if-changed={path}");
+    }
+    // Cargo fingerprints are checkout-specific, but this profile executable is
+    // shared. Another worktree can overwrite it while our fingerprint stays
+    // fresh. Observe the actual output so restoring this checkout refreshes its
+    // stamp and executable rather than running the other checkout's artifact.
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let profile = out
+        .ancestors()
+        .nth(3)
+        .expect("Cargo profile/build/package/out");
+    let executable = if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        "fenced-abandon.exe"
+    } else {
+        "fenced-abandon"
+    };
     println!(
-        "cargo:rustc-env=CRABBER_COMPILED_SHA={}",
-        String::from_utf8(output.stdout).unwrap().trim()
+        "cargo:rerun-if-changed={}",
+        profile.join(executable).display()
     );
+    println!("cargo:rerun-if-changed=build.rs");
 }

@@ -27,7 +27,7 @@ impl Resolver for Unavailable {
 }
 struct NeverTool(Arc<AtomicUsize>);
 #[async_trait]
-impl crabber::ToolExecutor for NeverTool {
+impl crabber::JsonToolExecutor for NeverTool {
     async fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ExtensionError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         panic!("abandonment executed unavailable tool")
@@ -100,9 +100,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let tool = Arc::new(AtomicUsize::new(0));
     let mount = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(Arc::new(Unavailable(counters.clone())))
-        .tool(Arc::new(crabber::ToolDefinition {
+        .shared_tool(Arc::new(crabber::ToolDefinition {
             info: ToolInfo {
                 name: "unavailable-unsafe-tool".into(),
                 description: "never execute".into(),
@@ -112,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             },
             executor: Arc::new(NeverTool(tool.clone())),
         }))
-        .extension(Arc::new(Unmountable(mount.clone())), Scope::Global)
+        .shared_extension(Arc::new(Unmountable(mount.clone())), Scope::Global)
         .config(AgentConfig::new(Selection {
             provider_id: "unavailable".into(),
             model_id: "unavailable".into(),
@@ -161,6 +162,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut worker = OwnerProcess(Command::new("sleep").arg("60").spawn()?);
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "demo".into(),
             directory: ".".into(),

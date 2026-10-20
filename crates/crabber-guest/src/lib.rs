@@ -1,10 +1,20 @@
-//! Rust guest SDK for `crabber:extensions@0.1.0` components.
+//! Rust guest SDK for `crabber:extensions@0.2.0` components.
 //!
 //! Build a guest with `cargo build --target wasm32-wasip2 --release`. The
 //! resulting `.wasm` is a Component Model component.
 
+pub use crabber_core::{CoreError, MediaKind, MediaSource, MessageContent, ToolOutput};
 pub use crabber_guest_macros::generate;
 pub use serde_json;
+
+/// Encode an explicitly JSON-producing tool as literal text in a versioned
+/// completion envelope. JSON shapes never acquire media or runtime authority.
+/// # Errors
+/// Rejects oversized or excessively nested JSON.
+pub fn json_tool_output(value: &serde_json::Value) -> Result<String, CoreError> {
+    Ok(ToolOutput::from_json(value)?.into_envelope().to_string())
+}
+
 pub use wit_bindgen;
 pub use wit_bindgen::rt;
 

@@ -11,11 +11,13 @@ use reqwest::{
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
+mod binding;
 #[cfg(feature = "custom-http")]
 mod client;
 #[cfg(feature = "custom-http")]
 mod custom;
 mod errors;
+pub(crate) mod outbound;
 mod streaming;
 #[cfg(feature = "custom-http")]
 pub use client::{HttpClientConfig, HttpProxyConfig};
@@ -60,6 +62,33 @@ impl Protocol {
             Self::ChatCompletions => "/chat/completions",
         }
     }
+}
+
+/// Media reference interpretation supported by a protocol implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaInputSource {
+    Data,
+    Url,
+    OpaqueFile,
+}
+
+/// A representation supported at specific message or tool-result placements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpMediaSupport {
+    pub kind: crabber_core::MediaKind,
+    pub source: MediaInputSource,
+    pub mime_types: &'static [&'static str],
+    pub message_roles: &'static [crabber_core::Role],
+    pub tool_results: bool,
+}
+
+/// Inspectable outbound support; unsupported representations fail before I/O.
+/// This describes encoding support, not role/artifact authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpInputSupport {
+    pub roles: &'static [crabber_core::Role],
+    pub media: &'static [HttpMediaSupport],
+    pub context_data: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -130,6 +159,21 @@ pub struct HttpAdapter {
 }
 
 impl HttpAdapter {
+    /// Inspect strict encoding support without credentials or network access.
+    #[must_use]
+    pub fn input_support(&self) -> HttpInputSupport {
+        use crabber_core::Role;
+        HttpInputSupport {
+            roles: if self.protocol == Protocol::ChatCompletions {
+                &[Role::System, Role::User, Role::Assistant, Role::Tool]
+            } else {
+                &[Role::User, Role::Assistant, Role::Tool]
+            },
+            media: outbound::media_support(self.protocol),
+            context_data: true,
+        }
+    }
+
     fn new(
         id: impl Into<String>,
         base_url: impl Into<String>,
@@ -382,6 +426,7 @@ impl HttpAdapter {
     }
 
     async fn send(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        let body = outbound::prepare(self, &request)?;
         let url = endpoint_url(&self.base_url, self.protocol)?;
         #[cfg(feature = "custom-http")]
         let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
@@ -398,13 +443,6 @@ impl HttpAdapter {
         if let Some(credential) = &custom_credential {
             attempt_credentials.push(credential.clone());
         }
-        let body = match self.protocol {
-            Protocol::Responses => {
-                crate::responses::body(&request, self.uses_codex_responses_mode())
-            }
-            Protocol::Messages => crate::messages::body(&request),
-            Protocol::ChatCompletions => crate::chat::body(&request, self.chat_token_mode),
-        };
         #[allow(unused_mut)]
         let mut response = self.post(&url, headers.clone(), &body).await?;
         #[cfg(feature = "custom-http")]
@@ -508,6 +546,13 @@ impl Streamer for HttpAdapter {
 }
 #[async_trait]
 impl ProviderAdapter for HttpAdapter {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crate::ProviderBindingError> {
+        self.builtin_binding(selection)
+    }
+
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: self.id.clone(),
@@ -600,6 +645,16 @@ impl HttpResolver {
 }
 #[async_trait]
 impl Resolver for HttpResolver {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crate::ProviderBindingError> {
+        self.adapters
+            .get(&selection.provider_id)
+            .ok_or(crate::ProviderBindingError::Unavailable)?
+            .binding_descriptor(selection)
+    }
+
     async fn resolve(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         let adapter = self
             .adapters

@@ -8,6 +8,14 @@ struct LedgerProvider {
 }
 #[async_trait]
 impl Resolver for LedgerProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        self.fake.binding_descriptor(selection)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(self.clone()))
     }
@@ -25,7 +33,7 @@ impl Streamer for LedgerProvider {
 }
 struct LedgerTool(PathBuf, bool);
 #[async_trait]
-impl crabber::ToolExecutor for LedgerTool {
+impl crabber::JsonToolExecutor for LedgerTool {
     async fn execute(
         &self,
         _: serde_json::Value,
@@ -73,6 +81,7 @@ pub(super) fn agent(
         scripts
     });
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .observer(capture)
         .provider(Arc::new(LedgerProvider {
@@ -81,10 +90,11 @@ pub(super) fn agent(
             gate,
         }))
         .config(config())
+        .extension_factory(Arc::new(LedgerFactory(dir.to_owned())))
         .policy(Arc::new(crabber::StaticPolicy::new(
             crabber::PermissionDecision::Allow,
         )))
-        .tool(Arc::new(crabber::ToolDefinition {
+        .shared_tool(Arc::new(crabber::ToolDefinition {
             info: crabber::core::ToolInfo {
                 name: "effect".into(),
                 description: "controlled test effect".into(),
@@ -96,4 +106,47 @@ pub(super) fn agent(
         }))
         .build()
         .unwrap()
+}
+
+struct LedgerFactory(PathBuf);
+struct EmptyPreparation;
+#[async_trait]
+impl crabber::extension::ExtensionFactory for LedgerFactory {
+    fn identity(&self) -> crabber::extension::ComponentIdentity {
+        crabber::extension::ComponentIdentity {
+            id: "process-preparation".into(),
+            version: "1".into(),
+        }
+    }
+    fn config_hash(&self) -> String {
+        "v1".into()
+    }
+    fn scope(&self) -> crabber::extension::FactoryScope {
+        crabber::extension::FactoryScope::Session
+    }
+    async fn create(
+        &self,
+        _: crabber::extension::FactoryContext,
+    ) -> Result<Arc<dyn crabber::extension::Extension>, crabber::ExtensionError> {
+        append(&self.0.join("ledger"), "factory");
+        Ok(Arc::new(EmptyPreparation))
+    }
+}
+#[async_trait]
+impl crabber::extension::Extension for EmptyPreparation {
+    fn id(&self) -> &'static str {
+        "process-empty"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        "v1".into()
+    }
+    async fn install(
+        &self,
+        _: &mut crabber::extension::Registrar,
+    ) -> Result<(), crabber::ExtensionError> {
+        Ok(())
+    }
 }

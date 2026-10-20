@@ -1,9 +1,9 @@
 //! Credential-free public host adoption; shared with the external consumer.
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, EventRecord, ExtensionError, MonotonicClock, Observer,
-    OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, TerminalReason, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, EventKind, EventRecord, ExtensionError, JsonToolExecutor, MonotonicClock,
+    Observer, OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
+    StreamDelta, TerminalReason, ToolDefinition,
     core::{ToolCallId, ToolInfo},
     obs::{DatadogConfig, DatadogObserver, MetricDimensions, WorkerStatus},
     providers::{DeltaStream, ModelRequest, ProviderError, ProviderErrorKind, Resolver, Streamer},
@@ -77,6 +77,25 @@ fn error() -> ProviderError {
 }
 #[async_trait]
 impl Resolver for Provider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        crabber::core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "Provider-fixture",
+            "1",
+            crabber::core::InputFingerprint::new("c".repeat(64)).unwrap(),
+            crabber::core::ProviderBindingLimits {
+                context_tokens: None,
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| crabber::providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(self.clone()))
     }
@@ -110,7 +129,7 @@ struct Echo {
     fail: bool,
 }
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         self.clock.0.fetch_add(15, Ordering::SeqCst);
         if self.fail {
@@ -171,6 +190,7 @@ fn agent(
 ) -> Agent {
     let clock = provider.clock.clone();
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider))
         .monotonic_clock(clock.clone())
@@ -178,7 +198,7 @@ fn agent(
         .observer(capture)
         .observer(second)
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "echo".into(),
                 description: "native fixture".into(),
@@ -553,6 +573,7 @@ async fn lease() -> Vec<OperationalObservation> {
     );
     let entered = provider.entered.clone();
     let runtime = Orchestrator::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .clock(wall.clone())
         .monotonic_clock(provider.clock.clone())
@@ -564,6 +585,9 @@ async fn lease() -> Vec<OperationalObservation> {
         .unwrap();
     let handle = runtime
         .start(Request {
+            selection_policy: crabber::session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
+            input_envelope: None,
             session_id: None,
             workspace_id: "fixture".into(),
             directory: ".".into(),
@@ -859,6 +883,7 @@ async fn outage_overflow() {
     let capture = Arc::new(Capture::default());
     let clock = Arc::new(Clock::default());
     let host = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .monotonic_clock(clock.clone())
         .provider(Arc::new(Provider::new(clock, vec![text()])))
@@ -1107,6 +1132,7 @@ async fn cardinality() {
             }
         }
         let host = Agent::builder()
+            .behavior_version("example-host.v1")
             .memory()
             .provider(Arc::new(Provider::new(clock.clone(), vec![script, text()])))
             .monotonic_clock(clock.clone())
@@ -1117,7 +1143,7 @@ async fn cardinality() {
             .observer(capture.clone())
             .observer(Arc::new(export.clone()))
             .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-            .tool(Arc::new(ToolDefinition {
+            .shared_tool(Arc::new(ToolDefinition {
                 info: ToolInfo {
                     name: name.clone(),
                     description: "native cardinality fixture".into(),

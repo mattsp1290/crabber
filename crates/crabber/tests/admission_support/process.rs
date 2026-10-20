@@ -24,6 +24,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Migrations take DDL locks across all tables. Keep separate PG journeys from
+// rerunning them while another journey owns live writers on this shared DB.
+// Each journey still exercises its own independent processes/connections.
+#[cfg(feature = "postgres")]
+static POSTGRES_JOURNEY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Default)]
 struct ContextCapture(Mutex<Vec<(EventRecord, Option<TraceContext>)>>);
 impl Observer for ContextCapture {
@@ -73,7 +79,10 @@ use fault_store::FaultStore;
 mod provider;
 use provider::agent;
 
+mod backend_unavailable;
 mod child;
+mod host_outbox;
+mod reconcile_started;
 mod recovery;
 
 struct ChildGuard(Child);
@@ -223,6 +232,7 @@ async fn evidence(
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_public_facade_fault_restart_journey() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
         assert!(
             std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
@@ -244,24 +254,33 @@ async fn sqlite_public_facade_fault_restart_journey() {
 }
 
 async fn fault_restart_journey(kind: BackendKind) {
-    // Failed before admission: no session/receipt, exact retry can start once.
+    // A failed native commit preserves the original preparation blocker. A cold
+    // retry gets correlation metadata and cannot run factories a second time.
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     finish(spawn(&backend, &dir.0, "precommit")).await;
     finish(spawn(&backend, &dir.0, "absent")).await;
-    finish(spawn(&backend, &dir.0, "normal")).await;
-    finish(spawn(&backend, &dir.0, "reconcile")).await;
-    evidence(&backend, &dir.0, &session, 2, 1).await;
+    finish(spawn(&backend, &dir.0, "preparation-blocked")).await;
+    assert!(
+        backend
+            .connect()
+            .await
+            .lookup_admission(&session, &options().key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count(&dir.0.join("ledger"), "factory"), 1);
     // Lookup can be absent while the original call is still about to commit.
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     let delayed = spawn(&backend, &dir.0, "delayed");
     wait(&dir.0.join("waiting")).await;
     finish(spawn(&backend, &dir.0, "absent")).await;
+    finish(spawn(&backend, &dir.0, "preparation-inflight")).await;
     fs::write(dir.0.join("release"), "go").unwrap();
-    let retry = spawn(&backend, &dir.0, "normal");
     finish(delayed).await;
-    finish(retry).await;
+    finish(spawn(&backend, &dir.0, "normal")).await;
     evidence(&backend, &dir.0, &session, 2, 1).await;
     // Simultaneous fresh independent-process starts, with the same retained key.
     let (dir, session) = handoff();
@@ -275,14 +294,28 @@ async fn fault_restart_journey(kind: BackendKind) {
     finish(second).await;
     finish(spawn(&backend, &dir.0, "reconcile")).await;
     evidence(&backend, &dir.0, &session, 2, 1).await;
-    // Kill a genuine OS worker after its running tool effect is durable. Recovery
-    // interrupts that running call rather than repeating an ambiguous effect.
+    // Kill a genuine OS worker after its running effect is durable. Generic
+    // resume must refuse Started work; explicit host reconciliation records
+    // stopped ownership, joined in-process resources and a failed tool result.
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     let mut lost = spawn(&backend, &dir.0, "tool-loss");
     wait(&dir.0.join("tool-running")).await;
+    let pid = lost.0.id();
     lost.0.kill().unwrap();
-    lost.0.wait().unwrap();
+    let status = lost.0.wait().unwrap();
+    assert!(!status.success());
+    let receipt: AdmissionReceipt =
+        serde_json::from_slice(&fs::read(dir.0.join("committed.json")).unwrap()).unwrap();
+    fs::write(
+        dir.0.join("owner-stop-proof"),
+        serde_json::to_vec(&serde_json::json!({
+            "pid":pid,"run_id":receipt.run_id,"joined":true,"status":status.to_string()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    // Expiry alone still cannot settle an externally ambiguous effect.
     // The first heartbeat renews the live execution lease to 30 seconds.
     tokio::time::sleep(Duration::from_secs(31)).await;
     finish(spawn(&backend, &dir.0, "recover")).await;

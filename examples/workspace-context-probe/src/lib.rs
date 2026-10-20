@@ -7,8 +7,8 @@
 
 use async_trait::async_trait;
 use crabber::{
-    AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    AgentBuilder, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ToolCallId, ToolInfo},
     extension::{
         ContextAssemble, Extension, Point, Registrar, Scope, ToolContext, WorkspaceContext,
@@ -79,7 +79,7 @@ struct WorkspaceTool {
     name: &'static str,
 }
 #[async_trait]
-impl ToolExecutor for WorkspaceTool {
+impl JsonToolExecutor for WorkspaceTool {
     async fn execute(&self, _arguments: Value) -> Result<Value, ExtensionError> {
         Err(ExtensionError::Tool("tool context required".into()))
     }
@@ -255,6 +255,8 @@ pub fn host(
 
 /// Mounts the probe using the caller's permission policy.
 #[must_use]
+/// # Panics
+/// Panics if the fixed fixture fingerprint is invalid.
 pub fn host_with_policy(
     observations: &Arc<Observations>,
     scripts: Vec<Vec<StreamDelta>>,
@@ -262,10 +264,11 @@ pub fn host_with_policy(
     policy: Arc<dyn PermissionPolicy>,
 ) -> AgentBuilder {
     crabber::Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(config)
         .policy(policy)
-        .extension(
+        .shared_extension(
             Arc::new(ProbeExtension(Arc::clone(observations))),
             Scope::Global,
         )

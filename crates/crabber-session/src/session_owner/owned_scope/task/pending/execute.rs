@@ -1,0 +1,236 @@
+#[path = "execute/continuation.rs"]
+mod continuation;
+use super::core::execute::{Fresh, Prepared, Registration, administrative};
+use super::core::{Control, Notice, Replay};
+use super::{Error, PendingSuccessorCompletion, PendingSuccessorError, PendingSuccessorReplay};
+use crate::{
+    Store,
+    session_owner::{
+        driver::{NativeClaimLocator, RegisterSuccessorExecutionDriver},
+        preparation::{
+            AdmissionRecoveryOutcome, ExpiredRunOutcome, JoinedPreparation, PreparationCompletion,
+            PreparationPurpose, PreparedOperation,
+        },
+    },
+};
+use crabber_core::{RunId, SessionContext};
+pub(super) struct Source {
+    continuation: Option<continuation::Source>,
+    run: RunId,
+    claim: Option<NativeClaimLocator>,
+    admission: bool,
+    key: Option<crabber_core::AdmissionKey>,
+}
+impl Source {
+    pub(super) fn new(
+        context: &SessionContext,
+        original: &JoinedPreparation,
+    ) -> Result<Self, Error> {
+        original
+            .verify_original_intent()
+            .map_err(|_| Error::InvalidRequest)?;
+        let reservation = original.observed_grant().original_reservation();
+        let binding = &reservation.owner.binding;
+        if original.observed_registration().is_none() || reservation.resource_contract.is_none() {
+            return Err(Error::Unsupported);
+        }
+        if context.session_id() != &binding.session_id
+            || context.workspace_id() != binding.workspace_id
+            || context.directory() != binding.directory
+        {
+            return Err(Error::IdentityMismatch);
+        }
+        if let Some(continuation) = continuation::Source::new(original)? {
+            return Ok(Self {
+                run: continuation.run.clone(),
+                continuation: Some(continuation),
+                claim: None,
+                admission: false,
+                key: None,
+            });
+        }
+        let (run, issuance, admission) = match original.observed_operation() {
+            PreparedOperation::AdmissionRecovery(value) => (
+                &value.source.request().expected_fence.run_id,
+                value.source.expected_issuance(),
+                true,
+            ),
+            PreparedOperation::ExpiredRunResume(value) => (
+                &value.source.request().expected_fence.run_id,
+                value.source.expected_issuance(),
+                false,
+            ),
+            _ => return Err(Error::Unsupported),
+        };
+        if !matches!(&reservation.purpose, PreparationPurpose::ExistingRun { run_id, .. } if run_id == run)
+        {
+            return Err(Error::SemanticConflict);
+        }
+        let claim = NativeClaimLocator {
+            issuance: issuance.checked_add(1).ok_or(Error::InvalidRequest)?,
+            root_join_id: reservation.reconciliation()?.join_id,
+        };
+        claim.validate()?;
+        Ok(Self {
+            run: run.clone(),
+            claim: Some(claim),
+            continuation: None,
+            admission,
+            key: match original.observed_operation() {
+                PreparedOperation::AdmissionRecovery(value) => {
+                    Some(value.source.request().key.clone())
+                }
+                _ => None,
+            },
+        })
+    }
+    fn original_claim(&self) -> Result<&NativeClaimLocator, Error> {
+        self.claim.as_ref().ok_or(Error::Unsupported)
+    }
+    pub(super) fn origin(&self) -> crate::session_owner::driver::SuccessorExecutionDriverOrigin {
+        self.continuation.as_ref().map_or_else(
+            || {
+                if self.admission {
+                    crate::session_owner::driver::SuccessorExecutionDriverOrigin::AdmissionRecovery
+                } else {
+                    crate::session_owner::driver::SuccessorExecutionDriverOrigin::ExpiredRun
+                }
+            },
+            |s| s.origin,
+        )
+    }
+    fn request(
+        &self,
+        context: SessionContext,
+        completion: &PreparationCompletion,
+    ) -> Result<RegisterSuccessorExecutionDriver, Error> {
+        let fence = match completion {
+            PreparationCompletion::AdmissionRecovery(AdmissionRecoveryOutcome::Claimed(value))
+                if self.admission =>
+            {
+                &value.fence
+            }
+            PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed { receipt, fence })
+                if !self.admission
+                    && receipt.issuance == self.original_claim()?.issuance
+                    && receipt.operation_id == self.original_claim()?.root_join_id
+                    && receipt.run_id == self.run
+                    && &receipt.session_id == context.session_id() =>
+            {
+                fence
+            }
+            _ => return Err(Error::UnknownStoreOutcome),
+        };
+        crate::session_owner::identifier(&fence.claim_token, 512, false)?;
+        if fence.run_id != self.run {
+            return Err(Error::SemanticConflict);
+        }
+        Ok(RegisterSuccessorExecutionDriver {
+            context,
+            fence: fence.clone(),
+            claim: self.original_claim()?.clone(),
+        })
+    }
+    async fn expected_receipt(
+        &self,
+        store: &dyn Store,
+        context: &SessionContext,
+        control: &Control,
+    ) -> Result<Option<crabber_core::AdmissionReceipt>, PendingSuccessorError> {
+        if let Some(key) = &self.key {
+            let Some(_call) = control.enter_call()? else {
+                return Ok(None);
+            };
+            let receipt = administrative(async {
+                store
+                    .lookup_admission(context.session_id(), key)
+                    .await
+                    .map_err(crate::session_owner::preparation::PreparationCommitError::from)
+            })
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+            if receipt.run_id != self.run
+                || &receipt.session_id != context.session_id()
+                || crate::snapshot::encoded_bytes(&receipt, 8192).is_none()
+            {
+                return Err(Error::UnknownStoreOutcome.into());
+            }
+            Ok(Some(receipt))
+        } else {
+            Ok(None)
+        }
+    }
+    fn replay(
+        &self,
+        context: &SessionContext,
+        completion: &PreparationCompletion,
+        expected_receipt: Option<&crabber_core::AdmissionReceipt>,
+    ) -> Result<PendingSuccessorReplay, Error> {
+        Ok(match completion {
+            PreparationCompletion::AdmissionRecovery(AdmissionRecoveryOutcome::Replayed(
+                receipt,
+            )) if self.admission
+                && Some(receipt) == expected_receipt
+                && receipt.run_id == self.run
+                && &receipt.session_id == context.session_id() =>
+            {
+                PendingSuccessorReplay::Admission(receipt.clone())
+            }
+            PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Replayed(receipt))
+                if !self.admission
+                    && receipt.run_id == self.run
+                    && &receipt.session_id == context.session_id()
+                    && receipt.issuance == self.original_claim()?.issuance
+                    && receipt.operation_id == self.original_claim()?.root_join_id =>
+            {
+                PendingSuccessorReplay::Expired(receipt.clone())
+            }
+            _ => return Err(Error::SemanticConflict),
+        })
+    }
+}
+
+pub(super) async fn prepare(
+    store: &dyn Store,
+    context: SessionContext,
+    original: JoinedPreparation,
+    mut source: Source,
+    control: &Control,
+) -> Result<Prepared, PendingSuccessorError> {
+    if control.stopped() {
+        return Ok(Prepared::Stopped);
+    }
+    if let Some(continuation) = source.continuation.take() {
+        return continuation::prepare(store, context, original, continuation, control).await;
+    }
+    let expected_receipt = source.expected_receipt(store, &context, control).await?;
+    // These futures stay inside the same actual main; ordinary stop never selects
+    // them away, aborts them or reconstructs their private result from replay.
+    let completion = {
+        let Some(_call) = control.enter_call()? else {
+            return Ok(Prepared::Stopped);
+        };
+        administrative(async { store.complete_preparation(original).await }).await?
+    };
+    if completion.is_replayed() {
+        let replay = source.replay(&context, &completion, expected_receipt.as_ref())?;
+        return Ok(Prepared::Replayed(Replay::Successor(replay)));
+    }
+    let request = source.request(context, &completion)?;
+    let metadata = match &completion {
+        PreparationCompletion::AdmissionRecovery(AdmissionRecoveryOutcome::Claimed(value))
+            if Some(&value.record.receipt) == expected_receipt.as_ref() =>
+        {
+            PendingSuccessorReplay::Admission(value.record.receipt.clone())
+        }
+        PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed { receipt, .. }) => {
+            PendingSuccessorReplay::Expired(receipt.clone())
+        }
+        _ => return Err(Error::SemanticConflict.into()),
+    };
+    Ok(Prepared::Fresh(Box::new(Fresh {
+        registration: Registration::Successor(request),
+        notice: Notice::Successor(PendingSuccessorCompletion::Fresh(metadata)),
+        completion,
+    })))
+}

@@ -2,7 +2,7 @@
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExtensionError, FakeProvider,
     InputFingerprint, RuntimeError, Selection, SessionId, StreamDelta, ToolDefinition,
-    ToolExecutor,
+    JsonToolExecutor,
     core::{CoreError, ToolInfo},
     extension::{Extension, Registrar, Scope},
     session::MemoryStore,
@@ -18,7 +18,7 @@ const REORDERED_CONFIG: &str = r#"{"steps":[{"y":2,"x":1}],"nested":{"b":2,"a":1
 
 struct UnusedTool;
 #[async_trait::async_trait]
-impl ToolExecutor for UnusedTool {
+impl JsonToolExecutor for UnusedTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         panic!("text-only receipt regression must not execute tools")
     }
@@ -37,7 +37,13 @@ impl Extension for SchemaExtension {
         "1"
     }
     fn config_hash(&self) -> String {
-        self.config.clone()
+        // Schema is an input to installation and must be part of the pure
+        // declaration. Receipt replay deliberately does not install extensions.
+        // Keep the full schema assertions below, including ordered enum arrays.
+        serde_json::json!({
+            "configuration": serde_json::from_str::<Value>(&self.config).unwrap(),
+            "tools": [&self.tool.info],
+        }).to_string()
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         registrar.tool(self.tool.clone());
@@ -70,6 +76,7 @@ fn agent(
         executor: Arc::new(UnusedTool),
     });
     let mut builder = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider)
         .config(AgentConfig::new(Selection {
@@ -77,7 +84,7 @@ fn agent(
             model_id: "scripted".into(),
         }));
     builder = if let Some(config) = registry_config {
-        builder.extension(
+        builder.shared_extension(
             Arc::new(SchemaExtension {
                 tool,
                 config: config.into(),
@@ -85,7 +92,7 @@ fn agent(
             Scope::Global,
         )
     } else {
-        builder.tool(tool)
+        builder.shared_tool(tool)
     };
     Ok(builder.build()?)
 }

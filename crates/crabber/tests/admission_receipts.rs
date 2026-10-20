@@ -23,6 +23,7 @@ fn config() -> AgentConfig {
 }
 fn build(store: Arc<MemoryStore>, provider: Arc<FakeProvider>, config: AgentConfig) -> Agent {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider)
         .config(config)
@@ -50,16 +51,25 @@ async fn concurrent_and_terminal_retries_execute_once() {
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
-            agent
-                .prompt_keyed(session, "hello", options())
-                .await
-                .unwrap()
+            agent.prompt_keyed(session, "hello", options()).await
         }));
     }
     let mut receipt = None;
     let mut handle = None;
+    let mut pending = Vec::new();
     for task in tasks {
-        let outcome = task.await.unwrap();
+        let outcome = match task.await.unwrap() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                assert!(matches!(
+                    error.operation_error(),
+                    RuntimeError::PreparationRecoveryRequired
+                        | RuntimeError::Store(CoreError::AdmissionRecoveryRequired)
+                ));
+                pending.push(error.preparation_reconciliation().unwrap().clone());
+                continue;
+            }
+        };
         if let Some(expected) = &receipt {
             assert_eq!(outcome.receipt(), expected);
         }
@@ -73,6 +83,22 @@ async fn concurrent_and_terminal_retries_execute_once() {
         }
     }
     let result = handle.unwrap().done().await.unwrap();
+    // The host reconciles pending observations after the winning owned worker;
+    // none of those metadata responses granted another preparation or worker.
+    for original in pending {
+        assert_eq!(
+            agent
+                .lookup_preparation_operation(
+                    &session,
+                    &crabber::session::session_owner::preparation::PreparationKey::Admission(
+                        options().key
+                    )
+                )
+                .await
+                .unwrap(),
+            Some(original)
+        );
+    }
     let replay = agent
         .prompt_keyed(session.clone(), "hello", options())
         .await
@@ -133,6 +159,7 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
             _ => {}
         }
         let mut builder = Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store.clone())
             .provider(provider.clone())
             .config(config);
@@ -152,7 +179,7 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
                 }));
             }
             10 => {
-                builder = builder.tool(Arc::new(crabber::ToolDefinition {
+                builder = builder.shared_tool(Arc::new(crabber::ToolDefinition {
                     info: crabber::core::ToolInfo {
                         name: "new-tool".into(),
                         description: "new".into(),
@@ -164,7 +191,7 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
                 }));
             }
             11 => {
-                builder = builder.extension(
+                builder = builder.shared_extension(
                     Arc::new(VersionedExtension),
                     crabber::extension::Scope::Global,
                 );
@@ -260,7 +287,7 @@ fn metadata_validation_and_redaction() {
 
 struct UnusedTool;
 #[async_trait::async_trait]
-impl crabber::ToolExecutor for UnusedTool {
+impl crabber::JsonToolExecutor for UnusedTool {
     async fn execute(
         &self,
         _: serde_json::Value,

@@ -8,6 +8,224 @@ pub(super) struct FaultStore {
 }
 #[async_trait]
 impl Store for FaultStore {
+    fn supports_preparation_protocol(&self) -> bool {
+        self.inner.supports_preparation_protocol()
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.reserve_preparation(request).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.mutate_session_owner(request, authority).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        mut joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        if self.mode == "precommit" {
+            return Err(StoreError::Validation("injected before commit".into()).into());
+        }
+        if self.mode == "delayed" {
+            fs::write(self.dir.join("waiting"), "ready").unwrap();
+            wait(&self.dir.join("release")).await;
+        }
+        if self.mode == "commit-loss" && !self.dir.join("text-only").exists() {
+            joined.set_admission_lease(Duration::from_millis(20));
+        }
+        if self.dir.join("short-admission-lease").exists() {
+            joined.set_admission_lease(Duration::from_secs(1));
+        }
+        let completed = self.inner.complete_preparation(joined).await?;
+        if matches!(
+            &completed,
+            crabber_session::session_owner::preparation::PreparationCompletion::AdmissionRecovery(
+                crabber_session::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(_)
+            )
+        ) {
+            if self.mode == "unstarted-claim-loss" {
+                return Err(crabber_session::AdmissionExecutionError::UnknownStoreFailure.into());
+            }
+            if self.mode == "unstarted-before-begin" {
+                fs::write(self.dir.join("claimed"), "ready").unwrap();
+                wait(&self.dir.join("claim-release")).await;
+            }
+        }
+
+        if let crabber_session::session_owner::preparation::PreparationCompletion::Keyed(outcome) =
+            &completed
+        {
+            let receipt = match outcome {
+                KeyedAdmitOutcome::Started { receipt, .. }
+                | KeyedAdmitOutcome::Replayed(receipt) => receipt,
+            };
+            if matches!(outcome, KeyedAdmitOutcome::Started { .. }) {
+                fs::write(
+                    self.dir.join("committed.json"),
+                    serde_json::to_vec(receipt).unwrap(),
+                )
+                .unwrap();
+            }
+            if self.mode == "commit-loss" && matches!(outcome, KeyedAdmitOutcome::Started { .. }) {
+                assert_eq!(
+                    self.inner
+                        .lookup_admission(&receipt.session_id, &options().key)
+                        .await?,
+                    Some(receipt.clone())
+                );
+                let record = self
+                    .inner
+                    .load_admission_execution(&receipt.session_id, &options().key)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    record.state,
+                    crabber_session::AdmissionExecutionState::Unstarted
+                );
+                if !self.dir.join("text-only").exists() {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                return Err(StoreError::Validation(self.failure.into()).into());
+            }
+        }
+        Ok(completed)
+    }
+
+    fn supports_owned_attempts(&self) -> bool {
+        self.inner.supports_owned_attempts()
+    }
+    fn supports_owned_tool_phases(&self) -> bool {
+        self.inner.supports_owned_tool_phases()
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        self.inner.supports_pre_effect_approvals()
+    }
+    async fn list_tool_phases(
+        &self,
+        request: crabber::session::PhasePageRequest,
+    ) -> Result<crabber::session::PhasePage, crabber::session::PhaseError> {
+        self.inner.list_tool_phases(request).await
+    }
+    async fn mark_phase_uncertain(
+        &self,
+        request: crabber::session::PhaseUncertainty,
+    ) -> Result<crabber::session::PhaseControlOutcome, crabber::session::PhaseError> {
+        self.inner.mark_phase_uncertain(request).await
+    }
+    async fn record_phase_cleanup(
+        &self,
+        request: crabber::session::PhaseCleanup,
+    ) -> Result<crabber::session::PhaseControlOutcome, crabber::session::PhaseError> {
+        self.inner.record_phase_cleanup(request).await
+    }
+    async fn tool_phase(
+        &self,
+        run: &crabber::core::RunId,
+        id: &crabber::core::PhaseId,
+    ) -> Result<crabber::session::VersionedPhase, crabber::session::PhaseError> {
+        self.inner.tool_phase(run, id).await
+    }
+    async fn resolve_uncertain_phase(
+        &self,
+        resolution: crabber::session::PhaseResolution,
+    ) -> Result<crabber::session::PhaseResolutionOutcome, crabber::session::PhaseError> {
+        self.inner.resolve_uncertain_phase(resolution).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::PhaseReceipt>, crabber::session::PhaseError> {
+        self.inner.lookup_phase_mutation(session, id).await
+    }
+    async fn approval_snapshot(
+        &self,
+        session: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+    ) -> Result<Option<crabber::session::ApprovalSnapshot>, crabber::session::ApprovalError> {
+        self.inner.approval_snapshot(session, run).await
+    }
+    async fn original_approval_plan(
+        &self,
+        selected: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+        target: &crabber::session::ContinuationTarget,
+    ) -> Result<crabber::core::InputFingerprint, crabber::session::ApprovalError> {
+        self.inner
+            .original_approval_plan(selected, run, target)
+            .await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::ApprovalReceipt>, crabber::session::ApprovalError> {
+        self.inner.lookup_approval(session, id).await
+    }
+    async fn answer_approval(
+        &self,
+        answer: crabber::session::ApprovalAnswer,
+    ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
+        self.inner.answer_approval(answer).await
+    }
+    async fn terminate_approval(
+        &self,
+        request: crabber_session::ApprovalTermination,
+    ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
+        self.inner.terminate_approval(request).await
+    }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crabber_session::ApprovalContinuationRecovery,
+    ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
+        self.inner.reclaim_approval_continuation(request).await
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crabber::session::ApprovalContinuationClaim,
+    ) -> Result<crabber::session::ApprovalClaimOutcome, crabber::session::ApprovalError> {
+        self.inner.claim_approval_continuation(claim).await
+    }
+
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.inner.latest_execution_attempt(run).await
+    }
+
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber::core::SessionRevision, StoreError> {
+        self.inner.session_revision(session).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.inner.admit_run(request).await
     }
@@ -70,15 +288,99 @@ impl Store for FaultStore {
         }
         Ok(outcome)
     }
+    async fn admit_bound_run(
+        &self,
+        request: crabber_session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.inner.admit_bound_run(request).await
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        mut request: crabber_session::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        if self.mode == "precommit" {
+            return Err(StoreError::Validation("injected before commit".into()));
+        }
+        if self.mode == "delayed" {
+            fs::write(self.dir.join("waiting"), "ready").unwrap();
+            wait(&self.dir.join("release")).await;
+        }
+        if self.mode == "commit-loss" && !self.dir.join("text-only").exists() {
+            // The host never sees the successful Store outcome or its fence.
+            request.keyed.request.lease = Duration::from_millis(20);
+        }
+        if self.dir.join("short-admission-lease").exists() {
+            request.keyed.request.lease = Duration::from_secs(1);
+        }
+        let outcome = self.inner.admit_bound_keyed_run(request).await?;
+        let receipt = match &outcome {
+            KeyedAdmitOutcome::Started { receipt, .. } | KeyedAdmitOutcome::Replayed(receipt) => {
+                receipt
+            }
+        };
+        if let KeyedAdmitOutcome::Started { .. } = &outcome {
+            fs::write(
+                self.dir.join("committed.json"),
+                serde_json::to_vec(receipt).unwrap(),
+            )
+            .unwrap();
+        }
+        if self.mode == "commit-loss" {
+            assert_eq!(
+                self.inner
+                    .lookup_admission(&receipt.session_id, &options().key)
+                    .await?,
+                Some(receipt.clone())
+            );
+            assert!(self.inner.get_run(&receipt.run_id).await?.is_some());
+            let record = self
+                .inner
+                .load_admission_execution(&receipt.session_id, &options().key)
+                .await
+                .expect("execution evidence must commit atomically")
+                .unwrap();
+            assert_eq!(record.receipt, *receipt);
+            assert_eq!(
+                record.state,
+                crabber_session::AdmissionExecutionState::Unstarted
+            );
+            // Let this abandoned owner's positive lease expire before fresh recovery.
+            if !self.dir.join("text-only").exists() {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            // Same sanitized error category as a real backend commit acknowledgement loss.
+            return Err(StoreError::Validation(self.failure.into()));
+        }
+        Ok(outcome)
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::RetainedExecutionBinding>, StoreError> {
+        self.inner.execution_binding(session, run).await
+    }
     async fn load_admission_execution(
         &self,
         session: &SessionId,
-        key: &crabber_core::AdmissionKey,
+        key: &crabber::core::AdmissionKey,
     ) -> Result<
         Option<crabber_session::AdmissionExecutionRecord>,
         crabber_session::AdmissionExecutionError,
     > {
         self.inner.load_admission_execution(session, key).await
+    }
+    async fn inspect_admission_recovery(
+        &self,
+        mut request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        if self.mode.starts_with("unstarted-") {
+            request.lease = Duration::from_secs(3);
+        }
+        self.inner.inspect_admission_recovery(request).await
     }
     async fn claim_unstarted_admission(
         &self,
@@ -182,6 +484,50 @@ struct FaultExecution {
 }
 #[async_trait]
 impl ExecutionStore for FaultExecution {
+    async fn mutate_phase(
+        &self,
+        request: crabber::session::PhaseMutation,
+        authority: Option<crabber::session::PhaseWriteAuthority>,
+    ) -> Result<crabber::session::PhaseMutationOutcome, crabber::session::PhaseError> {
+        self.inner.mutate_phase(request, authority).await
+    }
+    async fn start_tool_phase(
+        &self,
+        start: crabber::session::PhaseStart,
+        authority: Option<crabber::session::PhaseAuthority>,
+    ) -> Result<crabber::session::PhaseMutationOutcome, crabber::session::PhaseError> {
+        self.inner.start_tool_phase(start, authority).await
+    }
+    async fn settle_tool_phase(
+        &self,
+        settlement: crabber::session::PhaseSettlement,
+        authority: Option<crabber::session::PhaseAuthority>,
+    ) -> Result<crabber::session::PhaseMutationOutcome, crabber::session::PhaseError> {
+        self.inner.settle_tool_phase(settlement, authority).await
+    }
+    async fn suspend_for_approval(
+        &self,
+        batch: crabber::session::ApprovalSuspension,
+        authority: crabber::session::AttemptAuthority,
+    ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
+        self.inner.suspend_for_approval(batch, authority).await
+    }
+
+    async fn mutate_attempt(
+        &self,
+        request: crabber_session::AttemptMutation,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        self.inner.mutate_attempt(request, authority).await
+    }
+    async fn conclude_attempt(
+        &self,
+        conclusion: crabber_session::AttemptConclusion,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        self.inner.conclude_attempt(conclusion, authority).await
+    }
+
     async fn renew_lease(&self, until: time::OffsetDateTime) -> Result<(), StoreError> {
         self.inner.renew_lease(until).await
     }

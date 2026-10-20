@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ContentBlock, EventKind, RunStatus, ToolCallId, ToolInfo, ToolResultStatus},
     extension::{
         Extension, InputUnavailable, Point, Registrar, Scope, ToolInput, ToolOutcomeClass,
@@ -28,7 +28,7 @@ struct Seen {
     result: Value,
 }
 impl Seen {
-    fn capture(context: &ToolResultContext, result: &Value) -> Self {
+    fn capture(context: &ToolResultContext, result: &crabber::core::ToolOutput) -> Self {
         Self {
             tool: context.tool_name().into(),
             input: context.input().clone(),
@@ -37,7 +37,7 @@ impl Seen {
             phase: context.phase(),
             resolved: context.resolved(),
             call_id: context.call_id().clone(),
-            result: result.clone(),
+            result: result.json_value().unwrap(),
         }
     }
 }
@@ -51,7 +51,7 @@ struct Observed {
 }
 struct OutputTool(Arc<Observed>);
 #[async_trait]
-impl ToolExecutor for OutputTool {
+impl JsonToolExecutor for OutputTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         self.0.executed.lock().unwrap().push(input);
         Ok(json!({"secret": SECRET, "bulky": [1, 2, 3]}))
@@ -113,7 +113,7 @@ impl Extension for Protection {
                         && context.input() == &ToolInput::Normalized(json!({"command": "inspect"}))
                     {
                         return Ok(TransformOutput::marked_error(
-                            json!({"secret": result["secret"], "reduced": true}),
+                            crabber::core::ToolOutput::from_json(&json!({"secret": result.json_value().unwrap()["secret"], "reduced": true})).unwrap(),
                         ));
                     }
                     // False mark_error cannot downgrade a source error.
@@ -126,7 +126,7 @@ impl Extension for Protection {
         registrar.on_final_redaction(
             -100,
             "protect",
-            Arc::new(move |context, mut result| {
+            Arc::new(move |context, result| {
                 let observed = observed.clone();
                 Box::pin(async move {
                     observed
@@ -134,10 +134,13 @@ impl Extension for Protection {
                         .lock()
                         .unwrap()
                         .push(Seen::capture(&context, &result));
-                    if let Some(secret) = result.get_mut("secret") {
+                    let mut value = result.json_value().unwrap();
+                    if let Some(secret) = value.get_mut("secret") {
                         *secret = json!(REDACTED);
                     }
-                    Ok(TransformOutput::new(result))
+                    Ok(TransformOutput::new(
+                        crabber::core::ToolOutput::from_json(&value).unwrap(),
+                    ))
                 })
             }),
         );
@@ -174,6 +177,7 @@ async fn exercise(calls: &[(&str, &str)], error_flags: &[bool]) -> Arc<Observed>
     ]));
     let store = Arc::new(MemoryStore::new());
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(Selection {
@@ -181,9 +185,9 @@ async fn exercise(calls: &[(&str, &str)], error_flags: &[bool]) -> Arc<Observed>
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(Arc::new(Protection(observed.clone())), Scope::Global);
+        .shared_extension(Arc::new(Protection(observed.clone())), Scope::Global);
     for name in ["output", "other-output"] {
-        builder = builder.tool(Arc::new(ToolDefinition {
+        builder = builder.shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo { name: name.into(), description: "Synthetic output probe".into(), parameters: json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}), retry_safe: false, required_permissions: vec![] },
             executor: Arc::new(OutputTool(observed.clone())),
         }));
