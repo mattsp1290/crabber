@@ -313,6 +313,11 @@ async fn shutdown_is_bounded_when_collector_is_unreachable() {
         Err(TelemetryError::Otlp)
     ));
     assert!(start.elapsed() < Duration::from_millis(1200));
+    assert!(matches!(
+        telemetry.shutdown().await,
+        Err(TelemetryError::Otlp)
+    ));
+    assert!(matches!(telemetry.flush().await, Err(TelemetryError::Otlp)));
 }
 
 fn empty_config() -> TelemetryConfig {

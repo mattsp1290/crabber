@@ -154,12 +154,20 @@ impl Telemetry {
         self.health.snapshot()
     }
 
+    fn otlp_result(&self) -> Result<(), TelemetryError> {
+        if self.otlp_failed.load(Ordering::Acquire) {
+            Err(TelemetryError::Otlp)
+        } else {
+            Ok(())
+        }
+    }
+
     /// # Errors
     /// Reports an OTLP or agentless intake failure.
     pub async fn flush(&self) -> Result<(), TelemetryError> {
         let _guard = self.control.lock().await;
         if self.stopped.load(Ordering::Acquire) {
-            return Ok(());
+            return self.otlp_result();
         }
         let otlp = if let Some(provider) = &self.provider {
             let provider = provider.clone();
@@ -175,9 +183,7 @@ impl Telemetry {
         } else {
             Ok(())
         };
-        if self.otlp_failed.load(Ordering::Acquire) {
-            return Err(TelemetryError::Otlp);
-        }
+        self.otlp_result()?;
         otlp.and(intake)
     }
 
@@ -187,7 +193,7 @@ impl Telemetry {
     pub async fn shutdown(&self) -> Result<(), TelemetryError> {
         let _guard = self.control.lock().await;
         if self.stopped.load(Ordering::Acquire) {
-            return Ok(());
+            return self.otlp_result();
         }
         let timeout = self
             .config
@@ -212,9 +218,7 @@ impl Telemetry {
             Ok(())
         };
         self.stopped.store(true, Ordering::Release);
-        if self.otlp_failed.load(Ordering::Acquire) {
-            return Err(TelemetryError::Otlp);
-        }
+        self.otlp_result()?;
         otlp.and(intake)
     }
 }
