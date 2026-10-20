@@ -248,3 +248,31 @@ async fn migrate_reopen_and_concurrent_sessions() {
         2
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn postgres_admission_transaction_span_records_scope_and_outcome() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _lock = TEST_LOCK.lock().await;
+    let (captured, _guard) = crate::tracing_capture_tests::capture();
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    store.admit_run(request(&SessionId::new())).await.unwrap();
+    let records = captured.0.lock().unwrap();
+    assert!(records.iter().any(|r| {
+        r.name == "crabber.store.transaction"
+            && r.fields.get("db.system").is_some_and(|v| v == "postgresql")
+            && r.fields
+                .get("crabber.store.scope")
+                .is_some_and(|v| v == "admission")
+            && r.fields.get("outcome").is_some_and(|v| v == "committed")
+    }));
+    assert!(records.iter().any(|r| {
+        r.name == "crabber.store.transaction"
+            && r.fields
+                .get("crabber.store.scope")
+                .is_some_and(|v| v == "verify")
+            && r.fields.get("outcome").is_some_and(|v| v == "rolled_back")
+    }));
+}

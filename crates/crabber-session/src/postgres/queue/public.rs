@@ -191,9 +191,10 @@ async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
     // Keep the authoritative serialized original body unchanged while changing
     // both mutable routing indexes and the copied receipt coherently. A plain
     // replacement projection would now make that different original ID match.
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
+    let mut tx =
+        crate::transaction::begin_scoped(&store.pool, crate::transaction::StoreScope::Queue)
+            .await
+            .unwrap();
     sqlx::query(
         "UPDATE future_queue_audit SET operation_id=$3 WHERE session_id=$1 AND operation_id=$2",
     )

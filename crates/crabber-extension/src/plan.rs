@@ -155,6 +155,41 @@ pub enum ExtensionError {
     #[error("context cleanup is incomplete")]
     ContextCleanupIncomplete,
 }
+impl ExtensionError {
+    /// Returns a finite diagnostic category without error content.
+    #[must_use]
+    pub fn error_kind(&self) -> &'static str {
+        match self {
+            Self::PreparationResourceContractInvalid => "preparation_resource_contract_invalid",
+            Self::PreparationResourcesUnsupported => "preparation_resources_unsupported",
+            Self::PreparationLeaseAlreadyBound => "preparation_lease_already_bound",
+            Self::PreparationRegistration(..) => "preparation_registration",
+            Self::SessionServiceDependency(..) => "session_service_dependency",
+            Self::DurableInteractionUnsupported(..) => "durable_interaction_unsupported",
+            Self::RegistrationDescriptorUnavailable => "registration_descriptor_unavailable",
+            Self::Plan(..) => "plan",
+            Self::Tool(..) => "tool",
+            Self::Rejected(..) => "rejected",
+            Self::ToolCollision(..) => "tool_collision",
+            Self::PromptContributorCollision(..) => "prompt_contributor_collision",
+            Self::NextNotCalled => "next_not_called",
+            Self::NextCalledTwice => "next_called_twice",
+            Self::NextExpired => "next_expired",
+            Self::NextOutsideCallback => "next_outside_callback",
+            Self::SelfClose => "self_close",
+            Self::MissingCapability(..) => "missing_capability",
+            Self::MountCloseTimeout { .. } => "mount_close_timeout",
+            Self::MountCleanupIncomplete { .. } => "mount_cleanup_incomplete",
+            Self::RegistryClosed => "registry_closed",
+            Self::ContextOwnerClosed => "context_owner_closed",
+            Self::ContextIdentityMismatch => "context_identity_mismatch",
+            Self::WorkspaceUnavailable => "workspace_unavailable",
+            Self::ContextInitializationFailed { .. } => "context_initialization_failed",
+            Self::ContextInitializationIncomplete => "context_initialization_incomplete",
+            Self::ContextCleanupIncomplete => "context_cleanup_incomplete",
+        }
+    }
+}
 
 /// An ordinary, run-to-completion tool returning validated ordered content.
 #[async_trait]

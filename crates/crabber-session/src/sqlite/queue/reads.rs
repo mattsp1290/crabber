@@ -232,7 +232,10 @@ impl SqliteStore {
         id: &SessionId,
     ) -> Result<crate::SessionSummary, StoreError> {
         scope(id, &ControlId("session".into()))?;
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.readers, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
 
         let (session, metadata, revision) =
             current(&mut tx, id).await?.ok_or(StoreError::NotFound)?;
@@ -247,7 +250,10 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<QueueReceipt>, StoreError> {
         scope(session, id)?;
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.readers, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
 
         let result = receipt(&mut tx, session, id).await?;
         tx.commit().await.map_err(db)?;
@@ -260,7 +266,10 @@ impl SqliteStore {
     ) -> Result<RetainedQueue, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.readers, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
 
         let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
         let selected = record_with_proof(&mut tx, session, id, &mut proof)
@@ -277,7 +286,10 @@ impl SqliteStore {
     ) -> Result<QueueSummary, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.readers, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
         super::super::deletion::ensure_live(&mut tx, session).await?;
         let row = sqlx::query(SUMMARY)
             .bind(&session.0)
@@ -301,7 +313,10 @@ impl SqliteStore {
                 .unwrap_or(SessionRevision::INITIAL),
             vec![],
         )?;
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.readers, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
 
         super::super::deletion::ensure_live(&mut tx, &request.session_id).await?;
         super::protocol::whole_scope(

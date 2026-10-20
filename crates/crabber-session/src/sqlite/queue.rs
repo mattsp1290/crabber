@@ -23,7 +23,9 @@ impl SqliteStore {
         request: QueueMutation,
     ) -> Result<QueueOutcome, StoreError> {
         let digest = request.fingerprint()?;
-        let mut tx = self.begin_write().await?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::Queue)
+            .await?;
         if let Some(saved) = reads::receipt(&mut tx, &request.session_id, &request.id).await? {
             if saved.semantic_digest != digest {
                 return Err(StoreError::AdmissionConflict);

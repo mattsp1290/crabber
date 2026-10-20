@@ -111,7 +111,11 @@ pub(super) async fn begin_with_proof(
         .map_err(|_| Error::UnknownStoreFailure)?;
     let store = &execution.store;
     let (mut tx, run) = store
-        .run_transaction_with_proof(&execution.fence.run_id, proof)
+        .run_transaction_with_proof_scoped(
+            crate::transaction::StoreScope::Admission,
+            &execution.fence.run_id,
+            proof,
+        )
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
     if run.claim_token != execution.fence.claim_token {

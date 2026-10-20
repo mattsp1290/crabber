@@ -1,5 +1,8 @@
 //! Frozen extension plan and tool execution boundary.
 
+#[path = "telemetry_targets.rs"]
+pub(crate) mod targets;
+
 mod contextual;
 mod dispatch;
 pub use contextual::{
@@ -143,3 +146,6 @@ pub use public_source::{
     PublicSourceError, PublicSourceSink, PublicSourceSnapshot, PublicSourceWriter,
     current_public_source, with_public_source,
 };
+
+#[cfg(test)]
+mod tracing_capture_tests;

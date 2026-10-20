@@ -114,7 +114,10 @@ impl ExecutionStore for SqliteExecution {
         admission_execution::begin(self).await
     }
     async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
-        let mut tx = self.store.begin_write().await?;
+        let mut tx = self
+            .store
+            .begin_write_scoped(crate::transaction::StoreScope::Lease)
+            .await?;
         let result = async {
             let mut run = self.store.ownership_fenced(&mut tx, &self.fence).await?;
             let now = self.store.clock.now();
@@ -187,7 +190,10 @@ impl ExecutionStore for SqliteExecution {
         finish(tx, result, std::convert::identity).await
     }
     async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
-        let mut tx = self.store.begin_write().await?;
+        let mut tx = self
+            .store
+            .begin_write_scoped(crate::transaction::StoreScope::Events)
+            .await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
             insert_event(&mut tx, &run, &event).await?;

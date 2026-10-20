@@ -289,6 +289,17 @@ fn rollback_all(mount: &Mount) -> bool {
     }
 }
 fn observe_timeout(mount: &Mount, bound: Duration) {
+    super::record_close_timeout(
+        mount.extension.id(),
+        mount.leases.load(std::sync::atomic::Ordering::SeqCst),
+        mount
+            .owned
+            .as_ref()
+            .expect("owned timeout")
+            .cleanup
+            .snapshot()
+            .pending,
+    );
     if let Some(observer) = &mount.close_observer {
         let timeout = MountCloseTimeout {
             extension: mount.extension.id().into(),

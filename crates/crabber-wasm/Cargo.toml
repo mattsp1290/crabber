@@ -23,6 +23,7 @@ wasmtime-wasi = { version = "=49.0.1", default-features = false, features = ["p2
 workspace = true
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["registry"] }
 crabber-runtime = { path = "../crabber-runtime" }
 crabber-providers = { path = "../crabber-providers" }
 wat = "1"

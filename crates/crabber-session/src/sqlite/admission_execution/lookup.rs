@@ -11,9 +11,12 @@ impl SqliteStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        let mut tx = crate::transaction::begin(&self.readers)
-            .await
-            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.readers,
+            crate::transaction::StoreScope::Admission,
+        )
+        .await
+        .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         let result = async {
             let receipt = lookup_receipt(&mut tx, session, key)
                 .await
@@ -37,7 +40,12 @@ impl SqliteStore {
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.readers,
+            crate::transaction::StoreScope::Admission,
+        )
+        .await
+        .map_err(db)?;
         let result = async {
             let state = admission_execution::load_record(&mut tx, run)
                 .await?

@@ -61,7 +61,10 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
-        let mut tx = self.begin_write().await.map_err(unknown)?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::ToolContinuation)
+            .await
+            .map_err(unknown)?;
         let saved = super::records::load_run(&mut tx, run)
             .await
             .map_err(unknown)?;
@@ -77,7 +80,10 @@ impl SqliteStore {
         run: &RunId,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
-        let mut tx = self.begin_write().await.map_err(unknown)?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::ToolContinuation)
+            .await
+            .map_err(unknown)?;
         let saved = super::records::load_run_with_proof(&mut tx, run, proof)
             .await
             .map_err(unknown)?;
@@ -92,9 +98,12 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ToolContinuationSnapshot>, Error> {
-        let mut tx = crate::transaction::begin(&self.readers)
-            .await
-            .map_err(unknown)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.readers,
+            crate::transaction::StoreScope::ToolContinuation,
+        )
+        .await
+        .map_err(unknown)?;
         let result = async {
             read::origin(&mut tx, session, run, None).await?;
             let record = scan::scan(&mut tx, session, Some(run)).await?.latest;
@@ -109,9 +118,12 @@ impl SqliteStore {
         session: &SessionId,
         id: &ControlId,
     ) -> Result<Option<ToolContinuationReceipt>, Error> {
-        let mut tx = crate::transaction::begin(&self.readers)
-            .await
-            .map_err(unknown)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.readers,
+            crate::transaction::StoreScope::ToolContinuation,
+        )
+        .await
+        .map_err(unknown)?;
         let result = read::receipt(&mut tx, session, id)
             .await
             .map(|saved| saved.map(|(receipt, _)| receipt));

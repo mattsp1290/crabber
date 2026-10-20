@@ -112,9 +112,10 @@ impl PostgresStore {
         {
             return Err(invalid());
         }
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Snapshot)
+                .await
+                .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

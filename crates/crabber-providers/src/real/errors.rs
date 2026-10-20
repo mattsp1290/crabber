@@ -210,3 +210,20 @@ pub(super) fn status_classification(status: reqwest::StatusCode) -> (ProviderErr
     );
     (kind, retryable)
 }
+
+pub(super) async fn rejected_response(
+    response: Response,
+    classifier: Option<&dyn ErrorClassifier>,
+    force_auth: bool,
+    credentials: &[String],
+) -> ProviderError {
+    let status = response.status().as_u16();
+    let error = response_error(response, classifier, force_auth, credentials).await;
+    let kind = error.error_kind();
+    let span = tracing::Span::current();
+    span.record("outcome", "rejected");
+    span.record("error.kind", kind);
+    span.record("otel.status_code", "ERROR");
+    tracing::warn!(target: crate::targets::PROVIDERS, { "error.kind" = %kind, http.response.status_code = status }, "provider request rejected");
+    error
+}

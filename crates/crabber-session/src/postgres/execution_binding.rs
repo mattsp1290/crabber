@@ -215,7 +215,8 @@ impl PostgresStore {
             binding.validate(&request)?;
         }
         let mut tx = self
-            .session_transaction(
+            .session_transaction_scoped(
+                crate::transaction::StoreScope::Admission,
                 request
                     .session_id
                     .as_ref()
@@ -292,7 +293,9 @@ impl PostgresStore {
         let session = request.request.session_id.as_ref().ok_or_else(|| {
             StoreError::Validation("keyed admission requires a stable session ID".into())
         })?;
-        let mut tx = self.session_transaction(session).await?;
+        let mut tx = self
+            .session_transaction_scoped(crate::transaction::StoreScope::Admission, session)
+            .await?;
         let result = async {
             match self
                 .admit_keyed_captured(

@@ -676,3 +676,86 @@ async fn codex_headers_have_exact_session_and_originator() {
     assert_eq!(headers["originator"], "advisor");
     assert_eq!(headers["session_id"], "session-1");
 }
+
+#[cfg(feature = "custom-http")]
+#[tokio::test(flavor = "current_thread")]
+async fn request_spans_record_retry_and_rejection_without_secrets() {
+    use crate::tracing_capture_tests::capture;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    struct Source;
+    #[async_trait]
+    impl CredentialSource for Source {
+        async fn credential(&self, _: &ModelRequest) -> Result<String, ProviderError> {
+            Ok("credential-secret".into())
+        }
+        async fn invalidate(&self, _: &str) {}
+    }
+    let (captured, _guard) = capture();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for status in [
+            "401 Unauthorized",
+            "200 OK",
+            "500 Internal Server Error",
+            "500 Internal Server Error",
+        ] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 8192];
+            let _ = socket.read(&mut bytes).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: 15\r\nConnection: close\r\n\r\nRESPONSE_SECRET"
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let adapter = HttpAdapter::custom("custom", &url, Protocol::Responses)
+        .with_credential_source(Arc::new(Source));
+    drop(adapter.stream(request("custom")).await.unwrap());
+    let Err(error) = adapter.stream(request("custom")).await else {
+        panic!("expected rejection");
+    };
+    assert_eq!(error.error_kind(), "server");
+    struct TransportClassifier;
+    impl super::errors::ErrorClassifier for TransportClassifier {
+        fn classify(&self, _: reqwest::StatusCode, _: &str) -> (ProviderErrorKind, bool) {
+            (ProviderErrorKind::Transport, true)
+        }
+    }
+    let classified = adapter.with_error_classifier(Arc::new(TransportClassifier));
+    let Err(error) = classified.stream(request("custom")).await else {
+        panic!("expected classified rejection");
+    };
+    assert_eq!(error.error_kind(), "transport");
+    server.await.unwrap();
+    let records = captured.0.lock().unwrap();
+    let spans: Vec<_> = records
+        .iter()
+        .filter(|r| r.name == "crabber.provider.request")
+        .collect();
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0].fields["retry.attempt"], "1");
+    assert_eq!(spans[0].fields["http.response.status_code"], "200");
+    assert_eq!(spans[0].fields["outcome"], "response_started");
+    assert_eq!(spans[1].fields["error.kind"], "server");
+    assert_eq!(spans[1].fields["otel.status_code"], "ERROR");
+    assert_eq!(spans[2].fields["error.kind"], "transport");
+    assert_eq!(spans[2].fields["outcome"], "rejected");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.target == "crabber::providers" && r.level == "WARN")
+            .count(),
+        2
+    );
+    for value in records.iter().flat_map(|r| r.fields.values()) {
+        assert!(
+            !value.contains("RESPONSE_SECRET")
+                && !value.contains("credential-secret")
+                && !value.contains(&url)
+        );
+    }
+}

@@ -24,7 +24,10 @@ pub(in crate::sqlite) async fn claim_with_proof(
 ) -> Result<ClaimedAdmission, Error> {
     crate::native_enrollment::caller::recovery::measure_request(&request, proof)
         .map_err(|_| Error::UnknownStoreFailure)?;
-    let mut tx = store.begin_write().await.map_err(unknown)?;
+    let mut tx = store
+        .begin_write_scoped(crate::transaction::StoreScope::Admission)
+        .await
+        .map_err(unknown)?;
     let run =
         super::super::records::load_run_with_proof(&mut tx, &request.expected_fence.run_id, proof)
             .await

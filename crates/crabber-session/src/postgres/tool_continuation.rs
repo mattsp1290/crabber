@@ -71,7 +71,10 @@ impl PostgresStore {
         if !exists {
             return Err(Error::NotFound);
         }
-        let (tx, saved) = self.run_transaction(run).await.map_err(unknown)?;
+        let (tx, saved) = self
+            .run_transaction_scoped(crate::transaction::StoreScope::ToolContinuation, run)
+            .await
+            .map_err(unknown)?;
         if saved.session_id != *session || saved.id != *run {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -84,7 +87,11 @@ impl PostgresStore {
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(Transaction<'_, Postgres>, Run), Error> {
         let (tx, saved) = self
-            .run_transaction_with_proof(run, proof)
+            .run_transaction_with_proof_scoped(
+                crate::transaction::StoreScope::ToolContinuation,
+                run,
+                proof,
+            )
             .await
             .map_err(unknown)?;
         if saved.session_id != *session || saved.id != *run {
@@ -97,9 +104,12 @@ impl PostgresStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ToolContinuationSnapshot>, Error> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(unknown)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.pool,
+            crate::transaction::StoreScope::ToolContinuation,
+        )
+        .await
+        .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -118,9 +128,12 @@ impl PostgresStore {
         session: &SessionId,
         id: &ControlId,
     ) -> Result<Option<ToolContinuationReceipt>, Error> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(unknown)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.pool,
+            crate::transaction::StoreScope::ToolContinuation,
+        )
+        .await
+        .map_err(unknown)?;
         let result = read::receipt(&mut tx, session, id)
             .await
             .map(|saved| saved.map(|(receipt, _)| receipt));

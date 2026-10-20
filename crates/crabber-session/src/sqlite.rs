@@ -2,6 +2,7 @@
 //! connecting only verifies a current-version Crabber database already using WAL.
 
 use crate::transaction::Transaction;
+use tracing::Instrument;
 #[path = "sqlite/admission_reads.rs"]
 mod admission_reads;
 #[path = "sqlite/credential_access.rs"]
@@ -184,10 +185,19 @@ impl SqliteStore {
     }
 
     async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        self.begin_write_scoped(crate::transaction::StoreScope::Unscoped)
+            .await
+    }
+
+    async fn begin_write_scoped(
+        &self,
+        scope: crate::transaction::StoreScope,
+    ) -> Result<Transaction<'static, Sqlite>, StoreError> {
         #[cfg(test)]
         self.write_waiters
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let result = crate::transaction::begin_with(&self.writer, "BEGIN IMMEDIATE").await;
+        let result =
+            crate::transaction::begin_with_scoped(&self.writer, "BEGIN IMMEDIATE", scope).await;
         #[cfg(test)]
         self.write_waiters
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -207,6 +217,27 @@ fn options(path: &Path) -> SqliteConnectOptions {
 }
 
 async fn connect_with(
+    path: &Path,
+    options: SqliteConnectOptions,
+) -> Result<SqliteStore, StoreError> {
+    let span = tracing::info_span!(target: crate::targets::SESSION, "crabber.store.connect", db.system = "sqlite", outcome = tracing::field::Empty, error.kind = tracing::field::Empty, schema.version = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
+    async {
+        let result = connect_with_inner(path, options).await;
+        let span = tracing::Span::current();
+        if result.is_ok() {
+            span.record("outcome", "ok");
+            span.record("otel.status_code", "OK");
+        } else {
+            span.record("outcome", "failed");
+            span.record("otel.status_code", "ERROR");
+        }
+        result
+    }
+    .instrument(span)
+    .await
+}
+
+async fn connect_with_inner(
     path: &Path,
     options: SqliteConnectOptions,
 ) -> Result<SqliteStore, StoreError> {
@@ -263,7 +294,10 @@ async fn connect_with(
 async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
     // Own the pooled connection before BEGIN, including its unacknowledged
     // interval. A cancelled verifier must not return that connection for reuse.
-    let mut transaction = crate::transaction::begin(writer).await.map_err(db)?;
+    let mut transaction =
+        crate::transaction::begin_scoped(writer, crate::transaction::StoreScope::Verify)
+            .await
+            .map_err(connection_error)?;
     let result = async {
         if classify(&mut transaction).await? != DatabaseState::Current {
             return Err(foreign_database());
@@ -280,7 +314,7 @@ async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
         Ok(())
     }
     .await;
-    transaction.rollback().await.map_err(db)?;
+    transaction.rollback().await.map_err(connection_error)?;
     result
 }
 
@@ -293,11 +327,15 @@ enum DatabaseState {
 // Metadata must come from one snapshot when another process initializes the
 // file concurrently. End this read transaction before attempting a WAL change.
 async fn classify_snapshot(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
-    let mut transaction = crate::transaction::begin_on::<Sqlite>(connection, None)
-        .await
-        .map_err(classification_error)?;
+    let mut transaction = crate::transaction::begin_on_scoped::<Sqlite>(
+        connection,
+        None,
+        crate::transaction::StoreScope::Verify,
+    )
+    .await
+    .map_err(classification_error)?;
     let state = classify(&mut transaction).await;
-    transaction.rollback().await.map_err(db)?;
+    transaction.rollback().await.map_err(connection_error)?;
     state
 }
 
@@ -328,11 +366,29 @@ async fn classify(connection: &mut SqliteConnection) -> Result<DatabaseState, St
 }
 
 async fn migrate_with(path: &Path, schema: &str) -> Result<(), StoreError> {
+    let span = tracing::info_span!(target: crate::targets::SESSION, "crabber.store.migrate", db.system = "sqlite", outcome = tracing::field::Empty, error.kind = tracing::field::Empty, schema.version = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
+    async {
+            let result = migrate_with_inner(path, schema).await;
+            let span = tracing::Span::current();
+            if result.is_ok() {
+                span.record("outcome", "ok");
+                span.record("otel.status_code", "OK");
+                span.record("schema.version", crate::SQLITE_SCHEMA_VERSION);
+                tracing::info!(target: crate::targets::SESSION, { db.system = "sqlite", schema.version = crate::SQLITE_SCHEMA_VERSION }, "schema migrated");
+            } else {
+                span.record("outcome", "failed");
+                span.record("otel.status_code", "ERROR");
+            }
+            result
+        }.instrument(span).await
+}
+
+async fn migrate_with_inner(path: &Path, schema: &str) -> Result<(), StoreError> {
     let mut connection = SqliteConnection::connect_with(&options(path).create_if_missing(true))
         .await
         .map_err(classification_error)?;
     let result = migrate_connection(&mut connection, schema).await;
-    let closed = connection.close().await.map_err(db);
+    let closed = connection.close().await.map_err(connection_error);
     result.and(closed)
 }
 
@@ -367,16 +423,18 @@ async fn migrate_connection(
     let mut transaction =
         crate::transaction::begin_on::<Sqlite>(connection, Some("BEGIN IMMEDIATE"))
             .await
-            .map_err(db)?;
+            .map_err(connection_error)?;
     let result = match classify(&mut transaction).await {
         Ok(DatabaseState::Fresh) => initialize(&mut transaction, schema).await,
-        Ok(DatabaseState::Current) => return transaction.rollback().await.map_err(db),
+        Ok(DatabaseState::Current) => {
+            return transaction.rollback().await.map_err(connection_error);
+        }
         Err(error) => Err(error),
     };
     match result {
-        Ok(()) => transaction.commit().await.map_err(db),
+        Ok(()) => transaction.commit().await.map_err(connection_error),
         Err(error) => {
-            transaction.rollback().await.map_err(db)?;
+            transaction.rollback().await.map_err(connection_error)?;
             Err(error)
         }
     }
@@ -389,22 +447,22 @@ async fn initialize(
     sqlx::query(&format!("PRAGMA application_id={APPLICATION_ID}"))
         .execute(&mut **transaction)
         .await
-        .map_err(db)?;
+        .map_err(connection_error)?;
     // Executor::execute exposes SQLx's Send boxed future directly; RawSql's
     // async convenience method cannot prove Send for a spawned migration.
     sqlx::Executor::execute(&mut **transaction, sqlx::raw_sql(schema))
         .await
-        .map_err(db)?;
+        .map_err(connection_error)?;
     sqlx::query("INSERT INTO snapshot_auth(singleton,secret) VALUES(1,?1)")
         .bind(uuid::Uuid::new_v4().to_string())
         .execute(&mut **transaction)
         .await
-        .map_err(db)?;
+        .map_err(connection_error)?;
     sqlx::query("INSERT INTO schema_version(version) VALUES(?1)")
         .bind(SQLITE_SCHEMA_VERSION)
         .execute(&mut **transaction)
         .await
-        .map_err(db)?;
+        .map_err(connection_error)?;
     Ok(())
 }
 
@@ -433,6 +491,7 @@ fn primary_code(error: &sqlx::Error) -> Option<i32> {
 }
 
 fn classification_error(error: sqlx::Error) -> StoreError {
+    tracing::Span::current().record("error.kind", crate::transaction::sqlx_error_kind(&error));
     if primary_code(&error) == Some(26) {
         foreign_database()
     } else {
@@ -485,3 +544,8 @@ mod process_tests;
 mod snapshot_tests;
 #[cfg(test)]
 mod test_support;
+
+fn connection_error(error: sqlx::Error) -> StoreError {
+    tracing::Span::current().record("error.kind", crate::transaction::sqlx_error_kind(&error));
+    db(error)
+}

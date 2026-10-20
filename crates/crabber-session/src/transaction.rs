@@ -12,6 +12,69 @@ use std::{
     },
 };
 
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))] // Shared scope vocabulary across backends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StoreScope {
+    Unscoped,
+    Session,
+    Run,
+    Lease,
+    Admission,
+    Events,
+    Snapshot,
+    Approval,
+    ToolContinuation,
+    Queue,
+    Verify,
+}
+impl StoreScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unscoped => "unscoped",
+            Self::Session => "session",
+            Self::Run => "run",
+            Self::Lease => "lease",
+            Self::Admission => "admission",
+            Self::Events => "events",
+            Self::Snapshot => "snapshot",
+            Self::Approval => "approval",
+            Self::ToolContinuation => "tool_continuation",
+            Self::Queue => "queue",
+            Self::Verify => "verify",
+        }
+    }
+}
+pub(crate) fn sqlx_error_kind(error: &Error) -> &'static str {
+    match error {
+        Error::Database(_) => "database",
+        Error::Io(_) => "io",
+        Error::PoolTimedOut => "pool_timeout",
+        Error::PoolClosed => "pool_closed",
+        Error::Protocol(_) => "protocol",
+        _ => "other",
+    }
+}
+fn transaction_span<DB: Database>(scope: StoreScope) -> tracing::Span {
+    let system = if DB::NAME == "PostgreSQL" {
+        "postgresql"
+    } else {
+        "sqlite"
+    };
+    macro_rules! span {
+        ($level:expr) => {
+            tracing::span!(target: crate::targets::SESSION, $level, "crabber.store.transaction",
+                db.system = system, crabber.store.scope = scope.as_str(),
+                outcome = tracing::field::Empty, error.kind = tracing::field::Empty,
+                otel.kind = "client", otel.status_code = tracing::field::Empty)
+        };
+    }
+    if scope == StoreScope::Unscoped {
+        span!(tracing::Level::DEBUG)
+    } else {
+        span!(tracing::Level::INFO)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum State {
     Opening,
@@ -21,6 +84,8 @@ enum State {
 }
 
 pub(crate) struct Transaction<'c, DB: Database> {
+    span: tracing::Span,
+    outcome_recorded: bool,
     connection: MaybePoolConnection<'c, DB>,
     state: State,
     poisoned: Arc<AtomicBool>,
@@ -29,24 +94,40 @@ pub(crate) struct Transaction<'c, DB: Database> {
 pub(crate) async fn begin<DB: Database>(
     pool: &Pool<DB>,
 ) -> Result<Transaction<'static, DB>, Error> {
-    start_pool(pool, None).await
+    start_pool(pool, None, StoreScope::Unscoped).await
 }
 #[cfg(feature = "sqlite")]
 pub(crate) async fn begin_with<DB: Database>(
     pool: &Pool<DB>,
     statement: &'static str,
 ) -> Result<Transaction<'static, DB>, Error> {
-    start_pool(pool, Some(Cow::Borrowed(statement))).await
+    start_pool(pool, Some(Cow::Borrowed(statement)), StoreScope::Unscoped).await
+}
+pub(crate) async fn begin_scoped<DB: Database>(
+    pool: &Pool<DB>,
+    scope: StoreScope,
+) -> Result<Transaction<'static, DB>, Error> {
+    start_pool(pool, None, scope).await
+}
+#[cfg(feature = "sqlite")]
+pub(crate) async fn begin_with_scoped<DB: Database>(
+    pool: &Pool<DB>,
+    statement: &'static str,
+    scope: StoreScope,
+) -> Result<Transaction<'static, DB>, Error> {
+    start_pool(pool, Some(Cow::Borrowed(statement)), scope).await
 }
 async fn start_pool<DB: Database>(
     pool: &Pool<DB>,
     statement: Option<Cow<'static, str>>,
+    scope: StoreScope,
 ) -> Result<Transaction<'static, DB>, Error> {
     let connection = pool.acquire().await?;
     Transaction::start(
         connection.into(),
         Arc::new(AtomicBool::new(false)),
         statement,
+        scope,
     )
     .await
 }
@@ -55,10 +136,19 @@ pub(crate) async fn begin_on<'c, DB: Database>(
     connection: &'c mut DB::Connection,
     statement: Option<&'static str>,
 ) -> Result<Transaction<'c, DB>, Error> {
+    begin_on_scoped::<DB>(connection, statement, StoreScope::Unscoped).await
+}
+#[cfg(feature = "sqlite")]
+pub(crate) async fn begin_on_scoped<'c, DB: Database>(
+    connection: &'c mut DB::Connection,
+    statement: Option<&'static str>,
+    scope: StoreScope,
+) -> Result<Transaction<'c, DB>, Error> {
     Transaction::start(
         MaybePoolConnection::Connection(connection),
         Arc::new(AtomicBool::new(false)),
         statement.map(Cow::Borrowed),
+        scope,
     )
     .await
 }
@@ -68,13 +158,21 @@ impl<'c, DB: Database> Transaction<'c, DB> {
         connection: MaybePoolConnection<'c, DB>,
         poisoned: Arc<AtomicBool>,
         statement: Option<Cow<'static, str>>,
+        scope: StoreScope,
     ) -> Result<Self, Error> {
         let mut transaction = Self {
+            span: transaction_span::<DB>(scope),
+            outcome_recorded: false,
             connection,
             state: State::Opening,
             poisoned,
         };
-        DB::TransactionManager::begin(&mut transaction.connection, statement).await?;
+        if let Err(error) =
+            DB::TransactionManager::begin(&mut transaction.connection, statement).await
+        {
+            transaction.finish("begin_failed", Some(sqlx_error_kind(&error)));
+            return Err(error);
+        }
         transaction.state = State::Open;
         Ok(transaction)
     }
@@ -86,6 +184,7 @@ impl<'c, DB: Database> Transaction<'c, DB> {
             MaybePoolConnection::<DB>::Connection(&mut *self.connection),
             self.poisoned.clone(),
             None,
+            StoreScope::Unscoped,
         )
         .await
     }
@@ -96,9 +195,16 @@ impl<'c, DB: Database> Transaction<'c, DB> {
     // Retain ownership through an acknowledged failed COMMIT so SQLite's
     // existing finish boundary can explicitly roll back before returning.
     pub(crate) async fn commit_in_place(&mut self) -> Result<(), Error> {
-        self.check()?;
+        if let Err(error) = self.check() {
+            self.finish("commit_failed", Some(sqlx_error_kind(&error)));
+            return Err(error);
+        }
         self.state = State::Finishing;
-        DB::TransactionManager::commit(&mut self.connection).await?;
+        if let Err(error) = DB::TransactionManager::commit(&mut self.connection).await {
+            self.finish("commit_failed", Some(sqlx_error_kind(&error)));
+            return Err(error);
+        }
+        self.finish("committed", None);
         self.state = State::Closed;
         Ok(())
     }
@@ -107,8 +213,24 @@ impl<'c, DB: Database> Transaction<'c, DB> {
         self.check()?;
         self.state = State::Finishing;
         DB::TransactionManager::rollback(&mut self.connection).await?;
+        self.finish("rolled_back", None);
         self.state = State::Closed;
         Ok(())
+    }
+
+    fn finish(&mut self, outcome: &'static str, kind: Option<&'static str>) {
+        if self.outcome_recorded {
+            return;
+        }
+        self.outcome_recorded = true;
+        self.span.record("outcome", outcome);
+        self.span.record(
+            "otel.status_code",
+            if kind.is_some() { "ERROR" } else { "OK" },
+        );
+        if let Some(kind) = kind {
+            self.span.record("error.kind", kind);
+        }
     }
 
     fn check(&self) -> Result<(), Error> {
@@ -138,6 +260,9 @@ impl<DB: Database> Drop for Transaction<'_, DB> {
             self.close();
         } else if matches!(self.state, State::Open) {
             DB::TransactionManager::start_rollback(&mut self.connection);
+        }
+        if !matches!(self.state, State::Closed) {
+            self.finish("abandoned", None);
         }
     }
 }

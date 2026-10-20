@@ -232,9 +232,10 @@ impl PostgresStore {
         id: &SessionId,
     ) -> Result<crate::SessionSummary, StoreError> {
         scope(id, &ControlId("session".into()))?;
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -252,9 +253,10 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<QueueReceipt>, StoreError> {
         scope(session, id)?;
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -270,9 +272,10 @@ impl PostgresStore {
     ) -> Result<RetainedQueue, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -292,9 +295,10 @@ impl PostgresStore {
     ) -> Result<QueueSummary, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -322,9 +326,10 @@ impl PostgresStore {
                 .unwrap_or(SessionRevision::INITIAL),
             vec![],
         )?;
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

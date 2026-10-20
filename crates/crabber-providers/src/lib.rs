@@ -8,6 +8,9 @@
 //! guidance. Public header, status, certificate, identity, and TLS
 //! types come from `reqwest` 0.12.
 
+#[path = "telemetry_targets.rs"]
+pub(crate) mod targets;
+
 mod binding;
 mod scripted;
 pub use binding::{
@@ -141,6 +144,22 @@ pub struct ProviderError {
     pub kind: ProviderErrorKind,
     pub message: String,
     pub retryable: bool,
+}
+
+impl ProviderError {
+    /// Returns a finite diagnostic category without response content.
+    #[must_use]
+    pub fn error_kind(&self) -> &'static str {
+        match self.kind {
+            ProviderErrorKind::Auth => "auth",
+            ProviderErrorKind::RateLimited => "rate_limited",
+            ProviderErrorKind::ContextOverflow => "context_overflow",
+            ProviderErrorKind::Transport => "transport",
+            ProviderErrorKind::Invalid => "invalid",
+            ProviderErrorKind::Server => "server",
+            ProviderErrorKind::Canceled => "canceled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -484,3 +503,6 @@ mod tests {
         assert_eq!(crate::CRATE_NAME, "crabber-providers");
     }
 }
+
+#[cfg(test)]
+mod tracing_capture_tests;

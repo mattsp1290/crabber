@@ -8,6 +8,10 @@ pub const SQLITE_SCHEMA_VERSION: i64 = 20;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[path = "telemetry_targets.rs"]
+pub(crate) mod targets;
+
 mod abandonment;
 mod admission_execution;
 mod admission_journal;
@@ -302,3 +306,6 @@ mod driver_raw_access_contract;
 
 #[cfg(test)]
 mod successor_driver_contract;
+
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+mod tracing_capture_tests;

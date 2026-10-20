@@ -1,5 +1,8 @@
 //! Sandboxed Component Model extensions.
 #![allow(clippy::missing_errors_doc)]
+#[path = "telemetry_targets.rs"]
+pub(crate) mod targets;
+
 mod adapters;
 mod profile;
 
@@ -411,10 +414,18 @@ impl Loader {
             }
         });
         let log_observer: LogObserver = Arc::new(|extension, level, message| match level {
-            "debug" => tracing::debug!(extension, "{message}"),
-            "warn" => tracing::warn!(extension, "{message}"),
-            "error" => tracing::error!(extension, "{message}"),
-            _ => tracing::info!(extension, "{message}"),
+            "debug" => {
+                tracing::debug!(target: targets::WASM_GUEST, { extension.id = %extension, guest.text = %message }, "guest log");
+            }
+            "warn" => {
+                tracing::warn!(target: targets::WASM_GUEST, { extension.id = %extension, guest.text = %message }, "guest log");
+            }
+            "error" => {
+                tracing::error!(target: targets::WASM_GUEST, { extension.id = %extension, guest.text = %message }, "guest log");
+            }
+            _ => {
+                tracing::info!(target: targets::WASM_GUEST, { extension.id = %extension, guest.text = %message }, "guest log");
+            }
         });
         Ok(Self {
             engine,
@@ -1033,6 +1044,36 @@ mod tests {
         assert!(matches!(tools, Val::List(items) if items.len() == 1));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn guest_log_uses_static_message_and_guest_target() {
+        let (captured, _guard) = crate::tracing_capture_tests::capture();
+        let loader = Loader::new().unwrap();
+        let module = loader.load(fixture("echo-tool")).await.unwrap();
+        module
+            .call(
+                "tool-api",
+                "execute",
+                &[
+                    Val::String("echo".into()),
+                    Val::String(String::new()),
+                    Val::String("{}".into()),
+                    turn_metadata(None),
+                ],
+            )
+            .await
+            .unwrap();
+        let records = captured.0.lock().unwrap();
+        let events: Vec<_> = records
+            .iter()
+            .filter(|r| r.target == "crabber::wasm::guest")
+            .collect();
+        assert!(!events.is_empty());
+        for event in events {
+            assert_eq!(event.fields["message"], "guest log");
+            assert!(event.fields.contains_key("guest.text"));
+            assert!(event.fields.contains_key("extension.id"));
+        }
+    }
     #[tokio::test]
     async fn guest_log_and_stdout_reach_observer() {
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2310,3 +2351,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tracing_capture_tests;

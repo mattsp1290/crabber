@@ -46,10 +46,13 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ApprovalSnapshot>, Error> {
-        let mut tx = crate::transaction::begin(&self.readers)
-            .await
-            .map_err(db)
-            .map_err(sql::unknown)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.readers,
+            crate::transaction::StoreScope::Approval,
+        )
+        .await
+        .map_err(db)
+        .map_err(sql::unknown)?;
         let result = load(&mut tx, session, run)
             .await
             .map(|saved| saved.map(|(record, revision)| record.snapshot(revision)));
@@ -61,10 +64,13 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<ApprovalReceipt>, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(approval::attempt_error)?;
-        let mut tx = crate::transaction::begin(&self.readers)
-            .await
-            .map_err(db)
-            .map_err(sql::unknown)?;
+        let mut tx = crate::transaction::begin_scoped(
+            &self.readers,
+            crate::transaction::StoreScope::Approval,
+        )
+        .await
+        .map_err(db)
+        .map_err(sql::unknown)?;
         let result = receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }
@@ -76,7 +82,10 @@ impl SqliteStore {
         run: &RunId,
         proof: &mut Proof,
     ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
-        let mut tx = self.begin_write().await.map_err(sql::unknown)?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::Approval)
+            .await
+            .map_err(sql::unknown)?;
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND id=$2)")
                 .bind(&session.0)
@@ -101,7 +110,10 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
-        let mut tx = self.begin_write().await.map_err(sql::unknown)?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::Approval)
+            .await
+            .map_err(sql::unknown)?;
         let result = async {
             let row = sqlx::query("SELECT data FROM runs WHERE session_id=$1 AND id=$2")
                 .bind(&session.0)

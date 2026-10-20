@@ -478,6 +478,28 @@ pub enum CoreError {
     #[error("unconsumed input remains")]
     PendingInput,
 }
+impl CoreError {
+    /// Returns a finite diagnostic category without error content.
+    #[must_use]
+    pub fn error_kind(&self) -> &'static str {
+        match self {
+            Self::Validation(..) => "validation",
+            Self::Limit(..) => "limit",
+            Self::Conflict => "conflict",
+            Self::AdmissionConflict => "admission_conflict",
+            Self::AdmissionRevisionConflict => "admission_revision_conflict",
+            Self::AdmissionUnsupported => "admission_unsupported",
+            Self::AdmissionRecoveryRequired => "admission_recovery_required",
+            Self::SnapshotUnsupported => "snapshot_unsupported",
+            Self::HostUnsupported => "host_unsupported",
+            Self::SessionIdentityMismatch => "session_identity_mismatch",
+            Self::SessionDeleted => "session_deleted",
+            Self::Busy => "busy",
+            Self::NotFound => "not_found",
+            Self::PendingInput => "pending_input",
+        }
+    }
+}
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
