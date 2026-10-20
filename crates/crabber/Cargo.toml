@@ -47,4 +47,5 @@ opencode-go = ["crabber-providers/opencode-go"]
 all-providers = ["crabber-providers/all-providers"]
 
 datadog = ["dep:crabber-obs"]
+otlp = ["datadog", "crabber-obs/otlp"]
 wasm = ["dep:crabber-wasm"]

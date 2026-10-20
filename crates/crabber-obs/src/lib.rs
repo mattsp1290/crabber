@@ -20,6 +20,14 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(feature = "otlp")]
+mod telemetry;
+#[cfg(feature = "otlp")]
+pub use telemetry::{
+    LogsPolicy, OtlpConfig, OtlpProtocol, Signals, Telemetry, TelemetryConfig, TelemetryError,
+    TelemetryHealth,
+};
+
 /// Explicit opt-in for bounded summaries. Defaults never capture content.
 #[derive(Debug, Clone)]
 pub struct RedactionPolicy {
@@ -549,6 +557,11 @@ impl DatadogObserver {
                 WorkerStatus::Running
             },
         }
+    }
+    /// Immediately stops the worker, counting outstanding records as dropped.
+    pub fn stop_now(&self) {
+        self.health.stopped.store(1, Ordering::SeqCst);
+        self.abort.abort();
     }
     /// Waits for queued records to be exported.
     /// # Errors
@@ -2266,6 +2279,18 @@ mod tests {
         stopped(&observer).await;
         assert_eq!(observer.health().accepted, 800);
         assert_eq!(observer.health().dropped, 800);
+        assert_eq!(observer.health().queue_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn stop_now_accounts_for_outstanding_and_later_records() {
+        let observer = DatadogObserver::new(&config());
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        observer.stop_now();
+        assert_eq!(observer.health().worker_status, WorkerStatus::Stopped);
+        assert_eq!(observer.health().dropped, 1);
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        assert_eq!(observer.health().dropped, 2);
         assert_eq!(observer.health().queue_depth, 0);
     }
 

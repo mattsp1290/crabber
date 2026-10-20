@@ -6,6 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["registry", "fmt", "json", "env-filter"] }
 crabber = { path = "../../crates/crabber", features = ["datadog"] }
 crabber-obs = { path = "../../crates/crabber-obs" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
