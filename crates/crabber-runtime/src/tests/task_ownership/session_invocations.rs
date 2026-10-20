@@ -5,6 +5,8 @@ use crabber_extension::{
 use crabber_session::session_owner::SessionOwnerState;
 #[path = "session_invocations/ack.rs"]
 mod ack;
+#[path = "session_invocations/bounds.rs"]
+mod bounds;
 #[path = "session_invocations/faults.rs"]
 mod faults;
 #[path = "session_invocations/scoped.rs"]

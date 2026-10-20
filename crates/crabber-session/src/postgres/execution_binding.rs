@@ -52,28 +52,6 @@ impl PostgresStore {
         .map_err(|_| StoreError::Conflict)?;
         Ok(captured.admitted)
     }
-    pub(super) async fn admit_keyed_transaction(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        keyed: KeyedAdmitRequest,
-    ) -> Result<KeyedAdmitOutcome, StoreError> {
-        self.admit_keyed_guarded(tx, keyed, crate::queue::AdmissionGuard::Ordinary)
-            .await
-    }
-    pub(super) async fn admit_keyed_guarded(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        keyed: KeyedAdmitRequest,
-        guard: crate::queue::AdmissionGuard<'_>,
-    ) -> Result<KeyedAdmitOutcome, StoreError> {
-        self.admit_keyed_guarded_with_proof(
-            tx,
-            keyed,
-            guard,
-            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-        )
-        .await
-    }
     pub(super) async fn admit_keyed_guarded_with_proof(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -131,10 +109,12 @@ impl PostgresStore {
             .session_id
             .as_ref()
             .ok_or(StoreError::AdmissionConflict)?;
-        if let Some(receipt) = super::lookup_receipt(tx, session, &keyed.options.key).await? {
+        if let Some(receipt) =
+            super::lookup_receipt_with_proof(tx, session, &keyed.options.key, read_proof).await?
+        {
             // Preserve historical replay-domain validation; no new fresh witness.
             if let Some((existing, _)) =
-                super::admission_reads::session(tx, session, &mut Proof::legacy()).await?
+                super::admission_reads::session(tx, session, read_proof).await?
             {
                 existing.ensure_identity(&request.workspace_id, &request.directory)?;
             }

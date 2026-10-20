@@ -1,7 +1,6 @@
 //! Owned Tool/Frontend continuations use their one original parked main.
 use super::super::{
     RunSession,
-    continuation::{ApprovalControl, ApprovalResume},
     preparation::pending::{PendingOutcome, main::Metadata},
     tool_continuation::ToolResumeControl,
 };
@@ -27,13 +26,7 @@ impl Orchestrator {
         let (mut request, context, origin) = self
             .checked_tool_preflight(&run, &binding, &control)
             .await?;
-        let (sender, _unused) = tokio::sync::oneshot::channel();
-        let control = ApprovalControl::Tool {
-            control,
-            sender,
-            expected,
-        };
-        let (spec, operation) = super::resume::operation(&control)?;
+        let (spec, operation) = super::resume::tool_operation(&control)?;
         self.reject_pending_preparation(&run.session_id, &spec.key)
             .await?;
         let grant = self
@@ -58,9 +51,6 @@ impl Orchestrator {
                 else {
                     return Err(RuntimeError::PreparationRecoveryRequired);
                 };
-                let ApprovalControl::Tool { expected, .. } = &control else {
-                    return Err(RuntimeError::PreparationRecoveryRequired);
-                };
                 expected.verify(&receipt)?;
                 let authority = super::super::tool_continuation::prepared_tool_authority(
                     &run, &receipt, *grant,
@@ -70,20 +60,12 @@ impl Orchestrator {
                     bound,
                     authority,
                 };
-                // Preserve the Tool discriminator while the real fresh native
-                // grant skips acquisition. This sender supplies no completion ACK.
-                let (sender, _unused) = tokio::sync::oneshot::channel();
-                let approval = ApprovalResume {
-                    prepared: None,
-                    control,
-                    sender,
-                };
-                Box::pin(runtime.resume_loaded_inner(
+                Box::pin(runtime.resume_prepared(
                     run,
                     validated,
                     cancellation,
-                    Some(approval),
-                    Some(prepared),
+                    prepared,
+                    super::super::recovery::PreparedResumeKind::Continuation,
                 ))
                 .await
             },

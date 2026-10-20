@@ -26,8 +26,11 @@ pub(in crate::sqlite) async fn replay_scope(
     run_id: &crabber_core::RunId,
     id: &ControlId,
     digest: &InputFingerprint,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<ApprovalReceipt>, Error> {
-    let saved = receipt(tx, session, id).await?;
+    let saved = super::receipt_with_proof(tx, session, id, proof)
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))?;
     if saved
         .as_ref()
         .is_some_and(|r| r.run_id != *run_id || r.semantic_digest != *digest)

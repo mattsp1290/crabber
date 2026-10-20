@@ -20,12 +20,9 @@ pub(super) fn verify(
     for result in &view.results {
         member(state, &result.original, proof)?;
     }
+    let results = protocol::ResultIndex::new(&view.results, proof)?;
     for publication in view.publications {
-        if let Some(result) = view
-            .results
-            .iter()
-            .find(|r| r.digest().ok().as_ref() == Some(&publication.original_digest))
-        {
+        if let Some((_, result)) = results.get(&publication.original_digest) {
             match &result.original {
                 Original::ReserveInitial(v) | Original::BeginInitial(v) => {
                     latest_attempt = Some(&v.after);

@@ -6,6 +6,7 @@ pub(super) mod fresh;
 mod inspection;
 #[path = "successor/pending_approval.rs"]
 mod pending_approval;
+mod scoped;
 mod source;
 #[path = "successor/tool.rs"]
 mod tool;

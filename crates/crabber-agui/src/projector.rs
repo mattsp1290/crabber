@@ -1,15 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ag_ui_core::event::{
-    ActivitySnapshotEvent, BaseEvent, Event, ReasoningEndEvent, ReasoningMessageContentEvent,
-    ReasoningMessageEndEvent, ReasoningMessageStartEvent, ReasoningStartEvent, StepFinishedEvent,
-    StepStartedEvent, TextMessageContentEvent, TextMessageEndEvent, TextMessageStartEvent,
+    ActivitySnapshotEvent, BaseEvent, Event, ReasoningEndEvent, ReasoningMessageEndEvent,
+    StepFinishedEvent, StepStartedEvent, TextMessageEndEvent, TextMessageStartEvent,
     ToolCallArgsEvent, ToolCallEndEvent, ToolCallResultEvent, ToolCallStartEvent,
 };
 use ag_ui_core::types::Role;
 use crabber_core::event_payload::{
-    CallDelta, CallIdentity, CallSettled, CallStarted, MessageCommitted, MessageDelta,
-    MessageEnded, MessageIdentity, StreamOutcome,
+    CallDelta, CallIdentity, CallSettled, CallStarted, MessageCommitted, MessageEnded,
+    MessageIdentity, StreamOutcome,
 };
 use crabber_core::{
     ContentBlock, EventKind, EventRecord, MessageId, ReasoningProvenance, RunId, SessionId,
@@ -27,6 +26,7 @@ mod native;
 mod presentation;
 mod sources;
 mod terminal;
+mod text;
 
 /// All limits are independently reducible from these defaults. No transcript is retained.
 #[derive(Debug, Clone)]
@@ -582,39 +582,7 @@ impl Projector {
                 | EventKind::InteractionChanged
                 | EventKind::ContinuationChanged
         ) {
-            json_bytes(&record.payload, self.config.max_event_bytes)?;
-            let activity = native::project(record)?;
-            let id = MessageId::from(activity.message_id.as_str());
-            if !self.activities.contains(&activity.message_id)
-                && (self.messages.contains_key(&id)
-                    || self.ui_messages.contains_key(&id)
-                    || self.result_ids.contains(&id)
-                    || self
-                        .public_state
-                        .activities
-                        .contains_key(&activity.message_id))
-            {
-                return Err(ProjectionError::Identity);
-            }
-            if !self.activities.contains(&activity.message_id)
-                && self.activities.len() + self.public_state.activities.len()
-                    >= self.config.max_messages
-            {
-                return Err(ProjectionError::Limit);
-            }
-            self.open_exchange(&base, &mut output);
-            self.activities.insert(activity.message_id.clone());
-            let snapshot = ActivitySnapshotEvent {
-                base,
-                message_id: activity.message_id.clone().into(),
-                activity_type: activity.activity_type.into(),
-                content: activity.content,
-                replace: Some(true),
-            };
-            self.native_activities
-                .insert(activity.message_id, snapshot.clone());
-            output.push(Event::ActivitySnapshot(snapshot));
-            return Ok(output);
+            return self.project_native_activity(record, base);
         }
         if record.kind == EventKind::RunResumed {
             return self.project_resume(record, base);
@@ -659,120 +627,7 @@ impl Projector {
                     .insert(payload.message_id, MessageState::default());
             }
             EventKind::TextDelta | EventKind::ReasoningDelta => {
-                // Check field size before deserializing/copying it.
-                let text = record
-                    .payload
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .ok_or(ProjectionError::Malformed)?;
-                let reasoning = record.kind == EventKind::ReasoningDelta;
-                if text.len() > self.config.max_text_bytes {
-                    return Err(ProjectionError::Limit);
-                }
-                let (payload, item_id) = if reasoning {
-                    json_bytes(&record.payload, self.config.max_event_bytes)?;
-                    let message_id = record
-                        .payload
-                        .get("message_id")
-                        .and_then(Value::as_str)
-                        .filter(|id| {
-                            !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
-                        })
-                        .ok_or(ProjectionError::Malformed)?;
-                    match record.payload.get("provenance").and_then(Value::as_str) {
-                        Some("public_summary") => {
-                            let public: crabber_core::event_payload::ReasoningDelta =
-                                self.payload(record)?;
-                            if public.provenance != ReasoningProvenance::PublicSummary
-                                || public.item_id.is_empty()
-                                || public.item_id.len() > 1024
-                                || public.item_id.chars().any(char::is_control)
-                            {
-                                return Err(ProjectionError::Malformed);
-                            }
-                            (
-                                MessageDelta {
-                                    message_id: public.message_id,
-                                    text: public.text,
-                                },
-                                Some(public.item_id),
-                            )
-                        }
-                        None | Some("private" | "unspecified") => {
-                            let limit = self.config.max_text_bytes;
-                            let message = self.active_message(&MessageId::from(message_id))?;
-                            message.reasoning_bytes = message
-                                .reasoning_bytes
-                                .checked_add(text.len())
-                                .filter(|bytes| *bytes <= limit)
-                                .ok_or(ProjectionError::Limit)?;
-                            return Ok(output);
-                        }
-                        Some(_) => return Err(ProjectionError::Malformed),
-                    }
-                } else {
-                    (self.payload::<MessageDelta>(record)?, None)
-                };
-                let limit = self.config.max_text_bytes;
-                let show_reasoning = self.config.reasoning;
-                let reasoning_limit = self.config.max_messages.saturating_sub(
-                    self.messages
-                        .values()
-                        .map(|message| message.reasoning_items.len())
-                        .sum(),
-                );
-                let message = self.active_message(&payload.message_id)?;
-                let bytes = if reasoning {
-                    &mut message.reasoning_bytes
-                } else {
-                    &mut message.text_bytes
-                };
-                *bytes = bytes
-                    .checked_add(text.len())
-                    .filter(|n| *n <= limit)
-                    .ok_or(ProjectionError::Limit)?;
-                if text.is_empty() || (reasoning && !show_reasoning) {
-                    return Ok(output);
-                }
-                if reasoning {
-                    let item_id = item_id.ok_or(ProjectionError::Malformed)?;
-                    let id = format!(
-                        "crabber:reasoning:{}:{}:{item_id}",
-                        payload.message_id.0.len(),
-                        payload.message_id
-                    );
-                    if !message.reasoning_items.contains(&id) {
-                        if reasoning_limit == 0 {
-                            return Err(ProjectionError::Limit);
-                        }
-                        message.reasoning_items.insert(id.clone());
-                        message.reasoning_public = true;
-                        message.public = true;
-                        output.push(Event::ReasoningStart(ReasoningStartEvent {
-                            base: base.clone(),
-                            message_id: id.clone().into(),
-                        }));
-                        output.push(Event::ReasoningMessageStart(ReasoningMessageStartEvent {
-                            base: base.clone(),
-                            message_id: id.clone().into(),
-                            role: Role::Reasoning,
-                        }));
-                    }
-                    output.push(Event::ReasoningMessageContent(
-                        ReasoningMessageContentEvent {
-                            base,
-                            message_id: id.into(),
-                            delta: payload.text,
-                        },
-                    ));
-                } else {
-                    self.open_text(&payload.message_id, &base, &mut output)?;
-                    output.push(Event::TextMessageContent(TextMessageContentEvent {
-                        base,
-                        message_id: payload.message_id.to_string().into(),
-                        delta: payload.text,
-                    }));
-                }
+                return self.project_text_delta(record, base);
             }
             EventKind::ToolCallStarted => {
                 let payload: CallStarted = self.payload(record)?;

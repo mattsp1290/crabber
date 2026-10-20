@@ -138,7 +138,7 @@ impl Orchestrator {
             .await;
         }
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        let control = ApprovalResume {
+        let control = ApprovalResume::Approval {
             prepared: None,
             control: ApprovalControl::Recover(recovery),
             sender,
@@ -147,7 +147,13 @@ impl Orchestrator {
             run.session_id.clone(),
             run.id.clone(),
             move |runtime, cancellation| async move {
-                Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
+                Box::pin(runtime.resume_loaded(
+                    run,
+                    validated,
+                    cancellation,
+                    super::recovery::ResumeRequest::Continuation(Box::new(control)),
+                ))
+                .await
             },
         )?;
         super::continuation::claim_result(handle, receiver).await

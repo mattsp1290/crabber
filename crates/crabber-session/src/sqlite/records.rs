@@ -3,8 +3,8 @@ use super::{Sqlite, SqliteConnection, StoreError, Transaction, db, decode, text}
 use crate::InboxKind;
 use crate::sql_snapshot as snapshot;
 use crabber_core::{
-    AdmissionKey, AdmissionReceipt, ContextEpoch, EpochId, EventRecord, Message, Part, PartKind,
-    Run, RunId, RunStatus, SessionId, ToolCallId, ToolCallRecord, ToolCallStatus,
+    AdmissionKey, AdmissionReceipt, ContextEpoch, EpochId, EventRecord, Message, Part, Run, RunId,
+    RunStatus, SessionId, ToolCallId, ToolCallRecord, ToolCallStatus,
 };
 use serde::de::DeserializeOwned;
 use sqlx::{Row, sqlite::SqliteRow};
@@ -326,42 +326,18 @@ pub(super) async fn project(
         None
     };
     let all = messages(connection, id).await?;
-    let selected = if let Some(epoch) = selected.filter(|epoch| epoch.summary_message_id.is_some())
-    {
-        let summary_id = epoch.summary_message_id.as_ref().expect("checked");
-        let summary = all
-            .iter()
-            .find(|message| &message.id == summary_id)
-            .ok_or(StoreError::NotFound)?
-            .clone();
-        let mut selected = vec![summary];
-        if let Some(tail) = epoch.tail_start_message_id {
-            let index = all
-                .iter()
-                .position(|message| message.id == tail)
-                .ok_or(StoreError::NotFound)?;
-            selected.extend(
-                all[index..]
-                    .iter()
-                    .filter(|message| &message.id != summary_id)
-                    .cloned(),
-            );
-        }
-        selected
-    } else {
-        all
-    };
-    Ok(selected
-        .into_iter()
-        .filter_map(|mut message| {
-            message
-                .parts
-                .retain(|part| !matches!(part.kind, PartKind::Custom { .. }));
-            (!message.parts.is_empty()).then_some(message)
-        })
-        .collect())
+    crate::context_projection::project(all, selected)
 }
 
+pub(super) async fn lookup_receipt_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    key: &AdmissionKey,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<AdmissionReceipt>, StoreError> {
+    super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|_| StoreError::Conflict)?;
+    lookup_receipt(tx, session, key).await
+}
 pub(super) async fn lookup_receipt(
     connection: &mut SqliteConnection,
     session: &SessionId,

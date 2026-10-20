@@ -169,8 +169,9 @@ parent history. RAW/CUSTOM hooks require explicit bounded `raw_sources` /
 `custom_events` allowlists and typed source-bearing events; arbitrary legacy
 custom records never pass through. Tool progress requires a known current call. Runtime `ToolContext::progress` is
 text-only and best-effort: it drops non-text or oversized content. Separately,
-typed native public-source progress uses the same public typed-content conversion
-as tool results, including supported media and recursive private-data filtering.
+authenticated native public-source progress validates text only. The adapter can
+represent supported media through its typed-content conversion and private-data
+filtering, but this supplies no native media-progress publication route.
 Progress does not imply tool completion.
 
 ## Typed wire input
@@ -239,10 +240,13 @@ unsupported profile -> 422; request/admission deadline -> 408; body over 128 KiB
 capacity/shutdown -> 503; startup failure -> generic 500. Admission occurs
 before successful SSE headers.
 
-`threadId` becomes the stored SessionId. The example's ThreadStore wrapper lets
-the first POST create that exact session via the existing atomic memory-store
-admission transaction; ordinary runtime prompt(Some(session)) otherwise requires
-an existing session. It owns one workspace/directory and process-local history.
+`threadId` becomes the stored SessionId. Before preparing the first admission,
+the example's `ensure_thread` commits an exact deterministic `ManageSession`
+creation and captures its resulting revision. Its ThreadStore wrapper forwards
+the original requests and capabilities to the same Memory store; it does not
+rewrite admission or mint execution authority. Ordinary runtime
+`prompt(Some(session))` requires an existing session. The example owns one
+workspace/directory and process-local history.
 POSTs are not idempotent; later repeated requests can start another turn.
 Production retries use [keyed admission](admission-receipts.md).
 

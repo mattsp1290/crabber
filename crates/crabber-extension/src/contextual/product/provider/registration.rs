@@ -21,19 +21,12 @@ pub(in crate::contextual) fn capture(
         crate::dispatch::discard_panic_payload(payload);
         ExtensionError::RegistrationDescriptorUnavailable
     })?;
-    if identity.id.is_empty()
-        || identity.id.len() > 128
-        || identity.id.chars().any(char::is_control)
-        || identity.version.is_empty()
-        || identity.version.len() > 128
-        || identity.version.chars().any(char::is_control)
-        || !names.insert(identity.id.clone())
-        || config.len() > 16384
-    {
-        return Err(ExtensionError::Plan(
-            "invalid Box provider factory metadata".into(),
-        ));
-    }
+    super::super::metadata::validate(
+        &identity,
+        &config,
+        names,
+        "invalid Box provider factory metadata",
+    )?;
     let config_hash = crate::plan::registration_hash(serde_json::json!([
         "crabber.contextual-provider-product-cell.v1",
         identity,

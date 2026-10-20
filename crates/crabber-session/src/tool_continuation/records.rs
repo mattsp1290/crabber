@@ -49,16 +49,7 @@ impl ToolContinuationRecord {
         let mut questions = Vec::new();
         for phase in &batch.phases {
             for question in &phase.interactions {
-                let expires_at = question
-                    .description
-                    .expires_after_ms()
-                    .map(|ms| {
-                        now.checked_add(time::Duration::milliseconds(
-                            i64::try_from(ms).map_err(|_| Error::InvalidRequest)?,
-                        ))
-                        .ok_or(Error::InvalidRequest)
-                    })
-                    .transpose()?;
+                let expires_at = interaction_expiry(&question.description, now)?;
                 questions.push(ToolQuestion {
                     view: ToolInteractionView {
                         id: question.id.clone(),
@@ -96,23 +87,26 @@ impl ToolContinuationRecord {
         }
         identity(&self.session_id.0, 512)?;
         identity(&self.run_id.0, 128)?;
-        let original = Self::new(
-            self.session_id.clone(),
-            self.run_id.clone(),
-            self.workspace_id.clone(),
-            self.batch.clone(),
-            self.created_at,
-        )
-        .map_err(|_| Error::UnknownStoreOutcome)?;
-        if original.questions.len() != self.questions.len() {
+        self.batch
+            .fingerprint(&self.session_id, &self.run_id)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let expected = self.batch.phases.iter().flat_map(|phase| {
+            phase
+                .interactions
+                .iter()
+                .map(move |question| (phase, question))
+        });
+        if expected.clone().count() != self.questions.len() {
             return Err(Error::UnknownStoreOutcome);
         }
-        for (expected, question) in original.questions.iter().zip(&self.questions) {
-            if expected.view.id != question.view.id
-                || expected.view.call_id != question.view.call_id
-                || expected.view.phase != question.view.phase
-                || expected.view.description != question.view.description
-                || expected.view.expires_at != question.view.expires_at
+        for ((phase, expected), question) in expected.zip(&self.questions) {
+            let expires_at = interaction_expiry(&expected.description, self.created_at)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+            if expected.id != question.view.id
+                || phase.previous.call_id != question.view.call_id
+                || phase.previous != question.view.phase
+                || expected.description != question.view.description
+                || expires_at != question.view.expires_at
                 || question.view.consumed != (self.state != ToolContinuationState::Waiting)
             {
                 return Err(Error::UnknownStoreOutcome);
@@ -434,4 +428,20 @@ impl ToolContinuationRecord {
             })
             .collect()
     }
+}
+
+fn interaction_expiry(
+    description: &InteractionDescription,
+    created_at: OffsetDateTime,
+) -> Result<Option<OffsetDateTime>, Error> {
+    description
+        .expires_after_ms()
+        .map(|ms| {
+            created_at
+                .checked_add(time::Duration::milliseconds(
+                    i64::try_from(ms).map_err(|_| Error::InvalidRequest)?,
+                ))
+                .ok_or(Error::InvalidRequest)
+        })
+        .transpose()
 }

@@ -3,7 +3,7 @@ use super::{
     Anchor, AssignmentLink, Bundle, CallResult, ConsumerClose, ConsumerInput, Correlation,
     DriverRetirement, Failure, Head, InputFingerprint, NoOpenedMember, Origin, Original, Proof,
     Publication, PublicationKind, RecordDelta, RegisteredCall, ReverseMembership, RosterEntry,
-    Selection, VerifiedConsumerCall, copied, digest, roster_digest, unknown, verify_order,
+    Selection, ResultIndex, VerifiedConsumerCall, copied, digest, roster_digest, unknown, verify_order,
 };
 use crate::native_enrollment::pending_initial::{self as birth, prefix::HistoricalInitialPrefix};
 use crate::session_owner::SessionOwnerError as Error;
@@ -236,18 +236,14 @@ pub(crate) fn prepare_call<'a, 'records>(
         }
         return Ok(CallDecision::Replayed(result));
     }
+    let results = ResultIndex::new(&view.results, proof).map_err(|error| failure(&error))?;
     let mut seen = Vec::new();
     for p in view
         .publications
         .iter()
         .filter(|p| p.kind == PublicationKind::CommittedCall)
     {
-        let r = view
-            .results
-            .iter()
-            .copied()
-            .find(|r| r.digest().ok().as_ref() == Some(&p.original_digest))
-            .ok_or(Error::UnknownStoreOutcome)?;
+        let (_, r) = results.get(&p.original_digest).ok_or(Error::UnknownStoreOutcome)?;
         proof
             .measure(&p.original_digest)
             .map_err(|error| failure(&error))?;

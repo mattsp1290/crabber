@@ -63,7 +63,7 @@ impl super::PostgresStore {
                     crate::session_owner::preparation::PreparationSource::ExpiredRun(source),
                 ) = &preparation.source
                 {
-                    super::super::expired::load_run(tx, source.request()).await?
+                    super::super::expired::load_run_with_proof(tx, source.request(), proof).await?
                 } else {
                     super::super::load_run_with_proof(tx, run_id, proof)
                         .await
@@ -104,15 +104,24 @@ impl super::PostgresStore {
     ) -> Result<(), Error> {
         match source {
             crate::session_owner::preparation::PreparationSource::ExpiredRun(source) => {
-                let current =
-                    super::super::expired::context(tx, source.request().clone(), self.clock.now())
-                        .await?;
+                let current = super::super::expired::context_with_proof(
+                    tx,
+                    source.request().clone(),
+                    self.clock.now(),
+                    proof,
+                )
+                .await?;
                 source.verify_source(&current)?;
             }
             crate::session_owner::preparation::PreparationSource::AdmissionRecovery(recovery) => {
-                super::super::admission_execution::validate_source(tx, recovery, self.clock.now())
-                    .await
-                    .map_err(unknown)?;
+                super::super::admission_execution::validate_source_with_proof(
+                    tx,
+                    recovery,
+                    self.clock.now(),
+                    proof,
+                )
+                .await
+                .map_err(unknown)?;
             }
             crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
                 super::super::approval::preparation_context(tx, run, claim, proof)
@@ -168,3 +177,7 @@ impl super::PostgresStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "preflight/proof_tests.rs"]
+mod proof_tests;

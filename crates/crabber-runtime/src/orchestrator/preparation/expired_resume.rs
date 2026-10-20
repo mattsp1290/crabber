@@ -61,12 +61,12 @@ impl Orchestrator {
             run.id.clone(),
             Some(driver::Request::Successor(request)),
             move |runtime, cancellation| async move {
-                Box::pin(runtime.resume_loaded_inner(
+                Box::pin(runtime.resume_prepared(
                     run,
                     validated,
                     cancellation,
-                    None,
-                    Some(prepared),
+                    prepared,
+                    super::super::recovery::PreparedResumeKind::Expired,
                 ))
                 .await
             },
@@ -139,12 +139,12 @@ impl Orchestrator {
                         frontend_phases: Vec::new(),
                     },
                 };
-                Box::pin(runtime.resume_loaded_inner(
+                Box::pin(runtime.resume_prepared(
                     run,
                     validated,
                     cancellation,
-                    None,
-                    Some(prepared),
+                    prepared,
+                    super::super::recovery::PreparedResumeKind::Expired,
                 ))
                 .await
             },

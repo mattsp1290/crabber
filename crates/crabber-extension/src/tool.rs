@@ -170,7 +170,8 @@ impl ToolContext {
     }
     /// Best-effort display progress for the current call. The Runtime forwards
     /// bounded text only; non-text and oversized updates are dropped. Use the
-    /// typed public-source writer for supported media and durable UI updates.
+    /// native public-source writer for durable UI updates; native tool progress
+    /// there also validates text only. Return typed tool output for media results.
     pub fn progress(&self, content: ContentBlock) {
         (self.progress)(content);
     }

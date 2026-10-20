@@ -1,9 +1,11 @@
 use super::tests::{TEST_LOCK, test_url};
 use super::*;
 use crate::abandonment_contract::{FixtureStore, abandon_request, event, request};
+use async_trait::async_trait;
 use crabber_core::{
     AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest, EventKind, ManualClock,
 };
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 #[async_trait]

@@ -161,8 +161,11 @@ identify an LLM attempt and does not fabricate a native LLM link. Native recover
 links point to the previous LLM admission root, never the unrelated host APM span.
 
 The killed-worker test flushes the original anchor/model export before killing
-its process, waits for real lease expiry, and proves a fresh worker emits an
-interrupted attempt linked to the captured original root. Nonblocking export
+its process and waits for real lease expiry. Fresh recovery refuses the native
+Started work with `Busy`: it emits no replacement callbacks, effects or recovery
+span, and preserves the unresolved phase/cleanup state and original closed
+anchor. The host must reconcile the actual outcome and resource joins explicitly;
+lease expiry supplies neither evidence. Nonblocking export
 can lose buffered observations on abrupt termination. A host needing guaranteed
 telemetry delivery must synchronize intake or supply its own durable observation
 policy; an absent predecessor cannot be claimed visible in Datadog.

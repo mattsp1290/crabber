@@ -1,8 +1,10 @@
 //! Allowlisted native attempt presentation; this is not native authentication.
-use crabber_core::{EventKind, EventRecord};
+use crate::sse::json_bytes;
+use ag_ui_core::event::{ActivitySnapshotEvent, BaseEvent, Event};
+use crabber_core::{EventKind, EventRecord, MessageId};
 use serde_json::{Map, Value, json};
 
-use super::ProjectionError;
+use super::{ProjectionError, Projector};
 
 pub(super) struct AttemptActivity {
     pub message_id: String,
@@ -292,4 +294,47 @@ fn continuation(record: &EventRecord) -> Result<AttemptActivity, ProjectionError
         activity_type: "crabber.continuation_control",
         content,
     })
+}
+
+impl Projector {
+    pub(super) fn project_native_activity(
+        &mut self,
+        record: &EventRecord,
+        base: BaseEvent,
+    ) -> Result<Vec<Event>, ProjectionError> {
+        let mut output = Vec::new();
+        json_bytes(&record.payload, self.config.max_event_bytes)?;
+        let activity = project(record)?;
+        let id = MessageId::from(activity.message_id.as_str());
+        if !self.activities.contains(&activity.message_id)
+            && (self.messages.contains_key(&id)
+                || self.ui_messages.contains_key(&id)
+                || self.result_ids.contains(&id)
+                || self
+                    .public_state
+                    .activities
+                    .contains_key(&activity.message_id))
+        {
+            return Err(ProjectionError::Identity);
+        }
+        if !self.activities.contains(&activity.message_id)
+            && self.activities.len() + self.public_state.activities.len()
+                >= self.config.max_messages
+        {
+            return Err(ProjectionError::Limit);
+        }
+        self.open_exchange(&base, &mut output);
+        self.activities.insert(activity.message_id.clone());
+        let snapshot = ActivitySnapshotEvent {
+            base,
+            message_id: activity.message_id.clone().into(),
+            activity_type: activity.activity_type.into(),
+            content: activity.content,
+            replace: Some(true),
+        };
+        self.native_activities
+            .insert(activity.message_id, snapshot.clone());
+        output.push(Event::ActivitySnapshot(snapshot));
+        Ok(output)
+    }
 }

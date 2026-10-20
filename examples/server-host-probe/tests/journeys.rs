@@ -9,6 +9,9 @@ async fn memory_public_host() -> Result<(), Error> {
     assert_eq!(report.contexts, 2);
     assert_eq!(report.ordinary_effects, 2);
     assert_eq!(report.interactive_effects, 1);
+    assert_eq!(report.resumed_executions, 2);
+    assert_eq!(report.terminated_approvals, 1);
+    assert_eq!(report.http_support_profiles, 2);
     assert!(store.calls() > 0);
     Ok(())
 }

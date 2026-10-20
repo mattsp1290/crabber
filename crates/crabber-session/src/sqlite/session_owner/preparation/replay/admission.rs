@@ -10,12 +10,25 @@ impl crate::sqlite::SqliteStore {
     pub(super) async fn replay_admission(
         tx: &mut Transaction<'_, Sqlite>,
         joined: &JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Option<PreparationCompletion>, Error> {
         let PreparedOperation::Admit(bound) = joined.observed_operation() else {
             return Ok(None);
         };
         let grant = joined.observed_grant();
         let metadata = grant.reconciliation()?;
+        let query = format!(
+            "SELECT CAST(COALESCE(length(CAST(witness AS BLOB)),0)+COALESCE(length(CAST(initial AS BLOB)),0)+COALESCE(length(CAST(session AS BLOB)),0)+COALESCE(length(CAST(run_id AS BLOB)),0) AS BIGINT) FROM ({ORIGINAL}) selected"
+        );
+        crate::sqlite::read_proof::charge(
+            tx,
+            sqlx::query_scalar(&query)
+                .bind(&metadata.session_id.0)
+                .bind(&metadata.join_id.0),
+            proof,
+        )
+        .await
+        .map_err(|_| Error::Capacity)?;
         let row = sqlx::query(ORIGINAL)
             .bind(&metadata.session_id.0)
             .bind(&metadata.join_id.0)
@@ -41,9 +54,14 @@ impl crate::sqlite::SqliteStore {
             serde_json::from_str(row.try_get("initial").map_err(unknown)?).map_err(unknown)?;
         let mut audits = Vec::with_capacity(5);
         for id in witness.audit_ids()? {
-            let audit = crate::sqlite::session_owner::source_audit(tx, &metadata.session_id, &id)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            let audit = crate::sqlite::session_owner::source_audit_with_proof(
+                tx,
+                &metadata.session_id,
+                &id,
+                proof,
+            )
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
             audits.push(audit);
         }
         let audits = audits.try_into().map_err(|_| Error::UnknownStoreOutcome)?;

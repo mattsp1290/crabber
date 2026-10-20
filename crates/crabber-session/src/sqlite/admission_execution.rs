@@ -1,4 +1,6 @@
 mod initial_begin;
+#[path = "admission_execution/lookup.rs"]
+mod lookup;
 pub(in crate::sqlite) use initial_begin::begin_initial_in;
 #[path = "admission_execution/recovery.rs"]
 mod recovery;
@@ -17,7 +19,7 @@ use crate::StoreError;
 use crate::transaction::Transaction;
 use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
 use crabber_core::{Run, RunId};
-pub(super) use inspection::{inspect, validate_source};
+pub(super) use inspection::{inspect, validate_source_with_proof};
 use sqlx::{Row, Sqlite};
 
 pub(super) async fn load_record(

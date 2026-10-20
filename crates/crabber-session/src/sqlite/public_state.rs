@@ -52,6 +52,16 @@ async fn receipt_with_proof(
     id: &ControlId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<PublicStateReceipt>, Error> {
+    Ok(saved_with_proof(tx, session, id, proof)
+        .await?
+        .map(|saved| saved.receipt))
+}
+async fn saved_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<public_state::SavedPublication>, Error> {
     super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(r.data_json AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+COALESCE(length(CAST(e.data AS BLOB)),0)+64 AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.seq=r.event_seq AND e.session_id=r.session_id WHERE r.session_id=$1 AND r.operation_id=$2").bind(&session.0).bind(&id.0),proof).await.map_err(|_|Error::UnknownStoreOutcome)?;
     let row = sqlx::query(RECEIPT)
         .bind(&session.0)
@@ -83,7 +93,7 @@ async fn receipt_with_proof(
         proof
             .charge(raw.len())
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        let event: crabber_core::EventRecord =
+        let mut event: crabber_core::EventRecord =
             serde_json::from_str(raw).map_err(|_| Error::UnknownStoreOutcome)?;
         if row.get::<Option<String>, _>("event_run_id").as_deref() != Some(&receipt.run_id.0) {
             return Err(Error::UnknownStoreOutcome);
@@ -98,8 +108,13 @@ async fn receipt_with_proof(
         } else {
             public_state::verify_receipt_event(&receipt, &event)?;
         }
-        source::verify_before(tx, &event, proof).await?;
-        Ok(Some(receipt))
+        let before = source::read_before(tx, &event, proof).await?;
+        event.cursor = Some(receipt.event_cursor);
+        Ok(Some(public_state::SavedPublication {
+            receipt,
+            event,
+            before,
+        }))
     }
 }
 async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Result<T, Error> {
@@ -423,3 +438,7 @@ mod tests {
         .await;
     }
 }
+
+#[cfg(test)]
+#[path = "public_state/retained_tests.rs"]
+mod retained_tests;

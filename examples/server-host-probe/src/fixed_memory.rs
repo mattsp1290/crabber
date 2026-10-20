@@ -1,4 +1,5 @@
 //! Public fixed intake, actual cleanup observation, guarded deletion and replay.
+mod proof_limit;
 use super::{Error, selection};
 use crabber::{
     SessionContext,
@@ -22,6 +23,7 @@ pub(crate) async fn run() -> Result<usize, Error> {
     session(&host, false).await?;
     session(&clone, true).await?;
     parked_stop(&host).await?;
+    proof_limit::run().await?;
     Ok(2)
 }
 

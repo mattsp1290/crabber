@@ -3,6 +3,7 @@ use super::{
     tests::{TEST_LOCK, request, test_url},
     *,
 };
+use crate::{KeyedAdmitOutcome, KeyedAdmitRequest};
 use crabber_core::{AdmissionOptions, EventKind, InputFingerprint, ManualClock};
 use std::{
     process::{Child, Command, Stdio},

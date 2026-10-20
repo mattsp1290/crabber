@@ -1,5 +1,5 @@
 //! The same original callback body, separated from locked roster publication.
-use super::{CallbackInvocationCapability, Mount, OriginalRoster, observe};
+use super::{CallbackInvocationCapability, Mount, OriginalRoster};
 use futures::future::BoxFuture;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -36,7 +36,12 @@ impl<T: Send + 'static, F: FnOnce() -> BoxFuture<'static, T> + Send + 'static> W
         {
             return true;
         }
-        let output = observe(self.construct, self.cancel).await;
+        let output = crate::dispatch::original::original(
+            self.construct,
+            std::convert::identity,
+            &self.cancel,
+        )
+        .await;
         let success = output.is_ok();
         if let Ok(Some(output)) = output {
             let _ = self.send.send(output);

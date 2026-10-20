@@ -4,19 +4,6 @@ use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{admission::Witness, expired::unkeyed::Original};
 use crabber_core::{RunId, SessionId};
 use sqlx::{Postgres, Row};
-pub(in crate::postgres) async fn read(
-    tx: &mut Transaction<'_, Postgres>,
-    session: &SessionId,
-    run: &RunId,
-) -> Result<Option<Box<Original>>, Error> {
-    read_with_proof(
-        tx,
-        session,
-        run,
-        &mut crate::public_session::v2::proof::Proof::legacy(),
-    )
-    .await
-}
 pub(in crate::postgres) async fn read_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

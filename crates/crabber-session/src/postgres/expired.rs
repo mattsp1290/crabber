@@ -65,7 +65,7 @@ pub(super) async fn context_with_proof(
         return Err(Error::LiveOwner);
     }
     proof.charge(1).map_err(unknown)?;
-    if super::has_pending_continuation(tx, &run.session_id)
+    if super::admission_reads::pending(tx, &run.session_id, proof)
         .await
         .map_err(unknown)?
     {
@@ -218,8 +218,7 @@ async fn initial_provenance(
     if record.state != crate::AdmissionExecutionState::Started {
         return Err(Error::InvalidTransition);
     }
-    super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&run.session_id.0).bind(record.key.as_str()), proof).await.map_err(unknown)?;
-    let receipt = super::lookup_receipt(tx, &run.session_id, &record.key)
+    let receipt = super::lookup_receipt_with_proof(tx, &run.session_id, &record.key, proof)
         .await
         .map_err(unknown)?;
     if receipt.as_ref() != Some(&record.receipt) {
@@ -278,3 +277,7 @@ pub(super) async fn verify_begin(
 
 #[path = "expired/legacy.rs"]
 mod legacy;
+
+#[cfg(test)]
+#[path = "expired/proof_tests.rs"]
+mod proof_tests;

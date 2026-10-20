@@ -27,8 +27,10 @@ mod attempt;
 mod deletion;
 mod execution;
 mod execution_binding;
+mod extension_state;
 mod fork;
 mod frontend;
+mod inbox;
 mod legacy_execution;
 mod management;
 mod native_enrollment;
@@ -45,6 +47,7 @@ mod run_control;
 mod session_owner;
 mod snapshot;
 mod store_impl;
+mod store_reads;
 mod tool_continuation;
 mod tool_result;
 mod transactions;
@@ -145,25 +148,6 @@ pub struct SqliteStore {
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-async fn has_pending_continuation(
-    tx: &mut Transaction<'_, Sqlite>,
-    session: &crabber_core::SessionId,
-) -> Result<bool, StoreError> {
-    Box::pin(approval::verify_session(tx, session))
-        .await
-        .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
-    let tool = Box::pin(tool_continuation::pending_in_session(tx, session))
-        .await
-        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
-    let approval: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
-    )
-    .bind(&session.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(db)?;
-    Ok(approval || tool)
-}
 impl SqliteStore {
     /// Creates or verifies the dedicated schema and enables WAL journaling.
     /// The parent directory must already exist. Unknown schemas and foreign

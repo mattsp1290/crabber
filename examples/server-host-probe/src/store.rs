@@ -20,11 +20,18 @@ use std::{
     },
 };
 
+mod boundary;
+mod source_ack;
+pub(crate) use boundary::BoundaryAck;
+pub(crate) use source_ack::SourceAck;
+
 /// A custom host adapter forwarding the complete public transactional contract.
 /// The counter observes calls; it is never execution truth or an ownership cache.
 pub struct AuditedStore {
     inner: Arc<dyn Store>,
     calls: Arc<AtomicUsize>,
+    boundary_ack: Option<Arc<BoundaryAck>>,
+    source_ack: Option<Arc<SourceAck>>,
 }
 impl AuditedStore {
     #[must_use]
@@ -32,6 +39,24 @@ impl AuditedStore {
         Self {
             inner,
             calls: Arc::default(),
+            boundary_ack: None,
+            source_ack: None,
+        }
+    }
+    pub(crate) fn with_boundary_ack_loss(inner: Arc<dyn Store>, ack: Arc<BoundaryAck>) -> Self {
+        Self {
+            inner,
+            calls: Arc::default(),
+            boundary_ack: Some(ack),
+            source_ack: None,
+        }
+    }
+    pub(crate) fn with_source_ack_loss(inner: Arc<dyn Store>, ack: Arc<SourceAck>) -> Self {
+        Self {
+            inner,
+            calls: Arc::default(),
+            boundary_ack: None,
+            source_ack: Some(ack),
         }
     }
     #[must_use]
@@ -46,6 +71,23 @@ macro_rules! delegate {
      sync { $(fn $sync:ident($($sarg:ident: $sty:ty),* $(,)?) -> $sret:ty;)* }) => {
         #[async_trait::async_trait]
         impl Store for AuditedStore {
+            async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                let original = self.inner.execution(fence).await?;
+                let execution: Box<dyn ExecutionStore> = match &self.boundary_ack {
+                    Some(ack) => Box::new(boundary::Execution { inner: original, ack: ack.clone() }),
+                    None => original,
+                };
+                Ok(execution)
+            }
+            async fn mutate_bound_public_source(&self, mutation: s::PublicSourceMutation, authority: s::PublicSourceAuthority) -> Result<s::PublicStateReceipt, s::PublicStateError> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                let receipt = self.inner.mutate_bound_public_source(mutation.clone(), authority).await?;
+                if let Some(ack) = &self.source_ack {
+                    return ack.after_commit(mutation, receipt);
+                }
+                Ok(receipt)
+            }
             $(async fn $name(&self, $($arg: $ty),*) -> $ret {
                 self.calls.fetch_add(1, Ordering::Relaxed);
                 self.inner.$name($($arg),*).await
@@ -146,7 +188,6 @@ delegate! {
         fn lookup_attempt_mutation(_session: &SessionId, _id: &c::ControlId, ) -> Result<Option<s::AttemptReceipt>, s::AttemptError>;
         fn public_continuation_source(fence: &RunFence, authority: &s::AttemptAuthority, ) -> Result<c::continuation_source::ResumeSnapshot, s::PublicStateError>;
         fn lookup_public_source_publication(session: &SessionId, id: &c::ControlId, ) -> Result<Option<s::PublicSourcePublication>, s::PublicStateError>;
-        fn mutate_bound_public_source(mutation: s::PublicSourceMutation, authority: s::PublicSourceAuthority, ) -> Result<s::PublicStateReceipt, s::PublicStateError>;
         fn mutate_invocation_public_source(mutation: s::PublicSourceMutation, authority: s::session_owner::SessionOwnerAuthority, ) -> Result<s::PublicStateReceipt, s::PublicStateError>;
         fn public_state(_session: &SessionId, ) -> Result<s::PublicStateSnapshot, s::PublicStateError>;
         fn lookup_public_state_mutation(_session: &SessionId, _id: &c::ControlId, ) -> Result<Option<s::PublicStateReceipt>, s::PublicStateError>;
@@ -161,7 +202,6 @@ delegate! {
         fn inspect_admission_recovery(request: s::ClaimUnstartedAdmissionRequest) -> Result<s::session_owner::preparation::AdmissionRecoveryPreparation, s::AdmissionExecutionError>;
         fn claim_unstarted_admission(_request: s::ClaimUnstartedAdmissionRequest, ) -> Result<s::ClaimedAdmission, s::AdmissionExecutionError>;
         fn abandon_run(_request: c::AbandonRequest, ) -> Result<c::AbandonOutcome, c::AbandonError>;
-        fn execution(fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError>;
         fn get_session(id: &SessionId) -> Result<Option<Session>, StoreError>;
         fn get_run(id: &RunId) -> Result<Option<Run>, StoreError>;
         fn snapshot(_request: s::SnapshotRequest, ) -> Result<s::SnapshotOutcome, StoreError>;

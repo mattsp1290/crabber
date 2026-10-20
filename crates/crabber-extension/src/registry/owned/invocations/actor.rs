@@ -164,9 +164,13 @@ impl Source {
                 {
                     return true;
                 }
-                super::observe(|| construct(body_cancel), CancellationToken::new())
-                    .await
-                    .is_ok_and(|output| output == Some(true))
+                dispatch::original::original(
+                    || construct(body_cancel),
+                    std::convert::identity,
+                    &CancellationToken::new(),
+                )
+                .await
+                .is_ok_and(|output| output == Some(true))
             })));
             mount
                 .leases

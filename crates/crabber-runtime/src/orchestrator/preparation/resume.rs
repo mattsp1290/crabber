@@ -5,18 +5,30 @@ use super::{Orchestrator, PreparationSpec, Request, RuntimeError};
 use crabber_core::Run;
 use crabber_extension::RunPlan;
 use crabber_providers::BoundProvider;
+use crabber_session::ExecutionBindingCapsule;
 use crabber_session::session_owner::preparation::{
     ExistingWorkTarget, PreparationKey, PreparationPurpose, PreparationSource, PreparedOperation,
 };
-use crabber_session::{ExecutionBindingCapsule, StoreError};
+#[derive(Clone, Copy)]
+enum OperationSource<'a> {
+    Approval(&'a ApprovalControl),
+    Tool(&'a ToolResumeControl),
+}
 pub(super) fn operation(
     control: &ApprovalControl,
 ) -> Result<(PreparationSpec, PreparedOperation), RuntimeError> {
+    selected_operation(OperationSource::Approval(control))
+}
+pub(super) fn tool_operation(
+    control: &ToolResumeControl,
+) -> Result<(PreparationSpec, PreparedOperation), RuntimeError> {
+    selected_operation(OperationSource::Tool(control))
+}
+fn selected_operation(
+    control: OperationSource<'_>,
+) -> Result<(PreparationSpec, PreparedOperation), RuntimeError> {
     let (source, key, run, work, revision, intent, operation) = match control {
-        ApprovalControl::Tool {
-            control: ToolResumeControl::FrontendClaim(frontend),
-            ..
-        } => (
+        OperationSource::Tool(ToolResumeControl::FrontendClaim(frontend)) => (
             PreparationSource::FrontendClaim(frontend.clone()),
             PreparationKey::ToolContinuation(frontend.claim.id.clone()),
             frontend.claim.run_id.clone(),
@@ -25,10 +37,7 @@ pub(super) fn operation(
             frontend.fingerprint()?,
             PreparedOperation::FrontendClaim(frontend.clone()),
         ),
-        ApprovalControl::Tool {
-            control: ToolResumeControl::FrontendRecover(recovery),
-            ..
-        } => (
+        OperationSource::Tool(ToolResumeControl::FrontendRecover(recovery)) => (
             PreparationSource::FrontendRecovery(recovery.clone()),
             PreparationKey::ToolContinuation(recovery.id.clone()),
             recovery.original.claim.run_id.clone(),
@@ -40,7 +49,7 @@ pub(super) fn operation(
             recovery.fingerprint()?,
             PreparedOperation::FrontendRecovery(recovery.clone()),
         ),
-        ApprovalControl::Claim(claim) => (
+        OperationSource::Approval(ApprovalControl::Claim(claim)) => (
             PreparationSource::ApprovalClaim(claim.clone()),
             PreparationKey::Approval(claim.id.clone()),
             claim.run_id.clone(),
@@ -49,10 +58,7 @@ pub(super) fn operation(
             claim.fingerprint()?,
             PreparedOperation::ApprovalClaim(claim.clone()),
         ),
-        ApprovalControl::Tool {
-            control: ToolResumeControl::Claim(claim),
-            ..
-        } => (
+        OperationSource::Tool(ToolResumeControl::Claim(claim)) => (
             PreparationSource::ToolClaim(claim.clone()),
             PreparationKey::ToolContinuation(claim.id.clone()),
             claim.run_id.clone(),
@@ -61,7 +67,7 @@ pub(super) fn operation(
             claim.fingerprint()?,
             PreparedOperation::ToolClaim(claim.clone()),
         ),
-        ApprovalControl::Recover(recovery) => (
+        OperationSource::Approval(ApprovalControl::Recover(recovery)) => (
             PreparationSource::ApprovalRecovery(recovery.clone()),
             PreparationKey::Approval(recovery.id.clone()),
             recovery.original.run_id.clone(),
@@ -73,10 +79,7 @@ pub(super) fn operation(
             recovery.fingerprint()?,
             PreparedOperation::ApprovalRecovery(recovery.clone()),
         ),
-        ApprovalControl::Tool {
-            control: ToolResumeControl::Recover(recovery),
-            ..
-        } => (
+        OperationSource::Tool(ToolResumeControl::Recover(recovery)) => (
             PreparationSource::ToolRecovery(recovery.clone()),
             PreparationKey::ToolContinuation(recovery.id.clone()),
             recovery.original.run_id.clone(),
@@ -106,15 +109,12 @@ impl Orchestrator {
         &self,
         run: &Run,
         binding: &ExecutionBindingCapsule,
-        approval: &mut Option<ApprovalResume>,
+        approval: &mut ApprovalResume,
     ) -> Result<(RunPlan, BoundProvider), RuntimeError> {
-        let native = approval
-            .as_ref()
-            .map(|control| operation(&control.control))
-            .transpose()?;
-        let Some((spec, operation)) = native else {
-            return self.restore_resume_resources(run, binding).await;
-        };
+        let (spec, operation) = match &*approval {
+            ApprovalResume::Approval { control, .. } => operation(control),
+            ApprovalResume::Tool { control, .. } => tool_operation(control),
+        }?;
         let mut request = Request::from_binding(binding);
         self.verify_binding_request(&request, &run.session_id, binding)?;
         let context = crabber_core::SessionContext::new(
@@ -145,10 +145,7 @@ impl Orchestrator {
                 Ok((retained, operation))
             })
             .await?;
-        approval
-            .as_mut()
-            .ok_or(StoreError::AdmissionConflict)?
-            .prepared = Some(completed);
+        approval.set_prepared(completed);
         Ok(resources)
     }
     pub(in crate::orchestrator) async fn restore_resume_resources(

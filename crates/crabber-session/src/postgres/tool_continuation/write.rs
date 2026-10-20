@@ -87,9 +87,11 @@ pub(in crate::postgres) async fn replay_scope(
     run_id: &crabber_core::RunId,
     id: &ControlId,
     digest: &InputFingerprint,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<ToolContinuationReceipt>, Error> {
-    let saved = super::read::receipt(tx, session, id)
-        .await?
+    let saved = super::read::receipt_with_proof(tx, session, id, proof)
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))?
         .map(|(receipt, _)| receipt);
     if saved
         .as_ref()

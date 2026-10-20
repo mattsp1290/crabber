@@ -157,7 +157,7 @@ impl SqliteStore {
         ) {
             let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
                 .bind(&request.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
-            if super::has_pending_continuation(tx, &request.session_id).await? || busy {
+            if super::admission_reads::pending(tx, &request.session_id, proof).await? || busy {
                 return Err(StoreError::Busy);
             }
         }
@@ -278,8 +278,11 @@ impl SqliteStore {
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         request: &QueueMutation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Option<QueueOutcome>, StoreError> {
-        if let Some(saved) = reads::receipt(tx, &request.session_id, &request.id).await? {
+        if let Some(saved) =
+            reads::receipt_with_proof(tx, &request.session_id, &request.id, proof).await?
+        {
             if saved.semantic_digest != request.fingerprint()? {
                 return Err(StoreError::AdmissionConflict);
             }
@@ -336,7 +339,7 @@ impl SqliteStore {
         }
         let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
             .bind(&authority.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
-        if busy || super::has_pending_continuation(tx, &authority.session_id).await? {
+        if busy || super::admission_reads::pending(tx, &authority.session_id, proof).await? {
             return Err(StoreError::Busy);
         }
         Ok(())

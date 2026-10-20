@@ -97,8 +97,9 @@ typed `ToolOutput` interface; its blanket implementation adapts a
 
 `ToolContext::progress(ContentBlock)` is best-effort presentation, not a persisted
 result or completion acknowledgement. The Runtime `ToolContext::progress` path
-forwards text only. Authenticated typed public-source progress uses the projector's
-typed content conversion and can carry supported media. Use committed typed tool
+forwards text only. Authenticated native public-source progress also validates text only. The adapter's
+typed-content conversion can represent media, but supplies no native media-progress
+publication route. Use committed typed tool
 output for authoritative results; progress never supplies result or execution truth.
 
 ## Storable records
@@ -383,7 +384,8 @@ All items below are new or changed. Items in `crabber-extension` are reachable
 as `crabber::extension::…`; items in `crabber-runtime` as `crabber::runtime::…`.
 
 The table maps the public surface to the detailed contract below. `Value` is
-`serde_json::Value`, and `CancellationToken` is `tokio_util::sync::CancellationToken`.
+`serde_json::Value`, `ToolOutput` is `crabber::core::ToolOutput`, and
+`CancellationToken` is `tokio_util::sync::CancellationToken`.
 
 | Surface | API and contract |
 | --- | --- |
@@ -391,9 +393,9 @@ The table maps the public surface to the detailed contract below. `Value` is
 | Unavailable reason | `InputUnavailable::{PrepareFailed, Unresolved}`; explicit absence, never a default (D3) |
 | Outcome class | `ToolOutcomeClass::{Succeeded, ExecutionFailed, PermissionDenied, UnknownTool, PrepareFailed}`; `is_error(self) -> bool` and `as_str(self) -> &'static str`; immutable source outcome (D4) |
 | Phase | `TransformPhase::{Ordinary, FinalRedaction}`; final phase follows all ordinary handlers (D6) |
-| Handler output | `TransformOutput { pub result: Value, pub mark_error: bool }`; `new(Value) -> Self` sets false; `marked_error(Value) -> Self` sets true (D4) |
-| Driver outcome | `ToolResultOutcome::{Completed { result: Value, is_error: bool }, Failed { handler: String }, Interrupted { redacted: Option<Value> }}`; maps to the Persisted forms table (D2, D6) |
-| Native callback | `ResultTransformCallback = Arc<dyn Fn(ToolResultContext, Value) -> BoxFuture<'static, Result<TransformOutput, ExtensionError>> + Send + Sync>`; read-only context and mutable result (D4) |
+| Handler output | `TransformOutput { pub result: ToolOutput, pub mark_error: bool }`; `new(ToolOutput) -> Self` sets false; `marked_error(ToolOutput) -> Self` sets true (D4) |
+| Driver outcome | `ToolResultOutcome::{Completed { result: ToolOutput, is_error: bool }, Failed { handler: String }, Interrupted { redacted: Option<ToolOutput> }}`; maps to the Persisted forms table (D2, D6) |
+| Native callback | `ResultTransformCallback = Arc<dyn Fn(ToolResultContext, ToolOutput) -> BoxFuture<'static, Result<TransformOutput, ExtensionError>> + Send + Sync>`; read-only context and mutable result (D4) |
 | Context construction | `ToolResultContext::new(tool_name: String, resolved: bool, input: ToolInput, call_id: ToolCallId, session_id: SessionId, run_id: RunId, class: ToolOutcomeClass) -> Self`; `with_cancellation(self, CancellationToken) -> Self`, `with_cleanup(self, CleanupTracker) -> Self`; runtime/test construction, no authority granted to a handler |
 | Name and binding | `ToolResultContext::tool_name(&self) -> &str`, `resolved(&self) -> bool`, `input(&self) -> &ToolInput`; provider-requested name and record-derived input (D3) |
 | Durable identities | `ToolResultContext::call_id(&self) -> &ToolCallId`, `session_id(&self) -> &SessionId`, `run_id(&self) -> &RunId`; unchanged on re-execution (D10) |
@@ -402,8 +404,8 @@ The table maps the public surface to the detailed contract below. `Value` is
 | Native registrations | `Registrar::on_result_transform(&mut self, order: i32, id: impl Into<String>, cb: ResultTransformCallback)` and `on_final_redaction` with the same arguments; ordinary and final phases respectively |
 | JSON registrations | Existing `Registrar::on_transform(ToolResultTransform::ID, order, id, cb: Callback)` is ordinary; `on_final_redaction_json(&mut self, order: i32, id: impl Into<String>, cb: Callback)` is final; both use the exact envelope |
 | JSON adapter | `json_result_transform(cb: Callback) -> ResultTransformCallback`; validates context and output, no token or cleanup in JSON |
-| Envelope helpers | `result_envelope(context: &ToolResultContext, result: Value) -> Value`; `parse_result_envelope(context: &ToolResultContext, reply: Value) -> Result<TransformOutput, EnvelopeError>`; exact keys and equality rules in JSON envelope |
-| Envelope errors | `EnvelopeError::{NotAnObject, MissingField(&'static str), UnknownField, ContextChanged, MarkErrorNotBool}`; violations follow D2 |
+| Envelope helpers | `result_envelope(context: &ToolResultContext, result: ToolOutput) -> Value`; `parse_result_envelope(context: &ToolResultContext, reply: Value) -> Result<TransformOutput, EnvelopeError>`; exact keys and equality rules in JSON envelope |
+| Envelope errors | `EnvelopeError::{NotAnObject, MissingField(&'static str), UnknownField, ContextChanged, MarkErrorNotBool, InvalidOutput}`; violations follow D2 |
 | Chain driver | `Dispatcher::transform_tool_result(&self, context: ToolResultContext, seed: TransformOutput) -> ToolResultOutcome` (async); seed is never accepted; driver owns acceptance outside callback futures |
 | Generic dispatch | `Dispatcher::transform::<ToolResultTransform>` and `transform_pinned::<ToolResultTransform>` reject with `ExtensionError::Rejected(ToolResultTransform::ID)`; use the driver |
 | Point identity | `ToolResultTransform::ID` remains `crabber/tool/result-transform`; registration identity includes phase in `"{order}:{mount_seq}:{phase}"` |
@@ -573,8 +575,11 @@ impl CleanupOwner {
 pub struct CleanupJoinTimeout { pub pending: usize }
 ```
 
-A callback cannot close or join a tracker. `spawn` after the close signal still
-runs and tracks the task, so cleanup started late is not lost.
+A callback cannot close or join a tracker. Legacy mount/host trackers allow late
+`spawn` registration after the close signal. Native phase and explicit owned-mount
+trackers seal registration at close: `spawn` rejects late registration before
+polling the task, and `spawn_checked` returns the finite registration error.
+Register required cleanup while its actual scope remains open.
 `ToolResultContext::new` and a `Handler` that has not been mounted hold
 `CleanupTracker::detached()`. `CleanupTracker` lives in `result_transform.rs`
 and has a crate-private constructor from a `TaskTracker` and a close token;
@@ -766,10 +771,10 @@ the message identifies the module.
 
 | Driver outcome | Call status | `is_error` | Content | Notifications |
 | --- | --- | --- | --- | --- |
-| `Completed`, `is_error` false | `Completed` | false | `serde_json::to_string(&result)` | `EventPublished`, `ToolSettled` |
-| `Completed`, `is_error` true | `Failed` | true | `serde_json::to_string(&result)`; a structured error result is no longer stringified first | `EventPublished`, `ToolSettled` |
+| `Completed`, `is_error` false | `Completed` | false | Ordered typed blocks from `result.to_content_blocks()` | `EventPublished`, `ToolSettled` |
+| `Completed`, `is_error` true | `Failed` | true | The same ordered typed blocks, with the error bit retained | `EventPublished`, `ToolSettled` |
 | `Failed { handler }` | `Failed` | true | `serde_json::to_string` of the string `result_transform_failed_message(handler)` | `EventPublished`, `ToolSettled` |
-| `Interrupted { redacted: Some(v) }` | `Interrupted` | true | `serde_json::to_string(&v)` | `EventPublished`, `ToolSettled` |
+| `Interrupted { redacted: Some(v) }` | `Interrupted` | true | Ordered typed blocks from the accepted protected `v` | `EventPublished`, `ToolSettled` |
 | `Interrupted { redacted: None }`, and every fixed settlement | `Interrupted` | true | the bare text `interrupted` | `EventPublished` only |
 
 The same content is the `ToolResult`, the tool message part, the
@@ -792,7 +797,7 @@ pub trait ToolPipeline: Send + Sync {
         &self,
         context: &ToolResultContext,
         tool: &ToolInfo,
-        result: Value,
+        result: crabber::core::ToolOutput,
     ) -> Result<TransformOutput, String>;
 }
 impl OrchestratorBuilder {
@@ -881,9 +886,10 @@ continue. Closing one mount with `MountHandle::close` is **not** terminal: new
 plans simply omit that mount, so a host must not close a redactor's mount that
 way while it still admits runs.
 
-`Agent::close_extensions` calls `close_all` and adds no flag of its own. An
-agent built without extensions has no registry: the call returns `Ok(())` and
-the agent keeps working, since there is nothing to lose.
+`Agent::close_extensions` terminally closes configured host ingress as part of
+registry closure. Later fresh ingress returns `RuntimeError::HostClosed`, including on an
+agent built without extensions. Matching retained admission receipt replay remains
+metadata-only; it does not reopen the host or provide a new execution handle.
 
 ### Recorded answers
 
@@ -1198,8 +1204,9 @@ after `klyf`, `ctj9`, `2xrl` and `0bks`; `v1we` after `orgu`; `eig3` after
 
 ### User-facing guide
 
-Native result handlers receive `ToolResultContext` and the current JSON result
-separately. Register a reducer with `on_result_transform`, and register any
+Native result handlers receive `ToolResultContext` and the current typed
+`ToolOutput` separately. JSON-only handlers use the explicit envelope adapter;
+JSON values remain literal text via `ToolOutput::from_json`. Register a reducer with `on_result_transform`, and register any
 redactor relied on for protection with `on_final_redaction`. The
 [native example](../examples/native-extension/README.md) binds on the exact
 `shell` name and `ToolInput::Normalized` command, changes the result, and
@@ -1314,8 +1321,9 @@ guarantee a successful post-terminal callback commit.
 Spawn child/process cleanup through `context.cleanup().spawn(...)` before
 awaiting work that cancellation may drop. Tasks remain tracked when the callback
 or returned join handle is dropped. A callback can await `closing()`, inspect
-`is_closing()` and `pending()`, but cannot close or join the tracker. Tasks
-spawned after close are still tracked. A detached tracker has no owner, never
+`is_closing()` and `pending()`, but cannot close or join the tracker. Legacy mount/host trackers continue to track late tasks. Native phase and owned
+mount trackers reject registration once sealed, so register required cleanup
+before closing that scope. A detached tracker has no owner, never
 signals close and is not joined automatically; direct `ToolPipeline` hosts
 supply `CleanupOwner::tracker()` via `pipeline_cleanup` and join the owner.
 

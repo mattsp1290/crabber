@@ -1,7 +1,6 @@
 //! Store contract, with read-only calls routed through the reader pool.
-use super::records::{decode_row, inbox_kind, lookup_receipt, messages, project};
-use super::transactions::finish;
-use super::{SqliteExecution, SqliteStore, StoreError, abandon, admission_execution, db, text};
+use super::records::{lookup_receipt, messages, project};
+use super::{SqliteExecution, SqliteStore, StoreError, abandon, admission_execution, db};
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store,
@@ -11,7 +10,6 @@ use crabber_core::{
     AdmissionKey, AdmissionReceipt, EpochId, EventCursor, EventRecord, Message, Run, RunFence,
     RunId, Session, SessionId, ToolCallRecord,
 };
-use sqlx::Row;
 use std::collections::BTreeMap;
 
 #[async_trait]
@@ -765,16 +763,7 @@ impl Store for SqliteStore {
         &self,
         session: &SessionId,
     ) -> Result<crabber_core::SessionRevision, StoreError> {
-        let value: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
-            .bind(&session.0)
-            .fetch_optional(&self.readers)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
-        crabber_core::SessionRevision::new(
-            u64::try_from(value)
-                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?,
-        )
+        self.read_session_revision(session).await
     }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.admit_with_binding(request, None).await
@@ -825,27 +814,7 @@ impl Store for SqliteStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        let mut tx = crate::transaction::begin(&self.readers)
-            .await
-            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
-        let result = async {
-            let receipt = lookup_receipt(&mut tx, session, key)
-                .await
-                .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
-            let record = if let Some(receipt) = receipt {
-                admission_execution::load_record(&mut tx, &receipt.run_id)
-                    .await
-                    .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?
-            } else {
-                None
-            };
-            Ok(record)
-        }
-        .await;
-        finish(tx, result, |_| {
-            crate::AdmissionExecutionError::UnknownStoreFailure
-        })
-        .await
+        self.read_admission_execution(session, key).await
     }
     async fn lookup_expired_run_preparation(
         &self,
@@ -896,13 +865,7 @@ impl Store for SqliteStore {
         }))
     }
     async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError> {
-        sqlx::query("SELECT data FROM sessions WHERE id=$1")
-            .bind(&id.0)
-            .fetch_optional(&self.readers)
-            .await
-            .map_err(db)?
-            .map(|row| decode_row(&row, "data"))
-            .transpose()
+        self.read_session(id).await
     }
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
         self.raw_run(id).await
@@ -929,25 +892,7 @@ impl Store for SqliteStore {
         after: Option<EventCursor>,
         limit: usize,
     ) -> Result<Vec<EventRecord>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT seq,data FROM events WHERE session_id=$1 AND seq>$2 ORDER BY seq LIMIT $3",
-        )
-        .bind(&id.0)
-        .bind(after.map_or(0, |value| i64::try_from(value.0).unwrap_or(i64::MAX)))
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&self.readers)
-        .await
-        .map_err(db)?;
-        rows.into_iter()
-            .map(|row| {
-                let mut event: EventRecord = decode_row(&row, "data")?;
-                event.cursor = Some(EventCursor(
-                    u64::try_from(row.try_get::<i64, _>("seq").map_err(db)?)
-                        .map_err(|_| StoreError::Validation("invalid event cursor".into()))?,
-                ));
-                Ok(event)
-            })
-            .collect()
+        self.read_events(id, after, limit).await
     }
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
         self.raw_unfinished_runs().await
@@ -956,31 +901,13 @@ impl Store for SqliteStore {
         &self,
         run: &RunId,
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
-        sqlx::query(
-            "SELECT data FROM tool_calls WHERE run_id=$1 AND status IN \
-                ('pending','running','waiting') ORDER BY id",
-        )
-        .bind(&run.0)
-        .fetch_all(&self.readers)
-        .await
-        .map_err(db)?
-        .into_iter()
-        .map(|row| decode_row(&row, "data"))
-        .collect()
+        self.read_unfinished_calls(run).await
     }
     async fn admission_execution_state(
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
-        let result = async {
-            let state = admission_execution::load_record(&mut tx, run)
-                .await?
-                .map(|record| record.state);
-            Ok(state)
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+        self.read_admission_execution_state(run).await
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
@@ -997,28 +924,7 @@ impl Store for SqliteStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
-        let result = async {
-            super::deletion::ensure_live(&mut tx, session).await?;
-            let rows = sqlx::query(
-                "SELECT key,value FROM extension_state WHERE session_id=$1 AND extension_id=$2",
-            )
-            .bind(&session.0)
-            .bind(extension_id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(db)?;
-            rows.into_iter()
-                .map(|row| {
-                    Ok((
-                        row.try_get("key").map_err(db)?,
-                        row.try_get("value").map_err(db)?,
-                    ))
-                })
-                .collect()
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+        self.read_extension_state(extension_id, session).await
     }
 
     async fn enqueue_inbox(
@@ -1027,32 +933,6 @@ impl Store for SqliteStore {
         kind: InboxKind,
         message: Message,
     ) -> Result<(), StoreError> {
-        let mut tx = self.begin_write().await?;
-        let result = async {
-            super::deletion::ensure_live(&mut tx, session).await?;
-            if message.session_id != *session {
-                return Err(StoreError::Validation(
-                    "inbox message has wrong session".into(),
-                ));
-            }
-
-            sqlx::query("SELECT 1 FROM sessions WHERE id=$1")
-                .bind(&session.0)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?
-                .ok_or(StoreError::NotFound)?;
-            sqlx::query("INSERT INTO inbox(session_id,kind,data) VALUES($1,$2,$3)")
-                .bind(&session.0)
-                .bind(inbox_kind(kind))
-                .bind(text(&message)?)
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
-            super::records::bump_public_revision(&mut tx, session).await?;
-            Ok(())
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+        self.enqueue_inbox_message(session, kind, message).await
     }
 }

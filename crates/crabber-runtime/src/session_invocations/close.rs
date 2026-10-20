@@ -48,7 +48,7 @@ impl SessionInvocations {
     }
 }
 impl Invocation {
-    fn close_report(&self) -> SessionInvocationReport {
+    pub(super) fn close_report(&self) -> SessionInvocationReport {
         // Acquire completion first so subsequent failure/status reads see the
         // exact join result published before that completion.
         let local_joined = self.observed.load(Ordering::Acquire);

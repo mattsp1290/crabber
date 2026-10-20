@@ -174,7 +174,10 @@ impl SessionInvocations {
                 owner.cancel.cancel();
             }
         }
-        let deadline = tokio::time::Instant::now() + bound;
+        let Some(deadline) = tokio::time::Instant::now().checked_add(bound) else {
+            // Signalling above is real; an unrepresentable wait observes no new joins.
+            return owners.iter().map(|owner| owner.close_report()).collect();
+        };
         let mut reports = Vec::with_capacity(owners.len());
         for owner in owners {
             let Ok(mut join) = tokio::time::timeout_at(deadline, owner.join.lock()).await else {

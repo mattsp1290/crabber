@@ -75,7 +75,10 @@ impl PostgresStore {
             return Err(StoreError::Conflict);
         }
         let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))").bind(&authority.session_id.0).fetch_one(&mut *tx).await.map_err(super::super::db)?;
-        if busy || super::super::has_pending_continuation(&mut tx, &authority.session_id).await? {
+        if busy
+            || super::super::admission_reads::pending(&mut tx, &authority.session_id, &mut proof)
+                .await?
+        {
             return Err(StoreError::Busy);
         }
         let result = saved.retained(&mut proof)?;

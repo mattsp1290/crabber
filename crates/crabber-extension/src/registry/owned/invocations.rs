@@ -1,11 +1,8 @@
 //! Actual callback mains retained by their original concrete owned mount.
 use super::super::{Mount, MountMemberLease};
 use crate::{ExtensionError, dispatch};
-use futures::{FutureExt, future::BoxFuture};
-use std::{
-    panic::AssertUnwindSafe,
-    sync::{Arc, Mutex, Weak},
-};
+use futures::future::BoxFuture;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::{
     sync::{Mutex as AsyncMutex, oneshot},
     task::JoinHandle,
@@ -367,39 +364,4 @@ impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
     }
-}
-
-/// Poll and explicitly dispose the original future before handing off output.
-/// Both operations stay within the original callback's task-local frame.
-async fn observe<T>(
-    construct: impl FnOnce() -> BoxFuture<'static, T>,
-    cancel: CancellationToken,
-) -> Result<Option<T>, ()> {
-    let mut future = match std::panic::catch_unwind(AssertUnwindSafe(construct)) {
-        Ok(future) => future,
-        Err(payload) => {
-            dispatch::discard_panic_payload(payload);
-            return Err(());
-        }
-    };
-    let output = tokio::select! {
-        biased;
-        () = cancel.cancelled() => Ok(None),
-        output = AssertUnwindSafe(&mut future).catch_unwind() => output.map(Some),
-    };
-    let disposed = std::panic::catch_unwind(AssertUnwindSafe(|| drop(future)));
-    let output = match output {
-        Ok(output) => Ok(output),
-        Err(payload) => {
-            dispatch::discard_panic_payload(payload);
-            Err(())
-        }
-    };
-    if let Err(payload) = disposed {
-        dispatch::discard_panic_payload(payload);
-        // Output may retain resources whose ownership became uncertain.
-        std::mem::forget(output);
-        return Err(());
-    }
-    output
 }

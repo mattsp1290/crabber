@@ -9,14 +9,6 @@ pub(in super::super) struct Records {
 pub(super) async fn run(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<Records, Error> {
     scan(tx, &run.session_id, Some(&run.id)).await
 }
-pub(in super::super) async fn pending(
-    tx: &mut Transaction<'_, Postgres>,
-    session: &SessionId,
-) -> Result<bool, Error> {
-    scan(tx, session, None)
-        .await
-        .map(|records| records.active.is_some())
-}
 pub(in super::super) async fn pending_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

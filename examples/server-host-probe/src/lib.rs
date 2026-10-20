@@ -1,14 +1,19 @@
 //! Credential-free public embedding journeys, without a server or projection.
 //! These fixtures do not certify whole-runtime resource coverage or delivery.
+mod approval_termination;
+mod boundary_observations;
 mod controls;
 mod fixed_memory;
 mod frontend;
+mod input_support;
 mod interactive;
 mod ordinary;
 mod public_source;
+mod resume;
 mod shared_services;
 pub mod store;
 mod unsupported_store;
+mod workspace;
 use crabber::{
     core::{ControlId, SessionId, SessionRevision, ToolCallId},
     session::{DeleteSession, DeletionError, Store, StoreError},
@@ -27,9 +32,14 @@ pub struct Report {
     pub interactive_resumes: usize,
     pub interactive_effects: usize,
     pub frontend_resumes: usize,
+    /// Single-source sessions whose deletion and exact replay were exercised;
+    /// excludes the separate session used to check a proof-limit refusal.
     pub fixed_sessions: usize,
     pub shared_service_reads: usize,
     pub public_source_writes: usize,
+    pub resumed_executions: usize,
+    pub terminated_approvals: usize,
+    pub http_support_profiles: usize,
 }
 
 /// Execute public host flows against an injected Store. The Store alone remains
@@ -47,6 +57,11 @@ pub async fn run(store: Arc<dyn Store>) -> Result<Report, Error> {
     let frontend_resumes = frontend::run(store.clone()).await?;
     let shared_service_reads = shared_services::run(store.clone()).await?;
     let public_source_writes = public_source::run(store.clone()).await?;
+    let resumed_executions = resume::run(store.clone()).await?;
+    let terminated_approvals = approval_termination::run(store.clone()).await?;
+    let http_support_profiles = input_support::run()?;
+    workspace::run(store.clone()).await?;
+    boundary_observations::run(store.clone()).await?;
     controls::run(store, source).await?;
     let fixed_sessions = fixed_memory::run().await?;
     assert_eq!(std::env::current_dir()?, cwd);
@@ -61,6 +76,9 @@ pub async fn run(store: Arc<dyn Store>) -> Result<Report, Error> {
         fixed_sessions,
         shared_service_reads,
         public_source_writes,
+        resumed_executions,
+        terminated_approvals,
+        http_support_profiles,
     })
 }
 async fn unsupported(inner: Arc<dyn Store>) -> Result<(), Error> {

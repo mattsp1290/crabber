@@ -510,9 +510,11 @@ actual owned task joins to durable phase/attempt boundaries;
 a public quiescence claim still requires the embedding to account for its own
 external resources.
 
-If the initial execution cannot acknowledge its interruption/failure terminal
-write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID
-and storage cause. The task may have stopped while the retained run is still
+If execution cannot acknowledge its native attempt conclusion, it returns
+`RuntimeError::AttemptBoundaryUnknown` with the runtime run ID and attempt
+storage cause. The compatibility variant `RuntimeError::TerminalOutcomeUnknown`
+is individually unstable and is not emitted by the current native driver.
+The task may have stopped while the retained run is still
 running, or the terminal write may already have committed. Reconcile the run and
 durable events before deciding what to do next. Runtime terminal notifications
 follow acknowledged persistence. Owned ordinary/resumed paths retain joins. Complete resource coverage across

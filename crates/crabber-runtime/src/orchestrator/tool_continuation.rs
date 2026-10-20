@@ -1,5 +1,5 @@
 //! Public continuation admission restores exact native state without replaying start.
-use super::continuation::{ApprovalControl, ApprovalResume, ApprovedCalls, ResumeAuthority};
+use super::continuation::{ApprovalResume, ApprovedCalls, ResumeAuthority};
 use super::{Orchestrator, RunHandle, RuntimeError};
 use crabber_core::{ControlId, InputFingerprint, Run, RunId, SessionId, SessionRevision};
 use crabber_session::{
@@ -174,21 +174,23 @@ impl Orchestrator {
                 .await;
         }
         let (sender, receiver) = oneshot::channel();
-        let (dummy, _) = oneshot::channel();
-        let control = ApprovalResume {
+        let control = ApprovalResume::Tool {
             prepared: None,
-            control: ApprovalControl::Tool {
-                control,
-                sender,
-                expected,
-            },
-            sender: dummy,
+            control,
+            sender,
+            expected,
         };
         let handle = self.spawn_worker(
             run.session_id.clone(),
             run.id.clone(),
             move |runtime, cancellation| async move {
-                Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
+                Box::pin(runtime.resume_loaded(
+                    run,
+                    validated,
+                    cancellation,
+                    super::recovery::ResumeRequest::Continuation(Box::new(control)),
+                ))
+                .await
             },
         )?;
         match receiver.await {

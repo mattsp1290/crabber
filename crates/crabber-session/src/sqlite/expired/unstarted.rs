@@ -6,19 +6,6 @@ use sqlx::Sqlite;
 #[cfg(test)]
 #[path = "unstarted/tests.rs"]
 mod tests;
-pub(in crate::sqlite) async fn read(
-    tx: &mut Transaction<'_, Sqlite>,
-    session: &SessionId,
-    id: &ControlId,
-) -> Result<Original, Error> {
-    read_with_proof(
-        tx,
-        session,
-        id,
-        &mut crate::public_session::v2::proof::Proof::legacy(),
-    )
-    .await
-}
 pub(in crate::sqlite) async fn read_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

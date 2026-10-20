@@ -237,6 +237,14 @@ pub(crate) fn verify_receipt_event(
     Ok(())
 }
 
+/// Actual selected SQL carriers, retained only within the current transaction.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) struct SavedPublication {
+    pub receipt: PublicStateReceipt,
+    pub event: EventRecord,
+    pub before: Option<EventRecord>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,6 @@
 //! Isolated-schema admission receipt and execution-evidence migration proofs.
 use super::*;
+use sqlx::postgres::PgPoolOptions;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]

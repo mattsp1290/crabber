@@ -1,6 +1,7 @@
 use super::{
     AssignmentLink, CallKind, CallResult, ConsumerClose, Correlation, Failure, Head, Origin, Proof,
-    Publication, PublicationKind, RegisteredCall, ReverseMembership, RosterEntry, digest, unknown,
+    Publication, PublicationKind, RegisteredCall, ResultIndex, ReverseMembership, RosterEntry,
+    copied, digest, unknown,
 };
 use std::collections::BTreeSet;
 
@@ -75,8 +76,12 @@ impl Selection<'_> {
                 if let Some(close) = self.close {
                     close.verify_policy(origin, proof)?;
                 }
-                self.verify_calls(origin, proof)?;
-                self.verify_publications(origin)?;
+                if self.calls.len() != self.results.len() || self.calls.len() != self.roster.len() {
+                    return Err(unknown("consumer erased call originals"));
+                }
+                let results = ResultIndex::new(&self.results, proof)?;
+                self.verify_calls(origin, &results, proof)?;
+                self.verify_publications(origin, &results)?;
                 if let Some(close) = self.close {
                     close
                         .retirement
@@ -94,7 +99,8 @@ impl Selection<'_> {
                 {
                     return Err(unknown("no-Open consumer has opened members"));
                 }
-                self.verify_publications(origin)?;
+                let results = ResultIndex::new(&self.results, proof)?;
+                self.verify_publications(origin, &results)?;
                 if let Origin::NoOpenedMember(value) = origin {
                     value
                         .retirement
@@ -122,10 +128,12 @@ impl Selection<'_> {
         }
         Ok(())
     }
-    fn verify_calls(&self, origin: &Origin, proof: &mut Proof) -> Result<(), Failure> {
-        if self.calls.len() != self.results.len() || self.calls.len() != self.roster.len() {
-            return Err(unknown("consumer erased call originals"));
-        }
+    fn verify_calls(
+        &self,
+        origin: &Origin,
+        results: &ResultIndex<'_>,
+        proof: &mut Proof,
+    ) -> Result<(), Failure> {
         let mut ids = BTreeSet::new();
         let mut reverses = BTreeSet::new();
         let mut seen = Vec::new();
@@ -134,11 +142,8 @@ impl Selection<'_> {
             .iter()
             .filter(|p| p.kind == PublicationKind::CommittedCall);
         for publication in ordered {
-            let result = self
-                .results
-                .iter()
-                .copied()
-                .find(|r| r.digest().ok().as_ref() == Some(&publication.original_digest))
+            let (result_digest, result) = results
+                .get(&publication.original_digest)
                 .ok_or_else(|| unknown("consumer call publication membership"))?;
             proof.measure(&result.call)?;
             if !ids.insert(result.call.0.as_str()) {
@@ -156,13 +161,20 @@ impl Selection<'_> {
                 .copied()
                 .find(|r| r.call == result.call)
                 .ok_or_else(|| unknown("missing original call roster"))?;
-            self.verify_call(origin, registration, result, roster, &seen, proof)?;
+            self.verify_call(
+                origin,
+                registration,
+                (result, result_digest),
+                roster,
+                &seen,
+                proof,
+            )?;
             for reverse in self.reverse.iter().filter(|r| r.call == result.call) {
                 if !reverses.insert((reverse.kind, reverse.member_key.as_str())) {
                     return Err(unknown("consumer duplicate reverse assignment"));
                 }
             }
-            seen.push((registration.kind, result.digest()?));
+            seen.push((registration.kind, copied(result_digest, proof)?));
         }
         if ids.len() != self.calls.len() || reverses.len() != self.reverse.len() {
             return Err(unknown("consumer extra call/reverse original"));
@@ -173,11 +185,12 @@ impl Selection<'_> {
         &self,
         origin: &Origin,
         call: &RegisteredCall,
-        result: &CallResult,
+        result: (&CallResult, &crabber_core::InputFingerprint),
         roster: &RosterEntry,
         seen: &[(CallKind, crabber_core::InputFingerprint)],
         proof: &mut Proof,
     ) -> Result<(), Failure> {
+        let (result, result_digest) = result;
         let c = origin.correlation();
         let assignment = self
             .assignment
@@ -191,7 +204,7 @@ impl Selection<'_> {
             || call.anchor_digest != origin.digest()?
             || result.registration_digest != call.digest()?
             || roster.registration_digest != call.digest()?
-            || roster.result_digest != result.digest()?
+            || roster.result_digest != *result_digest
             || call.kind != result.original.kind()
             || call.input_digest != result.original.input_digest()?
             || roster.call != call.call
@@ -227,7 +240,7 @@ impl Selection<'_> {
                 || reverse.correlation != *c
                 || reverse.kind != *kind
                 || reverse.member_key != *key
-                || reverse.result_digest != result.digest()?
+                || reverse.result_digest != *result_digest
                 || !roster.reverse_digests.contains(&reverse.digest()?)
             {
                 return Err(unknown("consumer reverse original"));
@@ -235,7 +248,11 @@ impl Selection<'_> {
         }
         Ok(())
     }
-    fn verify_publications(&self, origin: &Origin) -> Result<(), Failure> {
+    fn verify_publications(
+        &self,
+        origin: &Origin,
+        results: &ResultIndex<'_>,
+    ) -> Result<(), Failure> {
         let head = self.head.ok_or_else(|| unknown("missing consumer head"))?;
         let expected = 1
             + usize::from(self.assignment.is_some())
@@ -270,10 +287,7 @@ impl Selection<'_> {
                         .digest()?,
                 )
             } else {
-                if !self
-                    .results
-                    .iter()
-                    .any(|r| r.digest().ok().as_ref() == Some(&p.original_digest))
+                if results.get(&p.original_digest).is_none()
                     || !calls.insert(p.original_digest.as_str())
                 {
                     return Err(unknown("consumer publication call original"));

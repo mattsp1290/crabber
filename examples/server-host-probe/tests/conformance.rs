@@ -3,7 +3,8 @@ use crabber::{
     core::ManualClock,
     session::{
         Store, attempt_contract, control_contract, interaction_contract, phase_contract,
-        session_management_contract,
+        public_state_contract, revision_contract, session_management_contract,
+        typed_admission_contract,
     },
 };
 use server_host_probe::store::AuditedStore;
@@ -19,6 +20,9 @@ async fn contracts(factory: impl Fn(Arc<ManualClock>) -> Arc<dyn Store>) {
     interaction_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
     attempt_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
     phase_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
+    revision_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
+    public_state_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
+    typed_admission_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
 }
 #[tokio::test]
 async fn memory_custom_adapter_conformance() {

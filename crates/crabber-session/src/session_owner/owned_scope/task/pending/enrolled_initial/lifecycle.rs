@@ -14,6 +14,7 @@ struct JoinedInitialOriginal {
 
 /// Reconcile only this actually joined original's exact Seal. No grant or
 /// replacement task can be recovered, including after process restart.
+/// Unstable until the same-original reconciliation consumer contract is qualified.
 pub struct LocallyJoinedInitialSeal {
     original: JoinedInitialOriginal,
     terminal: Option<PendingInitialProducerStatus>,
@@ -111,6 +112,7 @@ impl LocallyJoinedInitialSeal {
     }
     /// One bounded same-identity native attempt; no implicit retry loop.
     /// Physically blocked literal Drop stays visibly pending until observed.
+    /// Unstable until the same-original reconciliation consumer contract is qualified.
     /// # Errors
     /// Native refusal, unknown acknowledgment, or failed literal observation.
     pub async fn retry(&mut self) -> Result<PendingInitialProducerStatus, PreparationCommitError> {

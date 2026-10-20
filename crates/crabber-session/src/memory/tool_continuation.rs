@@ -501,3 +501,7 @@ mod tests {
         .await;
     }
 }
+
+#[cfg(test)]
+#[path = "tool_continuation/validation_allocation.rs"]
+mod validation_allocation;

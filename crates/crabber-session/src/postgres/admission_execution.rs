@@ -1,4 +1,6 @@
 mod initial_begin;
+#[path = "admission_execution/lookup.rs"]
+mod lookup;
 #[cfg(test)]
 use crate::ClaimUnstartedAdmissionRequest;
 use crate::postgres::transaction::Transaction;
@@ -18,7 +20,7 @@ use super::{PostgresExecution, PostgresStore, db, decode, lookup_receipt};
 use crate::StoreError;
 use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
 use crabber_core::{Run, RunId};
-pub(super) use inspection::{inspect, validate_source};
+pub(super) use inspection::{inspect, validate_source_with_proof};
 use sqlx::{Postgres, Row};
 
 pub(super) async fn load_record(

@@ -24,7 +24,6 @@ use crate::{
     approval::{self, sql},
 };
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
-pub(super) use current::session as verify_session;
 pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
 use sqlx::{Row, Sqlite};
 

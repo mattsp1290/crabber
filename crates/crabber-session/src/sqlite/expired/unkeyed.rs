@@ -4,19 +4,6 @@ use crate::session_owner::preparation::{admission::Witness, expired::unkeyed::Or
 use crate::transaction::Transaction;
 use crabber_core::{RunId, SessionId};
 use sqlx::{Row, Sqlite};
-pub(in crate::sqlite) async fn read(
-    tx: &mut Transaction<'_, Sqlite>,
-    session: &SessionId,
-    run: &RunId,
-) -> Result<Option<Box<Original>>, Error> {
-    read_with_proof(
-        tx,
-        session,
-        run,
-        &mut crate::public_session::v2::proof::Proof::legacy(),
-    )
-    .await
-}
 pub(in crate::sqlite) async fn read_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

@@ -57,7 +57,7 @@ user message and receipt; consume the handle to establish actual completion.
 | Recovery result | Host action |
 | --- | --- |
 | `Started { receipt, handle }` | Consume the handle and observe completed output. Ownership transfer alone does not establish completion. |
-| `Replayed(receipt)` | Terminal or Started evidence grants no new execution authority. Observe durable state; ordinary resume/recover may conservatively settle expired Started work. |
+| `Replayed(receipt)` | Terminal or Started evidence grants no new execution authority. Observe durable state. Native Started work remains unresolved until the host reconciles its actual outcome and cleanup; ordinary recovery does not manufacture an Interrupted result. |
 | `AdmissionExecutionError::LiveLease` | Wait or observe the current owner. No ownership change occurred. |
 | `StaleOwner`, `AlreadyStarted`, `AlreadyTerminal` | A race advanced ownership/state. Reconcile the original key; never replace the request. |
 | `AdmissionConflict` / `SemanticConflict` | Restore the exact original input, reflected plan/configuration and opaque behavior version, or surface conflict. Verification also precedes terminal replay. |
@@ -70,7 +70,8 @@ provider resolution or provider/tool call, the executor commits a one-shot fence
 `Unstarted -> Started` marker. Repeating begin never grants a second permission.
 A lost begin acknowledgement permits **zero execution** by that caller, even if
 it committed. Started identifies uncertainty, not proof that an effect happened;
-a crash there remains conservative and ordinary recovery may interrupt it.
+a crash there remains conservative. Native Started recovery refuses fresh work;
+eligible legacy record handling does not authorize replay of a native effect.
 There is no blind initial provider retry once Started. Paused tool continuation
 retains existing retry-safety and fencing rules. External tool effects are not
 exactly-once.

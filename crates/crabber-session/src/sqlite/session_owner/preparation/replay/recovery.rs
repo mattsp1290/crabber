@@ -11,12 +11,27 @@ impl crate::sqlite::SqliteStore {
     pub(super) async fn replay_recovery(
         tx: &mut Transaction<'_, Sqlite>,
         joined: &JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Option<PreparationCompletion>, PreparationCommitError> {
         let PreparedOperation::AdmissionRecovery(recovery) = joined.observed_operation() else {
             return Ok(None);
         };
         let source = &recovery.source;
         let request = source.request();
+        let query = format!(
+            "SELECT CAST(COALESCE(length(CAST(previous AS BLOB)),0)+COALESCE(length(CAST(next AS BLOB)),0)+COALESCE(length(CAST(initial AS BLOB)),0)+COALESCE(length(CAST(init AS BLOB)),0)+COALESCE(length(CAST(receipt AS BLOB)),0) AS BIGINT) FROM ({ORIGINAL}) selected"
+        );
+        crate::sqlite::read_proof::charge(
+            tx,
+            sqlx::query_scalar(&query)
+                .bind(&request.session_id.0)
+                .bind(&request.expected_fence.run_id.0)
+                .bind(i64::try_from(source.expected_issuance()).map_err(unknown)?)
+                .bind(request.key.as_str()),
+            proof,
+        )
+        .await
+        .map_err(|_| Error::Capacity)?;
         let Some(row) = sqlx::query(ORIGINAL)
             .bind(&request.session_id.0)
             .bind(&request.expected_fence.run_id.0)
@@ -38,9 +53,14 @@ impl crate::sqlite::SqliteStore {
         };
         let mut audits = Vec::with_capacity(5);
         for id in replay::audit_ids(joined.observed_grant())? {
-            let audit = crate::sqlite::session_owner::source_audit(tx, &request.session_id, &id)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            let audit = crate::sqlite::session_owner::source_audit_with_proof(
+                tx,
+                &request.session_id,
+                &id,
+                proof,
+            )
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
             audits.push(audit);
         }
         let receipt = replay::verify(

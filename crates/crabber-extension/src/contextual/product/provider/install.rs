@@ -1,6 +1,6 @@
 use super::Node;
-use crate::contextual::{FactoryBody, FactoryRegistration, Slot, cleanup::RecordMount};
-use crate::{ContextualPlanProvider, ExtensionError, FactoryContext, FactoryScope, Scope};
+use crate::contextual::{FactoryBody, FactoryRegistration, Slot};
+use crate::{ContextualPlanProvider, ExtensionError, FactoryContext, FactoryScope};
 use std::sync::Arc;
 pub(in crate::contextual) async fn install(
     provider: &ContextualPlanProvider,
@@ -23,34 +23,21 @@ pub(in crate::contextual) async fn install(
         .record_provider(index, node.clone());
     create(factory, context, &node).await?;
     provider.check_slot(slot)?;
-    let context = slot.context.as_ref().expect("factory context");
-    let scope = match scope {
-        FactoryScope::Workspace => Scope::Workspace(context.workspace_id().into()),
-        FactoryScope::Session => Scope::SessionIn {
-            session_id: context.session_id().clone(),
-            workspace_id: context.workspace_id().into(),
-        },
-    };
+    let scope = super::super::mount::scope(slot, scope);
     let extension = Arc::new(super::registration::ProviderRegistration {
         node: Arc::downgrade(&node),
         identity: registration.identity.clone(),
         config: registration.config_hash.clone(),
     });
-    let mount = provider
-        .inner
-        .registry
-        .mount_owned_with_failure_signal(extension, scope, || {
-            ContextualPlanProvider::signal_records(slot);
-        })
-        .await?;
-    let mut state = slot.state.lock().unwrap();
-    state
-        .producer
-        .as_ref()
-        .expect("provider product has host")
-        .record_mounted(index, RecordMount::Owned(mount.clone()));
-    state.records[index].mount = Some(RecordMount::Owned(mount));
-    Ok(())
+    super::super::mount::publish(
+        provider,
+        slot,
+        scope,
+        index,
+        extension,
+        "provider product has host",
+    )
+    .await
 }
 
 struct Original {

@@ -346,6 +346,10 @@ pub enum RuntimeError {
     Interrupted,
     /// The task stopped without acknowledged terminal persistence. Reconcile
     /// the retained run and events; this error proves neither rollback nor commit.
+    ///
+    /// Unstable compatibility variant: the current native execution driver
+    /// reports `AttemptBoundaryUnknown` for an unacknowledged attempt conclusion.
+    /// This variant is retained but is not emitted by that driver.
     #[error("run terminal persistence outcome is unknown")]
     TerminalOutcomeUnknown {
         run_id: RunId,

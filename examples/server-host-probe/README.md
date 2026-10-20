@@ -23,6 +23,9 @@ The assertions verify actual behavior:
 - One configured Agent uses two immutable workspace/session contexts. A custom
   permission policy allows a session-scoped counter tool. Two factory instances
   each execute once, retain separate state, and join their cleanup on close.
+- Separate workspace factories reuse A's counter across sessions while B keeps
+  its own counter. Shared workspace and selected-session tools execute only in
+  their matching contexts, as checked against the actual provider tool rosters.
 - A versioned native tool suspends twice and accepts authenticated, schema-checked
   host answers. Reconstructed Agents resume the exact checkpoint; the effect
   before the first checkpoint runs once. Answer and continuation retries replay
@@ -31,13 +34,28 @@ The assertions verify actual behavior:
   submit authenticated external results, persist the exact tool results, and
   replay both continuation receipts without provider work. Original typed keyed
   input also reconciles through admission and recovery metadata replay.
+- Two genuine native Paused runs resume through `Agent::resume_execution` on a
+  reconstructed host. Actual `RunHandle::control` observes each original worker.
+  Session-scoped drains join one gated session without joining or releasing the
+  other; both effects and provider continuations run once.
+- A joined pre-effect approval batch is cancelled through `terminate_approval`
+  after extension close. Exact termination replay changes no event/revision;
+  tool effects remain zero. Actual HTTP adapter support inspection runs without
+  credentials/network, and JSON output access round-trips a value while refusing
+  mixed media.
 - A separate fixed Memory host runs keyed and unkeyed pristine library sources
   through parked start, actual join and supervisor drain, then deletes each
   completed session with its current revision and replays that deletion. Any
   genuine returned Seal retry is retained and reconciled on the same handle;
-  the normal probe does not inject lost acknowledgements. A third parked task is
+  no Seal acknowledgement is fault-injected. A third parked task is
   stopped before dispatch and joins without changing its managed session; it is
-  not counted among the two completed fixed sessions.
+  not counted among the two deletion-positive fixed sessions reported by
+  `fixed_sessions`. Another session completes two genuine sources and checks
+  that a proof-limit deletion refusal preserves all public state and history.
+- Native attempt and public-source responses are withheld only after their
+  actual commits. Exact original receipt reconciliation checks unchanged effects
+  and history. A real callback disposal failure retains incomplete cleanup;
+  expired recovery refuses that Started attempt without running it again.
 - An explicitly shared extension executes a tool that reads the real
   `shared_host_services` capability. Registration and the service each run once.
 - The feature-gated WASM test loads the actual SHA-256-checked local echo
@@ -68,8 +86,8 @@ SDK, external Git-only consumer and publication/adoption gates.
 
 The `conformance` integration target also runs the published
 `session_management_contract`, `control_contract`, `interaction_contract`,
-`attempt_contract` and `phase_contract`
-harnesses through the custom adapter on every enabled backend. These exercise
+`attempt_contract`, `phase_contract`, `revision_contract` and
+`public_state_contract` harnesses through the custom adapter on every enabled backend. These exercise
 actual transactions, revision conflicts, frozen interactions and metadata replay;
 they are not success-returning Store mocks. The historical harness import paths
 remain available for existing adapter users.

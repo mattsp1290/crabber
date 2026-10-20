@@ -14,32 +14,33 @@ impl super::super::PostgresStore {
         &self,
         tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         joined: &JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
     > {
-        if let Some(outcome) = Self::replay_expired(tx, joined).await? {
+        if let Some(outcome) = Self::replay_expired(tx, joined, proof).await? {
             return Ok(Some(outcome));
         }
-        if let Some(outcome) = Self::replay_recovery(tx, joined).await? {
+        if let Some(outcome) = Self::replay_recovery(tx, joined, proof).await? {
             return Ok(Some(outcome));
         }
-        if let Some(outcome) = Self::replay_admission(tx, joined).await? {
+        if let Some(outcome) = Self::replay_admission(tx, joined, proof).await? {
             return Ok(Some(outcome));
         }
         if let PreparedOperation::AdmitKeyed(bound) = joined.observed_operation()
-            && let Some(outcome) = self.replay_keyed(tx, bound).await?
+            && let Some(outcome) = self.replay_keyed(tx, bound, proof).await?
         {
-            super::verify_replay(tx, joined.observed_grant()).await?;
+            super::verify_replay(tx, joined.observed_grant(), proof).await?;
             return Ok(Some(outcome));
         }
         if let PreparedOperation::Queue { request, .. } = joined.observed_operation()
-            && let Some(saved) = self.queue_replay(tx, request).await?
+            && let Some(saved) = self.queue_replay(tx, request, proof).await?
         {
-            super::verify_replay(tx, joined.observed_grant()).await?;
+            super::verify_replay(tx, joined.observed_grant(), proof).await?;
             return Ok(Some(PreparationCompletion::Queue(saved)));
         }
-        if let Some(outcome) = Self::replay_frontend(tx, joined).await? {
+        if let Some(outcome) = Self::replay_frontend(tx, joined, proof).await? {
             return Ok(Some(outcome));
         }
         match joined.observed_operation() {
@@ -50,10 +51,11 @@ impl super::super::PostgresStore {
                     &claim.run_id,
                     &claim.id,
                     &claim.fingerprint()?,
+                    proof,
                 )
                 .await?
                 {
-                    super::verify_replay(tx, joined.observed_grant()).await?;
+                    super::verify_replay(tx, joined.observed_grant(), proof).await?;
                     return Ok(Some(PreparationCompletion::Approval(
                         crate::ApprovalClaimOutcome::Replayed(saved),
                     )));
@@ -66,10 +68,11 @@ impl super::super::PostgresStore {
                     &claim.run_id,
                     &claim.id,
                     &claim.fingerprint()?,
+                    proof,
                 )
                 .await?
                 {
-                    super::verify_replay(tx, joined.observed_grant()).await?;
+                    super::verify_replay(tx, joined.observed_grant(), proof).await?;
                     return Ok(Some(PreparationCompletion::ToolContinuation(
                         crate::ToolContinuationClaimOutcome::Replayed(saved),
                     )));
@@ -82,11 +85,12 @@ impl super::super::PostgresStore {
                     &recovery.original.run_id,
                     &recovery.id,
                     &recovery.fingerprint()?,
+                    proof,
                 )
                 .await?
                 {
                     recovery.verify_receipt(&saved)?;
-                    super::verify_replay(tx, joined.observed_grant()).await?;
+                    super::verify_replay(tx, joined.observed_grant(), proof).await?;
                     return Ok(Some(PreparationCompletion::Approval(
                         crate::ApprovalClaimOutcome::Replayed(saved),
                     )));
@@ -99,11 +103,12 @@ impl super::super::PostgresStore {
                     &recovery.original.run_id,
                     &recovery.id,
                     &recovery.fingerprint()?,
+                    proof,
                 )
                 .await?
                 {
                     recovery.verify_receipt(&saved)?;
-                    super::verify_replay(tx, joined.observed_grant()).await?;
+                    super::verify_replay(tx, joined.observed_grant(), proof).await?;
                     return Ok(Some(PreparationCompletion::ToolContinuation(
                         crate::ToolContinuationClaimOutcome::Replayed(saved),
                     )));
@@ -121,6 +126,7 @@ impl super::super::PostgresStore {
         &self,
         tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         bound: &crate::BoundKeyedAdmitRequest,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
@@ -128,17 +134,36 @@ impl super::super::PostgresStore {
         let session = bound.binding.request.session_id.clone();
 
         bound.binding.validate_keyed(&bound.keyed)?;
-        if super::super::super::lookup_receipt(tx, &session, &bound.keyed.options.key)
-            .await?
-            .is_some()
+        if super::super::super::lookup_receipt_with_proof(
+            tx,
+            &session,
+            &bound.keyed.options.key,
+            proof,
+        )
+        .await?
+        .is_some()
         {
+            proof
+                .measure(&bound.keyed)
+                .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
             let outcome = self
-                .admit_keyed_transaction(tx, bound.keyed.clone())
+                .admit_keyed_guarded_with_proof(
+                    tx,
+                    bound.keyed.clone(),
+                    crate::queue::AdmissionGuard::Ordinary,
+                    proof,
+                )
                 .await?;
             if let KeyedAdmitOutcome::Replayed(receipt) = &outcome
-                && super::super::super::execution_binding::read(tx, &session, &receipt.run_id)
-                    .await?
-                    .is_none_or(|saved| saved.capsule != bound.binding)
+                && super::super::super::execution_binding::read_with_proof(
+                    tx,
+                    &session,
+                    &receipt.run_id,
+                    proof,
+                )
+                .await
+                .map_err(|error| error.into_domain_or(StoreError::Conflict))?
+                .is_none_or(|saved| saved.capsule != bound.binding)
             {
                 return Err(StoreError::AdmissionConflict.into());
             }
@@ -154,6 +179,7 @@ impl super::super::PostgresStore {
     async fn replay_frontend(
         tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         joined: &JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
@@ -166,10 +192,11 @@ impl super::super::PostgresStore {
                     &claim.claim.run_id,
                     &claim.claim.id,
                     &claim.fingerprint()?,
+                    proof,
                 )
                 .await?
                 {
-                    super::verify_replay(tx, joined.observed_grant()).await?;
+                    super::verify_replay(tx, joined.observed_grant(), proof).await?;
                     return Ok(Some(PreparationCompletion::ToolContinuation(
                         crate::ToolContinuationClaimOutcome::Replayed(saved),
                     )));
@@ -182,11 +209,12 @@ impl super::super::PostgresStore {
                     &recovery.original.claim.run_id,
                     &recovery.id,
                     &recovery.fingerprint()?,
+                    proof,
                 )
                 .await?
                 {
                     recovery.verify_receipt(&saved)?;
-                    super::verify_replay(tx, joined.observed_grant()).await?;
+                    super::verify_replay(tx, joined.observed_grant(), proof).await?;
                     return Ok(Some(PreparationCompletion::ToolContinuation(
                         crate::ToolContinuationClaimOutcome::Replayed(saved),
                     )));

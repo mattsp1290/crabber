@@ -72,7 +72,7 @@ impl super::SqliteStore {
             .map_err(super::super::db)?;
         let result = async {
             Self::raw_preparation_source_gate(&mut tx, &joined, read_proof).await?;
-            if let Some(outcome) = self.replay_prepared(&mut tx, &joined).await? {
+            if let Some(outcome) = self.replay_prepared(&mut tx, &joined, read_proof).await? {
                 return Ok(crate::session_owner::preparation::driver_completion::replayed(outcome));
             }
             read_proof.charge(2).map_err(|_| Error::Capacity)?;
@@ -165,9 +165,10 @@ fn storage_error(error: Error) -> StoreError {
 async fn verify_replay(
     tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     grant: &crate::session_owner::preparation::PreparationGrant,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     let join = crate::session_owner::preparation::proof::join_request(grant)?;
-    let source = reads::audit(tx, &join.session_id, &join.id).await?;
+    let source = reads::audit_with_proof(tx, &join.session_id, &join.id, proof).await?;
     crate::session_owner::preparation::proof::verify_join_audit(grant, source.as_ref())
 }
 

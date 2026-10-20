@@ -2,7 +2,7 @@
 use super::{db, decode as decode_record};
 use crate::transaction::Transaction;
 use crate::{StoreError, public_session::v2::proof::Proof};
-use crabber_core::{ContextEpoch, EpochId, Message, PartKind, Run, Session, SessionId};
+use crabber_core::{ContextEpoch, Message, Run, Session, SessionId};
 use sqlx::{Row, Sqlite};
 pub(super) async fn project(
     tx: &mut Transaction<'_, Sqlite>,
@@ -10,7 +10,6 @@ pub(super) async fn project(
     proof: &mut Proof,
 ) -> Result<Vec<Message>, StoreError> {
     super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM (SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1) last_run),0)+COALESCE((SELECT SUM(length(CAST(e.data AS BLOB))) FROM epochs e WHERE e.id=(SELECT json_extract(data,'$.epoch_id') FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1)),0)+COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM messages WHERE session_id=$1),0) AS BIGINT)").bind(&id.0),proof).await.map_err(|_|StoreError::Conflict)?;
-    let epoch: Option<EpochId> = None;
     let exists = sqlx::query("SELECT 1 FROM sessions WHERE id=$1")
         .bind(&id.0)
         .fetch_optional(&mut **tx)
@@ -19,15 +18,13 @@ pub(super) async fn project(
     if exists.is_none() {
         return Err(StoreError::NotFound);
     }
-    let epoch_id = if let Some(epoch) = epoch {
-        Some(epoch)
-    } else {
+    let epoch_id = {
         let row =
-            sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1")
-                .bind(&id.0)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(db)?;
+        sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1")
+            .bind(&id.0)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db)?;
         row.map(|row| read::<Run>(&row).map(|run| run.epoch_id))
             .transpose()?
     };
@@ -49,40 +46,7 @@ pub(super) async fn project(
         None
     };
     let all = bounded_messages(tx, id).await?;
-    let selected = if let Some(epoch) = selected.filter(|epoch| epoch.summary_message_id.is_some())
-    {
-        let summary_id = epoch.summary_message_id.as_ref().expect("checked");
-        let summary = all
-            .iter()
-            .find(|message| &message.id == summary_id)
-            .ok_or(StoreError::NotFound)?
-            .clone();
-        let mut selected = vec![summary];
-        if let Some(tail) = epoch.tail_start_message_id {
-            let index = all
-                .iter()
-                .position(|message| message.id == tail)
-                .ok_or(StoreError::NotFound)?;
-            selected.extend(
-                all[index..]
-                    .iter()
-                    .filter(|message| &message.id != summary_id)
-                    .cloned(),
-            );
-        }
-        selected
-    } else {
-        all
-    };
-    Ok(selected
-        .into_iter()
-        .filter_map(|mut message| {
-            message
-                .parts
-                .retain(|part| !matches!(part.kind, PartKind::Custom { .. }));
-            (!message.parts.is_empty()).then_some(message)
-        })
-        .collect())
+    crate::context_projection::project(all, selected)
 }
 
 async fn bounded_messages(

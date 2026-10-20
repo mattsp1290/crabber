@@ -1,8 +1,8 @@
 //! Native source attribution is selected under the same transaction as publication.
 use super::super::{PostgresStore, db};
 use super::{
-    Error, UPSERT_STATE, bump_public_revision, finish, public_state, receipt_with_proof,
-    record_receipt, snapshot,
+    Error, UPSERT_STATE, bump_public_revision, finish, public_state, record_receipt,
+    saved_with_proof, snapshot,
 };
 use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
@@ -49,11 +49,9 @@ async fn write(
     if fence.is_some_and(|fence| fence.run_id != run.id) {
         return Err(Error::StaleOwner);
     }
-    if let Some(saved) = receipt_with_proof(tx, session, &mutation.id, &mut proof).await? {
-        let event = event_at(tx, session, saved.event_cursor, &mut proof).await?;
-        verify_before(tx, &event, &mut proof).await?;
-        public_state::source_matches(&event, &source, mutation, &mut proof)?;
-        return Ok(saved);
+    if let Some(saved) = saved_with_proof(tx, session, &mutation.id, &mut proof).await? {
+        public_state::source_matches(&saved.event, &source, mutation, &mut proof)?;
+        return Ok(saved.receipt);
     }
     Box::pin(verify_fresh(
         tx,
@@ -332,16 +330,17 @@ pub(super) async fn event_at(
     event.cursor = Some(cursor);
     Ok(event)
 }
-pub(super) async fn verify_before(
+pub(super) async fn read_before(
     tx: &mut Transaction<'_, Postgres>,
     event: &EventRecord,
     proof: &mut Proof,
-) -> Result<(), Error> {
+) -> Result<Option<EventRecord>, Error> {
     if let Some(cursor) = public_state::before_event(event)? {
         let before = event_at(tx, &event.session_id, cursor, proof).await?;
         public_state::verify_before_event_with_proof(event, &before, proof)?;
+        return Ok(Some(before));
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn charge_event(
@@ -381,11 +380,11 @@ async fn publication(
     id: &crabber_core::ControlId,
 ) -> Result<Option<crate::PublicSourcePublication>, Error> {
     let mut proof = Proof::bounded(32 << 20);
-    let Some(receipt) = receipt_with_proof(tx, session, id, &mut proof).await? else {
+    let Some(saved) = saved_with_proof(tx, session, id, &mut proof).await? else {
         return Ok(None);
     };
-    let event = event_at(tx, session, receipt.event_cursor, &mut proof).await?;
-    if event
+    if saved
+        .event
         .payload
         .get("version")
         .and_then(serde_json::Value::as_u64)
@@ -397,9 +396,12 @@ async fn publication(
         .charge(2 * std::mem::size_of::<EventRecord>())
         .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut events = Vec::with_capacity(2);
-    if let Some(cursor) = public_state::before_event(&event)? {
-        events.push(event_at(tx, session, cursor, &mut proof).await?);
+    if let Some(before) = saved.before {
+        events.push(before);
     }
-    events.push(event);
-    Ok(Some(crate::PublicSourcePublication { receipt, events }))
+    events.push(saved.event);
+    Ok(Some(crate::PublicSourcePublication {
+        receipt: saved.receipt,
+        events,
+    }))
 }

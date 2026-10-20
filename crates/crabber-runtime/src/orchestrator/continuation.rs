@@ -28,21 +28,36 @@ pub enum Continuation {
     },
     Replayed(ApprovalReceipt),
 }
-pub(super) struct ApprovalResume {
-    pub(super) prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
-    pub(super) control: ApprovalControl,
-    pub(super) sender: oneshot::Sender<Claimed>,
+pub(super) enum ApprovalResume {
+    Approval {
+        prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
+        control: ApprovalControl,
+        sender: oneshot::Sender<Claimed>,
+    },
+    Tool {
+        prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
+        control: super::tool_continuation::ToolResumeControl,
+        sender: oneshot::Sender<super::tool_continuation::ToolClaimed>,
+        expected: Box<super::tool_continuation::ToolReceiptExpectation>,
+    },
+}
+impl ApprovalResume {
+    pub(super) fn set_prepared(
+        &mut self,
+        completed: crabber_session::session_owner::preparation::PreparationCompletion,
+    ) {
+        match self {
+            Self::Approval { prepared, .. } | Self::Tool { prepared, .. } => {
+                *prepared = Some(completed);
+            }
+        }
+    }
 }
 pub(super) enum Claimed {
     Fresh(ApprovalReceipt),
     Replay(ApprovalReceipt),
 }
 pub(super) enum ApprovalControl {
-    Tool {
-        control: super::tool_continuation::ToolResumeControl,
-        sender: oneshot::Sender<super::tool_continuation::ToolClaimed>,
-        expected: Box<super::tool_continuation::ToolReceiptExpectation>,
-    },
     Claim(ApprovalContinuationClaim),
     Recover(crabber_session::ApprovalContinuationRecovery),
 }
@@ -196,7 +211,7 @@ impl Orchestrator {
             .await;
         }
         let (sender, receiver) = oneshot::channel();
-        let control = ApprovalResume {
+        let control = ApprovalResume::Approval {
             prepared: None,
             control: ApprovalControl::Claim(claim),
             sender,
@@ -205,7 +220,13 @@ impl Orchestrator {
             run.session_id.clone(),
             run.id.clone(),
             move |runtime, cancellation| async move {
-                Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
+                Box::pin(runtime.resume_loaded(
+                    run,
+                    validated,
+                    cancellation,
+                    super::recovery::ResumeRequest::Continuation(Box::new(control)),
+                ))
+                .await
             },
         )?;
         claim_result(handle, receiver).await
@@ -213,27 +234,27 @@ impl Orchestrator {
     pub(super) async fn acquire_resume(
         &self,
         run: &Run,
-        control: Option<ApprovalResume>,
+        request: super::recovery::ResumeRequest,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
-        if let Some(control) = control {
-            let control = match control {
-                ApprovalResume {
-                    control:
-                        ApprovalControl::Tool {
-                            control,
-                            sender,
-                            expected,
-                        },
+        if let super::recovery::ResumeRequest::Continuation(control) = request {
+            let (prepared, control, sender) = match *control {
+                ApprovalResume::Tool {
+                    control,
+                    sender,
                     prepared,
-                    ..
+                    expected,
                 } => {
                     return self
                         .acquire_tool_resume(run, control, sender, prepared, expected)
                         .await;
                 }
-                control => control,
+                ApprovalResume::Approval {
+                    control,
+                    prepared,
+                    sender,
+                } => (prepared, control, sender),
             };
-            let outcome = if let Some(prepared) = control.prepared {
+            let outcome = if let Some(prepared) = prepared {
                 let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
                     outcome,
                 ) = prepared
@@ -242,10 +263,7 @@ impl Orchestrator {
                 };
                 outcome
             } else {
-                match &control.control {
-                    ApprovalControl::Tool { .. } => {
-                        unreachable!("tool claim handled before approval dispatch")
-                    }
+                match &control {
                     ApprovalControl::Claim(claim) => {
                         self.store
                             .claim_approval_continuation(claim.clone())
@@ -267,12 +285,12 @@ impl Orchestrator {
             };
             return match outcome {
                 ApprovalClaimOutcome::Replayed(receipt) => {
-                    let _ = control.sender.send(Claimed::Replay(receipt));
+                    let _ = sender.send(Claimed::Replay(receipt));
                     Ok(None)
                 }
                 ApprovalClaimOutcome::Applied { receipt, grant } => {
                     let authority = prepared_approval_authority(run, &receipt, *grant)?;
-                    let _ = control.sender.send(Claimed::Fresh(receipt));
+                    let _ = sender.send(Claimed::Fresh(receipt));
                     Ok(Some(authority))
                 }
             };

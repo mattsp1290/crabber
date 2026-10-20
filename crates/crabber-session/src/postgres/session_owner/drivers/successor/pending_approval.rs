@@ -5,7 +5,6 @@ use crate::session_owner::preparation::{
     InspectPendingApprovalPreparation as Request, PendingApprovalPreparationMetadata as Metadata,
     PendingApprovalSource, pending_approval as choice,
 };
-use crabber_core::{Run, Session};
 use sqlx::{Postgres, Row};
 impl crate::PostgresStore {
     pub(in crate::postgres) async fn inspect_pending_approval(
@@ -41,7 +40,15 @@ pub(super) async fn inspect(
     proof: &mut Proof,
 ) -> Result<Metadata, Error> {
     let claim = choice::claim(request);
-    context(tx, request, proof).await?;
+    super::scoped::context(
+        tx,
+        &claim.session_id,
+        &claim.run_id,
+        &request.context,
+        choice::revision(request),
+        proof,
+    )
+    .await?;
     proof.charge(8).map_err(unknown)?;
     crate::postgres::deletion::ensure_live(tx, &claim.session_id)
         .await
@@ -49,7 +56,7 @@ pub(super) async fn inspect(
             crate::StoreError::SessionDeleted => Error::Deleted,
             _ => Error::UnknownStoreOutcome,
         })?;
-    let run = run(tx, request, proof).await?;
+    let run = super::scoped::run(tx, &claim.session_id, &claim.run_id, proof).await?;
     let protected = crate::postgres::native_parent::source_protocol::raw_current(
         tx,
         &claim.session_id,
@@ -166,88 +173,6 @@ async fn original_input(
     .await?;
     Ok(binding)
 }
-async fn run(
-    tx: &mut Transaction<'_, Postgres>,
-    request: &Request,
-    proof: &mut Proof,
-) -> Result<Run, Error> {
-    let claim = choice::claim(request);
-    super::super::proof::charge(tx, RUN_COST, &claim.session_id.0, &claim.run_id.0, proof).await?;
-    let row = sqlx::query(RUN)
-        .bind(&claim.session_id.0)
-        .bind(&claim.run_id.0)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::NotFound)?;
-    let run: Run = serde_json::from_str(
-        &row.try_get::<Option<String>, _>("data")
-            .map_err(unknown)?
-            .ok_or(Error::UnknownStoreOutcome)?,
-    )
-    .map_err(unknown)?;
-    if run.id != claim.run_id
-        || run.session_id != claim.session_id
-        || row
-            .try_get::<Option<String>, _>("token")
-            .map_err(unknown)?
-            .as_deref()
-            != Some(run.claim_token.as_str())
-        || row
-            .try_get::<Option<String>, _>("status")
-            .map_err(unknown)?
-            .as_deref()
-            != Some(match run.status {
-                crabber_core::RunStatus::Running => "running",
-                crabber_core::RunStatus::Paused => "paused",
-                _ => return Err(Error::InvalidTransition),
-            })
-        || row.try_get::<i64, _>("lease_until").map_err(unknown)?
-            != crate::postgres::micros(run.lease_until)
-    {
-        return Err(Error::UnknownStoreOutcome);
-    }
-    Ok(run)
-}
-async fn context(
-    tx: &mut Transaction<'_, Postgres>,
-    request: &Request,
-    proof: &mut Proof,
-) -> Result<(), Error> {
-    let claim = choice::claim(request);
-    super::super::proof::charge(
-        tx,
-        SESSION_COST,
-        &claim.session_id.0,
-        &claim.run_id.0,
-        proof,
-    )
-    .await?;
-    let row = sqlx::query(SESSION)
-        .bind(&claim.session_id.0)
-        .bind(&claim.run_id.0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(unknown)?;
-    let session: Session = serde_json::from_str(
-        &row.try_get::<Option<String>, _>("data")
-            .map_err(unknown)?
-            .ok_or(Error::UnknownStoreOutcome)?,
-    )
-    .map_err(unknown)?;
-    if session.id != claim.session_id
-        || session.workspace_id != request.context.workspace_id()
-        || session.directory != request.context.directory()
-    {
-        return Err(Error::IdentityMismatch);
-    }
-    if u64::try_from(row.try_get::<i64, _>("revision").map_err(unknown)?).map_err(unknown)?
-        != choice::revision(request).get()
-    {
-        return Err(Error::RevisionConflict);
-    }
-    Ok(())
-}
 async fn calls(
     tx: &mut Transaction<'_, Postgres>,
     record: &crate::approval::ApprovalRecord,
@@ -315,10 +240,6 @@ async fn calls(
     }
     Ok(())
 }
-const RUN_COST: &str = "SELECT CAST(octet_length(data::text)+octet_length(claim_token)+octet_length(status)+8 AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2";
-const RUN: &str = "SELECT CASE WHEN octet_length(data::text)<=4194304 THEN data::text END AS data,CASE WHEN octet_length(claim_token)<=512 THEN claim_token END AS token,CASE WHEN octet_length(status)<=32 THEN status END AS status,lease_until FROM runs WHERE session_id=$1 AND id=$2";
-const SESSION_COST: &str = "SELECT CAST(octet_length(data::text)+8 AS BIGINT) FROM sessions WHERE id=$1 AND CAST($2 AS TEXT) IS NOT NULL";
-const SESSION: &str = "SELECT CASE WHEN octet_length(data::text)<=16384 THEN data::text END AS data,public_revision AS revision FROM sessions WHERE id=$1 AND CAST($2 AS TEXT) IS NOT NULL";
 
 #[cfg(test)]
 #[path = "pending_approval/tests.rs"]

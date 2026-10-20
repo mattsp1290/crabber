@@ -226,4 +226,7 @@ native_pending_initial_items! {
     #[cfg(test)]
     #[path="initial_consumer/budget_tests.rs"]
     mod budget_tests;
+    #[cfg(test)]
+    #[path="initial_consumer/digest_tests.rs"]
+    mod digest_tests;
 }

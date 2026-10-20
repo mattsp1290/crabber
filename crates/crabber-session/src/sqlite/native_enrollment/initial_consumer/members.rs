@@ -48,17 +48,16 @@ pub(super) async fn verify(
             }
         }
     }
+    let results = domain::ResultIndex::new(&view.results, proof)?;
     let mut latest = None;
     for publication in view.publications {
-        for result in &view.results {
-            if result.digest()?.as_str() == publication.original_digest.as_str() {
-                match &result.original {
-                    Original::ReserveInitial(value) | Original::BeginInitial(value) => {
-                        latest = Some(&value.after);
-                    }
-                    Original::Conclude(value) => latest = Some(&value.attempt.after),
-                    _ => (),
+        if let Some((_, result)) = results.get(&publication.original_digest) {
+            match &result.original {
+                Original::ReserveInitial(value) | Original::BeginInitial(value) => {
+                    latest = Some(&value.after);
                 }
+                Original::Conclude(value) => latest = Some(&value.attempt.after),
+                _ => (),
             }
         }
     }

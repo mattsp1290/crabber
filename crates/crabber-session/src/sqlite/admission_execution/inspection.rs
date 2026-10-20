@@ -113,19 +113,6 @@ async fn context_with_proof(
     Ok((revision, sequence, binding.capsule))
 }
 
-pub(in crate::sqlite) async fn validate_source(
-    tx: &mut Transaction<'_, Sqlite>,
-    source: &AdmissionRecoveryPreparation,
-    now: time::OffsetDateTime,
-) -> Result<(), Error> {
-    source.fingerprint()?;
-    let (_, sequence, binding) = context(tx, source.request(), now).await?;
-    source.verify_binding(&binding)?;
-    if sequence != source.expected_issuance() {
-        return Err(Error::StaleOwner);
-    }
-    Ok(())
-}
 pub(in crate::sqlite) async fn validate_source_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     source: &AdmissionRecoveryPreparation,

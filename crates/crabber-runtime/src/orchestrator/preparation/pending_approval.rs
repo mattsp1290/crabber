@@ -1,7 +1,7 @@
 //! Owned Approval sources enter their actual parked main before native completion.
 use super::super::{
     Continuation, RunSession,
-    continuation::{ApprovalControl, ApprovalResume},
+    continuation::ApprovalControl,
     preparation::pending::{PendingOutcome, main::Metadata},
 };
 use super::{Orchestrator, Request, RuntimeError};
@@ -24,7 +24,7 @@ impl Orchestrator {
         binding: ExecutionBindingCapsule,
         control: ApprovalControl,
     ) -> Result<Continuation, RuntimeError> {
-        let source = source(&control)?;
+        let source = source(&control);
         let origin = match source {
             PendingApprovalSource::Claim(_) => Origin::ApprovalClaim,
             PendingApprovalSource::Recovery(_) => Origin::ApprovalRecovery,
@@ -92,20 +92,12 @@ impl Orchestrator {
                     bound,
                     authority,
                 };
-                // Preserve the Approval discriminator. The prepared authority
-                // skips native acquisition; this sender is never an ACK source.
-                let (sender, _unused) = tokio::sync::oneshot::channel();
-                let approval = ApprovalResume {
-                    prepared: None,
-                    control,
-                    sender,
-                };
-                Box::pin(runtime.resume_loaded_inner(
+                Box::pin(runtime.resume_prepared(
                     run,
                     validated,
                     cancellation,
-                    Some(approval),
-                    Some(prepared),
+                    prepared,
+                    super::super::recovery::PreparedResumeKind::Continuation,
                 ))
                 .await
             },
@@ -114,13 +106,12 @@ impl Orchestrator {
         map(outcome, origin)
     }
 }
-fn source(control: &ApprovalControl) -> Result<PendingApprovalSource, RuntimeError> {
+fn source(control: &ApprovalControl) -> PendingApprovalSource {
     match control {
-        ApprovalControl::Claim(claim) => Ok(PendingApprovalSource::Claim(Box::new(claim.clone()))),
+        ApprovalControl::Claim(claim) => PendingApprovalSource::Claim(Box::new(claim.clone())),
         ApprovalControl::Recover(recovery) => {
-            Ok(PendingApprovalSource::Recovery(Box::new(recovery.clone())))
+            PendingApprovalSource::Recovery(Box::new(recovery.clone()))
         }
-        ApprovalControl::Tool { .. } => Err(RuntimeError::PreparationRecoveryRequired),
     }
 }
 fn receipt(

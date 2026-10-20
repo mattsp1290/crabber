@@ -139,9 +139,27 @@ async fn audited_receipt(
     id: &ControlId,
 ) -> Result<Option<(QueueReceipt, Audit)>, StoreError> {
     let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
-    let result = audited_leaf(tx, session, id, &mut proof).await?;
+    receipt_and_audit_with_proof(tx, session, id, &mut proof).await
+}
+pub(super) async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<QueueReceipt>, StoreError> {
+    Ok(receipt_and_audit_with_proof(tx, session, id, proof)
+        .await?
+        .map(|(receipt, _)| receipt))
+}
+async fn receipt_and_audit_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<(QueueReceipt, Audit)>, StoreError> {
+    let result = audited_leaf(tx, session, id, proof).await?;
     if let Some((_, audit)) = &result {
-        super::protocol::selected(tx, audit, &mut proof)
+        super::protocol::selected(tx, audit, proof)
             .await
             .map_err(super::protocol::domain)?;
     }
