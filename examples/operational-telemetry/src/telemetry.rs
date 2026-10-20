@@ -27,14 +27,39 @@ fn field<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
 }
 const MODEL_CALLS: usize = 3; // Failed attempt, successful tool turn, final text turn.
 const TOOL_CALLS: usize = 1;
-const EXTENSION_MOUNTS: usize = 1; // The builtin shared native tool registration.
+const EXTENSION_MOUNTS: usize = 1;
+const EXTENSION_CLOSES: usize = 1;
+const EXTENSION_ID: &str = "telemetry/echo";
+
+struct EchoExtension(Arc<ToolDefinition>);
+#[async_trait::async_trait]
+impl crabber::extension::Extension for EchoExtension {
+    fn id(&self) -> &str {
+        EXTENSION_ID
+    }
+    fn version(&self) -> &str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        crabber::session::admission_config_hash(&json!(&self.0.info))
+    }
+    async fn install(
+        &self,
+        registrar: &mut crabber::extension::Registrar,
+    ) -> Result<(), crabber::ExtensionError> {
+        registrar.tool(self.0.clone());
+        Ok(())
+    }
+}
 
 pub async fn run() {
     let receiver = otlp_receiver::Receiver::new();
     let intake = Intake::new().await;
     let mut config =
         TelemetryConfig::from_lookup(&|_| Err(std::env::VarError::NotPresent)).unwrap();
-    config.datadog = Some(intake.config());
+    let mut datadog = intake.config();
+    datadog.metric_dimensions.extensions = vec![EXTENSION_ID.into()];
+    config.datadog = Some(datadog);
     config.otlp = Some(OtlpConfig {
         traces_url: format!("{}/v1/traces", receiver.endpoint),
         protocol: OtlpProtocol::HttpProtobuf,
@@ -58,6 +83,7 @@ pub async fn run() {
     .instrument(tracing::info_span!("host.request"))
     .await;
     assert_eq!(result.status, crabber::core::RunStatus::Completed);
+    agent.close_extensions().await.unwrap();
     telemetry.flush().await.unwrap();
     telemetry.shutdown().await.unwrap();
     let spans = receiver.spans();
@@ -80,16 +106,19 @@ fn build_agent(telemetry: &Telemetry) -> Agent {
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .shared_tool(Arc::new(ToolDefinition {
-            info: ToolInfo {
-                name: "echo".into(),
-                description: "telemetry fixture".into(),
-                parameters: json!({"type":"object"}),
-                retry_safe: true,
-                required_permissions: vec![],
-            },
-            executor: Arc::new(fixture::Echo),
-        }))
+        .shared_extension(
+            Arc::new(EchoExtension(Arc::new(ToolDefinition {
+                info: ToolInfo {
+                    name: "echo".into(),
+                    description: "telemetry fixture".into(),
+                    parameters: json!({"type":"object"}),
+                    retry_safe: true,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(fixture::Echo),
+            }))),
+            crabber::Scope::Global,
+        )
         .build()
         .unwrap()
 }
@@ -132,7 +161,7 @@ fn verify_tree(spans: &[Span]) -> (usize, usize) {
     assert!(
         mounts
             .iter()
-            .any(|span| field(span, "extension.id") == Some("crabber/builtin"))
+            .any(|span| field(span, "extension.id") == Some(EXTENSION_ID))
     );
     assert!(
         spans
@@ -158,8 +187,8 @@ fn verify_tree(spans: &[Span]) -> (usize, usize) {
             }
         }
     }
-    // Catalog: admission + run + scripted model calls + tool calls + mounts, margin 4.
-    let bound = 1 + 1 + MODEL_CALLS + TOOL_CALLS + EXTENSION_MOUNTS + 4;
+    // Catalog: admission + run + scripted models/tools + mount/close, margin 4.
+    let bound = 1 + 1 + MODEL_CALLS + TOOL_CALLS + EXTENSION_MOUNTS + EXTENSION_CLOSES + 4;
     let count = spans
         .iter()
         .filter(|span| span.name.starts_with("crabber."))
@@ -192,7 +221,11 @@ fn verify_payloads(requests: &[super::Request]) {
         .filter(|request| request.accepted && request.path == "/api/v1/distribution_points")
         .flat_map(|request| request.body["series"].as_array().unwrap())
         .collect();
-    for name in ["crabber.extension.mount_ms", "crabber.admission.elapsed_ms"] {
+    for name in [
+        "crabber.extension.mount_ms",
+        "crabber.extension.close_ms",
+        "crabber.admission.elapsed_ms",
+    ] {
         let metrics: Vec<_> = distributions
             .iter()
             .filter(|series| series["metric"] == name)
