@@ -1,315 +1,309 @@
-//! Host-owned tracing configuration. Construction never installs a subscriber.
-use std::{env::VarError, fmt, time::Duration};
-use tracing::Level;
-use tracing_subscriber::{Layer, layer::Identity};
+//! Host-owned exporters and tracing layers. Never installs a subscriber.
+mod config;
+mod export;
+mod scrub;
 
-use crate::{DatadogConfig, DatadogObserver, ExportError};
+pub use crate::layers::{LayerHealthSnapshot as TelemetryHealth, LogsPolicy};
+pub use config::{OtlpConfig, OtlpProtocol, Signals, TelemetryConfig, TelemetryError};
+pub use scrub::ALLOWED_ATTRIBUTES;
 
-/// Signals enabled by a host, independently of environment configuration.
-#[derive(Debug, Clone, Copy)]
-pub struct Signals {
-    pub traces: bool,
-    pub metrics: bool,
-    pub logs: bool,
-}
-impl Default for Signals {
-    fn default() -> Self {
-        Self {
-            traces: true,
-            metrics: true,
-            logs: true,
-        }
-    }
-}
+use crate::{
+    DatadogObserver, ExportError,
+    layers::{LayerHealth, LogsLayer, SpanMetricsLayer},
+};
+use opentelemetry::{
+    KeyValue,
+    trace::{TraceContextExt as _, TracerProvider as _},
+};
+use opentelemetry_otlp::{WithExportConfig as _, WithHttpConfig as _};
+use opentelemetry_sdk::{
+    Resource,
+    trace::{BatchSpanProcessor, SdkTracerProvider},
+};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tracing::Subscriber;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use tracing_subscriber::{
+    Layer,
+    filter::{LevelFilter, Targets},
+    registry::LookupSpan,
+};
 
-#[derive(Debug, Clone)]
-pub struct LogsPolicy {
-    pub min_level: Level,
-    pub guest_text: bool,
+/// Construct inside Tokio. Install `layer()` globally in multithreaded hosts,
+/// share `exporter()` with agents, and call `shutdown()` before runtime exit.
+pub struct Telemetry {
+    exporter: Option<DatadogObserver>,
+    provider: Option<SdkTracerProvider>,
+    health: Arc<LayerHealth>,
+    config: TelemetryConfig,
+    stopped: AtomicBool,
+    otlp_failed: Arc<AtomicBool>,
+    control: tokio::sync::Mutex<()>,
 }
-impl Default for LogsPolicy {
-    fn default() -> Self {
-        Self {
-            min_level: Level::INFO,
-            guest_text: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OtlpProtocol {
-    HttpProtobuf,
-    HttpJson,
-    Grpc,
-}
-
-/// Plain HTTP OTLP settings; header values and endpoints are hidden in Debug.
-#[derive(Clone)]
-pub struct OtlpConfig {
-    pub traces_url: String,
-    pub protocol: OtlpProtocol,
-    pub timeout: Duration,
-    pub headers: Vec<(String, String)>,
-}
-impl fmt::Debug for OtlpConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OtlpConfig")
-            .field("traces_url", &"[REDACTED]")
-            .field("protocol", &self.protocol)
-            .field("timeout", &self.timeout)
-            .field("headers", &"[REDACTED]")
-            .finish()
-    }
-}
-impl OtlpConfig {
-    /// Reads standard OTLP HTTP environment settings.
-    /// # Errors
-    /// Rejects unsupported protocols and malformed or non-HTTP endpoints.
-    pub fn from_lookup(
-        get: &dyn Fn(&str) -> Result<String, VarError>,
-    ) -> Result<Option<Self>, TelemetryError> {
-        let nonempty = |name| get(name).ok().filter(|v| !v.is_empty());
-        let Some(traces_url) = nonempty("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").or_else(|| {
-            nonempty("OTEL_EXPORTER_OTLP_ENDPOINT")
-                .map(|v| format!("{}/v1/traces", v.trim_end_matches('/')))
-        }) else {
-            return Ok(None);
-        };
-        let endpoint =
-            reqwest::Url::parse(&traces_url).map_err(|_| TelemetryError::InvalidEndpoint)?;
-        if endpoint.scheme() != "http"
-            || endpoint.host_str().is_none()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-        {
-            return Err(TelemetryError::InvalidEndpoint);
-        }
-        let protocol = match get("OTEL_EXPORTER_OTLP_PROTOCOL")
-            .as_deref()
-            .unwrap_or("http/protobuf")
-        {
-            "http/protobuf" => OtlpProtocol::HttpProtobuf,
-            "http/json" => OtlpProtocol::HttpJson,
-            _ => return Err(TelemetryError::UnsupportedProtocol),
-        };
-        let timeout = get("OTEL_EXPORTER_OTLP_TIMEOUT")
-            .ok()
-            .map(|v| v.parse::<u64>())
-            .transpose()
-            .map_err(|_| TelemetryError::Otlp)?
-            .unwrap_or(10_000);
-        let headers = get("OTEL_EXPORTER_OTLP_HEADERS")
-            .ok()
-            .map(|v| {
-                v.split(',')
-                    .filter(|p| !p.trim().is_empty())
-                    .map(|p| {
-                        p.split_once('=')
-                            .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
-                            .ok_or(TelemetryError::Otlp)
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Some(Self {
-            traces_url,
-            protocol,
-            timeout: Duration::from_millis(timeout),
-            headers,
-        }))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TelemetryConfig {
-    pub datadog: Option<DatadogConfig>,
-    pub otlp: Option<OtlpConfig>,
-    pub service: String,
-    pub env: Option<String>,
-    pub version: Option<String>,
-    pub resource_tags: Vec<(String, String)>,
-    pub logs: LogsPolicy,
-    pub traces_level: Level,
-    pub signals: Signals,
-}
-impl TelemetryConfig {
-    /// # Errors
-    /// Rejects malformed OTLP configuration without exposing its values.
-    pub fn from_env() -> Result<Self, TelemetryError> {
-        Self::from_lookup(&|name| std::env::var(name))
-    }
-    /// # Errors
-    /// Rejects malformed OTLP configuration without exposing its values.
-    pub fn from_lookup(
-        get: &dyn Fn(&str) -> Result<String, VarError>,
-    ) -> Result<Self, TelemetryError> {
-        Ok(Self {
-            datadog: DatadogConfig::from_lookup(get),
-            otlp: OtlpConfig::from_lookup(get)?,
-            service: get("DD_SERVICE")
-                .or_else(|_| get("OTEL_SERVICE_NAME"))
-                .unwrap_or_else(|_| "crabber".into()),
-            env: get("DD_ENV").ok(),
-            version: get("DD_VERSION").ok(),
-            resource_tags: Vec::new(),
-            logs: LogsPolicy::default(),
-            traces_level: Level::INFO,
-            signals: Signals::default(),
-        })
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum TelemetryError {
-    #[error("OTLP operation failed")]
-    Otlp,
-    #[error(transparent)]
-    Export(#[from] ExportError),
-    #[error("unsupported OTLP protocol")]
-    UnsupportedProtocol,
-    #[error("invalid OTLP endpoint")]
-    InvalidEndpoint,
-    #[error("telemetry requires a Tokio runtime")]
-    Runtime,
-}
-
-/// Host-local counts for tracing layers; exporter queue health is separate.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TelemetryHealth {
-    pub spans_seen: u64,
-    pub events_seen: u64,
-    pub metrics_enqueued: u64,
-    pub metrics_dropped: u64,
-    pub logs_enqueued: u64,
-    pub logs_dropped: u64,
-    pub messages_unlisted: u64,
-    pub attributes_scrubbed: u64,
-}
-
-/// Host-owned telemetry bundle. Construct inside a Tokio runtime, including
-/// hosts with a synchronous `main`; this never installs a global subscriber.
-pub struct Telemetry;
 impl Telemetry {
     /// # Errors
-    /// Returns configuration errors or `Runtime` outside a Tokio runtime.
+    /// Returns a finite configuration, runtime or exporter error.
     pub fn from_env() -> Result<Self, TelemetryError> {
         Self::new(TelemetryConfig::from_env()?)
     }
+
+    /// Never installs a subscriber. OTLP transport uses a background thread.
     /// # Errors
-    /// Returns `Runtime` outside a Tokio runtime.
-    pub fn new(_config: TelemetryConfig) -> Result<Self, TelemetryError> {
+    /// Returns finite errors without endpoints, headers or credential values.
+    pub fn new(config: TelemetryConfig) -> Result<Self, TelemetryError> {
         tokio::runtime::Handle::try_current().map_err(|_| TelemetryError::Runtime)?;
-        Ok(Self)
+        let health = Arc::new(LayerHealth::default());
+        let otlp_failed = Arc::new(AtomicBool::new(false));
+        let provider = if config.signals.traces {
+            config
+                .otlp
+                .as_ref()
+                .map(|otlp| build_provider(&config, otlp, health.clone(), otlp_failed.clone()))
+                .transpose()?
+        } else {
+            None
+        };
+        let exporter = config.datadog.as_ref().map(DatadogObserver::new);
+        Ok(Self {
+            exporter,
+            provider,
+            health,
+            config,
+            stopped: AtomicBool::new(false),
+            otlp_failed,
+            control: tokio::sync::Mutex::new(()),
+        })
     }
+
+    /// Each pipeline uses its own filter; host formatting must also use
+    /// per-layer filtering. Host spans of any target participate in APM traces.
     #[must_use]
-    pub fn layer<S: tracing::Subscriber>(&self) -> impl Layer<S> {
-        Identity::new()
+    pub fn layer<S>(&self) -> impl Layer<S> + Send + Sync + 'static
+    where
+        S: Subscriber + for<'a> LookupSpan<'a> + Send + Sync + 'static,
+    {
+        let mut layers: Vec<Box<dyn Layer<S> + Send + Sync>> = Vec::new();
+        if let Some(provider) = &self.provider {
+            let filter = Targets::new()
+                .with_default(self.config.traces_level)
+                .with_target("crabber::wasm::guest", LevelFilter::OFF);
+            layers.push(
+                tracing_opentelemetry::layer()
+                    .with_tracer(provider.tracer("crabber"))
+                    .with_location(false)
+                    .with_threads(false)
+                    .with_level(false)
+                    .with_target(false)
+                    .with_tracked_inactivity(false)
+                    .with_filter(filter)
+                    .boxed(),
+            );
+        }
+        if let Some(observer) = &self.exporter {
+            if self.config.signals.metrics {
+                layers.push(
+                    SpanMetricsLayer::new(observer.clone(), self.health.clone())
+                        .with_filter(SpanMetricsLayer::filter())
+                        .boxed(),
+                );
+            }
+            if self.config.signals.logs {
+                layers.push(
+                    LogsLayer::new(
+                        observer.clone(),
+                        self.config.logs.clone(),
+                        self.health.clone(),
+                    )
+                    .with_filter(LogsLayer::filter(&self.config.logs))
+                    .boxed(),
+                );
+            }
+        }
+        // An empty Vec<Layer> reports Interest::never(), which would globally
+        // suppress a host's other layers. Option::None is a neutral layer.
+        (!layers.is_empty()).then_some(layers)
     }
+
     #[must_use]
     pub fn exporter(&self) -> Option<DatadogObserver> {
-        None
+        self.exporter.clone()
     }
+    /// Call inside the host request span, then supply to `prompt_with_context`.
     #[must_use]
     pub fn current_trace_context() -> Option<crabber_core::TraceContext> {
-        None
+        let context = tracing::Span::current().context();
+        let span = context.span();
+        let context = span.span_context();
+        if !context.is_valid() {
+            return None;
+        }
+        crabber_core::TraceContext::new(
+            &context.trace_id().to_string(),
+            &context.span_id().to_string(),
+        )
+        .ok()
     }
     #[must_use]
     pub fn health(&self) -> TelemetryHealth {
-        TelemetryHealth::default()
+        self.health.snapshot()
     }
+
     /// # Errors
-    /// Reserved for exporter failures when a signal pipeline is configured.
+    /// Reports an OTLP or agentless intake failure.
     pub async fn flush(&self) -> Result<(), TelemetryError> {
-        std::future::ready(Ok(())).await
+        let _guard = self.control.lock().await;
+        if self.stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let otlp = if let Some(provider) = &self.provider {
+            let provider = provider.clone();
+            tokio::task::spawn_blocking(move || provider.force_flush())
+                .await
+                .map_err(|_| TelemetryError::Otlp)?
+                .map_err(|_| TelemetryError::Otlp)
+        } else {
+            Ok(())
+        };
+        let intake = if let Some(exporter) = &self.exporter {
+            exporter.flush().await.map_err(TelemetryError::from)
+        } else {
+            Ok(())
+        };
+        if self.otlp_failed.load(Ordering::Acquire) {
+            return Err(TelemetryError::Otlp);
+        }
+        otlp.and(intake)
     }
+
+    /// Idempotent, including when a shared agent observer was stopped first.
     /// # Errors
-    /// Reserved for exporter failures when a signal pipeline is configured.
+    /// Reports finite OTLP or agentless intake failure categories.
     pub async fn shutdown(&self) -> Result<(), TelemetryError> {
-        std::future::ready(Ok(())).await
+        let _guard = self.control.lock().await;
+        if self.stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let timeout = self
+            .config
+            .otlp
+            .as_ref()
+            .map_or(Duration::from_secs(10), |o| o.timeout);
+        let otlp = if let Some(provider) = &self.provider {
+            let provider = provider.clone();
+            tokio::task::spawn_blocking(move || provider.shutdown_with_timeout(timeout))
+                .await
+                .map_err(|_| TelemetryError::Otlp)?
+                .map_err(|_| TelemetryError::Otlp)
+        } else {
+            Ok(())
+        };
+        let intake = if let Some(exporter) = &self.exporter {
+            match exporter.shutdown().await {
+                Ok(()) | Err(ExportError::WorkerStopped) => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            Ok(())
+        };
+        self.stopped.store(true, Ordering::Release);
+        if self.otlp_failed.load(Ordering::Acquire) {
+            return Err(TelemetryError::Otlp);
+        }
+        otlp.and(intake)
+    }
+}
+impl Drop for Telemetry {
+    fn drop(&mut self) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(exporter) = &self.exporter {
+            exporter.stop_now();
+        }
+        if let Some(provider) = self.provider.take() {
+            let timeout = self
+                .config
+                .otlp
+                .as_ref()
+                .map_or(Duration::from_secs(10), |o| o.timeout);
+            // Detach: Drop must work after a current-thread runtime stops driving.
+            // Thread creation failure must also avoid dropping the provider here.
+            let provider = Arc::new(provider);
+            let cleanup = provider.clone();
+            if std::thread::Builder::new()
+                .name("crabber-otlp-shutdown".into())
+                .spawn(move || {
+                    let _ = cleanup.shutdown_with_timeout(timeout);
+                })
+                .is_err()
+            {
+                std::mem::forget(provider);
+            }
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn config(vars: &[(&str, &str)]) -> Result<TelemetryConfig, TelemetryError> {
-        TelemetryConfig::from_lookup(&|name| {
-            vars.iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| (*value).to_owned())
-                .ok_or(VarError::NotPresent)
-        })
+fn build_provider(
+    config: &TelemetryConfig,
+    otlp: &OtlpConfig,
+    health: Arc<LayerHealth>,
+    failed: Arc<AtomicBool>,
+) -> Result<SdkTracerProvider, TelemetryError> {
+    // Validate programmatic configurations as strictly as environment input.
+    let endpoint =
+        reqwest::Url::parse(&otlp.traces_url).map_err(|_| TelemetryError::InvalidEndpoint)?;
+    if endpoint.scheme() != "http"
+        || endpoint.host_str().is_none()
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+    {
+        return Err(TelemetryError::InvalidEndpoint);
     }
-    #[test]
-    fn environment_defaults_and_endpoints() {
-        let empty = config(&[]).unwrap();
-        assert!(empty.datadog.is_none() && empty.otlp.is_none());
-        let base = config(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://h:4318/")]).unwrap();
-        assert_eq!(base.otlp.unwrap().traces_url, "http://h:4318/v1/traces");
-        let explicit = config(&[
-            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://base"),
-            ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://trace/custom"),
-        ])
-        .unwrap();
-        assert_eq!(explicit.otlp.unwrap().traces_url, "http://trace/custom");
-        for value in [
-            "https://h",
-            "ftp://h",
-            "not an endpoint",
-            "http://user:PRIVATE@h",
-        ] {
-            assert!(matches!(
-                config(&[("OTEL_EXPORTER_OTLP_ENDPOINT", value)]),
-                Err(TelemetryError::InvalidEndpoint)
-            ));
-        }
-        assert!(matches!(
-            config(&[
-                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://h"),
-                ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-            ]),
-            Err(TelemetryError::UnsupportedProtocol)
-        ));
+    let protocol = match otlp.protocol {
+        OtlpProtocol::HttpProtobuf => opentelemetry_otlp::Protocol::HttpBinary,
+        OtlpProtocol::HttpJson => opentelemetry_otlp::Protocol::HttpJson,
+        OtlpProtocol::Grpc => return Err(TelemetryError::UnsupportedProtocol),
+    };
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_endpoint(otlp.traces_url.clone())
+        .with_protocol(protocol)
+        .with_timeout(otlp.timeout)
+        .with_headers(otlp.headers.iter().cloned().collect())
+        .build()
+        .map_err(|_| TelemetryError::Otlp)?;
+    let mut attributes = vec![KeyValue::new("service.name", config.service.clone())];
+    if let Some(env) = &config.env {
+        attributes.push(KeyValue::new("deployment.environment.name", env.clone()));
+        attributes.push(KeyValue::new("deployment.environment", env.clone()));
     }
-    #[test]
-    fn secrets_are_redacted() {
-        let dd = config(&[("DD_API_KEY", "PRIVATE_KEY")]).unwrap();
-        assert!(dd.datadog.is_some() && dd.otlp.is_none());
-        let full = config(&[
-            ("DD_API_KEY", "PRIVATE_KEY"),
-            (
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                "http://h/ENDPOINT_SECRET?token=QUERY_SECRET",
-            ),
-            ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=PRIVATE_HEADER"),
-        ])
-        .unwrap();
-        let debug = format!("{full:?}");
-        assert!(!debug.contains("PRIVATE_KEY") && !debug.contains("PRIVATE_HEADER"));
-        assert!(!debug.contains("ENDPOINT_SECRET") && !debug.contains("QUERY_SECRET"));
+    if let Some(version) = &config.version {
+        attributes.push(KeyValue::new("service.version", version.clone()));
     }
-    #[tokio::test]
-    async fn empty_telemetry_is_inert() {
-        use tracing_subscriber::prelude::*;
-        let mut config = config(&[]).unwrap();
-        config.signals.metrics = false;
-        let telemetry = Telemetry::new(config).unwrap();
-        let subscriber = tracing_subscriber::registry().with(telemetry.layer());
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::info!("host event");
-        });
-        assert!(telemetry.exporter().is_none());
-        assert_eq!(telemetry.health(), TelemetryHealth::default());
-        telemetry.flush().await.unwrap();
-        telemetry.shutdown().await.unwrap();
-        telemetry.shutdown().await.unwrap();
-    }
-    #[test]
-    fn construction_requires_runtime() {
-        assert!(matches!(
-            Telemetry::new(config(&[]).unwrap()),
-            Err(TelemetryError::Runtime)
-        ));
-    }
+    attributes.extend(
+        config.resource_tags.iter().map(|(key, value)| {
+            KeyValue::new(crate::sanitize_tag(key), crate::sanitize_tag(value))
+        }),
+    );
+    let resource = Resource::builder_empty()
+        .with_attributes(attributes)
+        .build();
+    Ok(SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_span_processor(scrub::ScrubbingProcessor::new(
+            BatchSpanProcessor::builder(export::TrackedExporter::new(exporter, failed)).build(),
+            health,
+        ))
+        .build())
 }
+
+#[cfg(test)]
+mod config_tests;
+#[cfg(test)]
+mod tests;
