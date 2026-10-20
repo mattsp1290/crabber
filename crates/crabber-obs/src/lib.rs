@@ -1839,7 +1839,9 @@ mod tests {
     }
 
     async fn stopped(observer: &DatadogObserver) {
-        tokio::time::timeout(Duration::from_secs(1), async {
+        // Abort is scheduled by Tokio. This teardown backstop includes CPU
+        // contention from parallel exporter tests, not the export latency budget.
+        tokio::time::timeout(Duration::from_secs(5), async {
             while observer.health().worker_status != WorkerStatus::Stopped {
                 tokio::task::yield_now().await;
             }
