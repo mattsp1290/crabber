@@ -27,6 +27,7 @@ impl RunEvents {
                 match self.receiver.try_recv() {
                     Ok(event) => return Ok(Some(event)),
                     Err(broadcast::error::TryRecvError::Lagged(count)) => {
+                        tracing::warn!(target: crate::telemetry_targets::targets::RUNTIME, { lagged = count }, "event receiver lagged");
                         self.ended = true;
                         return Err(broadcast::error::RecvError::Lagged(count));
                     }
@@ -47,7 +48,7 @@ impl RunEvents {
                         self.ended = true;
                         return Ok(None);
                     },
-                    Err(error) => { self.ended = true; return Err(error); }
+                    Err(error) => { if let broadcast::error::RecvError::Lagged(count) = &error { tracing::warn!(target: crate::telemetry_targets::targets::RUNTIME, { lagged = count }, "event receiver lagged"); } self.ended = true; return Err(error); }
                 },
                 changed = self.completion.changed() => {
                     if changed.is_err() { self.ended = true; return Ok(None); }

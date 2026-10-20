@@ -2,6 +2,7 @@
 
 mod event_payload;
 mod execution_events;
+mod telemetry_targets;
 pub use execution_events::RunEvents;
 mod execution_tasks;
 pub use execution_tasks::{

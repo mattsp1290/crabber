@@ -8,6 +8,8 @@ use super::{
     collect_prompt_contributions_with_resolver, ensure_lease, invalid_provider, json,
     prompt_contribution_failed_message, request_error, user_message,
 };
+use crate::telemetry_targets::targets;
+use tracing::Instrument;
 
 impl Orchestrator {
     pub(super) async fn claim_input(
@@ -18,7 +20,7 @@ impl Orchestrator {
         Ok(execution.claim_inbox_into_history(kind).await?.len())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) async fn model_turn_with_retry(
         &self,
         execution: &dyn ExecutionStore,
@@ -53,7 +55,8 @@ impl Orchestrator {
             if !plan.prompt_contributors.is_empty() {
                 ensure_lease(lease_lost)?;
             }
-            match self
+            let span = tracing::info_span!(target: targets::RUNTIME, "crabber.model_call", "session.id" = %session_id, "run.id" = %run_id, "provider.id" = %snapshot.selection.provider_id, "model.id" = %snapshot.selection.model_id, purpose = "turn", "retry.attempt" = attempt - 1, "tokens.input" = tracing::field::Empty, "tokens.output" = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+            let result = self
                 .model_turn(
                     execution,
                     run_id,
@@ -65,8 +68,22 @@ impl Orchestrator {
                     cancellation,
                     lease_lost,
                 )
-                .await
-            {
+                .instrument(span.clone())
+                .await;
+            match &result {
+                Ok((_, usage)) => {
+                    span.record("tokens.input", usage.input_tokens);
+                    span.record("tokens.output", usage.output_tokens);
+                    span.record("outcome", "completed");
+                    span.record("reason", "success");
+                    span.record("otel.status_code", "OK");
+                }
+                Err(error) => {
+                    super::telemetry::record_model_error(&span, error);
+                }
+            }
+            drop(span);
+            match result {
                 Ok(result) => return Ok(result),
                 Err(RuntimeError::Provider(error)) => {
                     let overflow =
@@ -96,6 +113,7 @@ impl Orchestrator {
                         continue;
                     }
                     if retry && decision.retry {
+                        tracing::warn!(target: targets::RUNTIME, { "error.kind" = super::telemetry::provider_error_kind(&error), "retry.attempt" = retries + 1, "retry.delay_ms" = decision.delay_ms, compaction_requested = decision.compaction_requested }, "model request failed, retry scheduled");
                         retries += 1;
                         tokio::select! {
                             biased;
@@ -307,6 +325,8 @@ impl Orchestrator {
             // Compaction is an internal model request with a dedicated prompt. System-prompt
             // middleware is intentionally scoped to agent-turn attempts and is not collected
             // here; the next agent-turn attempt refreshes middleware after compaction.
+            let span = tracing::info_span!(target: targets::RUNTIME, "crabber.model_call", "session.id" = %session_id, "run.id" = %run_id, "provider.id" = %snapshot.selection.provider_id, "model.id" = %snapshot.selection.model_id, purpose = "compaction", "retry.attempt" = 0, "tokens.input" = tracing::field::Empty, "tokens.output" = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+            let result = async {
             let mut stream = tokio::select! {
                 () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
                 result = streamer.stream(request) => match result {
@@ -329,6 +349,10 @@ impl Orchestrator {
                         measurement.first_text(&fragment);
                         next_text.push_str(&fragment);
                     }
+                    StreamDelta::Usage(usage) => {
+                        span.record("tokens.input", usage.input_tokens);
+                        span.record("tokens.output", usage.output_tokens);
+                    }
                     StreamDelta::Completed => {
                         completed = true;
                         break;
@@ -350,6 +374,18 @@ impl Orchestrator {
             }
             measurement.observation.reason = TerminalReason::Success;
             drop(measurement);
+            Ok::<_, RuntimeError>(next_text)
+            }.instrument(span.clone()).await;
+            match &result {
+                Ok(_) => {
+                    span.record("outcome", "completed");
+                    span.record("reason", "success");
+                    span.record("otel.status_code", "OK");
+                }
+                Err(error) => super::telemetry::record_model_error(&span, error),
+            }
+            let next_text = result?;
+            drop(span);
             text = next_text;
             offset = end;
         }

@@ -165,6 +165,8 @@ impl OrchestratorBuilder {
             ));
         }
         Ok(Orchestrator {
+            attempt: None,
+            trace_parent: tracing::Span::none(),
             host_callbacks,
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             worker_resources: None,

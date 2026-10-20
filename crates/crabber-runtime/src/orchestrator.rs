@@ -6,6 +6,7 @@ mod helpers;
 mod model_support;
 mod model_turn;
 mod recovery;
+mod telemetry;
 pub(crate) use helpers::{RecordedCall, read_recorded_call, unknown_tool_arguments};
 use helpers::{
     ToolRun, ensure_lease, invalid_provider, is_reserved_arguments, push_part, request_error,
@@ -380,6 +381,102 @@ pub enum RuntimeError {
     PlanChanged,
 }
 
+impl RuntimeError {
+    /// Stable diagnostic category that never includes error content.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // Exhaustive finite categories mirror the public error vocabulary.
+    pub fn error_kind(&self) -> &'static str {
+        match self {
+            Self::PreparationRecoveryRequired => "preparation_recovery_required",
+            Self::AdmissionAlreadyCommitted(..) => "admission_already_committed",
+            Self::PreparationIncomplete { .. } => "preparation_incomplete",
+            Self::SessionOwner(..) => "session_owner",
+            Self::RunControl(..) => "run_control",
+            Self::HostClosed => "host_closed",
+            Self::SessionBusy => "session_busy",
+            Self::Management(..) => "management",
+            Self::Store(error) => match error.error_kind() {
+                "validation" => "store_validation",
+                "limit" => "store_limit",
+                "conflict" => "store_conflict",
+                "admission_conflict" => "store_admission_conflict",
+                "admission_revision_conflict" => "store_admission_revision_conflict",
+                "admission_unsupported" => "store_admission_unsupported",
+                "admission_recovery_required" => "store_admission_recovery_required",
+                "snapshot_unsupported" => "store_snapshot_unsupported",
+                "host_unsupported" => "store_host_unsupported",
+                "session_identity_mismatch" => "store_session_identity_mismatch",
+                "session_deleted" => "store_session_deleted",
+                "busy" => "store_busy",
+                "not_found" => "store_not_found",
+                "pending_input" => "store_pending_input",
+                _ => "store",
+            },
+            Self::AdmissionExecution(..) => "admission_execution",
+            Self::Attempt(..) => "attempt",
+            Self::Approval(..) => "approval",
+            Self::ToolContinuation(..) => "tool_continuation",
+            Self::ToolContinuationBoundaryUnknown { .. } => "tool_continuation_boundary_unknown",
+            Self::ApprovalBoundaryUnknown { .. } => "approval_boundary_unknown",
+            Self::Provider(error) => telemetry::provider_error_kind(error),
+            Self::ProviderBinding(..) => "provider_binding",
+            Self::Extension(..) => "extension",
+            Self::ExtensionPlan(error) => match error.error_kind() {
+                "preparation_resource_contract_invalid" => {
+                    "extension_preparation_resource_contract_invalid"
+                }
+                "preparation_resources_unsupported" => {
+                    "extension_preparation_resources_unsupported"
+                }
+                "preparation_lease_already_bound" => "extension_preparation_lease_already_bound",
+                "preparation_registration" => "extension_preparation_registration",
+                "session_service_dependency" => "extension_session_service_dependency",
+                "durable_interaction_unsupported" => "extension_durable_interaction_unsupported",
+                "registration_descriptor_unavailable" => {
+                    "extension_registration_descriptor_unavailable"
+                }
+                "plan" => "extension_plan",
+                "tool" => "extension_tool",
+                "rejected" => "extension_rejected",
+                "tool_collision" => "extension_tool_collision",
+                "prompt_contributor_collision" => "extension_prompt_contributor_collision",
+                "next_not_called" => "extension_next_not_called",
+                "next_called_twice" => "extension_next_called_twice",
+                "next_expired" => "extension_next_expired",
+                "next_outside_callback" => "extension_next_outside_callback",
+                "self_close" => "extension_self_close",
+                "missing_capability" => "extension_missing_capability",
+                "mount_close_timeout" => "extension_mount_close_timeout",
+                "mount_cleanup_incomplete" => "extension_mount_cleanup_incomplete",
+                "registry_closed" => "extension_registry_closed",
+                "context_owner_closed" => "extension_context_owner_closed",
+                "context_identity_mismatch" => "extension_context_identity_mismatch",
+                "workspace_unavailable" => "extension_workspace_unavailable",
+                "context_initialization_failed" => "extension_context_initialization_failed",
+                "context_initialization_incomplete" => {
+                    "extension_context_initialization_incomplete"
+                }
+                "context_cleanup_incomplete" => "extension_context_cleanup_incomplete",
+                _ => "extension",
+            },
+            Self::TurnLimit => "turn_limit",
+            Self::TaskStopped => "task_stopped",
+            Self::Missing(..) => "missing",
+            Self::InvalidConfiguration(..) => "invalid_configuration",
+            Self::LeaseLost => "lease_lost",
+            Self::Interrupted => "interrupted",
+            Self::TerminalOutcomeUnknown { .. } => "terminal_outcome_unknown",
+            Self::AttemptBoundaryUnknown { .. } => "attempt_boundary_unknown",
+            Self::AttemptCleanupIncomplete { .. } => "attempt_cleanup_incomplete",
+            Self::PhaseOutcomeUnknown { .. } => "phase_outcome_unknown",
+            Self::ToolOutcomeUnknown { .. } => "tool_outcome_unknown",
+            Self::DurableContinuationRequired { .. } => "durable_continuation_required",
+            Self::Paused => "paused",
+            Self::PlanChanged => "plan_changed",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TurnSnapshot {
     pub context: Vec<crabber_core::InputContext>,
@@ -476,6 +573,13 @@ pub trait Observer: Send + Sync {
 
 // Owned by one execution attempt; cloning the runtime into tasks keeps the identity
 // explicit and immutable, without depending on task-local or global tracing state.
+#[derive(Clone)]
+struct AttemptIdentity {
+    attempt: RunId,
+    context: Option<TraceContext>,
+    parent: Arc<std::sync::Mutex<Option<tracing::Span>>>,
+}
+
 struct ContextObserver {
     inner: Arc<dyn Observer>,
     context: Option<TraceContext>,
@@ -544,6 +648,8 @@ impl Streamer for SingleUseStreamer {
 
 #[derive(Clone)]
 pub struct Orchestrator {
+    attempt: Option<AttemptIdentity>,
+    trace_parent: tracing::Span,
     store: Arc<dyn Store>,
     behavior_fingerprint: crabber_core::InputFingerprint,
     host_callbacks: crabber_core::InputFingerprint,
@@ -974,7 +1080,8 @@ impl Orchestrator {
         F: FnOnce(Self) -> W + Send + 'static,
         W: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
     {
-        let runtime = self.clone();
+        let mut runtime = self.clone();
+        runtime.trace_parent = tracing::Span::current();
         async move {
             let admitted = self.execution_tasks.admit(session, move |scope| {
                 let mut runtime = runtime;

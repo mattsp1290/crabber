@@ -6,6 +6,8 @@ use super::{
     RuntimeError, SessionContext, SessionId, StoreError, TraceContext, Value, admission,
     admission_config_hash, frontend, json, preparation,
 };
+use crate::telemetry_targets::targets;
+use tracing::Instrument;
 
 impl Orchestrator {
     /// Admits a run and starts its turn loop in the background.
@@ -37,6 +39,38 @@ impl Orchestrator {
     }
 
     async fn start_admission(
+        &self,
+        request: Request,
+        session_id: SessionId,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let session = session_id.clone();
+        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = false, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let result = Box::pin(self.start_admission_inner(request, session_id, context))
+            .instrument(span.clone())
+            .await;
+        let outcome = match &result {
+            Ok(_) => "started",
+            Err(
+                RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
+                | RuntimeError::SessionBusy,
+            ) => "conflict",
+            Err(
+                RuntimeError::PreparationIncomplete { .. }
+                | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
+            ) => "unknown",
+            Err(_) => "rejected",
+        };
+        span.record("outcome", outcome).record(
+            "otel.status_code",
+            if outcome == "rejected" { "ERROR" } else { "OK" },
+        );
+        if let Err(error) = &result {
+            span.record("error.kind", error.error_kind());
+        }
+        result
+    }
+    async fn start_admission_inner(
         &self,
         request: Request,
         session_id: SessionId,
@@ -140,6 +174,42 @@ impl Orchestrator {
     }
 
     async fn start_keyed_admission(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let session = request
+            .session_id
+            .as_ref()
+            .map_or_else(|| "none".into(), ToString::to_string);
+        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = true, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let result = Box::pin(self.start_keyed_admission_inner(request, options, context))
+            .instrument(span.clone())
+            .await;
+        let outcome = match &result {
+            Ok(Admission::Replayed(_)) => "replayed",
+            Ok(_) => "started",
+            Err(
+                RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
+                | RuntimeError::SessionBusy,
+            ) => "conflict",
+            Err(
+                RuntimeError::PreparationIncomplete { .. }
+                | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
+            ) => "unknown",
+            Err(_) => "rejected",
+        };
+        span.record("outcome", outcome).record(
+            "otel.status_code",
+            if outcome == "rejected" { "ERROR" } else { "OK" },
+        );
+        if let Err(error) = &result {
+            span.record("error.kind", error.error_kind());
+        }
+        result
+    }
+    async fn start_keyed_admission_inner(
         &self,
         request: Request,
         options: AdmissionOptions,
@@ -277,6 +347,42 @@ impl Orchestrator {
     }
 
     pub(super) async fn recover_retained_admission(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let session = request
+            .session_id
+            .as_ref()
+            .map_or_else(|| "none".into(), ToString::to_string);
+        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = true, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let result = Box::pin(self.recover_retained_admission_inner(request, options, context))
+            .instrument(span.clone())
+            .await;
+        let outcome = match &result {
+            Ok(Admission::Replayed(_)) => "replayed",
+            Ok(_) => "started",
+            Err(
+                RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
+                | RuntimeError::SessionBusy,
+            ) => "conflict",
+            Err(
+                RuntimeError::PreparationIncomplete { .. }
+                | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
+            ) => "unknown",
+            Err(_) => "rejected",
+        };
+        span.record("outcome", outcome).record(
+            "otel.status_code",
+            if outcome == "rejected" { "ERROR" } else { "OK" },
+        );
+        if let Err(error) = &result {
+            span.record("error.kind", error.error_kind());
+        }
+        result
+    }
+    pub(super) async fn recover_retained_admission_inner(
         &self,
         request: Request,
         options: AdmissionOptions,
@@ -446,10 +552,17 @@ impl Orchestrator {
 
     pub(super) fn with_context(&self, context: Option<TraceContext>) -> Self {
         let mut runtime = self.clone();
+        let attempt = RunId::new();
+        runtime.attempt = Some(super::AttemptIdentity {
+            attempt: attempt.clone(),
+            context: context.clone(),
+            parent: Arc::new(std::sync::Mutex::new(Some(runtime.trace_parent.clone()))),
+        });
+        runtime.trace_parent = tracing::Span::none();
         runtime.observer = Arc::new(ContextObserver {
             inner: Arc::clone(&self.observer),
             context,
-            attempt: RunId::new(),
+            attempt,
         });
         runtime
     }

@@ -8,11 +8,13 @@ use super::{
     TransformOutput, Value, attempt, ensure_lease, read_recorded_call,
     result_transform_failed_message, runtime_error_output,
 };
+use crate::telemetry_targets::targets;
 use crabber_extension::ToolResourceOwner;
 use crabber_session::GrantedApproval;
 use futures::FutureExt;
 use std::sync::atomic::Ordering;
 use tokio::sync::watch;
+use tracing::Instrument;
 
 /// A protected output keeps its original class separate from transformation status.
 struct ProtectedResult {
@@ -210,6 +212,46 @@ impl Orchestrator {
     }
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn execute_tool_body(&self, work: Work<'_>) -> Result<(), RuntimeError> {
+        let name = work.call.name.clone();
+        let session = work.scope.session.id.clone();
+        let run = work.scope.run.clone();
+        let call = work.record.id.clone();
+        let permission = match work.authorization.decision {
+            crabber_session::GrantedDecision::Allow
+            | crabber_session::GrantedDecision::NotRequired => "allow",
+            crabber_session::GrantedDecision::Deny => "deny",
+        };
+        let span = tracing::info_span!(target: targets::RUNTIME, "crabber.tool_call", "session.id" = %session, "run.id" = %run, "tool.name" = %name, "tool.call_id" = %call, permission = permission, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let result = Box::pin(self.execute_tool_body_inner(work))
+            .instrument(span.clone())
+            .await;
+        if let Err(error) = &result {
+            let outcome = match error {
+                RuntimeError::LeaseLost => "lease_lost",
+                RuntimeError::Interrupted => "interrupted",
+                RuntimeError::ToolContinuation(
+                    crabber_session::ToolContinuationError::SemanticConflict,
+                ) => "semantic_conflict",
+                _ => "failed",
+            };
+            span.record("outcome", outcome);
+            span.record("error.kind", error.error_kind());
+            span.record(
+                "otel.status_code",
+                if outcome == "interrupted" {
+                    "OK"
+                } else {
+                    "ERROR"
+                },
+            );
+            if outcome == "failed" {
+                span.in_scope(|| tracing::warn!(target: targets::RUNTIME, { "tool.name" = %name, "error.kind" = error.error_kind() }, "tool call failed"));
+            }
+        }
+        result
+    }
+    #[allow(clippy::too_many_lines)]
+    async fn execute_tool_body_inner(&self, work: Work<'_>) -> Result<(), RuntimeError> {
         let Work {
             scope,
             call,
@@ -383,6 +425,10 @@ impl Orchestrator {
                                 cancellation,
                             )
                             .await?;
+                            // This attempt yields the pending call to its durable continuation.
+                            tracing::Span::current()
+                                .record("outcome", "interrupted")
+                                .record("otel.status_code", "OK");
                             return Ok(());
                         }
                         ToolRun::SuspensionInvalid => {
@@ -477,6 +523,31 @@ impl Orchestrator {
         } else {
             TerminalReason::Success
         };
+        let outcome = if interrupted {
+            "interrupted"
+        } else if is_error {
+            "failed"
+        } else {
+            "succeeded"
+        };
+        tracing::Span::current()
+            .record("outcome", outcome)
+            .record("otel.status_code", if is_error { "ERROR" } else { "OK" });
+        if is_error && !interrupted {
+            tracing::Span::current().record("error.kind", "tool_error");
+            tracing::warn!(target: targets::RUNTIME, { "tool.name" = %tool_name, "error.kind" = "tool_error" }, "tool call failed");
+        }
+        let attempt = self
+            .attempt
+            .as_ref()
+            .map_or_else(|| "none".into(), |identity| identity.attempt.to_string());
+        let context = self
+            .attempt
+            .as_ref()
+            .and_then(|identity| identity.context.as_ref());
+        let trace = context.map_or("", crabber_core::TraceContext::trace_id);
+        let host_span = context.map_or("", crabber_core::TraceContext::span_id);
+        tracing::info!(target: targets::LIFECYCLE, { "host.trace_id" = trace, "host.span_id" = host_span, "session.id" = %session_id, "run.id" = %run_id, "attempt.id" = %attempt, "tool.name" = %tool_name, "tool.call_id" = %record.id, outcome = outcome }, "tool settled");
         drop(measurement);
         let cleanup = resources.drain(attempt::RESOURCE_JOIN_BOUND).await;
         if !cleanup.sealed || cleanup.pending != 0 || !cleanup.failures.is_empty() {

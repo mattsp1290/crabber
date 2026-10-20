@@ -3,6 +3,7 @@ use super::{
     EventPublished, ExecutionStore, GuardContext, GuardDecision, Orchestrator, PermissionDecision,
     RecordedCall, RunPlan, RunSession, RuntimeError, Value, ensure_lease, read_recorded_call,
 };
+use crate::telemetry_targets::targets;
 use crabber_core::{
     AuthorityRequirement, ContinuationGeneration, ContinuationId, ControlId,
     InteractionDescription, InteractionId, InteractionKind, PhaseGeneration, PhaseId, RunId,
@@ -13,6 +14,7 @@ use crabber_session::{
     ContinuationTarget, GrantedApproval, GrantedDecision, PhaseTarget, PreparedApproval,
 };
 use std::sync::atomic::AtomicBool;
+use tracing::Instrument;
 
 impl Orchestrator {
     #[allow(clippy::too_many_arguments)]
@@ -177,6 +179,44 @@ impl Orchestrator {
         turns_used: usize,
         turn: Option<TurnId>,
     ) -> Result<(), RuntimeError> {
+        let count = calls.len();
+        let span = tracing::info_span!(target: targets::RUNTIME, "crabber.approval.suspend", "session.id" = tracing::field::Empty, "run.id" = %run_id, calls = count, outcome = "failed", "error.kind" = tracing::field::Empty);
+        let result = self
+            .suspend_approvals_inner(
+                execution,
+                run_id,
+                plan,
+                calls,
+                next_attempt,
+                usage,
+                turns_used,
+                turn,
+            )
+            .instrument(span.clone())
+            .await;
+        match &result {
+            Ok(()) => {
+                span.record("outcome", "suspended");
+                span.in_scope(|| tracing::info!(target: targets::RUNTIME, { calls = count }, "run suspended for approval"));
+            }
+            Err(error) => {
+                span.record("error.kind", error.error_kind());
+            }
+        }
+        result
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn suspend_approvals_inner(
+        &self,
+        execution: &dyn ExecutionStore,
+        run_id: &RunId,
+        plan: &RunPlan,
+        calls: Vec<PreparedApproval>,
+        next_attempt: AttemptTarget,
+        usage: &Usage,
+        turns_used: usize,
+        turn: Option<TurnId>,
+    ) -> Result<(), RuntimeError> {
         let owner = self
             .owned_attempt
             .as_ref()
@@ -196,6 +236,7 @@ impl Orchestrator {
             .get_run(run_id)
             .await?
             .ok_or(super::StoreError::NotFound)?;
+        tracing::Span::current().record("session.id", tracing::field::display(&run.session_id));
         let generation = self
             .store
             .approval_snapshot(&run.session_id, &run.id)

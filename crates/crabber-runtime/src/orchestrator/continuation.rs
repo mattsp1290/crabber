@@ -1,5 +1,6 @@
 //! Durable approval continuation: a receipt replay never returns another handle.
 use super::{Orchestrator, RunHandle, RunStatus, RuntimeError};
+use crate::telemetry_targets::targets;
 use crabber_core::{
     ControlId, Run, RunFence, RunId, SessionId, SessionRevision, TraceContext, TurnId, Usage,
 };
@@ -9,6 +10,7 @@ use crabber_session::{
     GrantedApproval, StoreError,
 };
 use tokio::sync::oneshot;
+use tracing::Instrument;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -254,6 +256,8 @@ impl Orchestrator {
                     sender,
                 } => (prepared, control, sender),
             };
+            let span = tracing::info_span!(target: targets::RUNTIME, "crabber.approval.continue", "session.id" = %run.session_id, "run.id" = %run.id, outcome = "failed", "error.kind" = tracing::field::Empty);
+            let result: Result<Option<ResumeAuthority>, RuntimeError> = async {
             let outcome = if let Some(prepared) = prepared {
                 let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
                     outcome,
@@ -283,17 +287,25 @@ impl Orchestrator {
                     }
                 }
             };
-            return match outcome {
+            match outcome {
                 ApprovalClaimOutcome::Replayed(receipt) => {
+                    span.record("outcome", "replayed");
                     let _ = sender.send(Claimed::Replay(receipt));
                     Ok(None)
                 }
                 ApprovalClaimOutcome::Applied { receipt, grant } => {
+                    let outcome = if grant.calls.iter().any(|call| call.decision == crabber_session::GrantedDecision::Deny) { "denied" } else { "approved" };
+                    span.record("outcome", outcome);
                     let authority = prepared_approval_authority(run, &receipt, *grant)?;
                     let _ = sender.send(Claimed::Fresh(receipt));
                     Ok(Some(authority))
                 }
-            };
+            }
+            }.instrument(span.clone()).await;
+            if let Err(error) = &result {
+                span.record("error.kind", error.error_kind());
+            }
+            return result;
         }
         let native_unstarted = match self.store.latest_execution_attempt(&run.id).await? {
             Some(previous) if previous.attempt.state == AttemptState::Unstarted => true,
