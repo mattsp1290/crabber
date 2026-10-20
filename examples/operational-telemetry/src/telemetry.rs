@@ -34,10 +34,10 @@ const EXTENSION_ID: &str = "telemetry/echo";
 struct EchoExtension(Arc<ToolDefinition>);
 #[async_trait::async_trait]
 impl crabber::extension::Extension for EchoExtension {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         EXTENSION_ID
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
