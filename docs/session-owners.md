@@ -303,6 +303,17 @@ or business operation. A new controller may explicitly recover a still
 Unstarted admission only after its current lease expires and a new authenticated
 source inspection succeeds.
 
+If restoration fails because the configured backend is unavailable, recovery
+leaves the original Run, fence, execution state and admission receipt unchanged.
+The failed recovery still occupies its original preparation key. Making the
+backend available again does not grant another Begin: a retry of that same
+recovery returns `PreparationRecoveryRequired` before restoring the provider or
+acquiring another plan. This remains a recovery liveness limitation, even when
+the failed legacy preparation has actually joined. Automatic retry would need
+an explicit successor preparation protocol that preserves original receipts,
+resource cleanup evidence and the captured native source; metadata replay
+alone supplies none of that authority.
+
 This protocol covers keyed admission recovery preparation. Generic expired-Run
 resume, complete-history verification of continuation claims, normal
 provider/service ownership, initializers, reapers and retained callbacks still

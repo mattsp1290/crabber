@@ -79,7 +79,9 @@ use fault_store::FaultStore;
 mod provider;
 use provider::agent;
 
+mod backend_unavailable;
 mod child;
+mod host_outbox;
 mod reconcile_started;
 mod recovery;
 
