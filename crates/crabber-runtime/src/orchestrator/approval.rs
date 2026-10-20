@@ -180,7 +180,7 @@ impl Orchestrator {
         turn: Option<TurnId>,
     ) -> Result<(), RuntimeError> {
         let count = calls.len();
-        let span = tracing::info_span!(target: targets::RUNTIME, "crabber.approval.suspend", "session.id" = tracing::field::Empty, "run.id" = %run_id, calls = count, outcome = "failed", "error.kind" = tracing::field::Empty);
+        let span = tracing::info_span!(target: targets::RUNTIME, "crabber.approval.suspend", "session.id" = tracing::field::Empty, "run.id" = %run_id, calls = count, outcome = "failed", "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
         let result = self
             .suspend_approvals_inner(
                 execution,
@@ -191,16 +191,19 @@ impl Orchestrator {
                 usage,
                 turns_used,
                 turn,
+                &span,
             )
             .instrument(span.clone())
             .await;
         match &result {
             Ok(()) => {
                 span.record("outcome", "suspended");
+                span.record("otel.status_code", "OK");
                 span.in_scope(|| tracing::info!(target: targets::RUNTIME, { calls = count }, "run suspended for approval"));
             }
             Err(error) => {
                 span.record("error.kind", error.error_kind());
+                span.record("otel.status_code", "ERROR");
             }
         }
         result
@@ -216,6 +219,7 @@ impl Orchestrator {
         usage: &Usage,
         turns_used: usize,
         turn: Option<TurnId>,
+        span: &tracing::Span,
     ) -> Result<(), RuntimeError> {
         let owner = self
             .owned_attempt
@@ -236,7 +240,7 @@ impl Orchestrator {
             .get_run(run_id)
             .await?
             .ok_or(super::StoreError::NotFound)?;
-        tracing::Span::current().record("session.id", tracing::field::display(&run.session_id));
+        span.record("session.id", tracing::field::display(&run.session_id));
         let generation = self
             .store
             .approval_snapshot(&run.session_id, &run.id)

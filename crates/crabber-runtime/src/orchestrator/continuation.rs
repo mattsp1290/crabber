@@ -12,6 +12,10 @@ use crabber_session::{
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+#[cfg(test)]
+#[path = "continuation/telemetry_tests.rs"]
+mod telemetry_tests;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContinueApproval {
@@ -233,31 +237,15 @@ impl Orchestrator {
         )?;
         claim_result(handle, receiver).await
     }
-    pub(super) async fn acquire_resume(
+    async fn acquire_approval_resume(
         &self,
         run: &Run,
-        request: super::recovery::ResumeRequest,
+        prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
+        control: ApprovalControl,
+        sender: oneshot::Sender<Claimed>,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
-        if let super::recovery::ResumeRequest::Continuation(control) = request {
-            let (prepared, control, sender) = match *control {
-                ApprovalResume::Tool {
-                    control,
-                    sender,
-                    prepared,
-                    expected,
-                } => {
-                    return self
-                        .acquire_tool_resume(run, control, sender, prepared, expected)
-                        .await;
-                }
-                ApprovalResume::Approval {
-                    control,
-                    prepared,
-                    sender,
-                } => (prepared, control, sender),
-            };
-            let span = tracing::info_span!(target: targets::RUNTIME, "crabber.approval.continue", "session.id" = %run.session_id, "run.id" = %run.id, outcome = "failed", "error.kind" = tracing::field::Empty);
-            let result: Result<Option<ResumeAuthority>, RuntimeError> = async {
+        let span = tracing::info_span!(target: targets::RUNTIME, "crabber.approval.continue", "session.id" = %run.session_id, "run.id" = %run.id, outcome = "failed", "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let result: Result<Option<ResumeAuthority>, RuntimeError> = async {
             let outcome = if let Some(prepared) = prepared {
                 let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
                     outcome,
@@ -294,18 +282,62 @@ impl Orchestrator {
                     Ok(None)
                 }
                 ApprovalClaimOutcome::Applied { receipt, grant } => {
-                    let outcome = if grant.calls.iter().any(|call| call.decision == crabber_session::GrantedDecision::Deny) { "denied" } else { "approved" };
-                    span.record("outcome", outcome);
+                    let outcome = if grant
+                        .calls
+                        .iter()
+                        .any(|call| call.decision == crabber_session::GrantedDecision::Deny)
+                    {
+                        "denied"
+                    } else {
+                        "approved"
+                    };
                     let authority = prepared_approval_authority(run, &receipt, *grant)?;
+                    span.record("outcome", outcome);
                     let _ = sender.send(Claimed::Fresh(receipt));
                     Ok(Some(authority))
                 }
             }
-            }.instrument(span.clone()).await;
-            if let Err(error) = &result {
-                span.record("error.kind", error.error_kind());
+        }
+        .instrument(span.clone())
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("otel.status_code", "OK");
             }
-            return result;
+            Err(error) => {
+                span.record("outcome", "failed");
+                span.record("error.kind", error.error_kind());
+                span.record("otel.status_code", "ERROR");
+            }
+        }
+        result
+    }
+    pub(super) async fn acquire_resume(
+        &self,
+        run: &Run,
+        request: super::recovery::ResumeRequest,
+    ) -> Result<Option<ResumeAuthority>, RuntimeError> {
+        if let super::recovery::ResumeRequest::Continuation(control) = request {
+            let (prepared, control, sender) = match *control {
+                ApprovalResume::Tool {
+                    control,
+                    sender,
+                    prepared,
+                    expected,
+                } => {
+                    return self
+                        .acquire_tool_resume(run, control, sender, prepared, expected)
+                        .await;
+                }
+                ApprovalResume::Approval {
+                    control,
+                    prepared,
+                    sender,
+                } => (prepared, control, sender),
+            };
+            return self
+                .acquire_approval_resume(run, prepared, control, sender)
+                .await;
         }
         let native_unstarted = match self.store.latest_execution_attempt(&run.id).await? {
             Some(previous) if previous.attempt.state == AttemptState::Unstarted => true,

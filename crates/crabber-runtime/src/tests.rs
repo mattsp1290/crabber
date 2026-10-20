@@ -43,7 +43,7 @@ mod recovery_observation;
 #[path = "tests/resume_lifecycle.rs"]
 mod resume_lifecycle;
 #[path = "tests/tracing_spans.rs"]
-mod tracing_spans;
+pub(crate) mod tracing_spans;
 use operational_observation::{
     OperationalAppendGate, OperationalCapture, OperationalClock, operational_stream,
 };

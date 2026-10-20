@@ -105,19 +105,19 @@ async fn opencode_models_request_sends_user_agent() {
 use crate::RequestIdentity;
 #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
 use crabber_core::{RunId, SessionId, TurnId};
-#[cfg(any(feature = "codex", feature = "opencode-go"))]
+#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
 use std::time::Duration;
-#[cfg(any(feature = "codex", feature = "opencode-go"))]
+#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::timeout,
 };
 
-#[cfg(any(feature = "codex", feature = "opencode-go"))]
+#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
 const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(any(feature = "codex", feature = "opencode-go"))]
+#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
 async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
     let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
         .await
@@ -162,7 +162,7 @@ async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) 
     (socket, headers)
 }
 
-#[cfg(any(feature = "codex", feature = "opencode-go"))]
+#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
 async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
     timeout(LOOPBACK_TIMEOUT, socket.write_all(response))
         .await
@@ -675,6 +675,48 @@ async fn codex_headers_have_exact_session_and_originator() {
     assert_eq!(headers["authorization"], "Bearer test-token");
     assert_eq!(headers["originator"], "advisor");
     assert_eq!(headers["session_id"], "session-1");
+}
+
+#[cfg(feature = "custom-http")]
+#[tokio::test(flavor = "current_thread")]
+async fn refreshed_request_transport_failure_preserves_terminal_outcome() {
+    struct Source;
+    #[async_trait]
+    impl CredentialSource for Source {
+        async fn credential(&self, _: &ModelRequest) -> Result<String, ProviderError> {
+            Ok("local-test".into())
+        }
+        async fn invalidate(&self, _: &str) {}
+    }
+    let (captured, _guard) = crate::tracing_capture_tests::capture();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = accept_loopback_request(&listener).await;
+        write_loopback_response(
+            &mut socket,
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        drop(socket);
+        let (socket, _) = listener.accept().await.unwrap();
+        drop(listener);
+        drop(socket); // Refreshed request receives no HTTP response.
+    });
+    let adapter = HttpAdapter::custom("custom", &url, Protocol::Responses)
+        .with_credential_source(Arc::new(Source));
+    let error = adapter.stream(request("custom")).await.err().unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Transport);
+    server.await.unwrap();
+    let records = captured.0.lock().unwrap();
+    let span = records
+        .iter()
+        .find(|r| r.name == "crabber.provider.request")
+        .unwrap();
+    assert_eq!(span.fields["retry.attempt"], "1");
+    assert_eq!(span.fields["http.response.status_code"], "401");
+    assert_eq!(span.fields["outcome"], "transport_error");
+    assert_eq!(span.fields["otel.status_code"], "ERROR");
 }
 
 #[cfg(feature = "custom-http")]

@@ -354,6 +354,7 @@ pub(super) struct OperationalAppendGate {
 #[tokio::test(start_paused = true)]
 async fn operational_store_first_takeover_skips_settlement_initial_and_resume() {
     for resume in [false, true] {
+        let traces = super::tracing_spans::RunReasonCapture::new();
         let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
         let wall = Arc::new(ManualClock::new(now));
         let inner = Arc::new(MemoryStore::with_clock(wall.clone()));
@@ -427,6 +428,14 @@ async fn operational_store_first_takeover_skips_settlement_initial_and_resume() 
             .collect();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].reason, crate::TerminalReason::LeaseLost);
+        assert_eq!(
+            traces.reasons(if resume {
+                "crabber.resume"
+            } else {
+                "crabber.run"
+            }),
+            vec!["lease_lost"]
+        );
         assert!(
             inner
                 .list_events(&session, None, 100)
@@ -443,6 +452,7 @@ async fn operational_store_first_takeover_skips_settlement_initial_and_resume() 
 }
 #[tokio::test(start_paused = true)]
 async fn operational_ordinary_store_conflict_keeps_runtime_error_and_settlement() {
+    let traces = super::tracing_spans::RunReasonCapture::new();
     let append = Arc::new(OperationalAppendGate::default());
     append.enabled.store(true, Ordering::SeqCst);
     append.conflict.store(true, Ordering::SeqCst);
@@ -478,6 +488,7 @@ async fn operational_ordinary_store_conflict_keeps_runtime_error_and_settlement(
             .any(|e| e.kind == EventKind::MessageCommitted)
     );
     assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
+    assert_eq!(traces.reasons("crabber.run"), vec!["runtime_error"]);
     let values = capture.values.lock().unwrap();
     assert_eq!(
         values.last().unwrap().reason,

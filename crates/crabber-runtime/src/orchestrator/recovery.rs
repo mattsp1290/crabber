@@ -298,14 +298,26 @@ impl Orchestrator {
         let span = self.attempt_span(true, &session.id, &run.id);
         let session_id = session.id.clone();
         let trace_run = run.id.clone();
+        let measurement_lost = Arc::new(AtomicBool::new(false));
         let result = async {
             self.lifecycle(&session_id, &trace_run, None);
-            self.resume_entry_inner(run, (session, saved), cancellation, entry)
-                .await
+            self.resume_entry_inner(
+                run,
+                (session, saved),
+                cancellation,
+                entry,
+                measurement_lost.clone(),
+            )
+            .await
         }
         .instrument(span.clone())
         .await;
-        let outcome = super::telemetry::record_result(&span, &result);
+        let reason = if measurement_lost.load(Ordering::SeqCst) {
+            crate::TerminalReason::LeaseLost
+        } else {
+            result_reason(&result)
+        };
+        let outcome = super::telemetry::record_result(&span, &result, reason);
         span.in_scope(|| self.lifecycle(&session_id, &trace_run, Some(outcome)));
         result
     }
@@ -315,6 +327,7 @@ impl Orchestrator {
         (session, saved): (RunSession, Option<Request>),
         cancellation: CancellationToken,
         entry: ResumeEntry,
+        measurement_lost: Arc<AtomicBool>,
     ) -> Result<RunResult, RuntimeError> {
         let run_id = &run.id.clone();
         if self.store.admission_execution_state(run_id).await?
@@ -406,6 +419,7 @@ impl Orchestrator {
                 authority: acquisition,
             },
             cancellation,
+            measurement_lost,
         ))
         .await
     }

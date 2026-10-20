@@ -147,12 +147,15 @@ fn provider_tags(fields: &Fields, dimensions: &MetricDimensions) -> Vec<String> 
     let status = fields
         .get("http.response.status_code")
         .and_then(|v| v.parse::<u16>().ok());
-    let class = match status {
-        Some(200..=299) => "2xx",
-        Some(400..=499) => "4xx",
-        Some(500..=599) => "5xx",
-        _ if fields.get("outcome").as_deref() == Some("transport_error") => "transport",
-        _ => "other",
+    let class = if fields.get("outcome").as_deref() == Some("transport_error") {
+        "transport"
+    } else {
+        match status {
+            Some(200..=299) => "2xx",
+            Some(400..=499) => "4xx",
+            Some(500..=599) => "5xx",
+            _ => "other",
+        }
     };
     let retried = fields
         .get("retry.attempt")

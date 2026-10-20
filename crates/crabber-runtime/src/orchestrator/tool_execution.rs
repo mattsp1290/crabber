@@ -222,7 +222,7 @@ impl Orchestrator {
             crabber_session::GrantedDecision::Deny => "deny",
         };
         let span = tracing::info_span!(target: targets::RUNTIME, "crabber.tool_call", "session.id" = %session, "run.id" = %run, "tool.name" = %name, "tool.call_id" = %call, permission = permission, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
-        let result = Box::pin(self.execute_tool_body_inner(work))
+        let result = Box::pin(self.execute_tool_body_inner(work, &span))
             .instrument(span.clone())
             .await;
         if let Err(error) = &result {
@@ -251,7 +251,11 @@ impl Orchestrator {
         result
     }
     #[allow(clippy::too_many_lines)]
-    async fn execute_tool_body_inner(&self, work: Work<'_>) -> Result<(), RuntimeError> {
+    async fn execute_tool_body_inner(
+        &self,
+        work: Work<'_>,
+        span: &tracing::Span,
+    ) -> Result<(), RuntimeError> {
         let Work {
             scope,
             call,
@@ -426,8 +430,7 @@ impl Orchestrator {
                             )
                             .await?;
                             // This attempt yields the pending call to its durable continuation.
-                            tracing::Span::current()
-                                .record("outcome", "interrupted")
+                            span.record("outcome", "interrupted")
                                 .record("otel.status_code", "OK");
                             return Ok(());
                         }
@@ -530,11 +533,10 @@ impl Orchestrator {
         } else {
             "succeeded"
         };
-        tracing::Span::current()
-            .record("outcome", outcome)
+        span.record("outcome", outcome)
             .record("otel.status_code", if is_error { "ERROR" } else { "OK" });
         if is_error && !interrupted {
-            tracing::Span::current().record("error.kind", "tool_error");
+            span.record("error.kind", "tool_error");
             tracing::warn!(target: targets::RUNTIME, { "tool.name" = %tool_name, "error.kind" = "tool_error" }, "tool call failed");
         }
         let attempt = self

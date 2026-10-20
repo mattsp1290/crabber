@@ -31,6 +31,7 @@ impl Orchestrator {
         &self,
         acquired: AcquiredResume,
         cancellation: CancellationToken,
+        measurement_lost: Arc<AtomicBool>,
     ) -> Result<RunResult, RuntimeError> {
         let AcquiredResume {
             run,
@@ -52,7 +53,6 @@ impl Orchestrator {
             tool_phases,
             frontend_phases,
         } = acquisition;
-        let measurement_lost = Arc::new(AtomicBool::new(false));
         let measurement_cancellation = CancellationToken::new();
         let mut measurement = Measurement::new(
             self.observer.as_ref(),

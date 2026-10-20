@@ -44,7 +44,12 @@ pub struct Telemetry {
     config: TelemetryConfig,
     stopped: AtomicBool,
     otlp_failed: Arc<AtomicBool>,
-    control: tokio::sync::Mutex<()>,
+    control: tokio::sync::Mutex<Option<TerminalFailure>>,
+}
+#[derive(Clone, Copy)]
+enum TerminalFailure {
+    Otlp,
+    Intake,
 }
 impl Telemetry {
     /// # Errors
@@ -77,7 +82,7 @@ impl Telemetry {
             config,
             stopped: AtomicBool::new(false),
             otlp_failed,
-            control: tokio::sync::Mutex::new(()),
+            control: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -162,19 +167,28 @@ impl Telemetry {
         }
     }
 
+    fn terminal_result(&self, failure: Option<TerminalFailure>) -> Result<(), TelemetryError> {
+        self.otlp_result()?;
+        match failure {
+            Some(TerminalFailure::Otlp) => Err(TelemetryError::Otlp),
+            Some(TerminalFailure::Intake) => Err(ExportError::WorkerStopped.into()),
+            None => Ok(()),
+        }
+    }
+
     /// # Errors
     /// Reports an OTLP or agentless intake failure.
     pub async fn flush(&self) -> Result<(), TelemetryError> {
-        let _guard = self.control.lock().await;
+        let terminal = self.control.lock().await;
         if self.stopped.load(Ordering::Acquire) {
-            return self.otlp_result();
+            return self.terminal_result(*terminal);
         }
         let otlp = if let Some(provider) = &self.provider {
             let provider = provider.clone();
             tokio::task::spawn_blocking(move || provider.force_flush())
                 .await
-                .map_err(|_| TelemetryError::Otlp)?
                 .map_err(|_| TelemetryError::Otlp)
+                .and_then(|result| result.map_err(|_| TelemetryError::Otlp))
         } else {
             Ok(())
         };
@@ -191,9 +205,9 @@ impl Telemetry {
     /// # Errors
     /// Reports finite OTLP or agentless intake failure categories.
     pub async fn shutdown(&self) -> Result<(), TelemetryError> {
-        let _guard = self.control.lock().await;
+        let mut terminal = self.control.lock().await;
         if self.stopped.load(Ordering::Acquire) {
-            return self.otlp_result();
+            return self.terminal_result(*terminal);
         }
         let timeout = self
             .config
@@ -204,22 +218,27 @@ impl Telemetry {
             let provider = provider.clone();
             tokio::task::spawn_blocking(move || provider.shutdown_with_timeout(timeout))
                 .await
-                .map_err(|_| TelemetryError::Otlp)?
                 .map_err(|_| TelemetryError::Otlp)
+                .and_then(|result| result.map_err(|_| TelemetryError::Otlp))
         } else {
             Ok(())
         };
         let intake = if let Some(exporter) = &self.exporter {
             match exporter.shutdown().await {
-                Ok(()) | Err(ExportError::WorkerStopped) => Ok(()),
+                Ok(()) => Ok(()),
+                Err(ExportError::WorkerStopped) if exporter.dropped() == 0 => Ok(()),
                 Err(error) => Err(error.into()),
             }
         } else {
             Ok(())
         };
+        let result = self.otlp_result().and(otlp).and(intake);
+        *terminal = result.as_ref().err().map(|error| match error {
+            TelemetryError::Otlp => TerminalFailure::Otlp,
+            _ => TerminalFailure::Intake,
+        });
         self.stopped.store(true, Ordering::Release);
-        self.otlp_result()?;
-        otlp.and(intake)
+        result
     }
 }
 impl Drop for Telemetry {

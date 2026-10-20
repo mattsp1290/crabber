@@ -82,8 +82,8 @@ pub(super) fn reason_label(reason: TerminalReason) -> &'static str {
 pub(super) fn record_result(
     span: &tracing::Span,
     result: &Result<RunResult, RuntimeError>,
+    reason: TerminalReason,
 ) -> &'static str {
-    let reason = crate::observation::result_reason(result);
     let outcome = match reason {
         TerminalReason::Success => "completed",
         TerminalReason::Paused => "paused",

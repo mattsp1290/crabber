@@ -83,9 +83,40 @@ enum State {
     Closed,
 }
 
-pub(crate) struct Transaction<'c, DB: Database> {
+struct TransactionTelemetry {
     span: tracing::Span,
     outcome_recorded: bool,
+}
+impl TransactionTelemetry {
+    fn new<DB: Database>(scope: StoreScope) -> Self {
+        Self {
+            span: transaction_span::<DB>(scope),
+            outcome_recorded: false,
+        }
+    }
+    fn finish(&mut self, outcome: &'static str, kind: Option<&'static str>) {
+        if self.outcome_recorded {
+            return;
+        }
+        self.outcome_recorded = true;
+        self.span.record("outcome", outcome);
+        self.span.record(
+            "otel.status_code",
+            if kind.is_some() { "ERROR" } else { "OK" },
+        );
+        if let Some(kind) = kind {
+            self.span.record("error.kind", kind);
+        }
+    }
+}
+impl Drop for TransactionTelemetry {
+    fn drop(&mut self) {
+        self.finish("abandoned", None);
+    }
+}
+
+pub(crate) struct Transaction<'c, DB: Database> {
+    telemetry: TransactionTelemetry,
     connection: MaybePoolConnection<'c, DB>,
     state: State,
     poisoned: Arc<AtomicBool>,
@@ -122,12 +153,19 @@ async fn start_pool<DB: Database>(
     statement: Option<Cow<'static, str>>,
     scope: StoreScope,
 ) -> Result<Transaction<'static, DB>, Error> {
-    let connection = pool.acquire().await?;
+    let mut telemetry = TransactionTelemetry::new::<DB>(scope);
+    let connection = match pool.acquire().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            telemetry.finish("begin_failed", Some(sqlx_error_kind(&error)));
+            return Err(error);
+        }
+    };
     Transaction::start(
         connection.into(),
         Arc::new(AtomicBool::new(false)),
         statement,
-        scope,
+        telemetry,
     )
     .await
 }
@@ -148,7 +186,7 @@ pub(crate) async fn begin_on_scoped<'c, DB: Database>(
         MaybePoolConnection::Connection(connection),
         Arc::new(AtomicBool::new(false)),
         statement.map(Cow::Borrowed),
-        scope,
+        TransactionTelemetry::new::<DB>(scope),
     )
     .await
 }
@@ -158,11 +196,10 @@ impl<'c, DB: Database> Transaction<'c, DB> {
         connection: MaybePoolConnection<'c, DB>,
         poisoned: Arc<AtomicBool>,
         statement: Option<Cow<'static, str>>,
-        scope: StoreScope,
+        telemetry: TransactionTelemetry,
     ) -> Result<Self, Error> {
         let mut transaction = Self {
-            span: transaction_span::<DB>(scope),
-            outcome_recorded: false,
+            telemetry,
             connection,
             state: State::Opening,
             poisoned,
@@ -184,7 +221,7 @@ impl<'c, DB: Database> Transaction<'c, DB> {
             MaybePoolConnection::<DB>::Connection(&mut *self.connection),
             self.poisoned.clone(),
             None,
-            StoreScope::Unscoped,
+            TransactionTelemetry::new::<DB>(StoreScope::Unscoped),
         )
         .await
     }
@@ -219,18 +256,7 @@ impl<'c, DB: Database> Transaction<'c, DB> {
     }
 
     fn finish(&mut self, outcome: &'static str, kind: Option<&'static str>) {
-        if self.outcome_recorded {
-            return;
-        }
-        self.outcome_recorded = true;
-        self.span.record("outcome", outcome);
-        self.span.record(
-            "otel.status_code",
-            if kind.is_some() { "ERROR" } else { "OK" },
-        );
-        if let Some(kind) = kind {
-            self.span.record("error.kind", kind);
-        }
+        self.telemetry.finish(outcome, kind);
     }
 
     fn check(&self) -> Result<(), Error> {

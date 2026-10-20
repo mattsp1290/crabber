@@ -38,6 +38,46 @@ struct CaptureSubscriber {
     _guard: tracing::subscriber::DefaultGuard,
     _interest_dispatch: tracing::Dispatch,
 }
+
+pub(super) struct RunReasonCapture {
+    layer: CaptureLayer,
+    _subscriber: CaptureSubscriber,
+}
+impl RunReasonCapture {
+    pub(super) fn new() -> Self {
+        let layer = CaptureLayer::default();
+        let subscriber = CaptureSubscriber::new(&layer);
+        Self {
+            layer,
+            _subscriber: subscriber,
+        }
+    }
+    pub(super) fn reasons(&self, name: &str) -> Vec<String> {
+        self.layer
+            .0
+            .lock()
+            .unwrap()
+            .spans
+            .iter()
+            .filter(|span| span.name == name)
+            .map(|span| span.fields["reason"].clone())
+            .collect()
+    }
+}
+
+pub(crate) async fn assert_failed_approval_span<T>(
+    name: &str,
+    work: impl std::future::Future<Output = Result<T, RuntimeError>>,
+) {
+    let layer = CaptureLayer::default();
+    let _subscriber = CaptureSubscriber::new(&layer);
+    assert!(work.await.is_err());
+    let capture = layer.0.lock().unwrap();
+    let span = capture.spans.iter().find(|span| span.name == name).unwrap();
+    assert_eq!(span.fields["outcome"], "failed");
+    assert_eq!(span.fields["otel.status_code"], "ERROR");
+    assert_ne!(span.fields["error.kind"], "");
+}
 impl CaptureSubscriber {
     fn new(layer: &CaptureLayer) -> Self {
         // Keep registration in tracing-core's multi-dispatch mode. Otherwise a
@@ -128,7 +168,7 @@ impl Observer for Attempts {
     }
 }
 fn runtime(
-    store: Arc<MemoryStore>,
+    store: Arc<dyn Store>,
     fake: FakeProvider,
     observer: Arc<dyn Observer>,
     decision: PermissionDecision,
@@ -539,6 +579,7 @@ async fn approval_suspend_and_continue_spans() {
         .find(|s| s.name == "crabber.approval.suspend")
         .unwrap();
     assert_eq!(suspend.fields["outcome"], "suspended");
+    assert_eq!(suspend.fields["otel.status_code"], "OK");
     let parent = capture
         .spans
         .iter()
@@ -551,10 +592,33 @@ async fn approval_suspend_and_continue_spans() {
         .find(|s| s.name == "crabber.approval.continue")
         .unwrap();
     assert_eq!(continued.fields["outcome"], "approved");
+    assert_eq!(continued.fields["otel.status_code"], "OK");
     let parent = capture
         .spans
         .iter()
         .find(|s| Some(s.id) == continued.parent)
         .unwrap();
     assert_eq!(parent.name, "crabber.resume");
+}
+
+#[tokio::test]
+async fn failed_approval_suspension_records_error_status() {
+    let gate = Arc::new(SettlementGate::default());
+    gate.fail_permission_event.store(true, Ordering::SeqCst);
+    let runtime = runtime(
+        Arc::new(DelayedTerminalStore {
+            inner: Arc::new(MemoryStore::new()),
+            gate,
+        }),
+        FakeProvider::scripted(vec![call_script(
+            ToolCallId::new(),
+            r#"{"text":"approval"}"#,
+        )]),
+        Arc::new(Attempts::default()),
+        PermissionDecision::Ask,
+    );
+    assert_failed_approval_span("crabber.approval.suspend", async {
+        runtime.start(request()).await.unwrap().done().await
+    })
+    .await;
 }

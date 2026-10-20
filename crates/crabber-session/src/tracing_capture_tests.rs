@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tracing::{
     Subscriber,
@@ -14,6 +15,8 @@ pub(crate) struct Captured {
     pub(crate) target: String,
     pub(crate) level: String,
     pub(crate) fields: BTreeMap<String, String>,
+    started: Option<Instant>,
+    elapsed: Duration,
 }
 impl Visit for Captured {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
@@ -32,6 +35,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
             name: attrs.metadata().name().into(),
             target: attrs.metadata().target().into(),
             level: attrs.metadata().level().to_string(),
+            started: Some(Instant::now()),
             ..Captured::default()
         };
         attrs.record(&mut captured);
@@ -47,14 +51,15 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
         );
     }
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
-        self.0.lock().unwrap().push(
-            ctx.span(&id)
-                .unwrap()
-                .extensions()
-                .get::<Captured>()
-                .unwrap()
-                .clone(),
-        );
+        let mut captured = ctx
+            .span(&id)
+            .unwrap()
+            .extensions()
+            .get::<Captured>()
+            .unwrap()
+            .clone();
+        captured.elapsed = captured.started.unwrap().elapsed();
+        self.0.lock().unwrap().push(captured);
     }
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         let mut captured = Captured {
@@ -66,6 +71,81 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
         event.record(&mut captured);
         self.0.lock().unwrap().push(captured);
     }
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test(flavor = "current_thread")]
+async fn transaction_span_includes_pool_acquisition() {
+    use crate::transaction::{StoreScope, begin_scoped};
+    let (captured, _guard) = capture();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_millis(100))
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let held = pool.acquire().await.unwrap();
+    assert!(matches!(
+        begin_scoped(&pool, StoreScope::Admission).await,
+        Err(sqlx::Error::PoolTimedOut)
+    ));
+    drop(held);
+    pool.close().await;
+    assert!(matches!(
+        begin_scoped(&pool, StoreScope::Verify).await,
+        Err(sqlx::Error::PoolClosed)
+    ));
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let held = pool.acquire().await.unwrap();
+    let wait = Duration::from_millis(30);
+    assert!(
+        tokio::time::timeout(wait, begin_scoped(&pool, StoreScope::Events))
+            .await
+            .is_err()
+    );
+    let queued = begin_scoped(&pool, StoreScope::Queue);
+    tokio::pin!(queued);
+    assert!(tokio::time::timeout(wait, &mut queued).await.is_err());
+    drop(held);
+    queued.await.unwrap().commit().await.unwrap();
+    pool.close().await;
+
+    let records = captured.0.lock().unwrap();
+    let transactions: Vec<_> = records
+        .iter()
+        .filter(|record| record.name == "crabber.store.transaction")
+        .collect();
+    assert_eq!(transactions.len(), 4);
+    let cancelled = transactions
+        .iter()
+        .find(|record| record.fields["crabber.store.scope"] == "events")
+        .unwrap();
+    assert_eq!(cancelled.fields["outcome"], "abandoned");
+    for (scope, kind) in [("admission", "pool_timeout"), ("verify", "pool_closed")] {
+        let record = transactions
+            .iter()
+            .find(|record| record.fields["crabber.store.scope"] == scope)
+            .unwrap();
+        assert_eq!(record.fields["outcome"], "begin_failed");
+        assert_eq!(record.fields["error.kind"], kind);
+        assert_eq!(record.fields["otel.status_code"], "ERROR");
+    }
+    let queued = transactions
+        .iter()
+        .find(|record| record.fields["crabber.store.scope"] == "queue")
+        .unwrap();
+    assert_eq!(queued.fields["outcome"], "committed");
+    assert!(
+        queued.elapsed >= wait,
+        "pool wait missing: {:?}",
+        queued.elapsed
+    );
 }
 pub(crate) struct CaptureGuard {
     _subscriber: tracing::subscriber::DefaultGuard,
@@ -87,6 +167,47 @@ pub(crate) fn capture() -> (Capture, CaptureGuard) {
             _interest_guard: interest_guard,
         },
     )
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test(flavor = "current_thread")]
+async fn disabled_store_spans_do_not_record_on_host_span() {
+    use tracing::Instrument as _;
+    use tracing_subscriber::prelude::*;
+    let capture = Capture::default();
+    let _interest = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(
+            capture.clone().with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("host::isolation", tracing::Level::INFO),
+            ),
+        ),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("absent/database.sqlite");
+    let host = tracing::info_span!(target: "host::isolation", "host.request",
+        outcome = "host-owned", error.kind = "host-error", schema.version = 99_u64, otel.status_code = "OK");
+    assert!(
+        crate::SqliteStore::connect(&missing)
+            .instrument(host.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        crate::SqliteStore::migrate(&missing)
+            .instrument(host.clone())
+            .await
+            .is_err()
+    );
+    drop(host);
+    let records = capture.0.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].name, "host.request");
+    assert_eq!(records[0].fields["outcome"], "host-owned");
+    assert_eq!(records[0].fields["error.kind"], "host-error");
+    assert_eq!(records[0].fields["schema.version"], "99");
+    assert_eq!(records[0].fields["otel.status_code"], "OK");
 }
 #[cfg(feature = "sqlite")]
 #[tokio::test(flavor = "current_thread")]

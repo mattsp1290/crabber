@@ -151,8 +151,13 @@ impl Orchestrator {
             if result.is_err() && self.verified_lease_loss(&fence).await {
                 lost.store(true, Ordering::SeqCst);
             }
-            measurement.observation.reason = result_reason(&result);
-            let outcome = super::telemetry::record_result(&span, &result);
+            measurement.observation.reason = if lost.load(Ordering::SeqCst) {
+                crate::TerminalReason::LeaseLost
+            } else {
+                result_reason(&result)
+            };
+            let outcome =
+                super::telemetry::record_result(&span, &result, measurement.observation.reason);
             self.lifecycle(&session.id, &fence.run_id, Some(outcome));
             result
         }

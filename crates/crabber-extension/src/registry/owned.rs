@@ -75,8 +75,12 @@ impl OwnedMountHandle {
     /// The bound includes plan leases, cleanup, deferred work and shutdown.
     /// A timeout never aborts work and a later call resumes the same joins.
     pub async fn close(&self, bound: Duration) -> Result<OwnedMountJoin, ExtensionError> {
-        self.check_close_allowed()?;
-        close(&self.inner.mount, bound).await
+        self.inner
+            .trace_close(|span| async move {
+                self.check_close_allowed()?;
+                close(&self.inner.mount, bound, &span).await
+            })
+            .await
     }
     pub(crate) fn scripted_source(
         &self,
@@ -180,6 +184,7 @@ pub(super) fn signal(mount: &Mount) {
 pub(super) async fn close(
     mount: &Arc<Mount>,
     bound: Duration,
+    span: &tracing::Span,
 ) -> Result<OwnedMountJoin, ExtensionError> {
     if dispatch::is_active_mount(mount.frame) {
         return Err(ExtensionError::SelfClose);
@@ -188,7 +193,7 @@ pub(super) async fn close(
     start(mount, owned)?;
     let close_task = owned.close_task.drain(bound).await;
     if close_task.pending != 0 {
-        observe_timeout(mount, bound);
+        observe_timeout(mount, bound, span);
         return Err(ExtensionError::MountCloseTimeout {
             extension: mount.extension.id().into(),
         });
@@ -288,8 +293,9 @@ fn rollback_all(mount: &Mount) -> bool {
         }
     }
 }
-fn observe_timeout(mount: &Mount, bound: Duration) {
+fn observe_timeout(mount: &Mount, bound: Duration, span: &tracing::Span) {
     super::record_close_timeout(
+        span,
         mount.extension.id(),
         mount.leases.load(std::sync::atomic::Ordering::SeqCst),
         mount

@@ -393,6 +393,78 @@ async fn shutdown_tolerates_observer_stopped_first() {
 }
 
 #[tokio::test]
+async fn terminal_intake_loss_survives_repeated_controls_and_shared_stop() {
+    use crabber_runtime::Observer as _;
+    for stop_mode in 0..3 {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", socket.local_addr().unwrap());
+        drop(socket);
+        let mut config = empty_config();
+        let mut intake = crate::DatadogConfig::from_lookup(&|name| {
+            if name == "DD_API_KEY" {
+                Ok("local-test".into())
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        })
+        .unwrap();
+        intake.api_origin = Some(origin.clone());
+        intake.logs_origin = Some(origin);
+        intake.timeout = Duration::from_millis(100);
+        intake.batch_size = 1000;
+        config.datadog = Some(intake);
+        let telemetry = Telemetry::new(config).unwrap();
+        let observer = telemetry.exporter().unwrap();
+        observer.operational_completed(&crate::OperationalObservation {
+            session_id: crabber_core::SessionId::new(),
+            run_id: crabber_core::RunId::new(),
+            kind: crate::OperationKind::Run,
+            reason: crate::TerminalReason::Success,
+            elapsed: Duration::from_millis(1),
+            first_token: None,
+        });
+        assert_eq!(observer.health().accepted, 1);
+        match stop_mode {
+            0 => assert!(telemetry.shutdown().await.is_err()),
+            1 => assert!(observer.shutdown().await.is_err()),
+            _ => observer.stop_now(),
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while observer.health().worker_status != crate::WorkerStatus::Stopped {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(observer.dropped(), 1);
+        assert!(telemetry.shutdown().await.is_err());
+        assert!(telemetry.shutdown().await.is_err());
+        assert!(telemetry.flush().await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn terminal_sdk_control_failure_is_retained_without_export_failure() {
+    let receiver = Receiver::new();
+    let telemetry = Telemetry::new(receiver.config(OtlpProtocol::HttpProtobuf)).unwrap();
+    let provider = telemetry.provider.as_ref().unwrap().clone();
+    tokio::task::spawn_blocking(move || provider.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!telemetry.otlp_failed.load(Ordering::Acquire));
+    assert!(matches!(
+        telemetry.shutdown().await,
+        Err(TelemetryError::Otlp)
+    ));
+    assert!(matches!(
+        telemetry.shutdown().await,
+        Err(TelemetryError::Otlp)
+    ));
+    assert!(matches!(telemetry.flush().await, Err(TelemetryError::Otlp)));
+}
+
+#[tokio::test]
 async fn disabled_trace_signal_creates_no_provider_or_socket() {
     let receiver = Receiver::new();
     let mut config = receiver.config(OtlpProtocol::HttpProtobuf);

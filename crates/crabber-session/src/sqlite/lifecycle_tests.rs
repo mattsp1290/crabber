@@ -477,10 +477,17 @@ async fn classification_snapshot_survives_concurrent_initialization() {
     SqliteStore::migrate(&database.path).await.unwrap();
     // Force the commit between identity and schema reads. The metadata reader
     // still sees a fully fresh snapshot, then sees Current after rollback.
-    assert_eq!(classify(&mut snapshot).await.unwrap(), DatabaseState::Fresh);
+    assert_eq!(
+        classify(&mut snapshot, &tracing::Span::none())
+            .await
+            .unwrap(),
+        DatabaseState::Fresh
+    );
     snapshot.rollback().await.unwrap();
     assert_eq!(
-        classify_snapshot(&mut connection).await.unwrap(),
+        classify_snapshot(&mut connection, &tracing::Span::none())
+            .await
+            .unwrap(),
         DatabaseState::Current
     );
     connection.close().await.unwrap();

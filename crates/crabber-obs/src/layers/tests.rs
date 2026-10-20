@@ -240,6 +240,109 @@ async fn provider_span_maps_status_class_allowlists_provider_and_runtime_spans_d
 }
 
 #[tokio::test]
+async fn final_transport_failure_overrides_stale_401_but_http_rejection_keeps_class() {
+    let intake = Intake::new(100);
+    let subscriber = tracing_subscriber::registry().with(
+        SpanMetricsLayer::new(intake.observer.clone(), intake.health.clone())
+            .with_filter(SpanMetricsLayer::filter()),
+    );
+    tracing::subscriber::with_default(subscriber, || {
+        for outcome in ["transport_error", "rejected"] {
+            drop(
+                tracing::info_span!(target: "crabber::providers", "crabber.provider.request",
+                http.response.status_code = 401_u64, retry.attempt = 1_u64,
+                outcome = outcome, error.kind = "transport"),
+            );
+        }
+    });
+    intake.observer.flush().await.unwrap();
+    let metrics = intake.metrics(true);
+    assert_eq!(metrics.len(), 2);
+    assert!(
+        metrics
+            .iter()
+            .any(|metric| has_tag(metric, "status_class:transport"))
+    );
+    assert!(
+        metrics
+            .iter()
+            .any(|metric| has_tag(metric, "status_class:4xx"))
+    );
+    assert!(metrics.iter().all(|metric| has_tag(metric, "retried:true")));
+}
+
+#[tokio::test]
+async fn owned_extension_close_emits_one_distribution_per_call_and_timeout_counter() {
+    use crabber_extension::{Extension, ExtensionError, Registrar, Registry, Scope};
+    struct Empty;
+    #[async_trait::async_trait]
+    impl Extension for Empty {
+        fn id(&self) -> &'static str {
+            "owned-metrics"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            "{}".into()
+        }
+        async fn install(&self, _: &mut Registrar) -> Result<(), ExtensionError> {
+            Ok(())
+        }
+    }
+    let intake = Intake::new(100);
+    let subscriber = tracing_subscriber::registry().with(
+        SpanMetricsLayer::new(intake.observer.clone(), intake.health.clone())
+            .with_filter(SpanMetricsLayer::filter()),
+    );
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let registry = Registry::new();
+    let handle = registry
+        .mount_owned(Arc::new(Empty), Scope::Global)
+        .await
+        .unwrap();
+    let plan = registry.acquire(&crabber_core::SessionId::new());
+    assert!(matches!(
+        handle.close(Duration::ZERO).await,
+        Err(ExtensionError::MountCloseTimeout { .. })
+    ));
+    plan.release();
+    assert_eq!(
+        handle
+            .close(Duration::from_secs(5))
+            .await
+            .unwrap()
+            .close_task()
+            .joined,
+        1
+    );
+    intake.observer.flush().await.unwrap();
+    let distributions: Vec<_> = intake
+        .metrics(true)
+        .into_iter()
+        .filter(|metric| metric["metric"] == "crabber.extension.close_ms")
+        .collect();
+    assert_eq!(distributions.len(), 2);
+    assert!(
+        distributions
+            .iter()
+            .any(|metric| has_tag(metric, "outcome:timed_out"))
+    );
+    assert!(
+        distributions
+            .iter()
+            .any(|metric| has_tag(metric, "outcome:closed"))
+    );
+    let counters: Vec<_> = intake
+        .metrics(false)
+        .into_iter()
+        .filter(|metric| metric["metric"] == "crabber.extension.close_timeouts")
+        .collect();
+    assert_eq!(counters.len(), 1);
+    assert_eq!(counters[0]["points"][0]["value"], 1);
+}
+
+#[tokio::test]
 async fn events_become_counters_once() {
     let intake = Intake::new(100);
     let subscriber = tracing_subscriber::registry().with(

@@ -426,6 +426,7 @@ impl HttpAdapter {
         url: &reqwest::Url,
         headers: HeaderMap,
         body: &Value,
+        span: &tracing::Span,
     ) -> Result<Response, ProviderError> {
         let response = self
             .client
@@ -435,7 +436,7 @@ impl HttpAdapter {
             .send()
             .await
             .map_err(|error| transport_from_reqwest(&error))?;
-        tracing::Span::current().record("http.response.status_code", response.status().as_u16());
+        span.record("http.response.status_code", response.status().as_u16());
         Ok(response)
     }
 
@@ -466,7 +467,7 @@ impl HttpAdapter {
             attempt_credentials.push(credential.clone());
         }
         #[allow(unused_mut)]
-        let mut response = self.post(&url, headers.clone(), &body).await?;
+        let mut response = self.post(&url, headers.clone(), &body, &span).await?;
         #[cfg(feature = "custom-http")]
         if self.kind == AdapterKind::Custom {
             if let Some(observer) = &self.response_observer {
@@ -482,9 +483,9 @@ impl HttpAdapter {
                 let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
                 attempt_credentials.extend(credentials_from_headers(&retry_headers));
                 attempt_credentials.push(retry_credential);
-                tracing::Span::current().record("retry.attempt", 1u32);
+                span.record("retry.attempt", 1u32);
             tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
-            response = self.post(&url, retry_headers, &body).await?;
+            response = self.post(&url, retry_headers, &body, &span).await?;
                 if let Some(observer) = &self.response_observer {
                     observer.observe(response.status(), response.headers());
                 }
@@ -511,9 +512,9 @@ impl HttpAdapter {
                 .map_err(|_| auth())?;
             let retry_headers = self.headers(&request).await?;
             attempt_credentials.extend(credentials_from_headers(&retry_headers));
-            tracing::Span::current().record("retry.attempt", 1u32);
+            span.record("retry.attempt", 1u32);
             tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
-            response = self.post(&url, retry_headers, &body).await?;
+            response = self.post(&url, retry_headers, &body, &span).await?;
         }
         if !response.status().is_success() {
             #[cfg(feature = "custom-http")]
@@ -527,27 +528,26 @@ impl HttpAdapter {
         }
         Ok(self.response_stream(response))
             }.await;
-            let current = tracing::Span::current();
             match &result {
                 Ok(_) => {
-                    current.record("outcome", "response_started");
-                    current.record("otel.status_code", "OK");
+                    span.record("outcome", "response_started");
+                    span.record("otel.status_code", "OK");
                 }
                 Err(error) => {
-                    current.record("error.kind", error.error_kind());
-                    current.record("otel.status_code", "ERROR");
+                    span.record("error.kind", error.error_kind());
+                    span.record("otel.status_code", "ERROR");
                     // A host classifier may call an HTTP rejection a transport failure.
                     // Keep the observed request outcome independent of that category.
                     if !http_rejected && error.kind == crate::ProviderErrorKind::Transport {
-                        current.record("outcome", "transport_error");
+                        span.record("outcome", "transport_error");
                     } else {
-                        current.record("outcome", "rejected");
+                        span.record("outcome", "rejected");
                     }
                 }
             }
             result
         }
-        .instrument(span)
+        .instrument(span.clone())
         .await
     }
 }
@@ -648,21 +648,20 @@ impl ProviderAdapter for HttpAdapter {
                     .collect())
             }
             .await;
-            let current = tracing::Span::current();
             match &result {
                 Ok(_) => {
-                    current.record("outcome", "ok");
-                    current.record("otel.status_code", "OK");
+                    span.record("outcome", "ok");
+                    span.record("otel.status_code", "OK");
                 }
                 Err(error) => {
-                    current.record("outcome", "failed");
-                    current.record("error.kind", error.error_kind());
-                    current.record("otel.status_code", "ERROR");
+                    span.record("outcome", "failed");
+                    span.record("error.kind", error.error_kind());
+                    span.record("otel.status_code", "ERROR");
                 }
             }
             result
         }
-        .instrument(span)
+        .instrument(span.clone())
         .await
     }
     async fn build(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
