@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, JsonToolExecutor,
+    Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ContentBlock, EventKind, RunStatus, ToolCallId, ToolInfo, ToolResultStatus},
     extension::{
         Extension, InputUnavailable, Point, Registrar, Scope, ToolInput, ToolOutcomeClass,
@@ -138,7 +138,9 @@ impl Extension for Protection {
                     if let Some(secret) = value.get_mut("secret") {
                         *secret = json!(REDACTED);
                     }
-                    Ok(TransformOutput::new(crabber::core::ToolOutput::from_json(&value).unwrap()))
+                    Ok(TransformOutput::new(
+                        crabber::core::ToolOutput::from_json(&value).unwrap(),
+                    ))
                 })
             }),
         );
