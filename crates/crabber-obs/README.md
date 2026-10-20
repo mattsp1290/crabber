@@ -213,3 +213,13 @@ provider/model/tool dimensions still have their independent finite bounds.
 The earlier consumer report above belongs to PR #12's `0355b83` correction and is
 historical evidence, not verification of this gate. Closing `crabber-9ghg` also
 requires a channels WP0 re-probe against the exact verified correction revision.
+
+## Host telemetry bundle
+
+Enable the `otlp` feature (also available on the `crabber` facade) to use `Telemetry`, `TelemetryConfig` and the shared observer. Hosts install `Telemetry::layer()`; the library never installs a subscriber. Traces use HTTP protobuf/JSON to an OTLP-enabled local Agent. Metrics and logs reuse the existing bounded agentless exporter. See the [complete signal, metric and environment catalog](../../docs/observability.md).
+
+The new metrics cover store transaction/connect/migrate latency, provider response-start latency, extension mount/close latency, admission outcomes, approval continuation/suspension, model retries, heartbeat failures/lease loss and event lag. Span metrics use `Instant` independently of observer measurements and do not duplicate run/model/tool distributions. Identity dimensions use the existing 32-name allowlists (including `extensions`); unknown names become `overflow`.
+
+`LogsPolicy` defaults to INFO and excludes lifecycle duplicates, exporter diagnostics and guest text. Guest export requires explicit opt-in and limits `guest.text` to 256 bytes. Layer logs carry `crabber.source:layer` and both OTel hex and Datadog trace/span conventions when the host supplies context.
+
+`Telemetry::health()` reports `spans_seen`, `events_seen`, `metrics_enqueued`, `metrics_dropped`, `logs_enqueued`, `logs_dropped`, `messages_unlisted` and `attributes_scrubbed`; these are separate from `ExportHealth`. `spans_seen` counts callbacks in the metrics and logs layers (a span seen by both contributes twice). With those layers configured, zero after an instrumented run is a first subscriber/layer diagnostic; OTLP-only configuration does not increment it. Call bundle shutdown before runtime exit; Drop aborts the intake worker and requests detached bounded OTLP cleanup. Offline fixtures prove the wire contracts; no live visibility is claimed without a successful `verify-datadog` evidence row.

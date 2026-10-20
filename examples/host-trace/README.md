@@ -236,3 +236,10 @@ introduced in SQLite 2 / PostgreSQL 6. The demo ignores `CRABBER_SQLITE_PATH` an
 queue/database directory on success. No Datadog or provider credentials are needed.
 These are offline assertions; live Datadog correlation remains a separate gate.
 See [SQLite operations](../../docs/sqlite-store.md).
+
+The memory binary also installs a process-global capture layer and asserts the
+runtime's `crabber.run` records the explicit 128-bit `host.trace_id`. Runtime
+lifecycle events now come directly from the tracing facade; hosts own subscriber
+and exporter setup. See the [observability guide](../../docs/observability.md)
+for the `Telemetry::current_trace_context()` recipe that derives this context
+from a real host request span.

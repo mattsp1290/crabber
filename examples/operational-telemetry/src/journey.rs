@@ -1,4 +1,6 @@
 //! Credential-free public host adoption; shared with the external consumer.
+#[path = "telemetry.rs"]
+mod telemetry;
 use async_trait::async_trait;
 use crabber::{
     Agent, AgentConfig, EventKind, EventRecord, ExtensionError, JsonToolExecutor, MonotonicClock,
@@ -360,6 +362,7 @@ impl Intake {
             providers: vec!["fake".into()],
             models: vec!["scripted".into()],
             tools: vec!["echo".into()],
+            extensions: vec!["builtin".into(), "crabber/builtin".into()],
         };
         config.tags.push("verify:operational-fixture".into());
         config.timeout = Duration::from_secs(2);
@@ -795,6 +798,7 @@ pub async fn run() {
     partial_recovery().await;
     outage_overflow().await;
     control_bounds().await;
+    telemetry::run().await;
 }
 async fn partial_recovery() {
     let intake = Intake::new().await;
@@ -1119,6 +1123,7 @@ async fn cardinality() {
         providers: names.clone(),
         models: names.clone(),
         tools: names.clone(),
+        extensions: vec!["builtin".into(), "crabber/builtin".into()],
     };
     let export = DatadogObserver::new(&config);
     let capture = Arc::new(Capture::default());

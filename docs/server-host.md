@@ -783,3 +783,5 @@ can affect cost. SQLite serializes writes across its whole file. SQL/client page
 limits likewise do not promise bounded server-side scans. Plan capacity using
 actual workload measurements; the finite Memory transaction-cost fixture is a
 regression check, not a production memory cap or an O(1) performance guarantee.
+
+For process telemetry, install [`Telemetry::layer()`](observability.md) once, then open a host request span per HTTP request and call `Telemetry::current_trace_context()` inside it. Hosts that propagate incoming W3C context set the request span parent with `OpenTelemetrySpanExt::set_parent` before entering it.

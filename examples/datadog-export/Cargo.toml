@@ -8,9 +8,13 @@ publish = false
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry", "fmt", "json", "env-filter"] }
-crabber = { path = "../../crates/crabber", features = ["datadog"] }
+crabber = { path = "../../crates/crabber", features = ["otlp", "sqlite"] }
 crabber-obs = { path = "../../crates/crabber-obs" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+async-trait = "0.1"
+serde_json = "1"
+tempfile = "3"
 
 [lints]
 workspace = true

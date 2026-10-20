@@ -1,6 +1,8 @@
 mod durable;
 mod export;
 mod journey;
+mod span_capture;
+use tracing_subscriber::prelude::*;
 
 fn source() {
     let output = std::process::Command::new("git")
@@ -17,6 +19,8 @@ fn source() {
 #[tokio::main]
 async fn main() {
     source();
+    let spans = span_capture::SpanCapture::default();
+    tracing_subscriber::registry().with(spans.clone()).init();
     if let Ok(mode) = std::env::var("CRABBER_TRACE_WORKER") {
         #[cfg(feature = "sqlite")]
         if let Some(database) = std::env::var_os("CRABBER_SQLITE_CHILD_PATH") {
@@ -53,6 +57,7 @@ async fn main() {
     match mode.as_str() {
         "memory" => {
             journey::journey().await;
+            spans.assert_trace(journey::host_context().trace_id());
             durable::memory(&path).await;
         }
         "postgres" => {

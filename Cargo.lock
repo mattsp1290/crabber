@@ -494,6 +494,8 @@ dependencies = [
  "flate2",
  "futures",
  "jsonschema",
+ "opentelemetry-proto",
+ "prost",
  "serde",
  "serde_json",
  "sha2",
@@ -502,6 +504,8 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -714,6 +718,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "wasmtime",
  "wasmtime-wasi",
  "wat",
@@ -924,8 +929,11 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 name = "datadog-export"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "crabber",
  "crabber-obs",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2343,6 +2351,8 @@ dependencies = [
  "crabber",
  "flate2",
  "futures",
+ "opentelemetry-proto",
+ "prost",
  "serde_json",
  "time",
  "tokio",

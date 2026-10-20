@@ -121,3 +121,5 @@ The composed credential-free host acceptance journey is
 [`operational-telemetry`](../examples/operational-telemetry/README.md), run with
 `cargo run -p operational-telemetry -- --check`. It exercises real public runtime
 outcomes, distribution capture, local exporter outage/recovery and bounded controls.
+
+See [observability](observability.md) for APM traces, I/O metrics and structured diagnostics. Span-derived metrics use their own clock and do not duplicate `operational_completed` run/model/tool measurements.

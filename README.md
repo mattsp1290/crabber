@@ -288,6 +288,8 @@ PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
 [Datadog export](examples/datadog-export/README.md) explain their actual commands
 and credential requirements.
 
+The [observability guide](docs/observability.md) describes the optional `otlp` feature for Datadog Agent APM traces, span-derived I/O metrics and structured diagnostic logs, with host-owned subscriber setup, redaction, correlation and bounded shutdown.
+
 Tool result transforms receive read-only call context and return
 `TransformOutput`. Bind on the exact tool name and normalized input, and
 register any protective redactor in the final phase:

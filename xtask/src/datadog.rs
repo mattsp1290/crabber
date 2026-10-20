@@ -1,4 +1,5 @@
 //! Explicit live read gate; workspace checks exercise only offline fixtures.
+mod apm;
 mod contract;
 
 use contract::{Evidence, Query, Window};
@@ -14,11 +15,14 @@ use time::OffsetDateTime;
 
 const BUDGET: Duration = Duration::from_secs(120);
 const MAX_BODY: u64 = 1_048_576;
-const METRICS: [&str; 4] = [
+const METRICS: [&str; 7] = [
     "crabber.run.count",
     "crabber.run.elapsed_ms",
     "crabber.model.elapsed_ms",
     "crabber.model.first_token_ms",
+    "crabber.admission.elapsed_ms",
+    "crabber.store.transaction_ms",
+    "crabber.model.retries",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +65,17 @@ fn required(name: &str) -> Result<String, &'static str> {
 }
 
 fn live() -> Result<(), &'static str> {
+    if env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .is_none_or(|value| value.is_empty())
+        && env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+            .ok()
+            .is_none_or(|value| value.is_empty())
+    {
+        println!("apm=skipped reason=no_otlp_endpoint");
+        println!("visibility=partial");
+        return Err("no_otlp_endpoint");
+    }
     let site = required("DD_SITE")?;
     // Never send credentials to an arbitrary URL assembled from operator input.
     if !matches!(
@@ -117,6 +132,7 @@ fn live() -> Result<(), &'static str> {
     let query = Query {
         marker,
         service: env::var("DD_SERVICE").unwrap_or_else(|_| "crabber".into()),
+        env: env::var("DD_ENV").ok(),
         ml_app: env::var("DD_LLMOBS_ML_APP")
             .unwrap_or_else(|_| env::var("DD_SERVICE").unwrap_or_else(|_| "crabber".into())),
         window: Window::new(start.unix_timestamp() - 600, end.unix_timestamp() + 60),
@@ -139,10 +155,12 @@ fn live() -> Result<(), &'static str> {
         query,
     };
     let mut clock = WallClock(submitted);
-    poll(&mut clock, |signal, remaining| {
+    let evidence = poll(&mut clock, |signal, remaining| {
         reader.probe(signal, remaining)
     })
     .map_err(Failure::category)?;
+    let convention = apm::linkage(&evidence).map_err(|_| "trace_linkage")?;
+    println!("log_trace_linkage=passed convention={convention}");
     println!("visibility=passed");
     Ok(())
 }
@@ -152,6 +170,8 @@ enum Signal {
     Spans,
     Metric(&'static str),
     Logs,
+    ApmSpans,
+    LayerLog,
 }
 impl Signal {
     fn name(self) -> &'static str {
@@ -159,6 +179,8 @@ impl Signal {
             Self::Spans => "spans",
             Self::Metric(name) => name,
             Self::Logs => "logs",
+            Self::ApmSpans => "apm_spans",
+            Self::LayerLog => "layer_log",
         }
     }
 }
@@ -180,14 +202,9 @@ fn poll(
     clock: &mut impl Clock,
     mut probe: impl FnMut(Signal, Duration) -> Result<Option<Evidence>, Failure>,
 ) -> Result<Vec<Evidence>, Failure> {
-    let signals = [
-        Signal::Spans,
-        Signal::Metric(METRICS[0]),
-        Signal::Metric(METRICS[1]),
-        Signal::Metric(METRICS[2]),
-        Signal::Metric(METRICS[3]),
-        Signal::Logs,
-    ];
+    let mut signals = vec![Signal::Spans];
+    signals.extend(METRICS.into_iter().map(Signal::Metric));
+    signals.extend([Signal::Logs, Signal::ApmSpans, Signal::LayerLog]);
     let mut found = vec![None; signals.len()];
     loop {
         for (signal, result) in signals.iter().zip(&mut found) {
@@ -276,6 +293,16 @@ impl Reader {
     fn probe(&self, signal: Signal, remaining: Duration) -> Result<Option<Evidence>, Failure> {
         match signal {
             Signal::Spans => self.spans(remaining),
+            Signal::ApmSpans => self.apm_spans(remaining),
+            Signal::LayerLog => {
+                let body = self.read(
+                    self.client
+                        .post(format!("{}/api/v2/logs/events/search", self.origin))
+                        .json(&apm::layer_request(&self.query)),
+                    remaining,
+                )?;
+                apm::layer_log(&body, &self.query)
+            }
             Signal::Metric(metric) => {
                 let body = self.read(
                     self.client
@@ -293,6 +320,36 @@ impl Reader {
                     remaining,
                 )?;
                 self.query.logs(&body)
+            }
+        }
+    }
+    fn apm_spans(&self, remaining: Duration) -> Result<Option<Evidence>, Failure> {
+        let start = Instant::now();
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        let mut spans = Vec::new();
+        loop {
+            let remaining = remaining
+                .checked_sub(start.elapsed())
+                .filter(|value| !value.is_zero())
+                .ok_or(Failure::Deadline)?;
+            let body = self.read(
+                self.client
+                    .post(format!("{}/api/v2/spans/events/search", self.origin))
+                    .json(&apm::request(&self.query, cursor.as_deref())),
+                remaining,
+            )?;
+            spans.extend(apm::page(&body, &self.query)?);
+            if spans.len() > 1000 {
+                return Err(Failure::ResponseLimit);
+            }
+            if let Some(evidence) = apm::graph(&spans) {
+                return Ok(Some(evidence));
+            }
+            match contract::cursor(&body)? {
+                Some(next) if seen.insert(next.clone()) => cursor = Some(next),
+                Some(_) => return Err(Failure::Schema),
+                None => return Ok(None),
             }
         }
     }
