@@ -7,7 +7,7 @@ use crabber::{
     obs::{ALLOWED_ATTRIBUTES, OtlpConfig, OtlpProtocol, Telemetry, TelemetryConfig},
     session::SqliteStore,
 };
-use std::{sync::Arc, time::Duration};
+use std::{fmt::Write as _, sync::Arc, time::Duration};
 use tracing::Instrument as _;
 use tracing_subscriber::prelude::*;
 #[tokio::test]
@@ -69,7 +69,6 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
         .unwrap();
     assert_eq!(run.parent_span_id, host.span_id);
     assert_eq!(run.trace_id, host.trace_id);
-    use std::fmt::Write as _;
     let trace_hex = host
         .trace_id
         .iter()
