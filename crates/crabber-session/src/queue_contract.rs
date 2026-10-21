@@ -100,9 +100,10 @@ pub(crate) async fn claim(store: &dyn Store, fixture: &Fixture) -> QueueAuthorit
     }
 }
 pub(crate) use journey::run;
-pub(crate) use limits::{
-    bounds, byte_bound, domains_archive_and_reserved_keys, faults, lazy_empty_scope,
-};
+native_store_unit_tests! {
+    pub(crate) use limits::{bounds, byte_bound};
+}
+pub(crate) use limits::{domains_archive_and_reserved_keys, faults, lazy_empty_scope};
 #[path = "queue_contract/journey.rs"]
 mod journey;
 #[path = "queue_contract/limits.rs"]

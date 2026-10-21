@@ -54,7 +54,7 @@ async fn history(
     let fault = |value| {
         store
             .session_owner_fault
-            .store(value, std::sync::atomic::Ordering::SeqCst)
+            .store(value, std::sync::atomic::Ordering::SeqCst);
     };
     let f = Box::pin(fixture(store, clock, frontend, recovery, false)).await;
     let mut tx = store
