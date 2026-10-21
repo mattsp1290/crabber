@@ -217,8 +217,7 @@ fn check_server_host(workspace: &Path, gates: &mut checks::Checks, run_cli: bool
             "workspace-context-probe",
             "--features",
             "sqlite",
-            "--bin",
-            "workspace-context-probe",
+            "--lib",
         ],
     );
     if run_cli {
