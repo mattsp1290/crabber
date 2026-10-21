@@ -8,6 +8,7 @@ pub(super) async fn contract<S: Store + 'static>(
     clock: &ManualClock,
     frontend: bool,
     recovery: bool,
+    exhaustive_validation: bool,
 ) {
     for stage in [
         Stage::Complete,
@@ -19,7 +20,15 @@ pub(super) async fn contract<S: Store + 'static>(
             Box::pin(held(store.clone(), clock, frontend, recovery, stage, fault)).await;
         }
     }
-    for corruption in 0..12 {
+    // Corruption validation lives in shared pending execution code. Memory
+    // keeps every distinct validator branch; SQL retains forged metadata and
+    // wrong typed outcomes through each persisted source/authentication path.
+    let corruptions: &[u8] = if exhaustive_validation {
+        &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    } else {
+        &[0, 8]
+    };
+    for &corruption in corruptions {
         Box::pin(malformed(
             store.clone(),
             clock,

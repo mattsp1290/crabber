@@ -1,5 +1,12 @@
 # Test execution and performance evidence
 
+## Ten-minute follow-up
+
+The current follow-up replaces the original percentage target and historical tuple-bijection requirement with a 600-second complete-check budget and [risk-based coverage ownership](test-coverage-policy.md). Qualification is pending. The intended budgeted entrypoint is `python3 -I -S .github/scripts/check.py`; it will wrap the full `cargo xtask check`, including real PostgreSQL, compilation, checks and cleanup. Until that integration lands, the existing commands below remain separate partial lanes.
+
+The clock starts before Cargo (and before CI cache restoration). Provisioned pinned tools, downloaded dependencies and the PostgreSQL image are prerequisites; ordinary workspace compilation counts. Required cache cases are unchanged source, forced runtime rebuild and forced session rebuild with dependencies warm. Each must pass within 600 seconds locally and on the declared CI resources. Package-scoped cleanup must cover every retained nested target containing the affected crate and its dependents. Existing timing results below describe the earlier implementation, not acceptance of this budget.
+
+
 The implementation base is `58535cfc234c2a3d514487b0f72d646e4ba33110` (use `git rev-parse 58535cfc` for the full revision).
 Implementation lives on `feat/test-suite-performance` in its own checkout. The
 pre-existing provider and orchestrator edits are excluded. This document records

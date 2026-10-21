@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "implementation_base": "3fc10a553bdd007f018fd85cbe629f44d316f52a",
+  "timing_budget_seconds": 600,
+  "qualification_status": "pending",
+  "policy": "Every required detector must distinguish a concrete important failure; identical parameter products are not a coverage obligation.",
+  "changes": [
+    {
+      "id": "sql-successor-tool-faults",
+      "disposition": "MERGE",
+      "state": "implemented-unqualified",
+      "failure": "Rollback before commit, committed-but-unknown register or activation ACK, cancellation, lease expiry, and public-state fencing must never grant an extra effect.",
+      "owner": [
+        "crates/crabber-session/src/postgres/session_owner/drivers/successor.rs",
+        "crates/crabber-session/src/sqlite/session_owner/drivers/successor.rs"
+      ],
+      "retained_tests": [
+        "tool_fresh_fault_before_commit",
+        "tool_fresh_fault_committed_ack",
+        "tool_fresh_fault_activation_ack",
+        "tool_fresh_fault_cancelled",
+        "tool_fresh_fault_expired",
+        "tool_fresh_fault_changed_public_state",
+        "tool_fresh_fault_changed_before_register",
+        "tool_fresh_fault_tool_recovery_before_commit",
+        "tool_fresh_fault_frontend_claim_committed_ack",
+        "tool_fresh_fault_frontend_recovery_activation_ack"
+      ],
+      "required_backends": [
+        "sqlite",
+        "postgres"
+      ],
+      "before": "28 complete histories per SQL backend: frontend x recovery x seven boundaries.",
+      "after": "Ten independent histories per backend, all seven boundaries and all four origins.",
+      "rationale": "Fault injection and post-registration refusal/activation checks are shared across origins inside each backend. Tool/Frontend claim/recovery select different native authentication paths, so three alternate-origin faults remain; tool_source_tests and tool_guards_tests retain all four source/authority paths. Existing fresh::faults, activation_fault and refusals assertions are unchanged. PostgreSQL Current fixtures already contain the migrated schema; migration tests retain Blank provisioning."
+    },
+    {
+      "id": "pending-tool-malformed-ack",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "Forged completion metadata, wrong claim/inspection/fence, oversized receipt, or wrong typed outcome must prevent registration and business dispatch.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation.rs",
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation/receipt.rs"
+      ],
+      "retained_tests": [
+        "memory_pending_tool_claim",
+        "memory_pending_tool_recovery",
+        "memory_pending_frontend_claim",
+        "memory_pending_frontend_recovery",
+        "sqlite_pending_tool_claim",
+        "sqlite_pending_tool_recovery",
+        "sqlite_pending_frontend_claim",
+        "sqlite_pending_frontend_recovery",
+        "postgres_pending_tool_claim",
+        "postgres_pending_tool_recovery",
+        "postgres_pending_frontend_claim",
+        "postgres_pending_frontend_recovery"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Twelve corruption preparations for each of four origins on every backend.",
+      "after": "All twelve on Memory for every origin; forged receipt revision (0) and suspended/wrong typed outcome (8) on both SQL backends for every origin.",
+      "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged."
+    }
+  ],
+  "required_behaviors": [
+    {
+      "behavior": "Receipt/actor/version/source/grant binding and replay",
+      "primary_owner": "Shared validator and session contracts",
+      "required_layer": "Cheap branch tables plus genuine SQL authentication and runtime no-dispatch",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Tool/approval keyed/unkeyed fresh/recovery transitions",
+      "primary_owner": "Session storage implementations",
+      "required_layer": "Memory branch coverage plus distinct SQLite/PostgreSQL transitions",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Atomic rollback and unknown commit response",
+      "primary_owner": "SQL transaction implementations",
+      "required_layer": "Real SQLite/PostgreSQL and one public cold-reconciliation journey per backend",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Kill/reconnect/exact replay",
+      "primary_owner": "Durable protocol process histories",
+      "required_layer": "Actual OS processes for admission/queue/distinct tool and approval paths",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Contention/fencing/cancellation/ownership/cleanup",
+      "primary_owner": "Backend concurrency and runtime ownership",
+      "required_layer": "Real SQL concurrency and one public controller lifecycle",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Limits and overflow",
+      "primary_owner": "Owning limit implementation",
+      "required_layer": "Pure boundaries and SQL enforcement/rollback",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Migration/corruption/unsupported data",
+      "primary_owner": "Backend storage",
+      "required_layer": "Real Blank/legacy/current schema fixtures",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Feature absence/custom HTTP visibility",
+      "primary_owner": "Narrow compile probes",
+      "required_layer": "Positive/negative compilation",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "Redaction/credentials/authorization before effects",
+      "primary_owner": "Owning boundary",
+      "required_layer": "Sentinel/effect checks and captured transport/log wiring",
+      "status": "retained-pending-schedule-audit"
+    },
+    {
+      "behavior": "WASM state/limits/embedding/telemetry",
+      "primary_owner": "Component and host integration",
+      "required_layer": "Real component bound plus short executable wiring per CLI",
+      "status": "retained-pending-schedule-audit"
+    }
+  ]
+}

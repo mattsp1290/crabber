@@ -31,6 +31,7 @@ async fn contract<S: Store + 'static>(
     clock: Arc<ManualClock>,
     frontend: bool,
     recovery: bool,
+    exhaustive_validation: bool,
 ) {
     for unkeyed in [false, true] {
         Box::pin(same_task(
@@ -56,7 +57,14 @@ async fn contract<S: Store + 'static>(
             .await;
         }
     }
-    Box::pin(faults::contract(store.clone(), &clock, frontend, recovery)).await;
+    Box::pin(faults::contract(
+        store.clone(),
+        &clock,
+        frontend,
+        recovery,
+        exhaustive_validation,
+    ))
+    .await;
     Box::pin(cleanup::blocked(store.clone(), &clock, frontend, recovery)).await;
 }
 
@@ -148,6 +156,7 @@ macro_rules! cases {
                 clock,
                 $frontend,
                 $recovery,
+                true,
             ))
             .await;
         }
@@ -162,7 +171,14 @@ macro_rules! cases {
                 .await
                 .unwrap()
                 .with_clock(clock.clone());
-            Box::pin(contract(Arc::new(store), clock, $frontend, $recovery)).await;
+            Box::pin(contract(
+                Arc::new(store),
+                clock,
+                $frontend,
+                $recovery,
+                false,
+            ))
+            .await;
         }
         #[cfg(feature = "postgres")]
         #[tokio::test]
@@ -175,7 +191,14 @@ macro_rules! cases {
                     .await
                     .unwrap()
                     .with_clock(clock.clone());
-                Box::pin(contract(Arc::new(store), clock, $frontend, $recovery)).await;
+                Box::pin(contract(
+                    Arc::new(store),
+                    clock,
+                    $frontend,
+                    $recovery,
+                    false,
+                ))
+                .await;
             })
             .await
             .unwrap();
