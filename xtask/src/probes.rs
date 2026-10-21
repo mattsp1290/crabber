@@ -1,10 +1,12 @@
 //! Check standalone consumer source against this workspace without altering its
 //! tracked Git pins. Published revision adoption remains a separate check.
+use sha2::Digest;
 use std::{
-    fs,
+    fs::{self, File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
-    sync::Arc,
-    time::SystemTime,
+    process::Command,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 const PROBES: [&str; 3] = [
@@ -13,24 +15,50 @@ const PROBES: [&str; 3] = [
     "result-transform-probe",
 ];
 
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "crabber-local-probes-{}-{nonce}",
-            std::process::id()
-        ));
-        Self(path)
+#[derive(Clone, Default)]
+struct Lease(Arc<Mutex<Option<File>>>);
+impl Lease {
+    fn acquire(&self, directory: &Path) {
+        fs::create_dir_all(directory).expect("create persistent local-probe cache");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("probe.lock"))
+            .expect("open local-probe lock");
+        loop {
+            crate::process::check_cancelled().expect("local-probe lock wait cancelled");
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(20)),
+                Err(TryLockError::Error(error)) => panic!("cannot lock local-probe cache: {error}"),
+            }
+        }
+        *self.0.lock().unwrap() = Some(file);
+    }
+    fn release(&self) {
+        if let Some(file) = self.0.lock().unwrap().take() {
+            file.unlock().expect("release local-probe cache lock");
+        }
     }
 }
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+
+fn cache_root(workspace: &Path) -> PathBuf {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| workspace.join("target"), PathBuf::from);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        workspace.join(target)
+    };
+    let canonical = workspace
+        .canonicalize()
+        .expect("canonical checkout identity");
+    let identity = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    target
+        .join("local-probes")
+        .join(&format!("{identity:x}")[..32])
 }
 
 fn copy_sources(from: &Path, to: &Path) {
@@ -58,25 +86,37 @@ pub(crate) fn check(workspace: &Path) {
 }
 
 pub(crate) fn schedule(workspace: &Path, gates: &mut crate::checks::Checks) {
-    let scratch = Arc::new(Scratch::new());
+    let cache = cache_root(workspace);
     for probe in PROBES {
-        let destination = scratch.0.join(probe);
+        let directory = cache.join(probe);
+        let destination = directory.join("source");
         let original = workspace.join("testdata").join(probe);
-        let owner = Arc::clone(&scratch);
+        let lease = Lease::default();
+        let locked = lease.clone();
         let prepared = destination.clone();
+        let locked_directory = directory.clone();
         gates.internal(&format!("prepare-{probe}"), workspace, move |workspace| {
-            // Every preparation closure retains the scratch owner until all
-            // gates (including a failed/cancelled schedule) are dropped.
-            fs::create_dir_all(&owner.0).expect("create local-probe scratch");
+            locked.acquire(&locked_directory);
             prepare(workspace, &original, &prepared);
         });
-        gates.cargo(&destination, &["check", "--all-targets"]);
+        let mut command = Command::new("cargo");
+        command
+            .args(["check", "--all-targets"])
+            .current_dir(&destination)
+            .env("CARGO_TARGET_DIR", directory.join("target"));
+        gates.named_command(&format!("local-probe-{probe}"),&destination,command,"all consumer targets compile against current local sources; original Git pin unchanged");
+        gates.internal(&format!("release-{probe}"), workspace, move |_| {
+            lease.release();
+        });
     }
 }
 
 fn prepare(workspace: &Path, original: &Path, destination: &Path) {
     let local = workspace.join("crates/crabber").canonicalize().unwrap();
-    fs::create_dir(destination).unwrap();
+    if destination.exists() {
+        fs::remove_dir_all(destination).expect("remove stale generated probe source");
+    }
+    fs::create_dir(destination).expect("refresh generated probe source");
     let mut manifest: toml::Value =
         toml::from_str(&fs::read_to_string(original.join("Cargo.toml")).unwrap()).unwrap();
     let dependency = manifest

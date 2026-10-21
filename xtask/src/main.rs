@@ -6,6 +6,7 @@ use std::{env, fmt::Write, fs, path::Path, process::Command};
 mod agui;
 mod checks;
 mod datadog;
+mod inventory;
 #[cfg(feature = "postgres-check")]
 mod postgres;
 mod probes;
@@ -46,12 +47,16 @@ fn main() {
             eprintln!("use cargo run -p xtask --features postgres-check -- check-postgres");
             std::process::exit(2);
         }
+        Some("inventory-tests") if args.len() == 1 => println!(
+            "{}",
+            serde_json::to_string_pretty(&inventory::tests(workspace())).unwrap()
+        ),
         Some("build-fixtures") if args.len() == 1 => build_fixtures(),
         Some("verify-datadog") if args.len() == 1 => datadog::verify(),
         Some("check-probes") if args.len() == 1 => probes::check(workspace()),
         _ => {
             eprintln!(
-                "usage: cargo xtask check [--list] [--timings <path>] | build-fixtures | verify-datadog | check-probes"
+                "usage: cargo xtask check [--list] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
             );
             std::process::exit(2);
         }
@@ -63,21 +68,22 @@ fn workspace() -> &'static Path {
 }
 
 fn check() -> checks::Checks {
-    let mut gates = checks::Checks::default();
+    let mut gates = checks::Checks::offline();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask belongs directly under the workspace root");
 
+    gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
     gates.internal("telemetry-messages", workspace, telemetry_messages::check);
     gates.internal("agui-pins", workspace, agui::check);
-    probes::schedule(workspace, &mut gates);
     gates.internal("wit-copies", workspace, check_wit);
     let mut wit = Command::new("wasm-tools");
     wit.args(["component", "wit", "wit", "-o", "/dev/null"])
         .current_dir(workspace);
     gates.command(workspace, wit, "WIT contract validation");
+    gates.internal("minimal-embed-glue", workspace, check_glue);
+    probes::schedule(workspace, &mut gates);
     schedule_fixtures(workspace, &mut gates);
-    gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
     check_server_host(workspace, &mut gates);
     check_custom_http(workspace, &mut gates);
     gates.cargo(
@@ -154,7 +160,6 @@ fn check() -> checks::Checks {
         "external consumer check",
         "testdata/external-consumer/check.sh",
     );
-    gates.internal("minimal-embed-glue", workspace, check_glue);
     gates
 }
 

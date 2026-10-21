@@ -53,7 +53,10 @@ impl GateCommand {
                 println!("$ {}", self.inventory["argv"]);
                 crate::process::status(command, signal).map_or_else(
                     |error| {
-                        eprintln!("cannot launch {}: {error}", self.inventory["id"]);
+                        eprintln!(
+                            "command {} could not start or be reaped: {error}",
+                            self.inventory["id"]
+                        );
                         Err(1)
                     },
                     |status| {
@@ -67,7 +70,10 @@ impl GateCommand {
             }
             Action::Captured(command, validate) => {
                 let output = crate::process::output(command, signal).map_err(|error| {
-                    eprintln!("cannot launch {}: {error}", self.inventory["id"]);
+                    eprintln!(
+                        "command {} could not start or be reaped: {error}",
+                        self.inventory["id"]
+                    );
                     1
                 })?;
                 if !output.status.success() {
@@ -87,9 +93,17 @@ impl GateCommand {
 #[derive(Default)]
 pub(crate) struct Checks {
     gates: Vec<GateCommand>,
+    offline: bool,
 }
 
 impl Checks {
+    pub(crate) fn offline() -> Self {
+        Self {
+            offline: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn cargo(&mut self, directory: &Path, args: &[&str]) {
         let mut command = Command::new("cargo");
         command.args(args).current_dir(directory);
@@ -103,6 +117,56 @@ impl Checks {
     }
 
     pub(crate) fn command(&mut self, directory: &Path, command: Command, expected: &str) {
+        self.register_command(None, directory, command, expected);
+    }
+
+    pub(crate) fn named_command(
+        &mut self,
+        id: &str,
+        directory: &Path,
+        command: Command,
+        expected: &str,
+    ) {
+        self.register_command(Some(id), directory, command, expected);
+    }
+
+    fn register_command(
+        &mut self,
+        name: Option<&str>,
+        directory: &Path,
+        mut command: Command,
+        expected: &str,
+    ) {
+        if self.offline {
+            for name in [
+                "CRABBER_TEST_POSTGRES_URL",
+                "CRABBER_POSTGRES_URL",
+                "CRABBER_REQUIRE_POSTGRES",
+                "CRABBER_TEST_POSTGRES_ADMIN_URL",
+                "CRABBER_TEST_RUN_POSTGRES_ADMIN_URL",
+                "CRABBER_TEST_POSTGRES_RUN",
+                "CRABBER_TRACE_LIVE",
+                "CRABBER_OBS_VERIFY_MARKER",
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "OPENCODE_GO_API_KEY",
+                "DD_API_KEY",
+                "DD_APP_KEY",
+                "DD_SERVICE",
+                "DD_ENV",
+                "DD_VERSION",
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+            ] {
+                command.env_remove(name);
+            }
+        }
         let argv: Vec<_> = std::iter::once(command.get_program())
             .chain(command.get_args())
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -124,7 +188,10 @@ impl Checks {
             directory_key.display(),
             relative_argv.join("\0")
         ));
-        let id = format!("command-{}", &format!("{digest:x}")[..16]);
+        let id = name.map_or_else(
+            || format!("command-{}", &format!("{digest:x}")[..16]),
+            str::to_owned,
+        );
         let features = argv
             .windows(2)
             .find(|pair| pair[0] == "--features")
@@ -142,6 +209,7 @@ impl Checks {
                 "workspace-resolved features (see ledger; optional PostgreSQL is not required coverage)"
             } else { "feature-specific; see ledger" },
             "expected": expected,
+            "service_mode": if self.offline { "offline; live PostgreSQL and exporter/provider credentials removed" } else { "command-specific" },
             "kind": "command",
             "phase": match argv.get(1).map(String::as_str) {
                 Some("test") => "build-and-test",
@@ -281,6 +349,17 @@ mod tests {
         assert_eq!(report["gates"][0]["exit_code"], 7);
         assert_eq!(report["gates"][1]["status"], "cancelled");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn offline_lane_strips_live_service_overrides_but_keeps_stderr_recipe() {
+        let mut checks = Checks::offline();
+        let mut command = Command::new("sh");
+        command.args(["-c", "test -z \"${CRABBER_REQUIRE_POSTGRES+x}\" && test -z \"${DD_API_KEY+x}\" && test \"$RUST_LOG\" = info"])
+            .env("CRABBER_REQUIRE_POSTGRES","1").env("DD_API_KEY","fixture-only-placeholder")
+            .env("RUST_LOG","info");
+        checks.command(Path::new("."), command, "offline service isolation");
+        assert_eq!(checks.execute(&Options::default()), 0);
     }
 
     #[test]

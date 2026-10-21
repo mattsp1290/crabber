@@ -45,14 +45,16 @@ Backend labels describe requested features, not proof of executed live tests.
 Offline PostgreSQL early returns give no required-service credit. At baseline,
 PostgreSQL URLs are supplied only in the separate required lane. Minimal-feature
 compilation, provider feature absence, exporter differences, consumer builds,
-doctoring WIT copies, and example output assertions remain distinct obligations.
+validating WIT copies, and example output assertions remain distinct obligations.
 Default Cargo test invocations also own their applicable doctests. A future
 nextest replacement must explicitly transfer doctest ownership to Cargo.
 
 ## Offline gate ledger
 
 `cmd-*` IDs below are abbreviated only by omitting the `command-` prefix. The
-machine inventory is authoritative for argv and ordering. Every row currently
+machine inventory is authoritative for argv and ordering. Formatting and static
+WIT/glue checks now run before compilation. The table maps baseline obligations;
+cache-release rows are additional resource-lifecycle checks. Every row currently
 has replacement evidence **pending/not replaced**. Scripts retain all internal
 commands and expected failures described after the table.
 
@@ -61,11 +63,14 @@ commands and expected failures described after the table.
 | `telemetry-messages` | telemetry-messages | static/filesystem | all runtime telemetry message sites use the qualified redacted vocabulary |
 | `agui-pins` | agui-pins | static/filesystem | all consumer manifests and locks use the qualified AG-UI source and revision |
 | `prepare-workspace-context-probe` | prepare-workspace-context-probe | static/filesystem | all preparation/assertion steps succeed |
-| `cmd-07239b217ad94fa8` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `local-probe-workspace-context-probe` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `release-workspace-context-probe` | Release workspace-context-probe cache lease | filesystem | holds refresh/build lock until Cargo and its descendants finish |
 | `prepare-prompt-contribution-probe` | prepare-prompt-contribution-probe | static/filesystem | all preparation/assertion steps succeed |
-| `cmd-6e656c3736d9645a` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `local-probe-prompt-contribution-probe` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `release-prompt-contribution-probe` | Release prompt-contribution-probe cache lease | filesystem | holds refresh/build lock until Cargo and its descendants finish |
 | `prepare-result-transform-probe` | prepare-result-transform-probe | static/filesystem | all preparation/assertion steps succeed |
-| `cmd-04a924128173e8c5` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `local-probe-result-transform-probe` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `release-result-transform-probe` | Release result-transform-probe cache lease | filesystem | holds refresh/build lock until Cargo and its descendants finish |
 | `wit-copies` | wit-copies | static/filesystem | all guest and macro WIT copies equal the root contract |
 | `cmd-0e8659e26ed9a7b1` | `wasm-tools component wit wit -o /dev/null` | independent tool/consumer boundary | WIT contract validation |
 | `cmd-da42e73f3d0adeb6` | `cargo build --workspace --target wasm32-wasip2 --release` | default/workspace-unified | WASM fixture build; installed wasm32-wasip2 target |
@@ -116,12 +121,19 @@ commands and expected failures described after the table.
 | `cmd-6a65ac97a97dc1e0` | `testdata/external-consumer/check.sh` | independent tool/consumer boundary | external consumer check |
 | `minimal-embed-glue` | minimal-embed-glue | static/filesystem | exactly one glue marker pair and at most 60 glue lines |
 
-The three local-source probes each own a preparation action and an all-targets
-Cargo check. They copy the workspace lock and original source, rewrite only the
-disposable Crabber dependency to the current checkout, and validate the original
-full Git revision without changing tracked pins. Their scratch owner survives
-until schedule teardown, including failed-command paths. At baseline their
-source/target caches are disposable; cache persistence is separate pending work.
+The three local-source probes each own a prepare, all-targets Cargo check and
+lease-release gate. Generated sources and targets persist below the resolved
+`CARGO_TARGET_DIR`, keyed by the canonical checkout path and probe name. Each
+probe holds an advisory file lock across source refresh and Cargo execution.
+Refresh removes stale copied files, copies the workspace lock and original
+sources, and rewrites only the disposable Crabber dependency. Tracked Git pins
+remain unchanged and are not qualified by a local source check.
+
+Two unchanged runs demonstrated reuse: the warm run checked only the three probe
+packages and completed in under a second. Functional checks detected an edited
+tracked consumer source, restored it successfully, removed stale generated
+copies, and ran two simultaneous invocations successfully. These are cache
+correctness checks, not full-gate performance qualification.
 
 The WASM prerequisite builds both positive and negative fixture workspaces,
 copies positive aliases, and writes SHA-256 manifest entries. Its target override
@@ -133,8 +145,21 @@ The custom HTTP script owns its positive compilation and dependency-feature
 graph check, four built-in constructor absence cases, nine custom API absence
 cases in built-in-only mode, eight mixed-feature setter absence cases, and seven
 raw-client escape absence cases. Each case must fail for its own forbidden API;
-infrastructure/build failure is not equivalent evidence. The baseline script's
-failure classification and shared `.probe-tmp` directory need strengthening.
+infrastructure/build failure is not equivalent evidence. The script now uses
+unique scratch sources, a per-checkout persistent target,
+and a whole-invocation `flock` lease. Every negative case has a successful
+preflight for its exact feature graph and allowed receiver API. A completed
+Cargo JSON rejection must have the expected error code on the probe source;
+dependency errors, incomplete builds and malformed output fail the gate.
+Python helpers use an isolated standard-library interpreter (`-I -S`), so local
+Python startup hooks cannot alter the gate. Python 3 and `flock` are prerequisites.
+
+A deterministic diagnostic demonstrated Cargo reusing a newer successful probe
+artifact for an older forbidden-call source in a different scratch workspace
+with the same package name. Each invocation now uses a unique package identity
+as well as the cache lease. The original concurrency failure and controlled
+reproduction remain in local evidence; the corrected concurrent invocations
+passed.
 Provider-only and mixed-provider unit/integration runs remain separate.
 
 The server-host consumer runs its locked external host. The external consumer
@@ -323,3 +348,28 @@ The full runner currently retains the original 24 Cargo CI commands and existing
 per-binary locks. Caller adoption, final per-test ownership, nextest scheduling,
 resource measurements and full performance qualification remain pending. These
 infrastructure checks alone do not prove complete PostgreSQL behavioral coverage.
+
+## Offline and source inventories
+
+`cargo xtask check` explicitly removes live PostgreSQL configuration, provider
+API keys and live-export credentials/endpoints in child commands. It does not
+mutate the host process environment. The separate PostgreSQL command owns
+required-service coverage. A focused subprocess test verifies removal while
+retaining the captured example's explicit stderr recipe.
+
+```sh
+cargo xtask inventory-tests > target/test-performance/source-inventory.json
+```
+
+This read-only source inventory records explicit test declarations, cfg guards,
+helper environment-variable names, calls and exact source byte ranges for audits.
+It does not expand macros, resolve features or prove execution; Cargo/nextest
+lists and actual required-service results remain necessary. A parser test covers
+nested guards and UTF-8 offsets. Deliberate wrong-root and wrong-SHA executions
+of operational-telemetry were rejected by their respective provenance guards.
+
+The clean original `58535cfc` offline schedule passed in 3248.415 seconds. The
+original PostgreSQL CI schedule also passed all 24 commands with its dedicated
+container removed. Both runs are exploratory timing evidence because the host
+had concurrent work; they establish passing original obligations, not the paired
+performance thresholds.

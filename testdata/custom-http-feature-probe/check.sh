@@ -2,15 +2,38 @@
 set -eu
 
 cd "$(dirname "$0")"
-ROOT=$(cd ../.. && pwd)
-TMP="$PWD/.probe-tmp"
-OUT="$TMP/output.json"
+python3 -I -S test_diagnostic.py
+probe_workspace=$(cd ../.. && pwd)
+probe_cache=$(python3 -I -S - "$probe_workspace" <<'CACHE'
+import hashlib, os, sys
+from pathlib import Path
+root = Path(sys.argv[1]).resolve()
+target = Path(os.environ.get("CARGO_TARGET_DIR", str(root / "target")))
+if not target.is_absolute():
+    target = root / target
+identity = hashlib.sha256(os.fsencode(root)).hexdigest()[:32]
+print(target / "consumer-probes" / identity / "custom-http")
+CACHE
+)
+mkdir -p "$probe_cache"
+# Serialize complete refresh/build histories, including writes outside Cargo's
+# own target lock. Unique package identity also prevents cross-scratch reuse of
+# a successful positive probe when another source has an older timestamp.
+command -v flock >/dev/null 2>&1 || { echo "install flock for serialized feature probes" >&2; exit 1; }
+exec 9>"$probe_cache/probe.lock"
+flock 9
+probe_identity=$(python3 -I -S -c 'import uuid; print(uuid.uuid4().hex)')
+probe_target="$probe_cache/target"
+probe_scratch=$(mktemp -d "$probe_cache/scratch.XXXXXXXX")
+mkdir "$probe_scratch/src"
+probe_output="$probe_scratch/output.json"
+probe_stderr="$probe_scratch/stderr.log"
+trap 'rm -rf "$probe_scratch"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-rm -rf "$TMP"
-mkdir -p "$TMP/src"
-trap 'rm -rf "$TMP"' EXIT HUP INT TERM
-
-cargo check --quiet
+CARGO_TARGET_DIR="$probe_target" cargo check --quiet
 
 graph=$(cargo tree -e features)
 printf '%s\n' "$graph" | grep -q 'crabber-providers feature "custom-http"'
@@ -19,16 +42,20 @@ if printf '%s\n' "$graph" | grep -Eq 'crabber-auth|crabber-providers feature "(a
     exit 1
 fi
 
-# Compile one forbidden API per crate and assert only that compilation fails.
-# Public-surface probes deliberately avoid rustc error codes and rendered text,
-# which are not stable across the repository's moving stable toolchain.
+# Each mutable manifest belongs to this invocation's unique scratch directory;
+# its writes and Cargo calls are sequential. Cargo locks the persistent target.
 expect_compile_failure() {
     label=$1
     features=$2
     source=$3
-    cat > "$TMP/Cargo.toml" <<EOF
+    case "$label" in
+        *_conversion) expected_code=E0277 ;;
+        auth_scheme|token_field|credential_source|header_hook|response_observer|error_classifier|client_config|proxy_config) expected_code=E0432 ;;
+        *) expected_code=E0599 ;;
+    esac
+    cat > "$probe_scratch/Cargo.toml" <<MANIFEST
 [package]
-name = "feature-gate-negative-probe"
+name = "feature-gate-negative-probe-$probe_identity"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -36,12 +63,37 @@ publish = false
 [workspace]
 
 [dependencies]
-crabber-providers = { path = "$ROOT/crates/crabber-providers", default-features = false, features = [$features] }
+crabber-providers = { path = "$probe_workspace/crates/crabber-providers", default-features = false, features = [$features] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-EOF
-    printf '%s\n' "$source" > "$TMP/src/main.rs"
-    if CARGO_TARGET_DIR="$PWD/target" cargo check --quiet --manifest-path "$TMP/Cargo.toml" >"$OUT" 2>&1; then
+MANIFEST
+    cp "$probe_workspace/Cargo.lock" "$probe_scratch/Cargo.lock"
+    case "$features" in
+        '"custom-http"') positive_source='
+use crabber_providers::{HttpAdapter, HttpClientConfig, HttpProxyConfig, Protocol};
+fn main() {
+    let _ = HttpAdapter::custom("probe", "https://example.test", Protocol::Responses);
+    let _ = HttpClientConfig::new();
+    let _: Option<HttpProxyConfig> = None;
+}' ;;
+        *) positive_source='use crabber_providers::HttpAdapter; fn main() { let _ = HttpAdapter::openai(); }' ;;
+    esac
+    printf '%s\n' "$positive_source" > "$probe_scratch/src/main.rs"
+    # Resolve and compile this exact feature graph successfully before accepting
+    # any negative result. This also makes dependency failures explicit.
+    if ! CARGO_TARGET_DIR="$probe_target" cargo check --quiet --message-format=json --manifest-path "$probe_scratch/Cargo.toml" >"$probe_output" 2>"$probe_stderr"; then
+        echo "$label positive feature preflight failed" >&2
+        cat "$probe_stderr" >&2
+        exit 1
+    fi
+    printf '%s\n' "$source" > "$probe_scratch/src/main.rs"
+    if CARGO_TARGET_DIR="$probe_target" cargo check --quiet --message-format=json --manifest-path "$probe_scratch/Cargo.toml" >"$probe_output" 2>"$probe_stderr"; then
         echo "$label unexpectedly compiled" >&2
+        cat "$probe_output" "$probe_stderr" >&2
+        exit 1
+    fi
+    if ! python3 -I -S check-diagnostic.py "$probe_output" "$probe_scratch/src/main.rs" "$expected_code"; then
+        echo "$label failed without its expected root-crate diagnostic ($expected_code)" >&2
+        cat "$probe_output" "$probe_stderr" >&2
         exit 1
     fi
 }
