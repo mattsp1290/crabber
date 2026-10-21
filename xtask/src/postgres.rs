@@ -9,7 +9,14 @@ pub(crate) mod child;
 mod container;
 mod fixtures;
 use container::{ADMIN_OVERRIDE, Endpoint};
+mod arguments;
 mod schedule;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Runner {
+    Cargo,
+    Nextest,
+}
 
 #[derive(Default)]
 struct Options {
@@ -19,6 +26,7 @@ struct Options {
     fixtures_only: bool,
     cleanup: Option<String>,
     test_threads: Option<String>,
+    runner: Option<Runner>,
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, &'static str> {
@@ -26,6 +34,13 @@ impl Options {
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--runner" if options.runner.is_none() => {
+                    options.runner = Some(match args.next().map(String::as_str) {
+                        Some("cargo") => Runner::Cargo,
+                        Some("nextest") => Runner::Nextest,
+                        _ => return Err("--runner needs cargo or nextest"),
+                    });
+                }
                 "--package" if options.package.is_none() => {
                     options.package = Some(args.next().ok_or("--package needs a name")?.clone());
                 }
@@ -125,6 +140,14 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
         println!("cleaned inactive PostgreSQL fixture run {nonce}");
         return Ok(0);
     }
+    if options.runner == Some(Runner::Nextest) {
+        let mut version = crate::checks::Checks::default();
+        crate::nextest::version_gate(crate::workspace(), &mut version);
+        let code = version.execute(&crate::checks::Options::default());
+        if code != 0 {
+            return Ok(code);
+        }
+    }
     let endpoint = Endpoint::start().await?;
     let admin = &endpoint.admin;
     let result = async {
@@ -200,55 +223,46 @@ async fn execute_schedule(
         } else {
             None
         };
-        let mut arguments = args.to_vec();
-        if let Some(filter) = &options.filter {
-            let position = arguments
-                .iter()
-                .position(|argument| *argument == "--")
-                .unwrap_or(arguments.len());
-            arguments.insert(position, filter);
-        }
-        if args[0] == "test" {
-            if !arguments.contains(&"--") {
-                arguments.push("--");
-            }
-            arguments.push("--test-threads");
-            arguments.push(options.test_threads.as_deref().unwrap_or("2"));
-        }
-        let mut command = Command::new("cargo");
-        command
-            .args(arguments)
-            .current_dir(crate::workspace())
-            .envs(run.environment())
-            .env("CRABBER_REQUIRE_POSTGRES", "1")
-            .env_remove("CRABBER_TEST_POSTGRES_URL")
-            .env_remove("CRABBER_POSTGRES_URL")
-            .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
-            .env_remove("CRABBER_TEST_HISTORY_CHILD")
-            .env_remove("ANTHROPIC_API_KEY")
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("OPENCODE_GO_API_KEY")
-            .env_remove("CRABBER_TRACE_LIVE")
-            .env_remove("CRABBER_OBS_VERIFY_MARKER")
-            .env_remove("DD_API_KEY")
-            .env_remove("DD_APP_KEY")
-            .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
-            .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-            .env_remove("OTEL_EXPORTER_OTLP_HEADERS")
-            .env_remove("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
-        if let Some(database) = &database {
+        let mut code = 0;
+        for arguments in arguments::commands(args, options) {
+            let mut command = Command::new("cargo");
             command
-                .env("CRABBER_TEST_POSTGRES_URL", database.url())
-                .env("CRABBER_POSTGRES_URL", database.url())
-                .env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", database.identity());
+                .args(arguments)
+                .current_dir(crate::workspace())
+                .envs(run.environment())
+                .env("CRABBER_REQUIRE_POSTGRES", "1")
+                .env_remove("CRABBER_TEST_POSTGRES_URL")
+                .env_remove("CRABBER_POSTGRES_URL")
+                .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
+                .env_remove("CRABBER_TEST_HISTORY_CHILD")
+                .env_remove("ANTHROPIC_API_KEY")
+                .env_remove("OPENAI_API_KEY")
+                .env_remove("OPENCODE_GO_API_KEY")
+                .env_remove("CRABBER_TRACE_LIVE")
+                .env_remove("CRABBER_OBS_VERIFY_MARKER")
+                .env_remove("DD_API_KEY")
+                .env_remove("DD_APP_KEY")
+                .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+                .env_remove("OTEL_EXPORTER_OTLP_HEADERS")
+                .env_remove("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+            if let Some(database) = &database {
+                command
+                    .env("CRABBER_TEST_POSTGRES_URL", database.url())
+                    .env("CRABBER_POSTGRES_URL", database.url())
+                    .env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", database.identity());
+            }
+            let mut gates = crate::checks::Checks::default();
+            gates.command(
+                crate::workspace(),
+                command,
+                "required PostgreSQL CI obligation",
+            );
+            code = gates.execute(&crate::checks::Options::default());
+            if code != 0 {
+                break;
+            }
         }
-        let mut gates = crate::checks::Checks::default();
-        gates.command(
-            crate::workspace(),
-            command,
-            "required PostgreSQL CI obligation",
-        );
-        let code = gates.execute(&crate::checks::Options::default());
         if let Some(database) = database
             && let Err(error) = database.finish().await
         {

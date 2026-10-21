@@ -564,3 +564,14 @@ paths are preserved. An external lease blocked a real fixture invocation;
 SIGTERM returned 143 before any Cargo fixture build or alias write began.
 The new lease module and its callers passed all-target xtask Clippy. Full normal
 execution with the lease remains part of final qualification.
+
+
+The required fixture runner also has an explicit `--runner nextest` adapter,
+currently awaiting live compatibility qualification. Cargo remains its default.
+The adapter preserves each original command's package, features and targets;
+examples remain actual Cargo executables, and default-target invocations receive
+separate Cargo doctest commands. Original uncaptured evidence is retained through
+nextest's immediate success/failure output without forcing serial no-capture
+mode. `--test-threads 1`, `2`, `4` select matching explicit PostgreSQL resource
+profiles for measurement; the normal profile remains capped at two. No required
+nextest execution is accepted until database ownership qualification completes.

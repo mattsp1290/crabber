@@ -3,6 +3,8 @@ nextest-version = { required = "0.9.138" }
 
 [test-groups]
 postgres = { max-threads = 2 }
+postgres-one = { max-threads = 1 }
+postgres-four = { max-threads = 4 }
 wasm = { max-threads = 4 }
 sqlite = { max-threads = 4 }
 
@@ -41,3 +43,20 @@ fail-fast = false
 [[profile.postgres.overrides]]
 filter = 'all()'
 test-group = 'postgres'
+
+# Explicit experiments; the normal PostgreSQL profile remains capped at two.
+[profile.postgres-one]
+test-threads = 1
+retries = 0
+fail-fast = false
+[[profile.postgres-one.overrides]]
+filter = 'all()'
+test-group = 'postgres-one'
+
+[profile.postgres-four]
+test-threads = 4
+retries = 0
+fail-fast = false
+[[profile.postgres-four.overrides]]
+filter = 'all()'
+test-group = 'postgres-four'
