@@ -27,11 +27,16 @@ def collect(owned):
     pending = [os.getpid()]
     current = {}
     visited = set()
-    for pid, start in owned.items():
+    for pid, start in list(owned.items()):
         row = identity(pid)
         if row is not None and row[1] == start:
             current[pid] = row
             pending.append(pid)
+        else:
+            # Thousands of short-lived test processes must not become a growing
+            # list of dead /proc lookups on every subsequent supervision poll.
+            # Live escaped/adopted descendants retain their original identity.
+            del owned[pid]
     while pending:
         parent = pending.pop()
         if parent in visited:
