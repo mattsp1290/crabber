@@ -187,6 +187,34 @@
       "before": "Narrow library/CLI feature checks compile their full private integration/unit suites, plus wasm_state and wasm_roles are rebuilt in two narrower facade graphs.",
       "after": "Session/runtime library checks retain driver absence; actual CLI binary checks retain selected constructors. Combined behavior runs all WASM contracts once; the existing standalone external consumer owns real WASM-only build/execution.",
       "rationale": "The removed test-crate compilation is not another production feature boundary. Actual production libraries, CLI glue and standalone consumer remain compiled in those narrow configurations; all runtime assertions stay in the combined behavior graph."
+    },
+    {
+      "id": "runtime-grant-ack-input-matrices",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A changed native Tool/Frontend grant ACK must never reach payload protection, successor registration, Begin or business effects; legacy None must still authenticate opaque attempt and phase capabilities.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/tool_continuation.rs:prepared_tool_authority",
+        "crates/crabber-session/src/tool_continuation/ack.rs:ToolContinuationGrant::verify_native_ack"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_pending_tool_grant_payload_is_authenticated",
+        "memory_pending_frontend_grant_payload_is_authenticated",
+        "sqlite_pending_tool_and_frontend_grant_payload_is_authenticated",
+        "postgres_pending_tool_and_frontend_grant_payload_is_authenticated",
+        "memory_none_grant_ack_integrity",
+        "sqlite_none_grant_ack_integrity",
+        "postgres_none_grant_ack_integrity"
+      ],
+      "before": "Each SQL backend repeats16 altered-payload and24 legacy-None corruption histories, plus four None positive/replay paths.",
+      "after": "Memory retains all four payload and six None corruption variants for each origin. Each SQL backend keeps four altered-payload histories and12 None corruption histories (checkpoint/result mutation and both opaque foreign-capability substitutions), plus all four None positive/replay paths.",
+      "rationale": "Runtime prepared_tool_authority calls the same backend-independent ToolContinuationGrant::verify_native_ack before protection or dispatch. Public checkpoint/result, answer/descriptor, turns_used and source_turn_id are covered by that same native ACK commitment. Memory keeps each distinct public-field branch for Tool/Frontend claim/recovery. Each SQL issuer still supplies real authentic grants for all four origins; changed checkpoint/result and both independently typed opaque attempt/phase authority substitutions remain real SQL. Existing Some-source inspection, SQL source/authentication and runtime task/cancellation/cold-recovery histories are unchanged. Current PostgreSQL clones already contain the migrated schema; these wrappers assert no migration behavior.",
+      "validation": "Previous full combined run measured PostgreSQL payload54.957s and None55.010s; SQLite payload33.241s. Targeted changed-family qualification is pending."
     }
   ],
   "required_behaviors": [
