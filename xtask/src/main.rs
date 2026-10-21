@@ -4,6 +4,8 @@ use sha2::Digest;
 use std::{env, fmt::Write, fs, path::Path, process::Command};
 
 mod agui;
+#[cfg(target_os = "linux")]
+mod budget;
 mod checks;
 mod datadog;
 mod inventory;
@@ -28,6 +30,11 @@ fn main() {
         && let Err(error) = process::enable_tree_supervision()
     {
         eprintln!("cannot enable Linux child supervision: {error}");
+        std::process::exit(1);
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = process::cancellation().and_then(budget::watch) {
+        eprintln!("cannot supervise complete-check budget: {error}");
         std::process::exit(1);
     }
     match args.first().map(String::as_str) {

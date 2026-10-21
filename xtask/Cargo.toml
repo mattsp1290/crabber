@@ -19,7 +19,7 @@ workspace = true
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "=0.4.5"
-nix = { version = "=0.31.3", features = ["signal", "process"] }
+nix = { version = "=0.31.3", features = ["signal", "process", "time"] }
 
 [features]
 postgres-check = ["dep:futures-util", "dep:testcontainers-modules", "dep:tokio", "dep:crabber-session", "dep:crabber-test-support", "dep:sqlx"]

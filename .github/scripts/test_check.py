@@ -1,0 +1,81 @@
+"""Focused ownership and failure tests for the outer check deadline."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+MODULE = Path(__file__).with_name('check.py')
+spec = importlib.util.spec_from_file_location('complete_check', MODULE)
+check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(check)
+ROOT = Path.cwd()
+
+
+class DeadlineTests(unittest.TestCase):
+    def setUp(self):
+        (ROOT / 'target').mkdir(exist_ok=True)
+        self.directory = tempfile.TemporaryDirectory(dir=ROOT / 'target')
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def run_child(self, code):
+        report = self.root / 'report.json'
+        result = check.supervise([sys.executable, '-I', '-S', '-c', code], ROOT, report,
+                                 budget=2, reserve=.4)
+        return result, json.loads(report.read_text())
+
+    def test_success_and_failure_propagate(self):
+        code, report = self.run_child('pass')
+        self.assertEqual(code, 0)
+        self.assertEqual(report['status'], 'passed')
+        (self.root / 'report.json').unlink()
+        code, report = self.run_child('raise SystemExit(7)')
+        self.assertEqual(code, 7)
+        self.assertEqual(report['status'], 'failed')
+
+    def test_deadline_before_xtask_reaps_escaped_compiler_helper(self):
+        marker = self.root / 'compiler-helper.pid'
+        program = ("import pathlib,subprocess,sys,time; "
+                   "p=subprocess.Popen([sys.executable,'-I','-S','-c','import time;time.sleep(60)'],start_new_session=True); "
+                   f"pathlib.Path({str(marker)!r}).write_text(str(p.pid)); time.sleep(60)")
+        code, report = self.run_child(program)
+        self.assertEqual(code, 124)
+        self.assertEqual(report['reason'], 'budget-expired')
+        self.assertLess(report['wall_seconds'], 2)
+        self.assertFalse(Path('/proc', marker.read_text()).exists())
+
+    def test_cancelled_zero_exit_child_still_fails(self):
+        marker = self.root / 'ready'
+        report = self.root / 'cancel.json'
+        child = ("import pathlib,signal,sys,time; signal.signal(signal.SIGTERM,lambda *_:sys.exit(0)); "
+                 f"pathlib.Path({str(marker)!r}).write_text('ready');time.sleep(60)")
+        program = ("import importlib.util,pathlib; "
+                   f"s=importlib.util.spec_from_file_location('check',{str(MODULE.resolve())!r}); "
+                   "m=importlib.util.module_from_spec(s);s.loader.exec_module(m); "
+                   f"raise SystemExit(m.supervise({[sys.executable, '-I', '-S', '-c', child]!r},pathlib.Path({str(ROOT)!r}),pathlib.Path({str(report)!r}),budget=4,reserve=.4))")
+        process = subprocess.Popen([sys.executable, '-I', '-S', '-c', program])
+        try:
+            until = time.monotonic() + 3
+            while not marker.exists():
+                if process.poll() is not None or time.monotonic() >= until:
+                    self.fail('child did not acknowledge readiness')
+                time.sleep(.02)
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=3), 143)
+            result = json.loads(report.read_text())
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(result['child_exit_code'], 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+if __name__ == '__main__':
+    unittest.main()
