@@ -14,11 +14,17 @@ flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
 
+[dependencies.sqlx]
+version = "0.8"
+default-features = false
+features = ["runtime-tokio", "postgres", "tls-rustls"]
+optional = true
+
 [lints]
 workspace = true
 
 [features]
 default = ["datadog"]
 datadog = ["crabber/datadog"]
-postgres = ["crabber/postgres"]
+postgres = ["crabber/postgres", "dep:sqlx"]
 sqlite = ["crabber/sqlite"]

@@ -1,5 +1,8 @@
 #[allow(dead_code)]
 mod journey;
+#[cfg(feature = "postgres")]
+#[path = "../../postgres-fixture.rs"]
+mod postgres_fixture;
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "--memory".into());
@@ -10,6 +13,7 @@ fn main() {
     #[cfg(feature = "postgres")]
     if mode == "--postgres-child" {
         let url = std::env::var("CRABBER_TEST_POSTGRES_URL").expect("PostgreSQL endpoint required");
+        runtime.block_on(postgres_fixture::verify(&url));
         runtime.block_on(journey::child(Some(&url)));
         return;
     }
@@ -37,10 +41,15 @@ fn main() {
         "--postgres" => {
             let url =
                 std::env::var("CRABBER_TEST_POSTGRES_URL").expect("PostgreSQL endpoint required");
+            runtime.block_on(postgres_fixture::verify(&url));
             (
                 "postgres",
                 runtime.block_on(journey::postgres(&url, true)),
-                journey::ChildMode::Demo(url, check),
+                journey::ChildMode::Demo(
+                    url,
+                    check,
+                    std::env::var("CRABBER_TEST_POSTGRES_CHILD_DATABASE").ok(),
+                ),
             )
         }
         #[cfg(feature = "sqlite")]

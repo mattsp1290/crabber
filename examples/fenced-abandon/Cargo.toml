@@ -12,10 +12,16 @@ tokio = { version = "1", features = ["macros", "rt", "process", "time"] }
 async-trait = "0.1"
 serde_json = "1"
 
+[dependencies.sqlx]
+version = "0.8"
+default-features = false
+features = ["runtime-tokio", "postgres", "tls-rustls"]
+optional = true
+
 [lints]
 workspace = true
 
 [features]
 default = []
-postgres = ["crabber/postgres"]
+postgres = ["crabber/postgres", "dep:sqlx"]
 sqlite = ["crabber/sqlite", "dep:tempfile"]

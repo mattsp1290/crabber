@@ -256,7 +256,7 @@ pub fn source(require_clean: bool) -> Source {
 #[derive(Clone)]
 pub enum ChildMode {
     None,
-    Demo(String, bool),
+    Demo(String, bool, Option<String>),
     Test(Vec<(&'static str, String)>),
     #[cfg(feature = "sqlite")]
     SqliteTest(std::path::PathBuf),
@@ -275,11 +275,14 @@ fn verify_child(
     let encoded = serde_json::to_string(query).unwrap();
     match mode {
         ChildMode::None => return,
-        ChildMode::Demo(url, check) => {
+        ChildMode::Demo(url, check, identity) => {
             command
                 .arg("--postgres-child")
                 .env("CRABBER_TEST_POSTGRES_URL", url)
                 .env("CRABBER_BOUNDED_CHILD", &encoded);
+            if let Some(identity) = identity {
+                command.env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", identity);
+            }
             if *check {
                 command.env("CRABBER_BOUNDED_CHECK", "1");
             }
