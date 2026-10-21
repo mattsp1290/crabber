@@ -7,7 +7,7 @@ pub(super) fn commands(args: &[&str], options: &Options) -> Vec<Vec<String>> {
         .iter()
         .position(|arg| *arg == "--")
         .unwrap_or(args.len());
-    if args[0] != "test" || options.runner != Some(Runner::Nextest) {
+    if args[0] != "test" || options.runner == Some(Runner::Cargo) {
         let mut command: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
         if let Some(filter) = &options.filter {
             command.insert(separator, filter.clone());

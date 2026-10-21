@@ -154,7 +154,7 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
         println!("cleaned inactive PostgreSQL fixture run {nonce}");
         return Ok(0);
     }
-    if options.runner == Some(Runner::Nextest) {
+    if !options.fixtures_only && options.runner != Some(Runner::Cargo) {
         let mut version = crate::checks::Checks::default();
         crate::nextest::version_gate(crate::workspace(), &mut version);
         let code = version.execute(&crate::checks::Options::default());
