@@ -1,6 +1,6 @@
 # Required test coverage policy
 
-The complete check has a 600-second budget with dependencies and tools cached. Critical failure detection determines coverage; test counts and Cartesian products do not. See [the machine-readable policy](test-coverage-policy.json) for exact retained detector names and implementation state. The initial reductions below are implemented but not yet qualified. The full schedule and ten-minute measurements remain pending.
+The complete check has a 600-second budget with dependencies and tools cached. Critical failure detection determines coverage; test counts and Cartesian products do not. See [the machine-readable policy](test-coverage-policy.json) for exact retained detector names and implementation state. The initial reductions below passed their selected Memory/SQLite/PostgreSQL histories serially and at four slots, with owned fixture/container cleanup verified. The full schedule and ten-minute measurements remain pending.
 
 Each costly family records the failure, production owner, required backend, retained detector and reason a removed dimension adds no distinct detection. Use KEEP, MOVE-CHEAPER, MERGE or DELETE-REDUNDANT. A unique transaction, SQL parser/constraint, migration, authorization, replay or process-recovery branch needs a required detector at its real owner. Pure malformed-input tables stay cheap and complete at shared validators. Public journeys verify wiring and cold reconciliation rather than repeat storage matrices.
 

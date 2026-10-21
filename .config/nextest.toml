@@ -3,6 +3,7 @@ nextest-version = { required = "0.9.138" }
 
 [test-groups]
 postgres = { max-threads = 4 }
+postgres-ci = { max-threads = 2 }
 postgres-one = { max-threads = 1 }
 postgres-four = { max-threads = 4 }
 wasm = { max-threads = 4 }
@@ -60,3 +61,61 @@ fail-fast = false
 [[profile.postgres-four.overrides]]
 filter = 'all()'
 test-group = 'postgres-four'
+
+# One required run: ordinary cases do not consume a PostgreSQL slot.
+[profile.complete]
+test-threads = 16
+retries = 0
+fail-fast = false
+
+[[profile.complete.overrides]]
+filter = 'binary(/wasm/) | test(/wasm/)'
+test-group = 'wasm'
+threads-required = 2
+
+[[profile.complete.overrides]]
+filter = 'test(/(^sqlite::|::sqlite_|^sqlite_)/)'
+test-group = 'sqlite'
+
+[[profile.complete.overrides]]
+filter = 'test(/(^memory::|::memory_|^memory_)/)'
+threads-required = 1
+
+[[profile.complete.overrides]]
+filter = 'not test(/(^memory::|::memory_|^memory_|^sqlite::|::sqlite_|^sqlite_)/) & (package(crabber-session) | package(crabber-runtime) | package(crabber) | package(server-host-probe) | package(workspace-context-probe) | package(crabber-test-support))'
+test-group = 'postgres'
+
+# Override the old partial profile's generic runtime weight; only actual heavy
+# WASM cases above reserve two scheduler threads in the combined run.
+[[profile.complete.overrides]]
+filter = 'all()'
+threads-required = 1
+
+# One required run: ordinary cases do not consume a PostgreSQL slot.
+[profile.complete-ci]
+test-threads = 4
+retries = 0
+fail-fast = false
+
+[[profile.complete-ci.overrides]]
+filter = 'binary(/wasm/) | test(/wasm/)'
+test-group = 'wasm'
+threads-required = 2
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/(^sqlite::|::sqlite_|^sqlite_)/)'
+test-group = 'sqlite'
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/(^memory::|::memory_|^memory_)/)'
+threads-required = 1
+
+[[profile.complete-ci.overrides]]
+filter = 'not test(/(^memory::|::memory_|^memory_|^sqlite::|::sqlite_|^sqlite_)/) & (package(crabber-session) | package(crabber-runtime) | package(crabber) | package(server-host-probe) | package(workspace-context-probe) | package(crabber-test-support))'
+test-group = 'postgres-ci'
+
+# Override the old partial profile's generic runtime weight; only actual heavy
+# WASM cases above reserve two scheduler threads in the combined run.
+[[profile.complete-ci.overrides]]
+filter = 'all()'
+threads-required = 1

@@ -2,17 +2,25 @@
 
 ## Ten-minute follow-up
 
-The current follow-up replaces the original percentage target and historical tuple-bijection requirement with a 600-second complete-check budget and [risk-based coverage ownership](test-coverage-policy.md). Qualification is pending. The intended budgeted entrypoint is `python3 -I -S .github/scripts/check.py`; it will wrap the full `cargo xtask check`, including real PostgreSQL, compilation, checks and cleanup. Until that integration lands, the existing commands below remain separate partial lanes.
+The current follow-up replaces the original percentage target and historical tuple-bijection requirement with a 600-second complete-check budget and [risk-based coverage ownership](test-coverage-policy.md). Qualification is pending. The budgeted entrypoint is `python3 -I -S .github/scripts/check.py`; it wraps the full `cargo xtask check`, including real PostgreSQL, compilation, checks and cleanup. Use `cargo xtask check --lane offline` or `check-postgres` for explicitly partial developer runs. The combined schedule is under validation; the 600-second target has not passed qualification.
 
-The clock starts before Cargo (and before CI cache restoration). Provisioned pinned tools, downloaded dependencies and the PostgreSQL image are prerequisites; ordinary workspace compilation counts. Required cache cases are unchanged source, forced runtime rebuild and forced session rebuild with dependencies warm. Each must pass within 600 seconds locally and on the declared CI resources. Package-scoped cleanup must cover every retained nested target containing the affected crate and its dependents. Existing timing results below describe the earlier implementation, not acceptance of this budget.
+The clock starts before Cargo (and before CI cache restoration). The launcher defaults development/test debug symbols to zero while preserving explicit caller settings and Cargo’s local incremental-compilation default. It starts cleanup with a 20-second reserve and returns failure for deadline expiration, child failure, cancellation or an incomplete schedule report. `--cache-state unchanged|runtime-rebuild|session-rebuild` labels a qualification case; bootstrap/unclassified runs never claim cached-dependency qualification. Provisioned pinned tools, downloaded dependencies and the PostgreSQL image are prerequisites; ordinary workspace compilation counts. Required cache cases are unchanged source, forced runtime rebuild and forced session rebuild with dependencies warm. Each must pass within 600 seconds locally and on the declared CI resources. Package-scoped cleanup must cover every retained nested target containing the affected crate and its dependents. Existing timing results below describe the earlier implementation, not acceptance of this budget.
 
 
-The implementation base is `58535cfc234c2a3d514487b0f72d646e4ba33110` (use `git rev-parse 58535cfc` for the full revision).
-Implementation lives on `feat/test-suite-performance` in its own checkout. The
+Current work starts at `3fc10a553bdd007f018fd85cbe629f44d316f52a` on `feat/ten-minute-tests`. The full gate provisions one owned PostgreSQL server, retains narrow driver/feature checks, compiles an explicit combined native feature graph, discovers and executes those exact test binaries once, runs explicit doctests and unique host checks, then cleans owned resources. Unknown cases in backend-enabled binaries use a conservative service group. The normal combined profile allows four PostgreSQL tests locally and initially two on CI, four SQLite slots, and weighted WASM work; ordinary Memory tests use the general scheduler.
+
+CI now runs one complete job. Its timestamp precedes cache restoration and is passed into the launcher. Compiler caches are separated by architecture, compiler identity, profile, tool pins, locks and the combined graph. Snapshot saving occurs afterward as separately reported CI maintenance. Bootstrap/cache-miss results do not establish the cached-dependency timing promise. Source provenance is refreshed after restoration. The complete run uploads sanitized timing, selected-manifest and fixture reports.
+
+The initial SQL fault and pending-tool reductions passed their targeted tests on all three backends, both serially and at four slots. Full combined execution, final retained-family reductions, the three local/CI qualification cases and independent final review remain pending.
+
+The following sections preserve evidence from the earlier plan. Their old schedules, tuple counts, concurrency choices and percentage protocol are historical; the coverage policy and 600-second contract above govern current acceptance.
+
+The previous implementation base was `58535cfc234c2a3d514487b0f72d646e4ba33110` (use `git rev-parse 58535cfc` for the full revision).
+That implementation lived on `feat/test-suite-performance` in its own checkout. The
 pre-existing provider and orchestrator edits are excluded. This document records
 coverage ownership; it is not a claim that performance qualification has passed.
 
-## Commands and reports
+## Historical: Commands and reports
 
 ```sh
 cargo xtask check --list > target/test-performance/inventory.json
@@ -38,7 +46,7 @@ a cancelled phase and cancel later obligations. A forcibly killed runner can
 still leave a running record; that is not completed evidence. The PostgreSQL runner also supervises descendants across process groups and
 sweeps only registered resources after those descendants stop.
 
-## Coverage rules
+## Historical: Coverage rules
 
 The baseline owner of each row below is the corresponding invocation in
 `xtask/src/main.rs` at the implementation base; the current owner is the same
@@ -55,7 +63,7 @@ compilation, provider feature absence, exporter differences, consumer builds,
 validating WIT copies, and example output assertions remain distinct obligations.
 Default Cargo test invocations also own their applicable doctests. The nextest adapter explicitly transfers doctest ownership to Cargo.
 
-## Offline gate ledger
+## Historical: Offline gate ledger
 
 `cmd-*` IDs below are abbreviated only by omitting the `command-` prefix. The
 machine inventory is authoritative for argv and ordering. Formatting and static
@@ -179,7 +187,7 @@ child removes `DD_API_KEY`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and
 operational-telemetry example verifies compiled root, exact SHA and clean Git
 state; qualify only a committed checkout using its own target artifacts.
 
-## Required PostgreSQL baseline ledger
+## Historical: Required PostgreSQL baseline ledger
 
 The baseline owner is `.github/workflows/ci.yml`'s `postgres` job. Every command
 below is retained and has no replacement evidence yet. The baseline service is
@@ -225,7 +233,7 @@ queue before/after commit, rollback and durable exact budget/receipt readback.
 Fixed IDs, truncations, schema mutation and advisory locks require a database
 owned by the logical journey before process-parallel execution is enabled.
 
-## Long-contract scenario accounting
+## Historical: Long-contract scenario accounting
 
 Before splitting, extract a tuple ledger from each original loop. In particular:
 
@@ -243,7 +251,7 @@ The completed tuple mappings and backend validation are recorded in
 `test-performance-resource-selection.json`. No loop bounds or production Store
 behavior changed.
 
-## Reproducible qualification
+## Historical: Reproducible qualification
 
 Record exact source/tree, tool versions, machine CPU/RAM, concurrent workload,
 profile settings, installed tools, registry/Git cache state and PostgreSQL image
@@ -314,7 +322,7 @@ must use blank provisioning and the original real migrations, rerun correctness
 gates, and remeasure before a performance claim. Restore a deduplicated gate if
 its replacement coverage is disproved.
 
-## Current evidence and limitations
+## Historical: Current evidence and limitations
 
 The original clean base passed both complete lanes before coverage changes.
 The implementation then passed a clean, unchanged full offline gate and all 24
@@ -333,7 +341,7 @@ and overwritten-executable attempts remain retained locally and are never
 counted as passing samples. Existing issues `crabber-pxdk`, `crabber-09ku`,
 `crabber-9e8u` and `crabber-7j4w` retain their separate scopes.
 
-## PostgreSQL fixture infrastructure
+## Historical: PostgreSQL fixture infrastructure
 
 ```sh
 cargo run -p xtask --features postgres-check -- check-postgres --fixtures-only
@@ -412,7 +420,7 @@ demos. Every PostgreSQL parent owns its database, and children attach to that
 parent. Cross-test database locks were removed after isolating their resources.
 Use `--runner cargo` for the tested Cargo fallback.
 
-## Offline and source inventories
+## Historical: Offline and source inventories
 
 `cargo xtask check` explicitly removes live PostgreSQL configuration, provider
 API keys and live-export credentials/endpoints in child commands. It does not
@@ -464,7 +472,7 @@ defaults to two libtest threads. Independent runners have independent budgets an
 add load. Concurrent lanes in one checkout require distinct `CARGO_TARGET_DIR`
 values and fixed sources.
 
-## Per-history PostgreSQL adoption
+## Historical: Per-history PostgreSQL adoption
 
 Session, runtime, facade and host-probe parents use explicit owned fixtures.
 Current-schema histories clone the migrated template and still execute their
@@ -511,7 +519,7 @@ The failed discovery diagnostics are retained locally. Corrected feature graphs,
 narrow SQLite builds and the full offline gate subsequently passed.
 
 
-## Consolidated offline ownership
+## Historical: Consolidated offline ownership
 
 [The machine-readable matrix](test-performance-matrix.json) records the original
 revision, argv, resolved target features, counts and SHA-256 hashes of sorted test
@@ -551,7 +559,7 @@ to the required fixture runner. External consumers, executable examples, WIT,
 fixture builds, provenance checks and glue assertions retain their owners.
 
 
-## Offline nextest integration
+## Historical: Offline nextest integration
 
 Install the pinned tooling described in the README, then run:
 
@@ -606,7 +614,7 @@ supervised children drain. Source probes retain their existing lock paths. A rea
 invocation waiting for an external lease returned 143 before building or writing
 aliases. The full offline gate also passed with the lease held normally.
 
-## Fixture timing events
+## Historical: Fixture timing events
 
 Use a new file for each run; existing event files are rejected:
 
@@ -637,7 +645,7 @@ support/runner all-target Clippy check passed.
 
 
 
-## Independent contract families
+## Historical: Independent contract families
 
 The scenario ledger in `test-performance-scenarios.json` maps every original
 parameter tuple to its new named test family. Native pending-tool coverage keeps

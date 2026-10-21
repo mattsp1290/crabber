@@ -15,7 +15,8 @@ def identity(pid):
     try:
         data = Path(f'/proc/{pid}/stat').read_text()
         fields = data[data.rfind(')') + 2:].split()
-        return int(fields[1]), int(fields[19]), fields[0]
+        return (int(fields[1]), int(fields[19]), fields[0],
+                int(fields[21]) * os.sysconf('SC_PAGE_SIZE'), int(fields[17]))
     except (OSError, ValueError, IndexError):
         return None
 
@@ -73,6 +74,8 @@ def persist(path, report):
 def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., env=None):
     started = time.monotonic()
     initial_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    initial_self_usage = resource.getrusage(resource.RUSAGE_SELF)
+    child_env = dict(os.environ if env is None else env)
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if report_path.exists():
@@ -81,8 +84,13 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
               'cleanup_reserve_seconds': reserve, 'ci_elapsed_before_launcher_seconds': elapsed,
               'started_unix_seconds': time.time(), 'command': command,
               'source_revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip(),
+              'source_clean': not subprocess.check_output(['git', 'status', '--porcelain'], cwd=cwd, text=True).strip(),
               'cpu_count': os.cpu_count(), 'platform': list(os.uname()),
-              'profile': {k: os.environ.get(k) for k in ['CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',
+              'peak_process_rss_sum_bytes': 0, 'peak_processes': 0, 'peak_threads': 0,
+              'resource_scope': 'launcher and owned process descendants; PostgreSQL server is outside this process tree; shared RSS pages may be counted twice',
+              'cpu_affinity_count': len(os.sched_getaffinity(0)),
+              'physical_memory_bytes': os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'),
+              'profile': {k: child_env.get(k) for k in ['CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',
                             'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG']}}
     interrupted = None
     child = None
@@ -106,7 +114,6 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
     persist(report_path, report)
     try:
         remaining = budget - elapsed
-        child_env = dict(os.environ if env is None else env)
         child_env['CRABBER_CHECK_WORK_DEADLINE_NS'] = str(
             time.monotonic_ns() + max(0, int((remaining - reserve) * 1_000_000_000)))
         if remaining <= reserve:
@@ -116,6 +123,9 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
         while child is not None:
             tree = collect(owned)
             code = child.poll()
+            report['peak_process_rss_sum_bytes'] = max(report['peak_process_rss_sum_bytes'], sum(row[3] for row in tree.values()))
+            report['peak_processes'] = max(report['peak_processes'], len(tree))
+            report['peak_threads'] = max(report['peak_threads'], sum(row[4] for row in tree.values()))
             live = {pid: row for pid, row in tree.items()
                     if row[2] != 'Z' and not (pid == child.pid and code is not None)}
             total = elapsed + time.monotonic() - started
@@ -168,12 +178,16 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
             signal.signal(number, previous)
         wall = elapsed + time.monotonic() - started
         usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        own_usage = resource.getrusage(resource.RUSAGE_SELF)
+        own_user = own_usage.ru_utime - initial_self_usage.ru_utime
+        own_system = own_usage.ru_stime - initial_self_usage.ru_stime
         report.update(status='passed' if reason is None and child is not None and child.returncode == 0 and wall <= budget else 'failed',
                       reason=reason, child_exit_code=child.returncode if child is not None else None,
                       wall_seconds=wall, launcher_wall_seconds=time.monotonic() - started,
                       ended_unix_seconds=time.time(), budget_breached=wall > budget,
-                      interrupted_signal=interrupted, cpu_user_seconds=usage.ru_utime - initial_usage.ru_utime,
-                      cpu_system_seconds=usage.ru_stime - initial_usage.ru_stime)
+                      interrupted_signal=interrupted, launcher_cpu_user_seconds=own_user, launcher_cpu_system_seconds=own_system,
+                      cpu_user_seconds=usage.ru_utime - initial_usage.ru_utime + own_user,
+                      cpu_system_seconds=usage.ru_stime - initial_usage.ru_stime + own_system)
         persist(report_path, report)
     if interrupted is not None:
         return 128 + interrupted
@@ -183,6 +197,8 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
 
 
 def main():
+    main_started = time.monotonic()
+    main_started_epoch = time.time()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
     parser.add_argument('--ci-start-time', type=float)
@@ -191,12 +207,18 @@ def main():
     cwd = Path(__file__).resolve().parents[2]
     elapsed = 0.
     if args.ci_start_time is not None:
-        elapsed = time.time() - args.ci_start_time
+        elapsed = main_started_epoch - args.ci_start_time
         if not 0 <= elapsed <= 86400:
             parser.error('--ci-start-time must be a valid earlier timestamp from this CI invocation')
     report = args.report or cwd / 'target/test-performance' / f'complete-{time.time_ns()}.json'
+    report = report if report.is_absolute() else (cwd / report).resolve()
     inner = report.with_name(report.stem + '-phases.json')
-    code = supervise(['cargo', 'xtask', 'check', '--timings', str(inner)], cwd, report, elapsed=elapsed)
+    env = dict(os.environ)
+    # Keep incremental compilation at Cargo's local default. Debug symbols are
+    # unnecessary for this gate; explicit caller settings remain authoritative.
+    env.setdefault('CARGO_PROFILE_DEV_DEBUG', '0')
+    env.setdefault('CARGO_PROFILE_TEST_DEBUG', '0')
+    code = supervise(['cargo', 'xtask', 'check', '--timings', str(inner)], cwd, report, elapsed=elapsed + time.monotonic() - main_started, env=env)
     result = json.loads(report.read_text())
     result['cache_state'] = args.cache_state
     result['phases_report'] = str(inner)
@@ -208,7 +230,16 @@ def main():
         if phases.get('coverage_scope') != 'complete' or phases.get('status') != 'passed':
             result.update(status='failed', reason='complete-schedule-report-missing')
             code = 1
-    result['qualified'] = code == 0 and args.cache_state in {'unchanged', 'runtime-rebuild', 'session-rebuild'}
+    result['end_revision'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip()
+    result['end_clean'] = not subprocess.check_output(['git', 'status', '--porcelain'], cwd=cwd, text=True).strip()
+    result['launcher_wall_seconds'] = time.monotonic() - main_started
+    result['wall_seconds'] = elapsed + result['launcher_wall_seconds']
+    result['ended_unix_seconds'] = time.time()
+    result['budget_breached'] = result['wall_seconds'] > 600
+    if result['budget_breached']:
+        result.update(status='failed', reason='budget-expired')
+        code = 124
+    result['qualified'] = code == 0 and result['source_clean'] and result['end_clean'] and result['end_revision'] == result['source_revision'] and args.cache_state in {'unchanged', 'runtime-rebuild', 'session-rebuild'}
     persist(report, result)
     print(f"Complete check: {result['status']} in {result['wall_seconds']:.3f}s (600s budget; cache state {args.cache_state})", flush=True)
     return code

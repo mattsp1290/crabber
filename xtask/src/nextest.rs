@@ -153,6 +153,7 @@ pub(crate) fn qualify_failure(workspace: &Path) -> i32 {
     let code = checks.execute(&crate::checks::Options {
         list: false,
         timings: Some(report.clone()),
+        ..crate::checks::Options::default()
     });
     let recorded: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     // 100 is nextest's test-failure code; build/tool errors must not qualify.

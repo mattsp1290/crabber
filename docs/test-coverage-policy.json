@@ -8,7 +8,7 @@
     {
       "id": "sql-successor-tool-faults",
       "disposition": "MERGE",
-      "state": "implemented-unqualified",
+      "state": "targeted-backend-qualified",
       "failure": "Rollback before commit, committed-but-unknown register or activation ACK, cancellation, lease expiry, and public-state fencing must never grant an extra effect.",
       "owner": [
         "crates/crabber-session/src/postgres/session_owner/drivers/successor.rs",
@@ -32,12 +32,13 @@
       ],
       "before": "28 complete histories per SQL backend: frontend x recovery x seven boundaries.",
       "after": "Ten independent histories per backend, all seven boundaries and all four origins.",
-      "rationale": "Fault injection and post-registration refusal/activation checks are shared across origins inside each backend. Tool/Frontend claim/recovery select different native authentication paths, so three alternate-origin faults remain; tool_source_tests and tool_guards_tests retain all four source/authority paths. Existing fresh::faults, activation_fault and refusals assertions are unchanged. PostgreSQL Current fixtures already contain the migrated schema; migration tests retain Blank provisioning."
+      "rationale": "Fault injection and post-registration refusal/activation checks are shared across origins inside each backend. Tool/Frontend claim/recovery select different native authentication paths, so three alternate-origin faults remain; tool_source_tests and tool_guards_tests retain all four source/authority paths. Existing fresh::faults, activation_fault and refusals assertions are unchanged. PostgreSQL Current fixtures already contain the migrated schema; migration tests retain Blank provisioning.",
+      "validation": "All selected histories passed at one and four slots; Memory/SQLite20 selected cases each, managed PostgreSQL10fault+4pendingfixtures each; all4ownedcontainers and fixture registries drained. Full combined schedule and budget qualification remain pending."
     },
     {
       "id": "pending-tool-malformed-ack",
       "disposition": "MOVE-CHEAPER",
-      "state": "implemented-unqualified",
+      "state": "targeted-backend-qualified",
       "failure": "Forged completion metadata, wrong claim/inspection/fence, oversized receipt, or wrong typed outcome must prevent registration and business dispatch.",
       "owner": [
         "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation.rs",
@@ -64,7 +65,8 @@
       ],
       "before": "Twelve corruption preparations for each of four origins on every backend.",
       "after": "All twelve on Memory for every origin; forged receipt revision (0) and suspended/wrong typed outcome (8) on both SQL backends for every origin.",
-      "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged."
+      "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged.",
+      "validation": "All selected histories passed at one and four slots; Memory/SQLite20 selected cases each, managed PostgreSQL10fault+4pendingfixtures each; all4ownedcontainers and fixture registries drained. Full combined schedule and budget qualification remain pending."
     }
   ],
   "required_behaviors": [

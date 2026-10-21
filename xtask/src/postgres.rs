@@ -27,6 +27,7 @@ enum Runner {
 
 #[derive(Default)]
 struct Options {
+    complete: Option<crate::checks::Options>,
     package: Option<String>,
     filter: Option<String>,
     target: Option<String>,
@@ -124,6 +125,10 @@ pub(crate) fn check(args: &[String]) -> i32 {
             return 2;
         }
     };
+    execute_options(options)
+}
+
+fn execute_options(options: Options) -> i32 {
     if !cfg!(target_os = "linux") {
         eprintln!("managed PostgreSQL qualification currently requires Linux process supervision");
         return 1;
@@ -143,6 +148,58 @@ pub(crate) fn check(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
+    let started = Instant::now();
+    let directory = crate::complete::output_directory();
+    if options.list {
+        return crate::complete::schedule(Vec::new(), &directory).execute(&options);
+    }
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("cannot prepare complete-check reports: {error}");
+        return 1;
+    }
+    if options.timings.is_none() {
+        options.timings = Some(directory.join("phases.json"));
+    }
+    let timings = options.timings.clone().unwrap();
+    let metrics = directory.join("fixtures.jsonl");
+    let code = execute_options(Options {
+        complete: Some(options),
+        fixture_metrics: Some(metrics.clone()),
+        ..Options::default()
+    });
+    let mut report: serde_json::Value = std::fs::read(&timings)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    report["coverage_scope"] = serde_json::json!("complete");
+    report["status"] = serde_json::json!(if code == 0 { "passed" } else { "failed" });
+    report["exit_code"] = serde_json::json!(code);
+    report["wall_seconds_including_fixture_lifecycle"] =
+        serde_json::json!(started.elapsed().as_secs_f64());
+    report["fixture_metrics"] = serde_json::json!(metrics);
+    report["tool_versions"] = serde_json::json!({
+        "rustc": std::fs::read_to_string(directory.join("rustc-version.txt")).ok(),
+        "wasm-tools": std::fs::read_to_string(directory.join("wasm-tools-version.txt")).ok(),
+        "docker-server": std::fs::read_to_string(directory.join("docker-version.txt")).ok(),
+        "nextest": serde_json::from_str::<serde_json::Value>(include_str!("../../.config/test-tools.json")).unwrap()["nextest"]["version"],
+    });
+    if let Some(parent) = timings.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("cannot prepare complete-check report directory: {error}");
+        return 1;
+    }
+    let temporary = timings.with_extension("complete.tmp");
+    if let Err(error) = std::fs::write(&temporary, serde_json::to_vec_pretty(&report).unwrap())
+        .and_then(|()| std::fs::rename(temporary, &timings))
+    {
+        eprintln!("cannot finish complete-check report: {error}");
+        return 1;
+    }
+    code
 }
 
 async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
@@ -250,6 +307,22 @@ async fn execute_owned_run(
             fixtures::verify(&run, admin).await?;
             return Ok(0);
         }
+        if let Some(complete) = &options.complete {
+            let mut environment: Vec<(String, String)> = run
+                .environment()
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect();
+            if let Some(path) = metrics_path {
+                environment.push((METRICS_FILE.into(), path.to_string_lossy().into_owned()));
+            }
+            let directory = metrics_path.unwrap().parent().unwrap();
+            let code = crate::complete::schedule(environment, directory).execute(complete);
+            if code != 0 {
+                return Ok(code);
+            }
+            return execute_demos(&run, metrics, metrics_path).await;
+        }
         execute_schedule(&run, options, metrics, metrics_path).await
     })
     .catch_unwind()
@@ -270,13 +343,34 @@ async fn execute_owned_run(
     outcome
 }
 
+async fn execute_demos(
+    run: &RunFixture,
+    metrics: Option<&FixtureMetrics>,
+    metrics_path: Option<&Path>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    execute_schedule_mode(run, &Options::default(), metrics, metrics_path, true).await
+}
+
 async fn execute_schedule(
     run: &RunFixture,
     options: &Options,
     metrics: Option<&FixtureMetrics>,
     metrics_path: Option<&Path>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
+    execute_schedule_mode(run, options, metrics, metrics_path, false).await
+}
+
+async fn execute_schedule_mode(
+    run: &RunFixture,
+    options: &Options,
+    metrics: Option<&FixtureMetrics>,
+    metrics_path: Option<&Path>,
+    demos_only: bool,
+) -> Result<i32, Box<dyn std::error::Error>> {
     for args in schedule::COMMANDS {
+        if demos_only && args[0] != "run" {
+            continue;
+        }
         crate::process::check_cancelled()?;
         if options.package.as_ref().is_some_and(|package| {
             !args
@@ -314,9 +408,18 @@ async fn execute_schedule(
         };
         let mut code = 0;
         for arguments in arguments::commands(args, options) {
-            let mut command = Command::new("cargo");
+            let mut command = if demos_only {
+                let package = args.windows(2).find(|pair| pair[0] == "-p").unwrap()[1];
+                let separator = args.iter().position(|arg| *arg == "--").unwrap();
+                let mut command = crate::complete::binary_command(package);
+                command.args(&args[separator + 1..]);
+                command
+            } else {
+                let mut command = Command::new("cargo");
+                command.args(arguments);
+                command
+            };
             command
-                .args(arguments)
                 .current_dir(crate::workspace())
                 .envs(run.environment())
                 .env("CRABBER_REQUIRE_POSTGRES", "1")

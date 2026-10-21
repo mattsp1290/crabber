@@ -7,6 +7,8 @@ mod agui;
 #[cfg(target_os = "linux")]
 mod budget;
 mod checks;
+#[cfg(feature = "postgres-check")]
+mod complete;
 mod datadog;
 mod inventory;
 mod lease;
@@ -43,7 +45,16 @@ fn main() {
                 eprintln!("{error}");
                 std::process::exit(2);
             });
-            std::process::exit(check().execute(&options));
+            if options.offline {
+                std::process::exit(check().execute(&options));
+            }
+            #[cfg(feature = "postgres-check")]
+            std::process::exit(postgres::complete(options));
+            #[cfg(not(feature = "postgres-check"))]
+            {
+                eprintln!("the complete check requires postgres-check; use cargo xtask check");
+                std::process::exit(2);
+            }
         }
         #[cfg(feature = "postgres-check")]
         Some("postgres-fixture-helper") => {
@@ -97,7 +108,7 @@ fn check() -> checks::Checks {
     nextest::version_gate(workspace, &mut gates);
     probes::schedule(workspace, &mut gates);
     let fixture_lease = schedule_fixtures(workspace, &mut gates);
-    check_server_host(workspace, &mut gates);
+    check_server_host(workspace, &mut gates, true);
     check_custom_http(workspace, &mut gates);
     gates.cargo(
         workspace,
@@ -183,7 +194,7 @@ fn check() -> checks::Checks {
 }
 
 // This local adoption probe deliberately needs no network provider or AG-UI SDK.
-fn check_server_host(workspace: &Path, gates: &mut checks::Checks) {
+fn check_server_host(workspace: &Path, gates: &mut checks::Checks, run_cli: bool) {
     for features in ["wasm", "sqlite"] {
         gates.cargo(
             workspace,
@@ -208,10 +219,12 @@ fn check_server_host(workspace: &Path, gates: &mut checks::Checks) {
             "--all-targets",
         ],
     );
-    gates.cargo(
-        workspace,
-        &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
-    );
+    if run_cli {
+        gates.cargo(
+            workspace,
+            &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
+        );
+    }
     gates.script(
         workspace,
         "locked server-host consumer",

@@ -1,6 +1,6 @@
 {
   "base_revision": "670880022c17d52d4c5253aad2bdc2f42a867524",
-  "status": "All affected backend cases passed at one slot and in five complete four-slot repetitions; quiet PostgreSQL 1/2/4 comparison passed",
+  "status": "Historical exhaustive tuple ledger; superseded by docs/test-coverage-policy.json for ten-minute reductions. Its old tuple bijection and source hashes are not current acceptance rules.",
   "families": [
     {
       "family": "session_native_pending_tool",
@@ -1724,5 +1724,7 @@
       "all_repetitions_passed": true,
       "retries": 0
     }
-  }
+  },
+  "historical_status": "All affected backend cases passed at one slot and in five complete four-slot repetitions; quiet PostgreSQL 1/2/4 comparison passed",
+  "current_policy": "test-coverage-policy.json"
 }

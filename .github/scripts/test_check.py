@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 
+sys.dont_write_bytecode = True
 MODULE = Path(__file__).with_name('check.py')
 spec = importlib.util.spec_from_file_location('complete_check', MODULE)
 check = importlib.util.module_from_spec(spec)
@@ -26,7 +27,7 @@ class DeadlineTests(unittest.TestCase):
 
     def run_child(self, code):
         report = self.root / 'report.json'
-        result = check.supervise([sys.executable, '-I', '-S', '-c', code], ROOT, report,
+        result = check.supervise([sys.executable, '-I', '-S', '-B', '-c', code], ROOT, report,
                                  budget=2, reserve=.4)
         return result, json.loads(report.read_text())
 
@@ -42,7 +43,7 @@ class DeadlineTests(unittest.TestCase):
     def test_deadline_before_xtask_reaps_escaped_compiler_helper(self):
         marker = self.root / 'compiler-helper.pid'
         program = ("import pathlib,subprocess,sys,time; "
-                   "p=subprocess.Popen([sys.executable,'-I','-S','-c','import time;time.sleep(60)'],start_new_session=True); "
+                   "p=subprocess.Popen([sys.executable,'-I','-S','-B','-c','import time;time.sleep(60)'],start_new_session=True); "
                    f"pathlib.Path({str(marker)!r}).write_text(str(p.pid)); time.sleep(60)")
         code, report = self.run_child(program)
         self.assertEqual(code, 124)
@@ -58,8 +59,8 @@ class DeadlineTests(unittest.TestCase):
         program = ("import importlib.util,pathlib; "
                    f"s=importlib.util.spec_from_file_location('check',{str(MODULE.resolve())!r}); "
                    "m=importlib.util.module_from_spec(s);s.loader.exec_module(m); "
-                   f"raise SystemExit(m.supervise({[sys.executable, '-I', '-S', '-c', child]!r},pathlib.Path({str(ROOT)!r}),pathlib.Path({str(report)!r}),budget=4,reserve=.4))")
-        process = subprocess.Popen([sys.executable, '-I', '-S', '-c', program])
+                   f"raise SystemExit(m.supervise({[sys.executable, '-I', '-S', '-B', '-c', child]!r},pathlib.Path({str(ROOT)!r}),pathlib.Path({str(report)!r}),budget=4,reserve=.4))")
+        process = subprocess.Popen([sys.executable, '-I', '-S', '-B', '-c', program])
         try:
             until = time.monotonic() + 3
             while not marker.exists():

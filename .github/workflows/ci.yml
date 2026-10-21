@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,23 +17,29 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  CRABBER_POSTGRES_IMAGE: postgres:14@sha256:c2427de38f998489d36de7ca3553db2134872c400f2b08be4b824e5c50e4d619
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install stable Rust with rustfmt and Clippy
+      - name: Provision pinned Rust
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-          rustup target add wasm32-wasip2
+          rust_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["rust"]["version"])')"
+          rustup toolchain install "$rust_version" --profile minimal --component rustfmt --component clippy
+          rustup target add --toolchain "$rust_version" wasm32-wasip2
       - name: Record compiler cache identity
         id: compiler
         run: echo "hash=$(rustc -Vv | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Start complete-check clock before cache restoration
+        id: budget
+        run: echo "start=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
         with:
           path: |
             ~/.cargo/registry
@@ -47,43 +54,64 @@ jobs:
             testdata/external-consumer/target
             testdata/server-host-consumer/target
             testdata/custom-http-feature-probe/target
-          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-offline-${{ hashFiles('Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml') }}
-          restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-offline-
-      - name: Install pinned test tools
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
+      - name: Record cache conditions and install pinned tools
+        id: conditions
+        env:
+          RESTORED_KEY: ${{ steps.cache.outputs.cache-matched-key }}
         run: |
-          python3 -I -S .github/scripts/install-nextest.py target/test-tools
-          if ! test -x target/test-tools/bin/wasm-tools || test "$(target/test-tools/bin/wasm-tools --version)" != "wasm-tools 1.261.0"; then
-            cargo install wasm-tools --version 1.261.0 --locked --root target/test-tools --force
+          python3 -I -S - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          root = pathlib.Path('target/test-tools')
+          root.mkdir(parents=True, exist_ok=True)
+          pins = json.loads(pathlib.Path('.config/test-tools.json').read_text())
+          marker = root / 'complete-cache.json'
+          warm = marker.exists() and bool(os.environ['RESTORED_KEY'])
+          state = 'unclassified' if warm else 'bootstrap'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('state=' + state, file=output)
+          report = pathlib.Path('target/test-performance/cache-restore.json')
+          report.parent.mkdir(parents=True, exist_ok=True)
+          report.write_text(json.dumps({'restored_key': os.environ['RESTORED_KEY'], 'previous_complete_result': json.loads(marker.read_text()) if marker.exists() else None, 'cache_state': state}, indent=2) + '\n')
+          marker.unlink(missing_ok=True)
+          binary = root / 'cargo-nextest'
+          version = subprocess.run([str(binary), 'nextest', '--version'], capture_output=True, text=True).stdout.split() if binary.exists() else []
+          if len(version) < 2 or version[1] != pins['nextest']['version']:
+              subprocess.run([sys.executable, '-I', '-S', '.github/scripts/install-nextest.py', str(root)], check=True)
+          PY
+          wasm_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["wasm-tools"]["version"])')"
+          if ! test -x target/test-tools/bin/wasm-tools || test "$(target/test-tools/bin/wasm-tools --version)" != "wasm-tools $wasm_version"; then
+            cargo install wasm-tools --version "$wasm_version" --locked --root target/test-tools --force
           fi
           echo "$GITHUB_WORKSPACE/target/test-tools" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/target/test-tools/bin" >> "$GITHUB_PATH"
-      - name: Refresh compiled source provenance after cache restore
-        run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
-      - name: Check offline workspace
-        run: cargo xtask check --timings "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/offline.json"
-      - name: Preserve sanitized offline timing report
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: test-performance-offline-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/test-performance/ci-${{ github.run_id }}-${{ github.run_attempt }}/offline.json
-          if-no-files-found: ignore
-          retention-days: 7
-
-  postgres:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install stable Rust
+      - name: Restore and verify pinned PostgreSQL image
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - name: Record compiler cache identity
-        id: compiler
-        run: echo "hash=$(rustc -Vv | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          if test -f target/test-tools/postgres-14.tar; then
+            docker load -i target/test-tools/postgres-14.tar
+          fi
+          docker pull "$CRABBER_POSTGRES_IMAGE"
+          if ! test -f target/test-tools/postgres-14.tar; then
+            docker save "$CRABBER_POSTGRES_IMAGE" -o target/test-tools/postgres-14.tar
+          fi
+      - name: Refresh source provenance after cache restore
+        run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
+      - name: Complete required check including compilation and cleanup
+        env:
+          CHECK_STARTED: ${{ steps.budget.outputs.start }}
+          CACHE_STATE: ${{ steps.conditions.outputs.state }}
+        run: python3 -I -S .github/scripts/check.py --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check.json"
+      - name: Mark complete cache snapshot
+        if: success()
+        run: |
+          python3 -I -S - <<'PY'
+          import json, os, pathlib
+          pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True}) + '\n')
+          PY
+      - name: Save dependency and compiler snapshot as CI maintenance
+        if: always() && steps.cache.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -94,21 +122,21 @@ jobs:
             target/local-probes
             target/consumer-probes
             target/test-tools
-          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-postgres-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml') }}
-          restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-postgres-
-      - name: Install pinned test runner
-        run: |
-          python3 -I -S .github/scripts/install-nextest.py target/test-tools
-          echo "$GITHUB_WORKSPACE/target/test-tools" >> "$GITHUB_PATH"
-      - name: Refresh compiled source provenance after cache restore
-        run: cargo clean -p fenced-abandon
-      - name: Required PostgreSQL contracts and actual demos
-        run: cargo run -p xtask --features postgres-check -- check-postgres --runner nextest --fixture-metrics "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/postgres.jsonl"
-      - name: Preserve sanitized PostgreSQL fixture report
+            fixtures/wasm/target
+            testdata/external-consumer/target
+            testdata/server-host-consumer/target
+            testdata/custom-http-feature-probe/target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Preserve sanitized check, coverage and fixture reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-performance-postgres-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/test-performance/ci-${{ github.run_id }}-${{ github.run_attempt }}/postgres.jsonl
+          name: complete-check-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/test-performance/cache-restore.json
+            target/test-performance/ci-*/*.json
+            target/test-performance/complete-*/fixtures.jsonl
+            target/test-performance/complete-*/tests.json
+            target/test-performance/complete-*/*-version.txt
           if-no-files-found: ignore
           retention-days: 7

@@ -92,22 +92,26 @@ framing, and security contract](docs/middleware.md), then run
 `crabber-middleware` is currently distributed as a workspace/path dependency rather
 than as a standalone crates.io package.
 
-Install the pinned tools and run the complete offline gate with stable Rust:
+Install the pinned tools and run the complete check with Rust 1.99.0 and Docker:
 
 ```sh
-rustup component add rustfmt clippy
-rustup target add wasm32-wasip2
+rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+rustup target add --toolchain 1.99.0 wasm32-wasip2
 cargo install wasm-tools --version 1.261.0 --locked
 python3 -I -S .github/scripts/install-nextest.py target/test-tools
 export PATH="$PWD/target/test-tools:$PATH"
-cargo xtask check
+python3 -I -S .github/scripts/check.py
 ```
 
 The gate checks formatting, Clippy, nextest unit/integration coverage, explicit
 Cargo doctests, WASM and consumer boundaries, demos and the 60-line embedding
-glue limit. Required PostgreSQL uses a separate managed PostgreSQL 14 fixture:
+glue limit, including an owned PostgreSQL 14 fixture. The launcher counts Cargo
+compilation and cleanup within its 600-second budget; final performance
+qualification is pending. `cargo xtask check` runs the same complete schedule.
+For explicitly partial developer checks:
 
 ```sh
+cargo xtask check --lane offline
 cargo run -p xtask --features postgres-check -- check-postgres
 ```
 

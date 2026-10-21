@@ -37,9 +37,10 @@ pub(crate) fn remove_live_configuration(command: &mut Command) {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Options {
     pub(crate) list: bool,
+    pub(crate) offline: bool,
     pub(crate) timings: Option<PathBuf>,
 }
 
@@ -50,6 +51,15 @@ impl Options {
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 "--list" if !options.list => options.list = true,
+                "--lane" if !options.offline => {
+                    if args.next().map(String::as_str) != Some("offline") {
+                        return Err(
+                            "--lane accepts offline; omit it for the complete required check"
+                                .into(),
+                        );
+                    }
+                    options.offline = true;
+                }
                 "--timings" if options.timings.is_none() => {
                     options.timings =
                         Some(PathBuf::from(args.next().ok_or("--timings needs a path")?));
@@ -64,7 +74,7 @@ impl Options {
 enum Action {
     Command(Command),
     Internal(Box<dyn Fn(&Path)>),
-    Captured(Command, fn(&Output)),
+    Captured(Command, Box<dyn Fn(&Output)>),
 }
 
 pub(crate) struct GateCommand {
@@ -104,6 +114,11 @@ impl GateCommand {
                     1
                 })?;
                 if !output.status.success() {
+                    eprintln!(
+                        "captured command {} failed: {}",
+                        self.inventory["id"], output.status
+                    );
+                    eprint!("{}", String::from_utf8_lossy(&output.stderr));
                     return Err(output.status.code().unwrap_or(1));
                 }
                 validate(&output);
@@ -121,12 +136,20 @@ impl GateCommand {
 pub(crate) struct Checks {
     gates: Vec<GateCommand>,
     offline: bool,
+    required_environment: Vec<(String, String)>,
 }
 
 impl Checks {
     pub(crate) fn offline() -> Self {
         Self {
             offline: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn required(environment: Vec<(String, String)>) -> Self {
+        Self {
+            required_environment: environment,
             ..Self::default()
         }
     }
@@ -168,6 +191,16 @@ impl Checks {
         mut command: Command,
         expected: &str,
     ) {
+        remove_live_configuration(&mut command);
+        if !self.required_environment.is_empty() {
+            command
+                .envs(self.required_environment.clone())
+                .env("CRABBER_REQUIRE_POSTGRES", "1")
+                .env_remove("CRABBER_TEST_POSTGRES_URL")
+                .env_remove("CRABBER_POSTGRES_URL")
+                .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
+                .env_remove("CRABBER_TEST_HISTORY_CHILD");
+        }
         if self.offline {
             for name in [
                 "CRABBER_TEST_POSTGRES_URL",
@@ -244,7 +277,7 @@ impl Checks {
         directory: &Path,
         command: Command,
         expected: &str,
-        validate: fn(&Output),
+        validate: impl Fn(&Output) + 'static,
     ) {
         self.command(directory, command, expected);
         let gate = self.gates.last_mut().unwrap();
@@ -252,7 +285,7 @@ impl Checks {
         if let Action::Command(command) =
             std::mem::replace(&mut gate.action, Action::Internal(Box::new(|_| {})))
         {
-            gate.action = Action::Captured(command, validate);
+            gate.action = Action::Captured(command, Box::new(validate));
         }
     }
 
@@ -331,7 +364,13 @@ mod tests {
 
     #[test]
     fn rejects_missing_path_and_unknown_options() {
-        for args in [vec!["--timings"], vec!["--typo"], vec!["--list", "--list"]] {
+        for args in [
+            vec!["--timings"],
+            vec!["--typo"],
+            vec!["--list", "--list"],
+            vec!["--lane"],
+            vec!["--lane", "postgres"],
+        ] {
             assert!(
                 Options::parse(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
             );
@@ -355,7 +394,8 @@ mod tests {
         assert_eq!(
             checks.execute(&Options {
                 list: false,
-                timings: Some(output.clone())
+                timings: Some(output.clone()),
+                ..Options::default()
             }),
             7
         );
