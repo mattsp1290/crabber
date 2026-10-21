@@ -28,8 +28,8 @@ marks every later gate cancelled. Build-and-test durations include compilation;
 they must not be presented as test-only durations or summed with their nested
 Cargo summaries. SIGINT/SIGTERM cancel the active Unix process group, reap its leader, record
 a cancelled phase and cancel later obligations. A forcibly killed runner can
-still leave a running record; that is not completed evidence. Full descendant
-supervision and resource sweeping remain required for the PostgreSQL runner.
+still leave a running record; that is not completed evidence. The PostgreSQL runner also supervises descendants across process groups and
+sweeps only registered resources after those descendants stop.
 
 ## Coverage rules
 
@@ -46,8 +46,7 @@ Offline PostgreSQL early returns give no required-service credit. At baseline,
 PostgreSQL URLs are supplied only in the separate required lane. Minimal-feature
 compilation, provider feature absence, exporter differences, consumer builds,
 validating WIT copies, and example output assertions remain distinct obligations.
-Default Cargo test invocations also own their applicable doctests. A future
-nextest replacement must explicitly transfer doctest ownership to Cargo.
+Default Cargo test invocations also own their applicable doctests. The nextest adapter explicitly transfers doctest ownership to Cargo.
 
 ## Offline gate ledger
 
@@ -232,8 +231,10 @@ Before splitting, extract a tuple ledger from each original loop. In particular:
 * Facade `wasm_state`: 212-run state-bound journey and its >=1000 assertion;
   replay/configuration cases may separate only when state independence is shown.
 
-The tuple-to-named-test bijections and family timing evidence are pending. No
-loop has been shortened and no production Store optimization is authorized.
+The completed tuple mappings and backend validation are recorded in
+`test-performance-scenarios.json`. Scheduler measurements are recorded in
+`test-performance-resource-selection.json`. No loop bounds or production Store
+behavior changed.
 
 ## Reproducible qualification
 
@@ -259,17 +260,71 @@ Run changed failure-prone contract families five consecutive times and retain
 first failures. All baseline obligations need passing replacement evidence;
 equal discovered counts alone do not prove equivalent semantics.
 
+### Benchmark driver
+
+After installing the pinned tools, use separate clean checkouts and new report
+and archive directories:
+
+```sh
+python3 -I -S scripts/test-performance/paired.py \
+  --baseline "$CRABBER_BASELINE_DIR" \
+  --candidate "$CRABBER_CANDIDATE_DIR" \
+  --candidate-revision "$CRABBER_CANDIDATE_REVISION" \
+  --output "$CRABBER_MEASUREMENT_DIR" \
+  --archives "$CRABBER_ARCHIVE_DIR" \
+  --incremental 1
+```
+
+The driver fixes matching dev/test debug settings to zero and uses four Cargo
+build jobs unless overridden with `--build-jobs`. `--incremental 1` retains local
+incremental compilation; use a separate run with `--incremental 0` for the CI
+profile. Product commands do not disable local incremental compilation.
+
+Each lane has its own target directory. PostgreSQL runs before offline fixture
+generation, and every nested effective compiler root is freshened for cold runs.
+Inactive artifacts are compressed outside the active compiler roots and restored
+with nanosecond timestamps; only explicitly listed ignored outputs are removed.
+Use storage large enough for those archives. Reports remain separate from
+archives. The driver rejects competing build/test runners and stops on a failed
+sample without retrying it away.
+
+The default baseline is the exact original `58535cfc` revision. Optional
+`--baseline-revision 9890af9c0f6ec22e94687f13a0d8918f6a0b19c4` selects the WP1
+instrumentation-only control with exact per-gate reports. The driver verifies
+that its product, behavioral tests, fixtures and workflow trees are identical to
+the original base. Declare the selected measurement revision explicitly in the
+published results; instrumentation is not a performance optimization.
+
+CI keeps two independent jobs. Sanitized timing/fixture reports are uploaded even
+when a gate fails. Checkout, tool installation, cache transfers and service
+startup belong to hosted job time; local command timings alone do not establish
+that end-to-end CI result. The successful original CI run is
+[recorded here](https://github.com/mattsp1290/crabber/actions/runs/39523094271).
+
+Rollback of the separate PostgreSQL CI runner-choice commit restores the managed
+`--runner cargo` lane while retaining database isolation. A template regression
+must use blank provisioning and the original real migrations, rerun correctness
+gates, and remeasure before a performance claim. Restore a deduplicated gate if
+its replacement coverage is disproved.
+
 ## Current evidence and limitations
 
-The initial instrumented schedule preserves all baseline command families and
-assertions. Focused orchestration tests cover nonzero child exit propagation,
-terminal reports for panics, cancellation of later obligations and exclusion of
-environment values. Performance thresholds, required PostgreSQL isolation,
-nextest parity, descendant/resource cleanup, source-refresh races and CI qualification
-are pending. Exploratory runs under concurrent machine load must be labeled
-unqualified and must not supply threshold evidence. Existing issues
-`crabber-pxdk`, `crabber-09ku`, `crabber-9e8u`, and `crabber-7j4w` retain their
-separate scopes; timing changes do not prove them fixed.
+The original clean base passed both complete lanes before coverage changes.
+The implementation then passed a clean, unchanged full offline gate and all 24
+required PostgreSQL commands under Cargo at one, two and four threads. The full
+required nextest schedule also passed, including actual demos, the controller
+process, allocation assertions and tracing/export captures. Each runner recorded
+363 matched history fixtures and four matched demo fixtures before the named
+contract splits; containers were independently verified absent.
+
+Affected families passed every backend at one slot and five complete four-slot
+repetitions. The quiet one/two/four-slot comparison selected four PostgreSQL
+slots. These correctness and scheduler results do not establish final whole-gate
+performance thresholds. The integrated final configuration, cold/paired warm
+comparison and hosted candidate CI still require qualification. Failed provenance
+and overwritten-executable attempts remain retained locally and are never
+counted as passing samples. Existing issues `crabber-pxdk`, `crabber-09ku`,
+`crabber-9e8u` and `crabber-7j4w` retain their separate scopes.
 
 ## PostgreSQL fixture infrastructure
 
@@ -344,12 +399,11 @@ databases, schemas or roles. Missing Docker fails before tests. Handled SIGTERM
 returned 143 and removed its container; the forced-kill test manually reclaimed
 its verified owned container afterward.
 
-The full runner retains the original 24 Cargo CI commands. PostgreSQL callers
-now allocate a separate database per parent history; subprocess helpers attach
-to that parent. Cross-test database locks have been removed after isolating their
-resources. Full concurrent adoption qualification, nextest scheduling, resource
-measurements and performance qualification remain pending. Infrastructure checks
-alone do not prove complete PostgreSQL behavioral coverage.
+The full runner retains all original 24 CI obligations: 20 test commands and four
+actual demos. Nextest runs tests; explicit Cargo commands retain doctests and
+demos. Every PostgreSQL parent owns its database, and children attach to that
+parent. Cross-test database locks were removed after isolating their resources.
+Use `--runner cargo` for the tested Cargo fallback.
 
 ## Offline and source inventories
 
@@ -397,11 +451,11 @@ Only the database identity is printed. No process-wide environment mutation is
 used. The workspace-context probe's resume and identity-drift children have
 passed this handoff against their parent's owned fixture.
 
-While caller adoption is in progress, the Cargo PostgreSQL runner limits libtest
-to two test threads per invocation. `--test-threads 1`, `2` or `4` selects a bounded
-functional qualification setting. This is not nextest scheduling or a measured
-concurrency recommendation.
-
+The normal PostgreSQL budget is four slots, with runtime contracts weighted two.
+`--test-threads 1`, `2` or `4` selects an explicit comparison cap. Cargo fallback
+defaults to two libtest threads. Independent runners have independent budgets and
+add load. Concurrent lanes in one checkout require distinct `CARGO_TARGET_DIR`
+values and fixed sources.
 
 ## Per-history PostgreSQL adoption
 
@@ -435,14 +489,10 @@ successful process exit before normal cleanup. A zero-match helper invocation or
 foreign acknowledgement is rejected. This process boundary never fabricates a
 native Join or changes persisted uncertainty.
 
-Initial adoption runs exposed connection-drain failures after business assertions
-passed. Those failures are retained in local evidence, rather than counted as
-successes. Focused reruns passed for expired-session child handoff, each runtime
-shutdown-order family, controller-process disposal, future queue, session owners
-and session defaults. The latest PostgreSQL+SQLite all-target Clippy check passed
-after removal of the cross-test locks. The full required schedule at two test
-threads is still in progress; no complete concurrent coverage claim is made yet.
-
+Initial connection-drain failures after business assertions identified fixture
+lifetime defects. Preserving the original runtime shutdown order corrected them;
+the diagnostics remain retained locally. Full Cargo and nextest required lanes
+subsequently passed.
 
 The private fixture crate selects its PostgreSQL feature by default when it is a
 workspace root. Every parent dev dependency explicitly disables those defaults;
@@ -450,8 +500,8 @@ SQLite-only package builds still exclude `sqlx-postgres`. This avoids an observe
 workspace feature-resolution failure in which dev-only forwarding enabled the
 fixture crate's PostgreSQL cfg without linking its optional dependencies. A small
 independent workspace reproduced that failure and the root-default correction.
-The first broad discovery build failed before executing tests; its diagnostics
-are retained locally. Broad discovery is being repeated after the correction.
+The failed discovery diagnostics are retained locally. Corrected feature graphs,
+narrow SQLite builds and the full offline gate subsequently passed.
 
 
 ## Consolidated offline ownership
@@ -496,86 +546,58 @@ fixture builds, provenance checks and glue assertions retain their owners.
 
 ## Offline nextest integration
 
+Install the pinned tooling described in the README, then run:
+
 ```sh
-python3 -I -S .github/scripts/install-nextest.py target/test-tools
-export PATH="$PWD/target/test-tools:$PATH"
 cargo xtask check
+cargo run -p xtask --features postgres-check -- check-postgres
+cargo run -p xtask --features postgres-check -- check-postgres --runner cargo
 cargo xtask qualify-nextest
 ```
 
-The installer reads `.config/test-tools.json`, downloads the exact 0.9.138 release
-for Linux aarch64/x86_64, checks its committed archive SHA-256, and installs only
-in the requested directory. xtask rejects a different version before running
-tests. The offline adapter runs unit/integration tests through nextest and emits
-explicit Cargo doctest gates for invocations that previously included doctests.
-The CLI forces zero retries and no fail-fast; pending gates are cancelled if a
-whole nextest invocation fails. Version, test failure and cancellation remain
-separate report outcomes.
+The installer reads `.config/test-tools.json`, verifies the exact 0.9.138 archive
+SHA-256 for Linux aarch64/x86_64, and installs in the requested directory. Both
+normal lanes reject a different nextest version before tests. Fixture-only
+qualification, inactive-run cleanup and explicit Cargo fallback do not require
+nextest. Adapters force zero retries and no fail-fast. A failed invocation fails
+the root gate and cancels later obligations. Doctests remain explicit Cargo
+executions; demos remain actual executables.
 
-The initial `.config/nextest.toml` caps global slots at four, assigns runtime
-contracts weight two, and weights WASM processes two with a four-slot group.
-SQLite has a four-slot group. PostgreSQL-named offline wrappers have a two-slot
-group, and the provisional required profile bounds every entrypoint with a
-catch-all PostgreSQL group. This includes newly named tests and helpers. The
-required runner still uses Cargo until full fixture adoption qualification is
-complete; its nextest profile is not yet accepted for live execution. A test can
-occupy multiple group slots as well as global slots, so heavy PostgreSQL cases
-may serialize. These are conservative starting limits, pending 1/2/4 resource
-measurements. The 30-minute runner hang bound exceeds the contract deadlines;
-Rust timeouts remain unchanged. See the nextest documentation for
+`.config/nextest.toml` caps global slots at four. Runtime and WASM contracts have
+weight two; SQLite, WASM and PostgreSQL groups have four slots. The required
+PostgreSQL profile assigns every discovered entrypoint to its group, including
+generic names, new cases and helpers. A list-based gate verifies the catch-all
+assignment. Explicit PostgreSQL one/two/four-slot settings preserve weights. The
+30-minute outer hang bound exceeds unchanged Rust deadlines. See nextest's
 [test groups](https://nexte.st/docs/configuration/test-groups/) and
 [weights](https://nexte.st/docs/configuration/threads-required/).
 
-Cargo and nextest discovery matched exactly for all 2,847 unit/integration tests
-across 111 binaries in the workspace owner; its 13 doctests remain Cargo-owned.
-A checksum-verified installation passed, an intentionally wrong version failed
-before execution, and a real two-test fixture produced one pass and one failure.
-That failure propagated as nextest status 100 through the aggregate executor,
-which recorded failure and cancelled the following gate. The qualification
-fixture has its own minimal config because its standalone workspace has no
-production packages for repository-specific selectors. The first full offline
-run reached SQLite Clippy and exposed an async helper whose await is enabled
-only with PostgreSQL; the narrowly scoped lint correction passed the combined
-SQLite all-target Clippy check. Full
-execution and final clean-source qualification remain pending.
+Discovery and feature/cfg audits prove transfers in the ownership ledger. A real
+failing nextest fixture propagated status 100 and cancelled the following gate.
+A SQL-backed failing PostgreSQL fixture also propagated 100 through the required
+runner, completed owned cleanup and removed its container. SIGTERM while a real
+controller child held a database connection returned 143; the child and container
+were verified gone. A missing Docker endpoint failed before fixtures or tests.
+These expected-failure qualifications never count as passing behavioral tests.
 
-The full session required suite passed with two libtest threads: 831 tests and
-four doctests. A server snapshot recorded active connections to two distinct
-owned history databases simultaneously. The remaining required schedule is
-still running, so this does not establish the complete PostgreSQL gate or a
-performance threshold.
+Both lanes remove live provider/exporter configuration from child commands while
+preserving explicit stderr recipes. Required PostgreSQL supplies its scoped
+fixture/admin environment and demo handoffs. An actual subprocess regression
+verifies that log/metric export settings and Datadog labels disappear while the
+fixture identity/endpoint and `RUST_LOG` remain intact.
 
+Combined facade/session/runtime SQLite Clippy retains the facade's pre-existing
+raw SQLx PostgreSQL dev dependency. A separate all-target session/runtime SQLite
+check preserves their PostgreSQL-driver-free boundary. Fixture defaults remain
+disabled in every consuming dev dependency. The child helper's unused-async
+allowance is limited to configurations without PostgreSQL verification.
 
-The combined facade/session/runtime SQLite Clippy graph retains the facade's
-pre-existing raw SQLx PostgreSQL dev dependency. A separate all-target
-session/runtime SQLite compilation check therefore preserves the original
-PostgreSQL-driver-free boundary. Its feature graph was checked independently;
-private fixture defaults remain disabled in every consumer. The shared child
-helper retains an async signature across features, with its unused-async lint
-allowance limited to configurations that compile out PostgreSQL verification.
-
-
-WASM output preparation now acquires an advisory lease in its actual fixture
-output root. A full offline gate holds it through its last consumer; standalone
-`build-fixtures` releases it after both fixture workspaces finish. Normal exit,
-failure and cancellation release the descriptor after supervised children drain.
-This uses the same cancellable lease as the source probes, whose existing lock
-paths are preserved. An external lease blocked a real fixture invocation;
-SIGTERM returned 143 before any Cargo fixture build or alias write began.
-The new lease module and its callers passed all-target xtask Clippy. Full normal
-execution with the lease remains part of final qualification.
-
-
-The required fixture runner also has an explicit `--runner nextest` adapter,
-currently awaiting live compatibility qualification. Cargo remains its default.
-The adapter preserves each original command's package, features and targets;
-examples remain actual Cargo executables, and default-target invocations receive
-separate Cargo doctest commands. Original uncaptured evidence is retained through
-nextest's immediate success/failure output without forcing serial no-capture
-mode. `--test-threads 1`, `2`, `4` select matching explicit PostgreSQL resource
-profiles for measurement; the normal profile remains capped at two. No required
-nextest execution is accepted until database ownership qualification completes.
-
+WASM preparation holds a cancellable advisory lease in its actual output root
+through the offline gate's last consumer. Standalone `build-fixtures` releases it
+after both fixture workspaces finish. Failure and cancellation release it after
+supervised children drain. Source probes retain their existing lock paths. A real
+invocation waiting for an external lease returned 143 before building or writing
+aliases. The full offline gate also passed with the lease held normally.
 
 ## Fixture timing events
 
@@ -603,15 +625,9 @@ queue crash/restart history produced one matched current create/finish pair
 across its attached children. A real predecessor queue migration produced one
 matched blank pair. Both completed their cleanup and terminal success event.
 Six support tests, including concurrent event writes, refused file reuse and
-failed writes, and all 23 optional xtask tests passed without credentials. The
+failed writes, and all 24 optional xtask tests passed without credentials. The
 support/runner all-target Clippy check passed.
 
-The second full offline attempt passed its workspace and exporter test phases,
-then correctly failed the final provenance check after tracked sources changed
-while the gate ran. That failed aggregate is retained. A stable committed-source
-run is still required. The original 24-command PostgreSQL schedule passed at two
-threads, including all required demos, and its exact owned container was verified
-absent afterward. The one- and four-thread checks are still being assessed.
 
 
 ## Independent contract families

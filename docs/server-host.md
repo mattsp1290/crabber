@@ -785,3 +785,19 @@ actual workload measurements; the finite Memory transaction-cost fixture is a
 regression check, not a production memory cap or an O(1) performance guarantee.
 
 For process telemetry, install [`Telemetry::layer()`](observability.md) once, then open a host request span per HTTP request and call `Telemetry::current_trace_context()` inside it. Hosts that propagate incoming W3C context set the request span parent with `OpenTelemetrySpanExt::set_parent` before entering it.
+
+
+## Required PostgreSQL verification
+
+Install the [pinned test tools](test-performance.md), then run the actual host
+probe and public facade contracts through managed, per-history databases:
+
+```sh
+cargo run -p xtask --features postgres-check -- check-postgres --package server-host-probe
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber --test server_host
+```
+
+Docker supplies the PostgreSQL 14 server by default. An existing dedicated
+administrative test server can be selected with `CRABBER_TEST_POSTGRES_ADMIN_URL`.
+Raw URL-only required test configuration is unsupported; fixture URLs and opaque
+identities are passed explicitly to fresh workers by their parent.

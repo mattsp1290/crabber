@@ -105,16 +105,17 @@ mismatch fails instead of printing a misleading source revision.
 SQLite needs no environment variable and uses a temporary database; the
 `--sqlite` command verifies the same fresh-process readback and zero counters.
 
-Tests use `CRABBER_TEST_POSTGRES_URL`; demos use `CRABBER_POSTGRES_URL`. Set
-`CRABBER_REQUIRE_POSTGRES=1` for mandatory service tests. CI provisions a dedicated
-PostgreSQL 14 trust service, requires the URL and runs session/facade contracts plus
-admission and abandonment demos without provider credentials.
+Required tests use `cargo run -p xtask --features postgres-check -- check-postgres`.
+The runner owns a PostgreSQL 14 server, per-history databases and child URLs. CI
+runs the same session/facade contracts and actual demos without provider
+credentials. A manually launched abandonment demo still accepts
+`CRABBER_POSTGRES_URL`. See [fixture and tool setup](test-performance.md).
 
 ## Request-to-assertion map
 
-Names below are Rust test names; `facade` means `cargo test -p crabber --features
-postgres --test fenced_abandon`, and `session` means `cargo test -p crabber-session
---features postgres`. The facade target privately compiles the Memory fixture
+Names below are Rust test names; `facade` means `cargo run -p xtask --features postgres-check -- check-postgres
+--package crabber --test fenced_abandon`, and `session` means the same runner with
+`--package crabber-session`. The facade target privately compiles the Memory fixture
 module to seed Pending and inject candidate failures; no product fault API exists.
 All acceptance clauses remain in scope.
 
@@ -128,17 +129,17 @@ All acceptance clauses remain in scope.
 | Unknown committed response, durable authenticated provenance, no duplicate messages/events or unfinished tools; fresh process rather than reconnect alone | facade `response_loss::memory_committed_response_loss_exact_request_reconciles`, `postgres::facade_committed_response_loss_fresh_host_process_exact_replay`, `postgres::abandonment_process_helper`; session `postgres::abandon_tests::rollback_unknown_response_and_fresh_process_replay` injects after actual SQL commit; `denials_and_precommit_failure_release_locks_before_return` proves no lingering row lock on immediate fresh process. Snapshots include `runs`, `tool_calls`, `messages`, `parts`, `events`, and private `abandonment_commits`. |
 | Missing/unrelated terminal and changed owner/token/authority retries are honest denials, untrusted history cannot fake abandonment | facade `facade_memory_missing_and_unrelated_terminal_are_honest`, `postgres::postgres_stopped_process_and_error_semantics`; both public matrix tests change each request field after real commit and require StaleOwner. Both session `untrusted_terminal_markers_are_never_replay_authority` tests retain unfinished calls yet require AlreadyTerminal for forged markers; forward migration never backfills authority. |
 | Retained steer/follow-up/session and immutable original receipt; next work admitted without automatic execution policy | Both public matrix tests verify two unconsumed inbox rows after abandonment and claim steer plus follow-up into history under next admission; shared session contract retains keyed receipt through later admission and exact abandoned-run replay. |
-| Demos, exact source/runtime identity, durable IDs and required PostgreSQL CI, host/Agentcraft protocol | `examples/fenced-abandon` and this document; `.github/workflows/ci.yml` runs required facade/session coverage and fresh-process PostgreSQL demo alongside admission gates. Session `required_url_is_enforced_in_fresh_process` proves missing required URL fails. |
+| Demos, exact source/runtime identity, durable IDs and required PostgreSQL CI, host/Agentcraft protocol | `examples/fenced-abandon` and this document; `.github/workflows/ci.yml` runs required facade/session coverage and fresh-process PostgreSQL demo alongside admission gates. Session `required_url_is_enforced_in_fresh_process` proves missing required runner configuration fails. |
 | Existing live interruption, resume/recover and keyed/unkeyed admission receipt behavior preserved | `cargo xtask check`: runtime `interrupt_cancels_blocked_compaction_summary`, `interrupt_cancels_summary_stream_acquisition`, `resume_reexecutes_only_retry_safe_pending_call`, `recover_interrupts_expired_running_call`; facade admission `concurrent_and_terminal_retries_execute_once`, `identity_and_unkeyed_compatibility`, `stale_claim_cannot_hide_changed_inspectable_semantics`; required session PostgreSQL admission regressions remain mandatory. |
 
 Required final gates, all from repository root:
 
 ```sh
 cargo xtask check
-env CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber-session --features postgres
-env CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features postgres --test fenced_abandon
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber-session
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber --test fenced_abandon
 cargo run --quiet -p fenced-abandon
-cargo run --quiet -p fenced-abandon --features postgres -- --postgres
+cargo run -p xtask --features postgres-check -- check-postgres --package fenced-abandon
 cargo clippy -p crabber -p crabber-session -p fenced-abandon --all-targets --features postgres -- -D warnings
 ```
 

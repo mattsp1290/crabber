@@ -213,15 +213,16 @@ does not satisfy the full amended request.
 
 ## Reproduce
 
-Set `CRABBER_TEST_POSTGRES_URL` to a disposable dedicated PostgreSQL 14+ database;
-no real provider credentials are used. Required mode fails if the URL is absent.
+Use the managed fixture runner for required PostgreSQL coverage. It starts a
+disposable PostgreSQL 14 server and provisions each history separately. No real
+provider credentials are used. See [tool installation](test-performance.md).
 
 ```sh
 cargo xtask check
-CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber-session --features postgres
-CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber-session
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber --test admission_receipts
 cargo run -p admission-receipt -- --memory
-cargo run -p admission-receipt --features postgres -- --postgres
+cargo run -p xtask --features postgres-check -- check-postgres --package admission-receipt
 cargo test -p crabber-session --features sqlite
 cargo test -p crabber --features sqlite --test admission_receipts
 cargo run -p admission-receipt --features sqlite -- --sqlite
