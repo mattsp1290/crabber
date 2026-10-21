@@ -38,7 +38,7 @@
     {
       "id": "pending-tool-malformed-ack",
       "disposition": "MOVE-CHEAPER",
-      "state": "implemented-unqualified",
+      "state": "targeted-backend-qualified",
       "failure": "Forged completion metadata, wrong claim/inspection/fence, oversized receipt, or wrong typed outcome must prevent registration and business dispatch.",
       "owner": [
         "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation.rs",
@@ -66,12 +66,12 @@
       "before": "Twelve corruption preparations for each of four origins on every backend.",
       "after": "All twelve on Memory for every origin; forged receipt revision (0) and suspended/wrong typed outcome (8) on both SQL backends for every origin.",
       "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged.",
-      "validation": "The original helper bodies passed on all backends at1/4 slots before the independent-family split; the renamed detector entrypoints need qualification."
+      "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
     },
     {
       "id": "wasm-state-bounds",
       "disposition": "MOVE-CHEAPER",
-      "state": "implemented-unqualified",
+      "state": "targeted-backend-qualified",
       "failure": "State must survive independent PerCall Agent runs; real host state imports must enforce entry, value and key bounds without applying refused writes.",
       "owner": [
         "crates/crabber-wasm/src/lib.rs",
@@ -88,7 +88,8 @@
       ],
       "before": "212 full Agent turns merely increment one state key past1000; actual default entry/value/key overflow was not crossed.",
       "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999\u21921000 counter transition and existing two-session concurrent state history remain.",
-      "rationale": "The counter guest only updates count; another model turn repeats the same transport/state path. Direct guest calls exercise actual host imports and state snapshots at their owning WASM layer. Limits/defaults/instance mode and production implementations are unchanged."
+      "rationale": "The counter guest only updates count; another model turn repeats the same transport/state path. Direct guest calls exercise actual host imports and state snapshots at their owning WASM layer. Limits/defaults/instance mode and production implementations are unchanged.",
+      "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
     },
     {
       "id": "embedded-memory-queue-bounds",
@@ -116,7 +117,7 @@
     {
       "id": "native-pending-tool-family-scheduling",
       "disposition": "KEEP",
-      "state": "implemented-unqualified",
+      "state": "targeted-backend-qualified",
       "failure": "Completion/inspection/main must share the actual task; held ACK cancellation cannot dispatch; committed replay cannot repeat effects; blocked cleanup must retain ownership until actual release.",
       "owner": [
         "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests.rs"
@@ -166,7 +167,8 @@
       ],
       "before": "Each of four origins bundles success, held-stage faults, malformed ACK/replay and blocked cleanup into one sequential Store history.",
       "after": "Each origin has independently scheduled success/replay, held-ACK, malformed/replay and cleanup tests, each with fresh Store/clock. Current PostgreSQL clones reuse the already migrated template.",
-      "rationale": "The helpers preserve their assertions and internal task/join order. Separate families share no IDs, receipts, tasks or database state. Migration is not asserted in these wrappers; dedicated migration cases retain real migration calls."
+      "rationale": "The helpers preserve their assertions and internal task/join order. Separate families share no IDs, receipts, tasks or database state. Migration is not asserted in these wrappers; dedicated migration cases retain real migration calls.",
+      "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
     },
     {
       "id": "narrow-feature-builds",
