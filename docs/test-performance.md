@@ -492,3 +492,54 @@ only, built-in-only and mixed constructor/negative probes also remain separate,
 as does mixed-feature typed I/O execution. Live PostgreSQL still belongs solely
 to the required fixture runner. External consumers, executable examples, WIT,
 fixture builds, provenance checks and glue assertions retain their owners.
+
+
+## Offline nextest integration
+
+```sh
+python3 -I -S .github/scripts/install-nextest.py target/test-tools
+export PATH="$PWD/target/test-tools:$PATH"
+cargo xtask check
+cargo xtask qualify-nextest
+```
+
+The installer reads `.config/test-tools.json`, downloads the exact 0.9.138 release
+for Linux aarch64/x86_64, checks its committed archive SHA-256, and installs only
+in the requested directory. xtask rejects a different version before running
+tests. The offline adapter runs unit/integration tests through nextest and emits
+explicit Cargo doctest gates for invocations that previously included doctests.
+The CLI forces zero retries and no fail-fast; pending gates are cancelled if a
+whole nextest invocation fails. Version, test failure and cancellation remain
+separate report outcomes.
+
+The initial `.config/nextest.toml` caps global slots at four, assigns runtime
+contracts weight two, and weights WASM processes two with a four-slot group.
+SQLite has a four-slot group. PostgreSQL-named offline wrappers have a two-slot
+group, and the provisional required profile bounds every entrypoint with a
+catch-all PostgreSQL group. This includes newly named tests and helpers. The
+required runner still uses Cargo until full fixture adoption qualification is
+complete; its nextest profile is not yet accepted for live execution. A test can
+occupy multiple group slots as well as global slots, so heavy PostgreSQL cases
+may serialize. These are conservative starting limits, pending 1/2/4 resource
+measurements. The 30-minute runner hang bound exceeds the contract deadlines;
+Rust timeouts remain unchanged. See the nextest documentation for
+[test groups](https://nexte.st/docs/configuration/test-groups/) and
+[weights](https://nexte.st/docs/configuration/threads-required/).
+
+Cargo and nextest discovery matched exactly for all 2,847 unit/integration tests
+across 111 binaries in the workspace owner; its 13 doctests remain Cargo-owned.
+A checksum-verified installation passed, an intentionally wrong version failed
+before execution, and a real two-test fixture produced one pass and one failure.
+That failure propagated as nextest status 100 through the aggregate executor,
+which recorded failure and cancelled the following gate. The qualification
+fixture has its own minimal config because its standalone workspace has no
+production packages for repository-specific selectors. The first full offline
+run reached SQLite Clippy and exposed an async helper whose await is enabled
+only with PostgreSQL; that feature-specific lint is being corrected. Full
+execution and final clean-source qualification remain pending.
+
+The full session required suite passed with two libtest threads: 831 tests and
+four doctests. A server snapshot recorded active connections to two distinct
+owned history databases simultaneously. The remaining required schedule is
+still running, so this does not establish the complete PostgreSQL gate or a
+performance threshold.

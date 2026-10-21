@@ -105,6 +105,10 @@ impl Checks {
     }
 
     pub(crate) fn cargo(&mut self, directory: &Path, args: &[&str]) {
+        if self.offline && args.first() == Some(&"test") && !args.contains(&"--doc") {
+            crate::nextest::schedule(directory, self, args);
+            return;
+        }
         let mut command = Command::new("cargo");
         command.args(args).current_dir(directory);
         self.command(directory, command, "Cargo exit status");
@@ -215,6 +219,7 @@ impl Checks {
             "kind": "command",
             "phase": match argv.get(1).map(String::as_str) {
                 Some("test") => "build-and-test",
+                Some("nextest") if argv.get(2).is_some_and(|arg| arg == "run") => "build-and-test",
                 Some("build" | "check" | "clippy") => "build-and-check",
                 Some("run") => "build-and-example",
                 _ => "validation",

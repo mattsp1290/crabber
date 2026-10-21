@@ -7,6 +7,7 @@ mod agui;
 mod checks;
 mod datadog;
 mod inventory;
+mod nextest;
 #[cfg(feature = "postgres-check")]
 mod postgres;
 mod probes;
@@ -54,6 +55,9 @@ fn main() {
         Some("build-fixtures") if args.len() == 1 => build_fixtures(),
         Some("verify-datadog") if args.len() == 1 => datadog::verify(),
         Some("check-probes") if args.len() == 1 => probes::check(workspace()),
+        Some("qualify-nextest") if args.len() == 1 => {
+            std::process::exit(nextest::qualify_failure(workspace()));
+        }
         _ => {
             eprintln!(
                 "usage: cargo xtask check [--list] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
@@ -82,6 +86,7 @@ fn check() -> checks::Checks {
         .current_dir(workspace);
     gates.command(workspace, wit, "WIT contract validation");
     gates.internal("minimal-embed-glue", workspace, check_glue);
+    nextest::version_gate(workspace, &mut gates);
     probes::schedule(workspace, &mut gates);
     schedule_fixtures(workspace, &mut gates);
     check_server_host(workspace, &mut gates);
