@@ -193,6 +193,22 @@ impl Checks {
     ) {
         remove_live_configuration(&mut command);
         if !self.required_environment.is_empty() {
+            // One complete invocation has one native target root, including
+            // standalone consumers. Explicit fixture/probe targets stay scoped.
+            if !command
+                .get_envs()
+                .any(|(name, _)| name == "CARGO_TARGET_DIR")
+            {
+                let workspace = crate::workspace();
+                let target = std::env::var_os("CARGO_TARGET_DIR")
+                    .map_or_else(|| workspace.join("target"), PathBuf::from);
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    workspace.join(target)
+                };
+                command.env("CARGO_TARGET_DIR", target);
+            }
             command
                 .envs(self.required_environment.clone())
                 .env("CRABBER_REQUIRE_POSTGRES", "1")
