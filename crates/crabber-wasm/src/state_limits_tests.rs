@@ -116,11 +116,8 @@ async fn counter_state_crosses_thousand_between_fresh_instances() {
     let loader = Loader::new().unwrap();
     let module = loader.load(fixture("counter-sink")).await.unwrap();
     let state = sink();
-    state
-        .state
-        .lock()
-        .await
-        .insert("count".into(), "999".into());
+    let initialized = emit(&module, &state, "test-state-write", "count", "999").await;
+    assert!(matches!(initialized, Val::Result(Ok(None))));
     let result = emit(&module, &state, "test", "", "").await;
     assert!(matches!(result, Val::Result(Ok(None))));
     let saved = state.state.lock().await;
