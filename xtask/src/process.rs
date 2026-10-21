@@ -11,6 +11,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "linux")]
+mod tree;
+#[cfg(target_os = "linux")]
+pub(crate) use tree::enable as enable_tree_supervision;
+#[cfg(all(target_os = "linux", feature = "postgres-check"))]
+pub(crate) use tree::verify_drained;
+
 static SIGNAL: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
 
 pub(crate) fn cancellation() -> io::Result<Arc<AtomicUsize>> {
@@ -29,7 +36,21 @@ pub(crate) fn cancellation() -> io::Result<Arc<AtomicUsize>> {
     Ok(Arc::clone(SIGNAL.get_or_init(|| signal)))
 }
 
+pub(crate) fn check_cancelled() -> io::Result<()> {
+    if interrupted() {
+        Err(io::Error::new(io::ErrorKind::Interrupted, "gate cancelled"))
+    } else {
+        Ok(())
+    }
+}
+fn interrupted() -> bool {
+    SIGNAL
+        .get()
+        .is_some_and(|signal| signal.load(Ordering::SeqCst) != 0)
+}
+
 fn spawn(command: &mut Command) -> io::Result<Child> {
+    check_cancelled()?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -39,12 +60,31 @@ fn spawn(command: &mut Command) -> io::Result<Child> {
 }
 
 fn wait(child: &mut Child, signal: &AtomicUsize) -> io::Result<ExitStatus> {
+    #[cfg(target_os = "linux")]
+    let mut tree = tree::Tree::new();
     loop {
-        if signal.load(Ordering::SeqCst) != 0 {
+        #[cfg(target_os = "linux")]
+        if let Some(tree) = &mut tree {
+            tree.scan()?;
+        }
+        if signal.load(Ordering::SeqCst) != 0 || interrupted() {
+            #[cfg(target_os = "linux")]
+            if let Some(tree) = &mut tree {
+                tree.terminate()?;
+            }
             terminate(child)?;
-            return child.wait();
+            let status = child.wait()?;
+            #[cfg(target_os = "linux")]
+            if let Some(tree) = &mut tree {
+                tree.finish()?;
+            }
+            return Ok(status);
         }
         if let Some(status) = child.try_wait()? {
+            #[cfg(target_os = "linux")]
+            if let Some(tree) = &mut tree {
+                tree.finish()?;
+            }
             return Ok(status);
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -78,7 +118,13 @@ fn terminate(child: &mut Child) -> io::Result<()> {
 }
 
 pub(crate) fn status(command: &mut Command, signal: &AtomicUsize) -> io::Result<ExitStatus> {
-    wait(&mut spawn(command)?, signal)
+    let mut child = spawn(command)?;
+    let result = wait(&mut child, signal);
+    if result.is_err() && child.try_wait()?.is_none() {
+        terminate(&mut child)?;
+        child.wait()?;
+    }
+    result
 }
 
 pub(crate) fn output(command: &mut Command, signal: &AtomicUsize) -> io::Result<Output> {
@@ -96,15 +142,21 @@ pub(crate) fn output(command: &mut Command, signal: &AtomicUsize) -> io::Result<
     };
     let stdout = reader(Box::new(child.stdout.take().unwrap()));
     let stderr = reader(Box::new(child.stderr.take().unwrap()));
-    let status = wait(&mut child, signal)?;
+    let status = wait(&mut child, signal);
+    if status.is_err() && child.try_wait()?.is_none() {
+        terminate(&mut child)?;
+        child.wait()?;
+    }
+    let stdout = stdout
+        .join()
+        .map_err(|_| io::Error::other("stdout reader panicked"))??;
+    let stderr = stderr
+        .join()
+        .map_err(|_| io::Error::other("stderr reader panicked"))??;
     Ok(Output {
-        status,
-        stdout: stdout
-            .join()
-            .map_err(|_| io::Error::other("stdout reader panicked"))??,
-        stderr: stderr
-            .join()
-            .map_err(|_| io::Error::other("stderr reader panicked"))??,
+        status: status?,
+        stdout,
+        stderr,
     })
 }
 

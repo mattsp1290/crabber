@@ -6,6 +6,8 @@ use std::{env, fmt::Write, fs, path::Path, process::Command};
 mod agui;
 mod checks;
 mod datadog;
+#[cfg(feature = "postgres-check")]
+mod postgres;
 mod probes;
 mod process;
 mod telemetry_messages;
@@ -17,6 +19,14 @@ const GLUE_LIMIT: usize = 60;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if !(args.first().map(String::as_str) == Some("check")
+        && args.iter().skip(1).any(|arg| arg == "--list"))
+        && let Err(error) = process::enable_tree_supervision()
+    {
+        eprintln!("cannot enable Linux child supervision: {error}");
+        std::process::exit(1);
+    }
     match args.first().map(String::as_str) {
         Some("check") => {
             let options = checks::Options::parse(&args[1..]).unwrap_or_else(|error| {
@@ -24,6 +34,17 @@ fn main() {
                 std::process::exit(2);
             });
             std::process::exit(check().execute(&options));
+        }
+        #[cfg(feature = "postgres-check")]
+        Some("postgres-fixture-helper") => {
+            std::process::exit(postgres::child::main(args.get(1).map(String::as_str)))
+        }
+        #[cfg(feature = "postgres-check")]
+        Some("check-postgres") => std::process::exit(postgres::check(&args[1..])),
+        #[cfg(not(feature = "postgres-check"))]
+        Some("check-postgres") => {
+            eprintln!("use cargo run -p xtask --features postgres-check -- check-postgres");
+            std::process::exit(2);
         }
         Some("build-fixtures") if args.len() == 1 => build_fixtures(),
         Some("verify-datadog") if args.len() == 1 => datadog::verify(),

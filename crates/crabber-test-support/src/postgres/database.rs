@@ -1,0 +1,97 @@
+//! PostgreSQL fixture database implementation.
+
+use super::{ADMIN_URL, Config, DatabaseMode, FixtureError, RUN_ID, Result, RunFixture};
+use sqlx::PgPool;
+use std::env;
+
+/// A database owned by one test history. Drop cannot perform asynchronous cleanup;
+/// normal paths must call `finish` after every Store/child has been released.
+pub struct TestDatabase {
+    config: Config,
+    pool: PgPool,
+    name: String,
+}
+impl TestDatabase {
+    /// Whether a direct test invocation has a runner configuration. Absent
+    /// service is an explicit offline skip; required/legacy URL-only mode fails.
+    /// # Errors
+    /// Fails for incomplete runner configuration or unsupported URL-only setup.
+    pub fn available() -> Result<bool> {
+        if env::var_os(ADMIN_URL).is_some() && env::var_os(RUN_ID).is_some() {
+            return Ok(true);
+        }
+        if env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1")
+            || env::var_os(ADMIN_URL).is_some()
+            || env::var_os(RUN_ID).is_some()
+            || env::var_os("CRABBER_TEST_POSTGRES_URL").is_some()
+        {
+            return Err(FixtureError(
+                "required PostgreSQL tests need check-postgres runner configuration; URL-only mode is unsupported",
+            ));
+        }
+        eprintln!("skipping PostgreSQL test: no check-postgres runner configured");
+        Ok(false)
+    }
+
+    /// Run one complete test history, then finish outside the history's future
+    /// scope. All Stores, pools and child guards must stay inside that scope.
+    /// An absent service skips explicitly; required mode never skips.
+    /// # Errors
+    /// Fails on missing required configuration, provisioning or connection drain.
+    pub async fn run_if_available(
+        mode: DatabaseMode,
+        journey: impl AsyncFnOnce(String),
+    ) -> Result<()> {
+        if !Self::available()? {
+            return Ok(());
+        }
+        let database = Self::create(mode).await?;
+        // The completed future is dropped at this statement, before finish.
+        journey(database.url()).await;
+        database.finish().await
+    }
+
+    /// Provision from runner configuration, never from an application URL.
+    /// # Errors
+    /// Fails without a valid runner or when cloning/registration fails.
+    pub async fn create(mode: DatabaseMode) -> Result<Self> {
+        let admin = env::var(ADMIN_URL).map_err(|_| {
+            FixtureError("run check-postgres to configure isolated PostgreSQL fixtures")
+        })?;
+        let nonce = env::var(RUN_ID)
+            .map_err(|_| FixtureError("missing PostgreSQL fixture run identity"))?;
+        Self::on_config(Config::new(&admin, &nonce)?, mode).await
+    }
+    async fn on_config(config: Config, mode: DatabaseMode) -> Result<Self> {
+        let pool = config.pool().await?;
+        let name = config.database();
+        config.create(&pool, &name, mode).await?;
+        Ok(Self { config, pool, name })
+    }
+    /// Attach a newly provisioned test to an explicitly held runner (runner tests).
+    /// # Errors
+    /// Fails when cloning or registration fails.
+    pub async fn for_run(run: &RunFixture, mode: DatabaseMode) -> Result<Self> {
+        Self::on_config(run.config.clone(), mode).await
+    }
+    /// Endpoint for this database only. Do not log it.
+    #[must_use]
+    pub fn url(&self) -> String {
+        self.config.url(&self.name)
+    }
+    /// Opaque database identity safe for child handoffs and assertions.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        &self.name
+    }
+    /// Wait for normal connection drain and drop this exact registered database.
+    /// # Errors
+    /// Fails rather than silently terminating a leaked test connection.
+    pub async fn finish(self) -> Result<()> {
+        self.config
+            .drop_database(&self.pool, &self.name, false)
+            .await?;
+        self.pool.close().await;
+        Ok(())
+    }
+}

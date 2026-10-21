@@ -245,3 +245,81 @@ are pending. Exploratory runs under concurrent machine load must be labeled
 unqualified and must not supply threshold evidence. Existing issues
 `crabber-pxdk`, `crabber-09ku`, `crabber-9e8u`, and `crabber-7j4w` retain their
 separate scopes; timing changes do not prove them fixed.
+
+## PostgreSQL fixture infrastructure
+
+```sh
+cargo run -p xtask --features postgres-check -- check-postgres --fixtures-only
+cargo run -p xtask --features postgres-check -- check-postgres
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber-session --filter postgres_contract
+```
+
+The private `crabber-test-support` crate depends on SQLx/Tokio/UUID, never the
+session, runtime or facade crates. The optional xtask feature owns
+`testcontainers-modules` 0.15.0 (locked `testcontainers` 0.27.3), and PostgreSQL 14
+with manifest digest
+`sha256:c2427de38f998489d36de7ca3553db2134872c400f2b08be4b824e5c50e4d619`.
+Both the module's fsync default and PostgreSQL startup settings are overridden;
+SQL verifies major version 14, fsync, synchronous_commit and full_page_writes.
+The default offline xtask build does not start or require Docker.
+
+Set `CRABBER_TEST_POSTGRES_ADMIN_URL` only for a dedicated external test server
+with create/drop database and schema privileges. The runner never takes its
+administrative endpoint from `CRABBER_POSTGRES_URL`. Without the administrative
+override it starts its own container with a dynamic port. `--fixtures-only`
+additionally tests a temporary restricted role, so that qualification command
+requires role-administration privileges on the dedicated server.
+
+The runner creates a random run identity, holds a dedicated session advisory
+lock, and owns a private schema containing create-intent records. Every generated
+database name must match that exact run identity and an ownership row. Current
+mode clones the migrated template; Blank mode clones template0. The runner
+migrates and closes template connections before cloning. Duplicate-name rejection
+revokes intent so an existing database cannot be swept. Each database's CREATE
+and DROP share an administrative advisory lock on their actual SQL backend, so
+cleanup cannot overtake an in-flight CREATE whose client lost its response.
+
+Tests must retain a fixture for their entire logical journey and explicitly pass
+its URL to every child. Normal cleanup waits for all connections to disappear;
+it fails after its bounded drain wait instead of forcing a successful result.
+Put the history inside an inner async scope, await resource/child cleanup, close
+raw pools, and drop all pool handles, Stores and Arc holders before `finish`.
+`TestDatabase::run_if_available` supplies that scope boundary. Its absent-service
+path is explicit; required mode and legacy URL-only configuration fail.
+
+A real qualification case exposed a raw SQLx pool still reporting size 1 after
+`close().await` while the test retained its last handle. Dropping the pool before
+finishing the database resolved that fixture defect with the original deadline.
+The failing diagnostic runs are retained locally; later passes do not erase them.
+
+Linux execution uses a subreaper and checks process identity/start time while
+following descendants across process-group changes. Handled SIGINT/SIGTERM stop
+owned processes and reap them before database sweep and container removal.
+A remaining helper is a failed gate even when it can subsequently be cleaned up.
+External cleanup acquires the run advisory lock and refuses a live owner:
+
+```sh
+cargo run -p xtask --features postgres-check -- check-postgres --cleanup-run "$RUN_NONCE"
+```
+
+SIGKILL cannot execute Rust Drop or signal handlers. This was tested: the managed
+container remains until explicitly removed. The runner prints an opaque container
+ID and `crabber.test-runner` ownership label; after verifying the runner and its
+process tree have stopped, inspect that exact ID/label and remove only that owned
+container. A killed external run can leave registered databases; stop its owned
+processes first, then use `--cleanup-run` against the same dedicated admin server.
+No machine-wide container removal or database-prefix deletion is supported.
+
+Credential-free real-server checks have exercised current/blank mode, identical
+session IDs, truncation/schema/advisory-lock isolation, retained Arc Store drain
+refusal, child attachment identities, panic after CREATE, a killed parent with a
+separately grouped grandchild, denied CREATEDB, active-owner cleanup refusal, and
+two concurrent external runners. A final external-server query found zero owned
+databases, schemas or roles. Missing Docker fails before tests. Handled SIGTERM
+returned 143 and removed its container; the forced-kill test manually reclaimed
+its verified owned container afterward.
+
+The full runner currently retains the original 24 Cargo CI commands and existing
+per-binary locks. Caller adoption, final per-test ownership, nextest scheduling,
+resource measurements and full performance qualification remain pending. These
+infrastructure checks alone do not prove complete PostgreSQL behavioral coverage.
