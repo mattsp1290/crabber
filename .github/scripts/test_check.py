@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 MODULE = Path(__file__).with_name('check.py')
@@ -77,6 +78,56 @@ class DeadlineTests(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.wait()
+
+    def test_exit_recollects_a_helper_forked_after_the_last_snapshot(self):
+        ready = self.root / 'parent-ready'
+        go = self.root / 'fork-now'
+        helper = self.root / 'late-helper'
+        program = '\n'.join([
+            'import os,pathlib,subprocess,sys,time',
+            f'pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))',
+            f'while not pathlib.Path({str(go)!r}).exists(): time.sleep(.005)',
+            "p=subprocess.Popen([sys.executable,'-I','-S','-B','-c','import time;time.sleep(60)'],start_new_session=True)",
+            f'pathlib.Path({str(helper)!r}).write_text(str(p.pid))',
+            'os._exit(0)',
+        ])
+        collect = check.collect
+        injected = False
+
+        def snapshot_then_fork(owned):
+            nonlocal injected
+            tree = collect(owned)
+            if ready.exists() and not injected:
+                injected = True
+                go.write_text('go')
+                until = time.monotonic() + 2
+                while time.monotonic() < until:
+                    parent = check.identity(int(ready.read_text()))
+                    if helper.exists() and parent is not None and parent[2] == 'Z':
+                        break
+                    time.sleep(.005)
+                else:
+                    self.fail('parent did not fork and exit at the controlled boundary')
+            return tree
+
+        try:
+            report = self.root / 'late-fork.json'
+            with mock.patch.object(check, 'collect', side_effect=snapshot_then_fork):
+                code = check.supervise([sys.executable, '-I', '-S', '-B', '-c', program],
+                                       ROOT, report, budget=4, reserve=1)
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(report.read_text())['reason'], 'leaked-descendants')
+            self.assertFalse(Path('/proc', helper.read_text()).exists())
+        finally:
+            if helper.exists():
+                pid = int(helper.read_text())
+                row = check.identity(pid)
+                if row is not None:
+                    check.send(pid, row[1], signal.SIGKILL)
+                    try:
+                        os.waitpid(pid, 0)
+                    except ChildProcessError:
+                        pass
 
     def test_deadline_during_child_test_allows_supervisor_cleanup(self):
         # An executable named xtask exercises the launcher's cooperative

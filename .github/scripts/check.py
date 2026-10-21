@@ -131,6 +131,10 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
         while child is not None:
             tree = collect(owned)
             code = child.poll()
+            if code is not None:
+                # Exit can adopt a helper forked after the previous snapshot.
+                # Recollect after reaping the leader before declaring drained.
+                tree = collect(owned)
             report['peak_process_rss_sum_bytes'] = max(report['peak_process_rss_sum_bytes'], sum(row[3] for row in tree.values()))
             report['peak_processes'] = max(report['peak_processes'], len(tree))
             report['peak_threads'] = max(report['peak_threads'], sum(row[4] for row in tree.values()))
