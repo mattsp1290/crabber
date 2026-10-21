@@ -95,6 +95,15 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
         supervisor_tests,
         "outer deadline, cancellation and process ownership",
     );
+    let mut freshness_tests = Command::new("python3");
+    freshness_tests
+        .args(["-I", "-S", ".github/scripts/test_cache_source_times.py"])
+        .current_dir(workspace);
+    gates.command(
+        workspace,
+        freshness_tests,
+        "unchanged cache inputs reuse timestamps; changed inputs rebuild",
+    );
     crate::probes::schedule(workspace, gates);
     crate::schedule_fixtures(workspace, gates)
 }

@@ -104,7 +104,9 @@ jobs:
             docker save "$CRABBER_POSTGRES_IMAGE" -o target/test-tools/postgres-14.tar
           fi
       - name: Refresh source provenance after cache restore
-        run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
+        run: |
+          python3 -I -S .github/scripts/cache-source-times.py restore
+          cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
       - name: Complete required check including compilation and cleanup
         if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha) }}
         env:
@@ -128,6 +130,9 @@ jobs:
           result = json.loads(report.read_text())
           pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True, 'check': result}) + '\n')
           PY
+      - name: Preserve unchanged source freshness as CI maintenance
+        if: always() && steps.cache.outcome == 'success'
+        run: python3 -I -S .github/scripts/cache-source-times.py capture
       - name: Save dependency and compiler snapshot as CI maintenance
         if: always() && steps.cache.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
