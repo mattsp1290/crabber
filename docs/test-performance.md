@@ -553,3 +553,14 @@ PostgreSQL-driver-free boundary. Its feature graph was checked independently;
 private fixture defaults remain disabled in every consumer. The shared child
 helper retains an async signature across features, with its unused-async lint
 allowance limited to configurations that compile out PostgreSQL verification.
+
+
+WASM output preparation now acquires an advisory lease in its actual fixture
+output root. A full offline gate holds it through its last consumer; standalone
+`build-fixtures` releases it after both fixture workspaces finish. Normal exit,
+failure and cancellation release the descriptor after supervised children drain.
+This uses the same cancellable lease as the source probes, whose existing lock
+paths are preserved. An external lease blocked a real fixture invocation;
+SIGTERM returned 143 before any Cargo fixture build or alias write began.
+The new lease module and its callers passed all-target xtask Clippy. Full normal
+execution with the lease remains part of final qualification.

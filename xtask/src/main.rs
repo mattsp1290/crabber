@@ -7,6 +7,7 @@ mod agui;
 mod checks;
 mod datadog;
 mod inventory;
+mod lease;
 mod nextest;
 #[cfg(feature = "postgres-check")]
 mod postgres;
@@ -88,7 +89,7 @@ fn check() -> checks::Checks {
     gates.internal("minimal-embed-glue", workspace, check_glue);
     nextest::version_gate(workspace, &mut gates);
     probes::schedule(workspace, &mut gates);
-    schedule_fixtures(workspace, &mut gates);
+    let fixture_lease = schedule_fixtures(workspace, &mut gates);
     check_server_host(workspace, &mut gates);
     check_custom_http(workspace, &mut gates);
     gates.cargo(
@@ -167,6 +168,9 @@ fn check() -> checks::Checks {
         "external consumer check",
         "testdata/external-consumer/check.sh",
     );
+    gates.internal("release-wasm-fixture-output", workspace, move |_| {
+        fixture_lease.release();
+    });
     gates
 }
 
@@ -397,16 +401,25 @@ fn check_wit(workspace: &Path) {
 
 fn build_fixtures() {
     let mut gates = checks::Checks::default();
-    schedule_fixtures(workspace(), &mut gates);
+    let lease = schedule_fixtures(workspace(), &mut gates);
+    gates.internal("release-wasm-fixture-output", workspace(), move |_| {
+        lease.release();
+    });
     let code = gates.execute(&checks::Options::default());
     if code != 0 {
         std::process::exit(code);
     }
 }
 
-fn schedule_fixtures(workspace: &Path, gates: &mut checks::Checks) {
+fn schedule_fixtures(workspace: &Path, gates: &mut checks::Checks) -> lease::Lease {
     let fixtures = workspace.join("fixtures/wasm");
     let target = fixtures.join("target");
+    let lease = lease::Lease::default();
+    let acquire = lease.clone();
+    let lock = target.join(".fixture-output.lock");
+    gates.internal("acquire-wasm-fixture-output", workspace, move |_| {
+        acquire.acquire(&lock);
+    });
     let arguments = [
         "build",
         "--workspace",
@@ -428,6 +441,7 @@ fn schedule_fixtures(workspace: &Path, gates: &mut checks::Checks) {
         .env("CARGO_TARGET_DIR", target)
         .current_dir(&negative_root);
     gates.command(&negative_root, negative, "negative WASM fixtures compile");
+    lease
 }
 
 fn copy_fixture_aliases(workspace: &Path) {

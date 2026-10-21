@@ -2,47 +2,18 @@
 //! tracked Git pins. Published revision adoption remains a separate check.
 use sha2::Digest;
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex},
-    time::Duration,
 };
+
+use crate::lease::Lease;
 
 const PROBES: [&str; 3] = [
     "workspace-context-probe",
     "prompt-contribution-probe",
     "result-transform-probe",
 ];
-
-#[derive(Clone, Default)]
-struct Lease(Arc<Mutex<Option<File>>>);
-impl Lease {
-    fn acquire(&self, directory: &Path) {
-        fs::create_dir_all(directory).expect("create persistent local-probe cache");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join("probe.lock"))
-            .expect("open local-probe lock");
-        loop {
-            crate::process::check_cancelled().expect("local-probe lock wait cancelled");
-            match file.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(20)),
-                Err(TryLockError::Error(error)) => panic!("cannot lock local-probe cache: {error}"),
-            }
-        }
-        *self.0.lock().unwrap() = Some(file);
-    }
-    fn release(&self) {
-        if let Some(file) = self.0.lock().unwrap().take() {
-            file.unlock().expect("release local-probe cache lock");
-        }
-    }
-}
 
 fn cache_root(workspace: &Path) -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR")
@@ -96,7 +67,7 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut crate::checks::Checks) {
         let prepared = destination.clone();
         let locked_directory = directory.clone();
         gates.internal(&format!("prepare-{probe}"), workspace, move |workspace| {
-            locked.acquire(&locked_directory);
+            locked.acquire(&locked_directory.join("probe.lock"));
             prepare(workspace, &original, &prepared);
         });
         let mut command = Command::new("cargo");
