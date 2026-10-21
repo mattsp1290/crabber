@@ -612,3 +612,37 @@ while the gate ran. That failed aggregate is retained. A stable committed-source
 run is still required. The original 24-command PostgreSQL schedule passed at two
 threads, including all required demos, and its exact owned container was verified
 absent afterward. The one- and four-thread checks are still being assessed.
+
+
+## Independent contract families (draft qualification)
+
+The scenario ledger in `test-performance-scenarios.json` maps every original
+parameter tuple to its new named test family. Native pending-tool coverage keeps
+100 tuples per backend: tool claim/recovery each own 24, and frontend
+claim/recovery each own 26, including the mixed-family cases. Runtime pending-tool
+coverage keeps 32 tuples per backend in four frontend/unkeyed families of eight.
+The durable successor lifecycle keeps 44 tuples per backend in core (28),
+retention (6), recovery (4) and pending (6) tests. Existing separate memory
+successor tests remain unchanged.
+
+The original same-task and runtime journey helper bodies are unchanged. Each
+inner history still constructs its actual owner, gate, task and scoped IDs. Cold
+restart, replay, held acknowledgements, corruptions and actual cleanup joins stay
+inside their original histories. Independent families now receive fresh Stores
+and clocks; no identity or receipt passes between them. The blocked cleanup
+history retains its complete ready/release/child-join sequence. SQL cases still
+perform their original migrations and use current-template fixtures only for
+current-schema behavior. Production MemoryStore transaction cloning is untouched.
+
+The WASM growth contract remains one 212-run causal history with its original
+`>= 1000` state assertion and per-call instance mode. Its replay/configuration
+check was already a separate test. Splitting the growth sequence would discard
+the retained-state obligation, so it is deliberately kept intact.
+
+The memory/SQLite draft passed all-target Clippy and all 20 changed cases at one
+thread. Five complete repetitions under the four-slot scheduler limit also
+passed all 20 cases without retries. Their test execution wall times were
+114.806, 116.221, 117.416, 118.987 and 119.700 seconds under concurrent host load;
+these are functional repetition measurements, not final performance samples.
+PostgreSQL execution of this split awaits the main fixture adoption qualification;
+no live PostgreSQL split result is claimed yet.

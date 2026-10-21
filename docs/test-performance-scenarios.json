@@ -1,0 +1,1709 @@
+{
+  "base_revision": "670880022c17d52d4c5253aad2bdc2f42a867524",
+  "status": "memory/SQLite single-thread and five scheduler repetitions passed; PostgreSQL execution pending",
+  "families": [
+    {
+      "family": "session_native_pending_tool",
+      "old_targets": {
+        "memory": "session_owner::owned_scope::task::pending::tool_tests::memory_pending_tool_same_task",
+        "sqlite": "session_owner::owned_scope::task::pending::tool_tests::sqlite_pending_tool_same_task",
+        "postgres": "session_owner::owned_scope::task::pending::tool_tests::postgres_pending_tool_same_task"
+      },
+      "new_targets": {
+        "frontend_claim": {
+          "memory": "session_owner::owned_scope::task::pending::tool_tests::memory_pending_frontend_claim",
+          "sqlite": "session_owner::owned_scope::task::pending::tool_tests::sqlite_pending_frontend_claim",
+          "postgres": "session_owner::owned_scope::task::pending::tool_tests::postgres_pending_frontend_claim"
+        },
+        "frontend_recovery": {
+          "memory": "session_owner::owned_scope::task::pending::tool_tests::memory_pending_frontend_recovery",
+          "sqlite": "session_owner::owned_scope::task::pending::tool_tests::sqlite_pending_frontend_recovery",
+          "postgres": "session_owner::owned_scope::task::pending::tool_tests::postgres_pending_frontend_recovery"
+        },
+        "tool_claim": {
+          "memory": "session_owner::owned_scope::task::pending::tool_tests::memory_pending_tool_claim",
+          "sqlite": "session_owner::owned_scope::task::pending::tool_tests::sqlite_pending_tool_claim",
+          "postgres": "session_owner::owned_scope::task::pending::tool_tests::postgres_pending_tool_claim"
+        },
+        "tool_recovery": {
+          "memory": "session_owner::owned_scope::task::pending::tool_tests::memory_pending_tool_recovery",
+          "sqlite": "session_owner::owned_scope::task::pending::tool_tests::sqlite_pending_tool_recovery",
+          "postgres": "session_owner::owned_scope::task::pending::tool_tests::postgres_pending_tool_recovery"
+        }
+      },
+      "tuples_per_backend": 100,
+      "baseline_tuple_sha256": "60774a6a674a295ebea6e9e5f6266a2b4d45b42559ff15e8d1fb91c31ddbd12a",
+      "mapping": [
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "tool",
+            "recovery": false,
+            "unkeyed": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "tool",
+            "recovery": false,
+            "unkeyed": true
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Complete",
+            "fault": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Complete",
+            "fault": true
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Inspect",
+            "fault": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Inspect",
+            "fault": true
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Register",
+            "fault": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Register",
+            "fault": true
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Activate",
+            "fault": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": false,
+            "stage": "Activate",
+            "fault": true
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 0
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 1
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 2
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 3
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 4
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 5
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 6
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 7
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 8
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 9
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 10
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": false,
+            "corruption": 11
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "replay",
+            "frontend": false,
+            "recovery": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "blocked",
+            "frontend": false,
+            "recovery": false
+          },
+          "new_family": "tool_claim"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "tool",
+            "recovery": true,
+            "unkeyed": false
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "tool",
+            "recovery": true,
+            "unkeyed": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Complete",
+            "fault": false
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Complete",
+            "fault": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Inspect",
+            "fault": false
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Inspect",
+            "fault": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Register",
+            "fault": false
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Register",
+            "fault": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Activate",
+            "fault": false
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": false,
+            "recovery": true,
+            "stage": "Activate",
+            "fault": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 0
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 1
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 2
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 3
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 4
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 5
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 6
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 7
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 8
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 9
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 10
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": false,
+            "recovery": true,
+            "corruption": 11
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "replay",
+            "frontend": false,
+            "recovery": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "blocked",
+            "frontend": false,
+            "recovery": true
+          },
+          "new_family": "tool_recovery"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "frontend",
+            "recovery": false,
+            "unkeyed": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "mixed",
+            "recovery": false,
+            "unkeyed": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "frontend",
+            "recovery": false,
+            "unkeyed": true
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "mixed",
+            "recovery": false,
+            "unkeyed": true
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Complete",
+            "fault": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Complete",
+            "fault": true
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Inspect",
+            "fault": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Inspect",
+            "fault": true
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Register",
+            "fault": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Register",
+            "fault": true
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Activate",
+            "fault": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": false,
+            "stage": "Activate",
+            "fault": true
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 0
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 1
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 2
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 3
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 4
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 5
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 6
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 7
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 8
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 9
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 10
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": false,
+            "corruption": 11
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "replay",
+            "frontend": true,
+            "recovery": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "blocked",
+            "frontend": true,
+            "recovery": false
+          },
+          "new_family": "frontend_claim"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "frontend",
+            "recovery": true,
+            "unkeyed": false
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "mixed",
+            "recovery": true,
+            "unkeyed": false
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "frontend",
+            "recovery": true,
+            "unkeyed": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "same_task",
+            "kind": "mixed",
+            "recovery": true,
+            "unkeyed": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Complete",
+            "fault": false
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Complete",
+            "fault": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Inspect",
+            "fault": false
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Inspect",
+            "fault": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Register",
+            "fault": false
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Register",
+            "fault": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Activate",
+            "fault": false
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "held",
+            "frontend": true,
+            "recovery": true,
+            "stage": "Activate",
+            "fault": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 0
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 1
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 2
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 3
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 4
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 5
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 6
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 7
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 8
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 9
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 10
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "malformed",
+            "frontend": true,
+            "recovery": true,
+            "corruption": 11
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "replay",
+            "frontend": true,
+            "recovery": true
+          },
+          "new_family": "frontend_recovery"
+        },
+        {
+          "parameters": {
+            "family": "blocked",
+            "frontend": true,
+            "recovery": true
+          },
+          "new_family": "frontend_recovery"
+        }
+      ]
+    },
+    {
+      "family": "runtime_pending_tool",
+      "old_targets": {
+        "memory": "tests::preparation_resources::pending_tool::memory_runtime_pending_tool_actual_task_ack_and_cold_recovery",
+        "sqlite": "tests::preparation_resources::pending_tool::sqlite_runtime_pending_tool_actual_task_ack_and_cold_recovery",
+        "postgres": "tests::preparation_resources::pending_tool::postgres_runtime_pending_tool_actual_task_ack_and_cold_recovery"
+      },
+      "new_targets": {
+        "frontend_keyed": {
+          "memory": "tests::preparation_resources::pending_tool::memory_runtime_pending_frontend_keyed",
+          "sqlite": "tests::preparation_resources::pending_tool::sqlite_runtime_pending_frontend_keyed",
+          "postgres": "tests::preparation_resources::pending_tool::postgres_runtime_pending_frontend_keyed"
+        },
+        "frontend_unkeyed": {
+          "memory": "tests::preparation_resources::pending_tool::memory_runtime_pending_frontend_unkeyed",
+          "sqlite": "tests::preparation_resources::pending_tool::sqlite_runtime_pending_frontend_unkeyed",
+          "postgres": "tests::preparation_resources::pending_tool::postgres_runtime_pending_frontend_unkeyed"
+        },
+        "tool_keyed": {
+          "memory": "tests::preparation_resources::pending_tool::memory_runtime_pending_tool_keyed",
+          "sqlite": "tests::preparation_resources::pending_tool::sqlite_runtime_pending_tool_keyed",
+          "postgres": "tests::preparation_resources::pending_tool::postgres_runtime_pending_tool_keyed"
+        },
+        "tool_unkeyed": {
+          "memory": "tests::preparation_resources::pending_tool::memory_runtime_pending_tool_unkeyed",
+          "sqlite": "tests::preparation_resources::pending_tool::sqlite_runtime_pending_tool_unkeyed",
+          "postgres": "tests::preparation_resources::pending_tool::postgres_runtime_pending_tool_unkeyed"
+        }
+      },
+      "tuples_per_backend": 32,
+      "baseline_tuple_sha256": "194dbcdd7d7abe70b8dbac6ca50ab7502b0049ac56735aa9771ce26b385fef6c",
+      "mapping": [
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 0
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 2
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 4
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 7
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "held_ack",
+            "frontend": false,
+            "unkeyed": false
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 5
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 6
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": false,
+            "unkeyed": false,
+            "fault": 9
+          },
+          "new_family": "tool_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 0
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 2
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 4
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 7
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "held_ack",
+            "frontend": false,
+            "unkeyed": true
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 5
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 6
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": false,
+            "unkeyed": true,
+            "fault": 9
+          },
+          "new_family": "tool_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 0
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 2
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 4
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 7
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "held_ack",
+            "frontend": true,
+            "unkeyed": false
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 5
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 6
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": true,
+            "unkeyed": false,
+            "fault": 9
+          },
+          "new_family": "frontend_keyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 0
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 2
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 4
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "journey",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 7
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "held_ack",
+            "frontend": true,
+            "unkeyed": true
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 5
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 6
+          },
+          "new_family": "frontend_unkeyed"
+        },
+        {
+          "parameters": {
+            "family": "preflight",
+            "frontend": true,
+            "unkeyed": true,
+            "fault": 9
+          },
+          "new_family": "frontend_unkeyed"
+        }
+      ]
+    },
+    {
+      "family": "runtime_successor_sql",
+      "old_targets": {
+        "sqlite": "tests::preparation_resources::successor::sql::sqlite_runtime_successor_complete_lifecycle",
+        "postgres": "tests::preparation_resources::successor::sql::postgres_runtime_successor_complete_lifecycle"
+      },
+      "new_targets": {
+        "core": {
+          "sqlite": "tests::preparation_resources::successor::sql::sqlite_runtime_successor_core",
+          "postgres": "tests::preparation_resources::successor::sql::postgres_runtime_successor_core"
+        },
+        "pending": {
+          "sqlite": "tests::preparation_resources::successor::sql::sqlite_runtime_successor_pending",
+          "postgres": "tests::preparation_resources::successor::sql::postgres_runtime_successor_pending"
+        },
+        "recovery": {
+          "sqlite": "tests::preparation_resources::successor::sql::sqlite_runtime_successor_recovery",
+          "postgres": "tests::preparation_resources::successor::sql::postgres_runtime_successor_recovery"
+        },
+        "retention": {
+          "sqlite": "tests::preparation_resources::successor::sql::sqlite_runtime_successor_retention",
+          "postgres": "tests::preparation_resources::successor::sql::postgres_runtime_successor_retention"
+        }
+      },
+      "tuples_per_backend": 44,
+      "baseline_tuple_sha256": "7a4a0c5942d9b7b9875785dfafe290037b34e2a001cbdafe8e3f7d4cf20926f8",
+      "mapping": [
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 0,
+            "point": 0
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 1,
+            "point": 1
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 1,
+            "point": 2
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 1,
+            "point": 3
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 1,
+            "point": 4
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 1,
+            "point": 5
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 2,
+            "point": 1
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 2,
+            "point": 2
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 2,
+            "point": 3
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 2,
+            "point": 4
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 3,
+            "point": 1
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 3,
+            "point": 2
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 3,
+            "point": 3
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": false,
+            "stage": 3,
+            "point": 4
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "retention",
+            "expired": false,
+            "case": "blocked_panic"
+          },
+          "new_family": "retention"
+        },
+        {
+          "parameters": {
+            "family": "retention",
+            "expired": false,
+            "case": "blocked_cancel"
+          },
+          "new_family": "retention"
+        },
+        {
+          "parameters": {
+            "family": "retention",
+            "expired": false,
+            "case": "malformed"
+          },
+          "new_family": "retention"
+        },
+        {
+          "parameters": {
+            "family": "recovery",
+            "expired": false,
+            "point": 1
+          },
+          "new_family": "recovery"
+        },
+        {
+          "parameters": {
+            "family": "recovery",
+            "expired": false,
+            "point": 2
+          },
+          "new_family": "recovery"
+        },
+        {
+          "parameters": {
+            "family": "pending",
+            "expired": false,
+            "case": "dropped_ack"
+          },
+          "new_family": "pending"
+        },
+        {
+          "parameters": {
+            "family": "pending",
+            "expired": false,
+            "case": "dropped_waiter"
+          },
+          "new_family": "pending"
+        },
+        {
+          "parameters": {
+            "family": "pending",
+            "expired": false,
+            "case": "replay"
+          },
+          "new_family": "pending"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 0,
+            "point": 0
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 1,
+            "point": 1
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 1,
+            "point": 2
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 1,
+            "point": 3
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 1,
+            "point": 4
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 1,
+            "point": 5
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 2,
+            "point": 1
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 2,
+            "point": 2
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 2,
+            "point": 3
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 2,
+            "point": 4
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 3,
+            "point": 1
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 3,
+            "point": 2
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 3,
+            "point": 3
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "core",
+            "expired": true,
+            "stage": 3,
+            "point": 4
+          },
+          "new_family": "core"
+        },
+        {
+          "parameters": {
+            "family": "retention",
+            "expired": true,
+            "case": "blocked_panic"
+          },
+          "new_family": "retention"
+        },
+        {
+          "parameters": {
+            "family": "retention",
+            "expired": true,
+            "case": "blocked_cancel"
+          },
+          "new_family": "retention"
+        },
+        {
+          "parameters": {
+            "family": "retention",
+            "expired": true,
+            "case": "malformed"
+          },
+          "new_family": "retention"
+        },
+        {
+          "parameters": {
+            "family": "recovery",
+            "expired": true,
+            "point": 1
+          },
+          "new_family": "recovery"
+        },
+        {
+          "parameters": {
+            "family": "recovery",
+            "expired": true,
+            "point": 2
+          },
+          "new_family": "recovery"
+        },
+        {
+          "parameters": {
+            "family": "pending",
+            "expired": true,
+            "case": "dropped_ack"
+          },
+          "new_family": "pending"
+        },
+        {
+          "parameters": {
+            "family": "pending",
+            "expired": true,
+            "case": "dropped_waiter"
+          },
+          "new_family": "pending"
+        },
+        {
+          "parameters": {
+            "family": "pending",
+            "expired": true,
+            "case": "replay"
+          },
+          "new_family": "pending"
+        }
+      ]
+    }
+  ],
+  "wasm_state": {
+    "owner": "counter_state_survives_runs_and_is_bounded",
+    "decision": "retain causal history as one test; configuration/replay already has a separate test",
+    "prompt_runs": 212,
+    "counter_assertion": ">= 1000",
+    "instance_mode": "PerCall"
+  },
+  "validation": {
+    "memory_sqlite": {
+      "case_count": 20,
+      "single_thread_test_wall_seconds": 294.223,
+      "repetitions_at_four_slots": 5,
+      "all_repetitions_passed": true,
+      "retries": 0
+    },
+    "postgres": "compile and execution qualification pending",
+    "performance_qualification": false
+  }
+}
