@@ -6,7 +6,10 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+# Workspace-root builds select the driver directly; dev-only feature forwarding
+# otherwise enables the cfg without its optional dependencies in the workspace.
+# Every consumer disables defaults so SQLite-only graphs remain driver-free.
+default = ["postgres"]
 postgres = ["dep:sqlx", "dep:tokio", "dep:url", "dep:uuid"]
 
 [dependencies]

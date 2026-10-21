@@ -442,3 +442,13 @@ shutdown-order family, controller-process disposal, future queue, session owners
 and session defaults. The latest PostgreSQL+SQLite all-target Clippy check passed
 after removal of the cross-test locks. The full required schedule at two test
 threads is still in progress; no complete concurrent coverage claim is made yet.
+
+
+The private fixture crate selects its PostgreSQL feature by default when it is a
+workspace root. Every parent dev dependency explicitly disables those defaults;
+SQLite-only package builds still exclude `sqlx-postgres`. This avoids an observed
+workspace feature-resolution failure in which dev-only forwarding enabled the
+fixture crate's PostgreSQL cfg without linking its optional dependencies. A small
+independent workspace reproduced that failure and the root-default correction.
+The first broad discovery build failed before executing tests; its diagnostics
+are retained locally. Broad discovery is being repeated after the correction.
