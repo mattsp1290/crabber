@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      qualify:
+        description: Run the three cached-source qualification cases once
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -51,9 +56,6 @@ jobs:
             target/consumer-probes
             target/test-tools
             fixtures/wasm/target
-            testdata/external-consumer/target
-            testdata/server-host-consumer/target
-            testdata/custom-http-feature-probe/target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
       - name: Record cache conditions and install pinned tools
@@ -98,16 +100,27 @@ jobs:
       - name: Refresh source provenance after cache restore
         run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
       - name: Complete required check including compilation and cleanup
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha) }}
         env:
           CHECK_STARTED: ${{ steps.budget.outputs.start }}
           CACHE_STATE: ${{ steps.conditions.outputs.state }}
         run: python3 -I -S .github/scripts/check.py --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check.json"
+      - name: Qualify no-op and affected workspace rebuilds
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha }}
+        env:
+          CHECK_STARTED: ${{ steps.budget.outputs.start }}
+        run: python3 -I -S .github/scripts/qualify-check.py --warm-report target/test-performance/cache-restore.json --ci-start-time "$CHECK_STARTED" --output "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/qualification"
       - name: Mark complete cache snapshot
         if: success()
         run: |
           python3 -I -S - <<'PY'
           import json, os, pathlib
-          pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True}) + '\n')
+          directory = pathlib.Path('target/test-performance') / ('ci-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          report = directory / 'check.json'
+          if not report.exists():
+              report = directory / 'qualification/session-rebuild.json'
+          result = json.loads(report.read_text())
+          pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True, 'check': result}) + '\n')
           PY
       - name: Save dependency and compiler snapshot as CI maintenance
         if: always() && steps.cache.outcome == 'success'
@@ -123,9 +136,6 @@ jobs:
             target/consumer-probes
             target/test-tools
             fixtures/wasm/target
-            testdata/external-consumer/target
-            testdata/server-host-consumer/target
-            testdata/custom-http-feature-probe/target
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Preserve sanitized check, coverage and fixture reports
         if: always()
@@ -134,7 +144,7 @@ jobs:
           name: complete-check-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             target/test-performance/cache-restore.json
-            target/test-performance/ci-*/*.json
+            target/test-performance/ci-*/**/*.json
             target/test-performance/complete-*/fixtures.jsonl
             target/test-performance/complete-*/tests.json
             target/test-performance/complete-*/*-version.txt
