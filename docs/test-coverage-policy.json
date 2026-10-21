@@ -185,8 +185,8 @@
       ],
       "retained_tests": [],
       "before": "Narrow library/CLI feature checks compile their full private integration/unit suites, plus wasm_state and wasm_roles are rebuilt in two narrower facade graphs.",
-      "after": "Session/runtime library checks retain driver absence; actual CLI binary checks retain selected constructors. Combined behavior runs all WASM contracts once; the existing standalone external consumer owns real WASM-only build/execution.",
-      "rationale": "The removed test-crate compilation is not another production feature boundary. Actual production libraries, CLI glue and standalone consumer remain compiled in those narrow configurations; all runtime assertions stay in the combined behavior graph."
+      "after": "One driver-free SQLite library graph also compiles crabber-obs without OTLP. Combined behavior and actual normal CLI builds own constructor match arms; the standalone external consumer owns real WASM-only embedding. Custom-HTTP positive/negative probes retain every visibility assertion.",
+      "rationale": "server-host-probe main.rs has only sqlite/postgres conditional match arms; both compile in the combined graph. It has no wasm conditional CLI arm. workspace-context-probe is a library and its SQLite-enabled behavior compiles and runs in the combined graph. There were no negative CLI visibility assertions in the removed positive cargo-check commands. External host still builds/executes the facade with wasm+otlp+custom-http and no SQL drivers; the locked server-host consumer remains a genuine separate public consumer. The custom-http probe retains all positive/negative provider API diagnostics. crabber-obs has only two OTLP gates, at its telemetry module and reexports; its production library without OTLP now shares the driver-free SQLite graph, while its private tests run once with the combined graph. No assertion helper, doctest or actual executable journey was removed."
     },
     {
       "id": "runtime-grant-ack-input-matrices",
@@ -425,9 +425,8 @@
       "status": "source-audited-pending-selected-manifest",
       "required_detectors": [],
       "required_commands": [
-        "cargo check -p crabber-session -p crabber-runtime --features sqlite --lib",
-        "testdata/custom-http-feature-probe/check.sh",
-        "cargo check -p crabber-obs --no-default-features --all-targets"
+        "cargo check -p crabber-session -p crabber-runtime -p crabber-obs --no-default-features --features crabber-session/sqlite,crabber-runtime/sqlite --lib",
+        "testdata/custom-http-feature-probe/check.sh"
       ]
     },
     {

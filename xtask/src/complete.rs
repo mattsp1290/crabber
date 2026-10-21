@@ -111,20 +111,12 @@ fn feature_boundaries(gates: &mut Checks) {
             "crabber-session",
             "-p",
             "crabber-runtime",
-            "--features",
-            "sqlite",
-            "--lib",
-        ],
-    );
-    gates.cargo(
-        workspace,
-        &[
-            "check",
             "-p",
-            "crabber",
+            "crabber-obs",
             "--no-default-features",
             "--features",
-            "custom-http",
+            "crabber-session/sqlite,crabber-runtime/sqlite",
+            "--lib",
         ],
     );
     gates.script(
@@ -132,17 +124,15 @@ fn feature_boundaries(gates: &mut Checks) {
         "custom HTTP feature visibility and raw-escape boundaries",
         "testdata/custom-http-feature-probe/check.sh",
     );
-    gates.cargo(
+    // The combined graph compiles the actual CLI's SQLite/PostgreSQL match
+    // arms. There is no WASM-specific CLI arm, and the standalone external
+    // consumer below owns genuine WASM-only embedding. Rechecking those CLI
+    // sources in three narrow graphs adds no additional visibility assertion.
+    gates.script(
         workspace,
-        &[
-            "check",
-            "-p",
-            "crabber-obs",
-            "--no-default-features",
-            "--all-targets",
-        ],
+        "locked server-host consumer",
+        "testdata/server-host-consumer/check.sh",
     );
-    crate::check_server_host(workspace, gates, false);
     // The standalone external consumer builds and runs the genuine WASM-only
     // API. Combined behavior owns wasm_state/wasm_roles; rebuilding their full
     // test crates in two narrower feature graphs adds no distinct detector.
