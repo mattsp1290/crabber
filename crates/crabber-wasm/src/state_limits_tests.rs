@@ -45,7 +45,8 @@ async fn state_import_enforces_default_entry_and_value_limits() {
     let max_bytes = config.limits.max_state_value_bytes;
     assert_eq!(max_entries, 64);
     assert_eq!(max_bytes, 16 << 10);
-    let module = Loader::new().unwrap().load(config).await.unwrap();
+    let loader = Loader::new().unwrap();
+    let module = loader.load(config).await.unwrap();
     let state = sink();
     for n in 0..max_entries {
         let result = emit(
@@ -112,11 +113,8 @@ async fn state_import_enforces_default_entry_and_value_limits() {
 
 #[tokio::test]
 async fn counter_state_crosses_thousand_between_fresh_instances() {
-    let module = Loader::new()
-        .unwrap()
-        .load(fixture("counter-sink"))
-        .await
-        .unwrap();
+    let loader = Loader::new().unwrap();
+    let module = loader.load(fixture("counter-sink")).await.unwrap();
     let state = sink();
     state
         .state
