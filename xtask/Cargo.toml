@@ -41,6 +41,7 @@ optional = true
 
 [dependencies.crabber-test-support]
 path = "../crates/crabber-test-support"
+features = ["postgres"]
 optional = true
 
 [dependencies.sqlx]

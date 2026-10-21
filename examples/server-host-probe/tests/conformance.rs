@@ -40,15 +40,16 @@ async fn sqlite_custom_adapter_conformance() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_custom_adapter_conformance() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = crabber::session::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    contracts(|clock| Arc::new(store.clone().with_clock(clock))).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        let store = crabber::session::PostgresStore::connect(&url)
+            .await
+            .unwrap();
+        contracts(|clock| Arc::new(store.clone().with_clock(clock))).await;
+    })
+    .await
+    .unwrap();
 }

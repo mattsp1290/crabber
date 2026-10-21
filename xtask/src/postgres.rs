@@ -17,6 +17,7 @@ struct Options {
     filter: Option<String>,
     fixtures_only: bool,
     cleanup: Option<String>,
+    test_threads: Option<String>,
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, &'static str> {
@@ -29,6 +30,13 @@ impl Options {
                 }
                 "--filter" if options.filter.is_none() => {
                     options.filter = Some(args.next().ok_or("--filter needs a substring")?.clone());
+                }
+                "--test-threads" if options.test_threads.is_none() => {
+                    let threads = args.next().ok_or("--test-threads needs 1, 2 or 4")?;
+                    if !matches!(threads.as_str(), "1" | "2" | "4") {
+                        return Err("--test-threads needs 1, 2 or 4");
+                    }
+                    options.test_threads = Some(threads.clone());
                 }
                 "--cleanup-run" if options.cleanup.is_none() => {
                     options.cleanup =
@@ -176,6 +184,13 @@ async fn execute_schedule(
                 .position(|argument| *argument == "--")
                 .unwrap_or(arguments.len());
             arguments.insert(position, filter);
+        }
+        if args[0] == "test" {
+            if !arguments.contains(&"--") {
+                arguments.push("--");
+            }
+            arguments.push("--test-threads");
+            arguments.push(options.test_threads.as_deref().unwrap_or("2"));
         }
         let mut command = Command::new("cargo");
         command

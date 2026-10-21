@@ -19,6 +19,7 @@ async-trait = "0.1"
 serde_json = "1"
 
 [dev-dependencies]
+crabber-test-support = { path = "../crabber-test-support", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "trace"] }
@@ -41,7 +42,7 @@ workspace = true
 
 [features]
 default = []
-postgres = ["crabber-session/postgres"]
+postgres = ["crabber-test-support/postgres", "crabber-session/postgres"]
 sqlite = ["crabber-session/sqlite", "crabber-runtime/sqlite"]
 custom-http = ["crabber-providers/custom-http"]
 anthropic = ["crabber-providers/anthropic"]

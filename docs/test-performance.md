@@ -373,3 +373,30 @@ original PostgreSQL CI schedule also passed all 24 commands with its dedicated
 container removed. Both runs are exploratory timing evidence because the host
 had concurrent work; they establish passing original obligations, not the paired
 performance thresholds.
+
+
+Original Cargo discovery also passed for all 41 distinct invocation variants at
+`58535cfc`, recording each feature graph and test list. This is source-revision
+coverage evidence; lists alone do not replace executing required database tests.
+After preserving these logs and summaries, the exploratory baseline's compiler
+outputs were removed to reclaim disk. Qualified cold/warm comparisons must
+rebuild both revisions under matching conditions.
+
+Fixture support is a private, unpublished dev dependency. Its PostgreSQL driver
+is feature gated: SQLite-only dependency graphs must not acquire PostgreSQL just
+because test support exists. `cargo tree -p crabber-session --features sqlite -e
+features` was checked for that boundary.
+
+Adopted child helpers use `TestDatabase::child_environment` on their specific
+`Command`, then `attached_url` inside the marked helper. Attachment rejects a
+foreign server, template database, unregistered database or mismatched opaque
+identity, and verifies `current_database()` through an independent connection.
+Only the database identity is printed. No process-wide environment mutation is
+used. The workspace-context probe's resume and identity-drift children have
+passed this handoff against their parent's owned fixture.
+
+While caller adoption is in progress, the Cargo PostgreSQL runner limits libtest
+to two test threads per invocation. `--test-threads 1`, `2` or `4` selects a bounded
+functional qualification setting; existing cross-test locks remain until all
+users of their shared resources are isolated. This is not nextest scheduling or
+a measured concurrency recommendation.

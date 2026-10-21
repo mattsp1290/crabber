@@ -24,10 +24,11 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]
 default = []
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
+postgres = ["crabber-test-support/postgres", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 
 [dev-dependencies]
+crabber-test-support = { path = "../crabber-test-support", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 tempfile = "3"
 allocation-counter = "0.8.1"

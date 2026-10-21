@@ -31,6 +31,7 @@ pub enum DatabaseMode {
     Blank,
 }
 
+mod child;
 mod config;
 mod database;
 mod runner;

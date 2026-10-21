@@ -145,6 +145,7 @@ impl Checks {
                 "CRABBER_TEST_POSTGRES_ADMIN_URL",
                 "CRABBER_TEST_RUN_POSTGRES_ADMIN_URL",
                 "CRABBER_TEST_POSTGRES_RUN",
+                "CRABBER_TEST_POSTGRES_CHILD_DATABASE",
                 "CRABBER_TRACE_LIVE",
                 "CRABBER_OBS_VERIFY_MARKER",
                 "ANTHROPIC_API_KEY",

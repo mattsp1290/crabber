@@ -15,12 +15,13 @@ tempfile = "3"
 time = "0.3"
 
 [dev-dependencies]
+crabber-test-support = { path = "../../crates/crabber-test-support", default-features = false }
 sha2 = "0.10"
 
 [features]
 default = []
 wasm = ["crabber/wasm"]
-postgres = ["crabber/postgres"]
+postgres = ["crabber-test-support/postgres", "crabber/postgres"]
 sqlite = ["crabber/sqlite"]
 
 [lints]
