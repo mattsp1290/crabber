@@ -165,10 +165,6 @@ fn behavior_graph(gates: &mut Checks, directory: &Path) {
     );
     // The same features own binaries, tests and docs; there are no per-package
     // behavior reruns merely to enable PostgreSQL or another provider/exporter.
-    gates.cargo(
-        workspace,
-        &["build", "--workspace", "--bins", "--features", FEATURES],
-    );
     let cargo_metadata = directory.join("cargo-metadata.json");
     let binaries = directory.join("binaries.json");
     let manifest = directory.join("tests.json");
@@ -191,6 +187,14 @@ fn behavior_graph(gates: &mut Checks, directory: &Path) {
             "json",
         ],
         binaries.clone(),
+    );
+    // Compile tests first so Cargo can schedule library and test targets
+    // together. Building every normal CLI first would serialize those builds
+    // unnecessarily when a workspace library changed. CLI-only outputs still
+    // use the identical graph and are ready before the retained journeys run.
+    gates.cargo(
+        workspace,
+        &["build", "--workspace", "--bins", "--features", FEATURES],
     );
     let profile = if std::env::var("CI").as_deref() == Ok("true") {
         "complete-ci"
