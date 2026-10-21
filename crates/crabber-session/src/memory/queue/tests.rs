@@ -21,6 +21,7 @@ async fn queue_faults() {
     })
     .await;
 }
+native_store_unit_tests! {
 #[tokio::test]
 async fn queue_bounds() {
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
@@ -29,6 +30,8 @@ async fn queue_bounds() {
     let store = crate::MemoryStore::with_clock(clock.clone());
     crate::queue_contract::bounds(&store).await;
     crate::queue_contract::byte_bound(&store).await;
+}
+
 }
 
 #[tokio::test]

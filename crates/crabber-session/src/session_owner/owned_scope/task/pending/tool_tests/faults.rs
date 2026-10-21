@@ -3,12 +3,11 @@ use super::super::tests::interposed::{Interposed, Stage};
 use super::*;
 use std::time::Duration;
 
-pub(super) async fn contract<S: Store + 'static>(
+pub(super) async fn held_contract<S: Store + 'static>(
     store: Arc<S>,
     clock: &ManualClock,
     frontend: bool,
     recovery: bool,
-    exhaustive_validation: bool,
 ) {
     for stage in [
         Stage::Complete,
@@ -20,6 +19,15 @@ pub(super) async fn contract<S: Store + 'static>(
             Box::pin(held(store.clone(), clock, frontend, recovery, stage, fault)).await;
         }
     }
+}
+
+pub(super) async fn malformed_contract<S: Store + 'static>(
+    store: Arc<S>,
+    clock: &ManualClock,
+    frontend: bool,
+    recovery: bool,
+    exhaustive_validation: bool,
+) {
     // Corruption validation lives in shared pending execution code. Memory
     // keeps every distinct validator branch; SQL retains forged metadata and
     // wrong typed outcomes through each persisted source/authentication path.

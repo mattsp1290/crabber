@@ -7,6 +7,8 @@ Each costly family records the failure, production owner, required backend, reta
 | Family | Decision | Required detection | Removed work |
 | --- | --- | --- | --- |
 | SQL successor tool faults | MERGE | All seven fault/refusal boundaries per SQLite/PostgreSQL, with three alternate-origin faults; existing source/guard contracts retain all four origins | 28 histories become ten independently scheduled histories per backend |
+| WASM state | MOVE-CHEAPER | Two actual Agent runs, real guest imports at64entries/16KiB, direct1000countertransition and existing concurrent isolation | 210 redundant model turns |
+| Embedded Memory queue bounds | DELETE-REDUNDANT | Native Memory plus both SQL item/byte-budget contracts; adapter-specific fenced journeys stay | One named duplicate private contract registration |
 | Pending tool malformed ACK | MOVE-CHEAPER | Twelve corruptions through real shared pending execution on Memory; forged metadata and wrong outcome through each of four SQL origin paths; zero dispatch/register assertions retained | SQL corruption preparations fall from 48 to eight per backend |
 
 The SQL fault histories call the original assertion helpers unchanged. Before/after-commit and activation uncertainty remain real SQL transactions. Current PostgreSQL fixtures already provide the migrated schema; dedicated migration tests continue using Blank/legacy fixtures. Every independent fault test receives fresh storage. Shared state between independently scheduled histories is forbidden.
@@ -16,3 +18,7 @@ The pending corruption table exercises shared `Completed::new`, `Source::metadat
 Further reductions must retain real crash/restart, effect counts, concurrency, leases, cancellation, cleanup, migrations, distinct backend SQL/serialization, limits, feature absence, redaction, WASM and embedding boundaries. Known regression reproductions remain required. Do not hide essential coverage in ignored/nightly suites or pass with retries, relaxed durability or increased deadlines.
 
 Before qualification, audit the final selected manifest against the policy and verify three consequential reductions with temporary meaningful faults. Record failure and exact restoration as implementation evidence; no permanent mutation framework is required. A faster failed or partial check does not meet the budget.
+
+The WASM replacement and other follow-up rows are implemented but not yet qualified. Their retained detectors require actual guest builds and tests before acceptance. The new state-import cases use the unchanged default64-entry/16KiB limits and PerCall mode; they assert both the specific state refusal and unchanged persisted state. The short Agent case continues proving public extension wiring and state reuse across distinct runs. The old numeric growth milestone remains a direct real-guest999→1000 transition, with no model-turn amplification.
+
+Native pending-tool histories now have separate success/replay, held-ACK, malformed/replay and blocked-cleanup entrypoints for each origin/backend. This preserves the retained helper bodies and creates fresh Store/clock state per independent family; it adds no cross-test dependencies. The earlier targeted qualification predates this split, so the new entrypoints remain unqualified until run. The machine-readable policy names their actual detector entrypoints.

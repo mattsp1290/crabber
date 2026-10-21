@@ -38,11 +38,93 @@
     {
       "id": "pending-tool-malformed-ack",
       "disposition": "MOVE-CHEAPER",
-      "state": "targeted-backend-qualified",
+      "state": "implemented-unqualified",
       "failure": "Forged completion metadata, wrong claim/inspection/fence, oversized receipt, or wrong typed outcome must prevent registration and business dispatch.",
       "owner": [
         "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation.rs",
         "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation/receipt.rs"
+      ],
+      "retained_tests": [
+        "tool_claim::memory_pending_malformed_replay",
+        "tool_recovery::memory_pending_malformed_replay",
+        "frontend_claim::memory_pending_malformed_replay",
+        "frontend_recovery::memory_pending_malformed_replay",
+        "tool_claim::sqlite_pending_malformed_replay",
+        "tool_recovery::sqlite_pending_malformed_replay",
+        "frontend_claim::sqlite_pending_malformed_replay",
+        "frontend_recovery::sqlite_pending_malformed_replay",
+        "tool_claim::postgres_pending_malformed_replay",
+        "tool_recovery::postgres_pending_malformed_replay",
+        "frontend_claim::postgres_pending_malformed_replay",
+        "frontend_recovery::postgres_pending_malformed_replay"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Twelve corruption preparations for each of four origins on every backend.",
+      "after": "All twelve on Memory for every origin; forged receipt revision (0) and suspended/wrong typed outcome (8) on both SQL backends for every origin.",
+      "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged.",
+      "validation": "The original helper bodies passed on all backends at1/4 slots before the independent-family split; the renamed detector entrypoints need qualification."
+    },
+    {
+      "id": "wasm-state-bounds",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "State must survive independent PerCall Agent runs; real host state imports must enforce entry, value and key bounds without applying refused writes.",
+      "owner": [
+        "crates/crabber-wasm/src/lib.rs",
+        "fixtures/wasm/src/counter-sink/src/lib.rs"
+      ],
+      "required_backends": [
+        "wasm"
+      ],
+      "retained_tests": [
+        "counter_state_survives_independent_agent_runs",
+        "state_import_enforces_default_entry_and_value_limits",
+        "counter_state_crosses_thousand_between_fresh_instances",
+        "concurrent_sessions_serialize_without_state_leak"
+      ],
+      "before": "212 full Agent turns merely increment one state key past1000; actual default entry/value/key overflow was not crossed.",
+      "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999\u21921000 counter transition and existing two-session concurrent state history remain.",
+      "rationale": "The counter guest only updates count; another model turn repeats the same transport/state path. Direct guest calls exercise actual host imports and state snapshots at their owning WASM layer. Limits/defaults/instance mode and production implementations are unchanged."
+    },
+    {
+      "id": "embedded-memory-queue-bounds",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-unqualified",
+      "failure": "Pending item and byte budgets must reject overflow while retaining head preparation/admission capacity.",
+      "owner": [
+        "crates/crabber-session/src/memory/queue.rs",
+        "crates/crabber-session/src/queue_contract/limits.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory::queue::tests::queue_bounds",
+        "sqlite::queue::tests::queue_bounds",
+        "postgres::queue::tests::queue_bounds"
+      ],
+      "before": "The exact private Memory queue_bounds contract executes in both the native session binary and source-embedded facade adapter.",
+      "after": "Canonical Memory and both independently implemented SQL queue bounds remain; only this named duplicate registration is absent from the embedding adapter.",
+      "rationale": "The adapter source-embeds the same Memory queue implementation and shared limits; its Store implementation still compiles. Its own fenced public and adapter-specific negative histories remain. No test-prefix filtering or generic adapter suite removal is used."
+    },
+    {
+      "id": "native-pending-tool-family-scheduling",
+      "disposition": "KEEP",
+      "state": "implemented-unqualified",
+      "failure": "Completion/inspection/main must share the actual task; held ACK cancellation cannot dispatch; committed replay cannot repeat effects; blocked cleanup must retain ownership until actual release.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
       ],
       "retained_tests": [
         "memory_pending_tool_claim",
@@ -56,17 +138,35 @@
         "postgres_pending_tool_claim",
         "postgres_pending_tool_recovery",
         "postgres_pending_frontend_claim",
-        "postgres_pending_frontend_recovery"
+        "postgres_pending_frontend_recovery",
+        "tool_claim::memory_pending_held_ack",
+        "tool_claim::memory_pending_cleanup",
+        "tool_recovery::memory_pending_held_ack",
+        "tool_recovery::memory_pending_cleanup",
+        "frontend_claim::memory_pending_held_ack",
+        "frontend_claim::memory_pending_cleanup",
+        "frontend_recovery::memory_pending_held_ack",
+        "frontend_recovery::memory_pending_cleanup",
+        "tool_claim::sqlite_pending_held_ack",
+        "tool_claim::sqlite_pending_cleanup",
+        "tool_recovery::sqlite_pending_held_ack",
+        "tool_recovery::sqlite_pending_cleanup",
+        "frontend_claim::sqlite_pending_held_ack",
+        "frontend_claim::sqlite_pending_cleanup",
+        "frontend_recovery::sqlite_pending_held_ack",
+        "frontend_recovery::sqlite_pending_cleanup",
+        "tool_claim::postgres_pending_held_ack",
+        "tool_claim::postgres_pending_cleanup",
+        "tool_recovery::postgres_pending_held_ack",
+        "tool_recovery::postgres_pending_cleanup",
+        "frontend_claim::postgres_pending_held_ack",
+        "frontend_claim::postgres_pending_cleanup",
+        "frontend_recovery::postgres_pending_held_ack",
+        "frontend_recovery::postgres_pending_cleanup"
       ],
-      "required_backends": [
-        "memory",
-        "sqlite",
-        "postgres"
-      ],
-      "before": "Twelve corruption preparations for each of four origins on every backend.",
-      "after": "All twelve on Memory for every origin; forged receipt revision (0) and suspended/wrong typed outcome (8) on both SQL backends for every origin.",
-      "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged.",
-      "validation": "All selected histories passed at one and four slots; Memory/SQLite20 selected cases each, managed PostgreSQL10fault+4pendingfixtures each; all4ownedcontainers and fixture registries drained. Full combined schedule and budget qualification remain pending."
+      "before": "Each of four origins bundles success, held-stage faults, malformed ACK/replay and blocked cleanup into one sequential Store history.",
+      "after": "Each origin has independently scheduled success/replay, held-ACK, malformed/replay and cleanup tests, each with fresh Store/clock. Current PostgreSQL clones reuse the already migrated template.",
+      "rationale": "The helpers preserve their assertions and internal task/join order. Separate families share no IDs, receipts, tasks or database state. Migration is not asserted in these wrappers; dedicated migration cases retain real migration calls."
     }
   ],
   "required_behaviors": [

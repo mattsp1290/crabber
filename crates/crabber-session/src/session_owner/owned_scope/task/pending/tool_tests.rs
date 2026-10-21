@@ -26,13 +26,44 @@ enum BatchKind {
     Mixed,
 }
 
+#[derive(Clone, Copy)]
+enum Family {
+    SuccessReplay,
+    HeldAck,
+    MalformedReplay,
+    Cleanup,
+}
+
 async fn contract<S: Store + 'static>(
     store: Arc<S>,
     clock: Arc<ManualClock>,
     frontend: bool,
     recovery: bool,
     exhaustive_validation: bool,
+    family: Family,
 ) {
+    match family {
+        Family::HeldAck => {
+            Box::pin(faults::held_contract(store, &clock, frontend, recovery)).await;
+            return;
+        }
+        Family::MalformedReplay => {
+            Box::pin(faults::malformed_contract(
+                store,
+                &clock,
+                frontend,
+                recovery,
+                exhaustive_validation,
+            ))
+            .await;
+            return;
+        }
+        Family::Cleanup => {
+            Box::pin(cleanup::blocked(store, &clock, frontend, recovery)).await;
+            return;
+        }
+        Family::SuccessReplay => (),
+    }
     for unkeyed in [false, true] {
         Box::pin(same_task(
             store.clone(),
@@ -57,15 +88,6 @@ async fn contract<S: Store + 'static>(
             .await;
         }
     }
-    Box::pin(faults::contract(
-        store.clone(),
-        &clock,
-        frontend,
-        recovery,
-        exhaustive_validation,
-    ))
-    .await;
-    Box::pin(cleanup::blocked(store.clone(), &clock, frontend, recovery)).await;
 }
 
 async fn same_task<S: Store + 'static>(
@@ -147,7 +169,7 @@ async fn same_task<S: Store + 'static>(
 // Each family begins with a fresh Store; histories inside a family retain their
 // original task identity, faults, replay and cleanup order.
 macro_rules! cases {
-    ($memory:ident, $sqlite:ident, $postgres:ident, $frontend:literal, $recovery:literal) => {
+    ($memory:ident, $sqlite:ident, $postgres:ident, $frontend:literal, $recovery:literal, $family:ident) => {
         #[tokio::test]
         async fn $memory() {
             let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
@@ -157,6 +179,7 @@ macro_rules! cases {
                 $frontend,
                 $recovery,
                 true,
+                Family::$family,
             ))
             .await;
         }
@@ -177,6 +200,7 @@ macro_rules! cases {
                 $frontend,
                 $recovery,
                 false,
+                Family::$family,
             ))
             .await;
         }
@@ -185,7 +209,6 @@ macro_rules! cases {
         async fn $postgres() {
             use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
             TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
-                crate::PostgresStore::migrate(&url).await.unwrap();
                 let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
                 let store = crate::PostgresStore::connect(&url)
                     .await
@@ -197,6 +220,7 @@ macro_rules! cases {
                     $frontend,
                     $recovery,
                     false,
+                    Family::$family,
                 ))
                 .await;
             })
@@ -210,26 +234,68 @@ cases!(
     sqlite_pending_tool_claim,
     postgres_pending_tool_claim,
     false,
-    false
+    false,
+    SuccessReplay
 );
 cases!(
     memory_pending_tool_recovery,
     sqlite_pending_tool_recovery,
     postgres_pending_tool_recovery,
     false,
-    true
+    true,
+    SuccessReplay
 );
 cases!(
     memory_pending_frontend_claim,
     sqlite_pending_frontend_claim,
     postgres_pending_frontend_claim,
     true,
-    false
+    false,
+    SuccessReplay
 );
 cases!(
     memory_pending_frontend_recovery,
     sqlite_pending_frontend_recovery,
     postgres_pending_frontend_recovery,
     true,
-    true
+    true,
+    SuccessReplay
 );
+
+// Every independent family gets its own migrated Store and clock. A held ACK,
+// exact replay or cleanup story remains internally sequential in its old helper.
+macro_rules! fault_families {
+    ($module:ident, $frontend:literal, $recovery:literal) => {
+        mod $module {
+            use super::*;
+            cases!(
+                memory_pending_held_ack,
+                sqlite_pending_held_ack,
+                postgres_pending_held_ack,
+                $frontend,
+                $recovery,
+                HeldAck
+            );
+            cases!(
+                memory_pending_malformed_replay,
+                sqlite_pending_malformed_replay,
+                postgres_pending_malformed_replay,
+                $frontend,
+                $recovery,
+                MalformedReplay
+            );
+            cases!(
+                memory_pending_cleanup,
+                sqlite_pending_cleanup,
+                postgres_pending_cleanup,
+                $frontend,
+                $recovery,
+                Cleanup
+            );
+        }
+    };
+}
+fault_families!(tool_claim, false, false);
+fault_families!(tool_recovery, false, true);
+fault_families!(frontend_claim, true, false);
+fault_families!(frontend_recovery, true, true);

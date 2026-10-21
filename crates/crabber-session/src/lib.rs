@@ -57,6 +57,12 @@ pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBound
 macro_rules! native_pending_initial_items {
     ($($item:item)*) => { $($item)* };
 }
+// Canonical store units belong to this crate. The source-embedding adapter
+// separately compiles the same implementation and owns its public journeys.
+#[cfg(test)]
+macro_rules! native_store_unit_tests {
+    ($($item:item)*) => { $($item)* };
+}
 mod native_enrollment;
 mod native_parent;
 #[cfg(test)]

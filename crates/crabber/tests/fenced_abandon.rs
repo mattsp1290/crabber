@@ -5,6 +5,11 @@ mod event_persistence;
 macro_rules! native_pending_initial_items {
     ($($item:item)*) => {};
 }
+// Generic queue limits run on the canonical MemoryStore and both real SQL
+// implementations; this adapter retains its own fenced public histories.
+macro_rules! native_store_unit_tests {
+    ($($item:item)*) => {};
+}
 mod pending_initial_test_state {
     #[derive(Clone, Default)]
     pub(crate) struct TestState {}
