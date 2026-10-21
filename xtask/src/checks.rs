@@ -184,14 +184,8 @@ impl Checks {
         self.register_command(Some(id), directory, command, expected);
     }
 
-    fn register_command(
-        &mut self,
-        name: Option<&str>,
-        directory: &Path,
-        mut command: Command,
-        expected: &str,
-    ) {
-        remove_live_configuration(&mut command);
+    fn configure_environment(&self, command: &mut Command) {
+        remove_live_configuration(command);
         if !self.required_environment.is_empty() {
             // One complete invocation has one native target root, including
             // standalone consumers. Explicit fixture/probe targets stay scoped.
@@ -231,8 +225,18 @@ impl Checks {
             ] {
                 command.env_remove(name);
             }
-            remove_live_configuration(&mut command);
+            remove_live_configuration(command);
         }
+    }
+
+    fn register_command(
+        &mut self,
+        name: Option<&str>,
+        directory: &Path,
+        mut command: Command,
+        expected: &str,
+    ) {
+        self.configure_environment(&mut command);
         let argv: Vec<_> = std::iter::once(command.get_program())
             .chain(command.get_args())
             .map(|arg| arg.to_string_lossy().into_owned())
