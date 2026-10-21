@@ -167,6 +167,24 @@
       "before": "Each of four origins bundles success, held-stage faults, malformed ACK/replay and blocked cleanup into one sequential Store history.",
       "after": "Each origin has independently scheduled success/replay, held-ACK, malformed/replay and cleanup tests, each with fresh Store/clock. Current PostgreSQL clones reuse the already migrated template.",
       "rationale": "The helpers preserve their assertions and internal task/join order. Separate families share no IDs, receipts, tasks or database state. Migration is not asserted in these wrappers; dedicated migration cases retain real migration calls."
+    },
+    {
+      "id": "narrow-feature-builds",
+      "disposition": "MERGE",
+      "state": "implemented-unqualified",
+      "failure": "SQLite libraries must compile without a PostgreSQL driver; CLI constructors and external WASM embedding must work in their selected feature graphs.",
+      "owner": [
+        "xtask/src/complete.rs",
+        "xtask/src/main.rs",
+        "testdata/external-consumer"
+      ],
+      "required_backends": [
+        "compile-boundary"
+      ],
+      "retained_tests": [],
+      "before": "Narrow library/CLI feature checks compile their full private integration/unit suites, plus wasm_state and wasm_roles are rebuilt in two narrower facade graphs.",
+      "after": "Session/runtime library checks retain driver absence; actual CLI binary checks retain selected constructors. Combined behavior runs all WASM contracts once; the existing standalone external consumer owns real WASM-only build/execution.",
+      "rationale": "The removed test-crate compilation is not another production feature boundary. Actual production libraries, CLI glue and standalone consumer remain compiled in those narrow configurations; all runtime assertions stay in the combined behavior graph."
     }
   ],
   "required_behaviors": [

@@ -113,7 +113,7 @@ fn feature_boundaries(gates: &mut Checks) {
             "crabber-runtime",
             "--features",
             "sqlite",
-            "--all-targets",
+            "--lib",
         ],
     );
     gates.cargo(
@@ -143,22 +143,9 @@ fn feature_boundaries(gates: &mut Checks) {
         ],
     );
     crate::check_server_host(workspace, gates, false);
-    for features in ["wasm", "wasm,sqlite"] {
-        gates.cargo(
-            workspace,
-            &[
-                "check",
-                "-p",
-                "crabber",
-                "--features",
-                features,
-                "--test",
-                "wasm_state",
-                "--test",
-                "wasm_roles",
-            ],
-        );
-    }
+    // The standalone external consumer builds and runs the genuine WASM-only
+    // API. Combined behavior owns wasm_state/wasm_roles; rebuilding their full
+    // test crates in two narrower feature graphs adds no distinct detector.
 }
 
 fn behavior_graph(gates: &mut Checks, directory: &Path) {
