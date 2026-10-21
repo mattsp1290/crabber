@@ -324,18 +324,8 @@ async fn execute_schedule(
                 .env_remove("CRABBER_POSTGRES_URL")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD")
-                .env_remove(METRICS_FILE)
-                .env_remove("ANTHROPIC_API_KEY")
-                .env_remove("OPENAI_API_KEY")
-                .env_remove("OPENCODE_GO_API_KEY")
-                .env_remove("CRABBER_TRACE_LIVE")
-                .env_remove("CRABBER_OBS_VERIFY_MARKER")
-                .env_remove("DD_API_KEY")
-                .env_remove("DD_APP_KEY")
-                .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
-                .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-                .env_remove("OTEL_EXPORTER_OTLP_HEADERS")
-                .env_remove("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+                .env_remove(METRICS_FILE);
+            crate::checks::remove_live_configuration(&mut command);
             if let Some(path) = metrics_path {
                 command.env(METRICS_FILE, path);
             }

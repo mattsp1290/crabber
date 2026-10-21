@@ -10,6 +10,33 @@ use sha2::Digest;
 
 use crate::timings::Report;
 
+/// Keep provider/exporter configuration out of both credential-free test lanes.
+/// Scoped PostgreSQL fixture handoffs and explicit stderr recipes remain intact.
+pub(crate) fn remove_live_configuration(command: &mut Command) {
+    for name in [
+        "CRABBER_TRACE_LIVE",
+        "CRABBER_OBS_VERIFY_MARKER",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENCODE_GO_API_KEY",
+        "DD_API_KEY",
+        "DD_APP_KEY",
+        "DD_SERVICE",
+        "DD_ENV",
+        "DD_VERSION",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    ] {
+        command.env_remove(name);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Options {
     pub(crate) list: bool,
@@ -152,27 +179,10 @@ impl Checks {
                 "CRABBER_TEST_POSTGRES_CHILD_DATABASE",
                 "CRABBER_TEST_HISTORY_CHILD",
                 "CRABBER_TEST_POSTGRES_METRICS_FILE",
-                "CRABBER_TRACE_LIVE",
-                "CRABBER_OBS_VERIFY_MARKER",
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "OPENCODE_GO_API_KEY",
-                "DD_API_KEY",
-                "DD_APP_KEY",
-                "DD_SERVICE",
-                "DD_ENV",
-                "DD_VERSION",
-                "OTEL_EXPORTER_OTLP_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_HEADERS",
-                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
-                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
             ] {
                 command.env_remove(name);
             }
+            remove_live_configuration(&mut command);
         }
         let argv: Vec<_> = std::iter::once(command.get_program())
             .chain(command.get_args())
@@ -368,6 +378,31 @@ mod tests {
             .env("RUST_LOG","info");
         checks.command(Path::new("."), command, "offline service isolation");
         assert_eq!(checks.execute(&Options::default()), 0);
+    }
+
+    #[test]
+    fn live_configuration_removal_preserves_scoped_fixture_handoff() {
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                concat!(
+                    "test -z \"${DD_ENV+x}\" && ",
+                    "test -z \"${OTEL_EXPORTER_OTLP_LOGS_HEADERS+x}\" && ",
+                    "test -z \"${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT+x}\" && ",
+                    "test \"$CRABBER_TEST_POSTGRES_URL\" = fixture-endpoint && ",
+                    "test \"$CRABBER_TEST_POSTGRES_CHILD_DATABASE\" = ct_fixture && ",
+                    "test \"$RUST_LOG\" = info"
+                ),
+            ])
+            .env("DD_ENV", "fixture-only")
+            .env("OTEL_EXPORTER_OTLP_LOGS_HEADERS", "fixture-only")
+            .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "fixture-only")
+            .env("CRABBER_TEST_POSTGRES_URL", "fixture-endpoint")
+            .env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", "ct_fixture")
+            .env("RUST_LOG", "info");
+        remove_live_configuration(&mut command);
+        assert!(command.status().unwrap().success());
     }
 
     #[test]
