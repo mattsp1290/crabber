@@ -12,6 +12,35 @@ pub struct TestDatabase {
     name: String,
 }
 impl TestDatabase {
+    /// Preserve Tokio-test shutdown order for histories that intentionally retain
+    /// uncertain controllers. Call from a synchronous test with its original
+    /// runtime configuration. Runtime Drop stops and joins its actual tasks
+    /// before the administrative runtime attempts normal connection drain.
+    /// # Errors
+    /// Fails on configuration, runtime construction, provisioning or drain.
+    pub fn run_with_runtime(
+        mode: DatabaseMode,
+        mut history: tokio::runtime::Builder,
+        journey: impl AsyncFnOnce(String),
+    ) -> Result<()> {
+        if !Self::available()? {
+            return Ok(());
+        }
+        let admin = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| FixtureError("cannot create fixture administrative runtime"))?;
+        let database = admin.block_on(Self::create(mode))?;
+        {
+            let runtime = history
+                .enable_all()
+                .build()
+                .map_err(|_| FixtureError("cannot create original test history runtime"))?;
+            runtime.block_on(journey(database.url()));
+        }
+        admin.block_on(database.finish())
+    }
+
     /// Whether a direct test invocation has a runner configuration. Absent
     /// service is an explicit offline skip; required/legacy URL-only mode fails.
     /// # Errors
@@ -45,10 +74,12 @@ impl TestDatabase {
         if !Self::available()? {
             return Ok(());
         }
-        let database = Self::create(mode).await?;
+        // Keep fixture administration and potentially large contract histories
+        // off the caller's async stack without spawning another Tokio task.
+        let database = Box::pin(Self::create(mode)).await?;
         // The completed future is dropped at this statement, before finish.
-        journey(database.url()).await;
-        database.finish().await
+        Box::pin(journey(database.url())).await;
+        Box::pin(database.finish()).await
     }
 
     /// Provision from runner configuration, never from an application URL.

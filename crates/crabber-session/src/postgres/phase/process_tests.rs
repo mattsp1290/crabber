@@ -6,7 +6,9 @@ async fn process_helper() {
         return;
     };
     let store = super::PostgresStore::connect(
-        &crate::postgres::tests::test_url().expect("child database required"),
+        &crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .expect("child database required"),
     )
     .await
     .unwrap();
@@ -20,49 +22,53 @@ async fn process_helper() {
 }
 #[tokio::test]
 async fn lost_acknowledgements_reconcile_in_fresh_process() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::PostgresStore::connect(&url).await.unwrap();
-    for mode in process::Mode::ALL {
-        let fixture = process::pending(&store, mode).await;
-        let result = process::write(
-            &store,
-            &fixture,
-            |point| {
-                store
-                    .phase_fault
-                    .store(point, std::sync::atomic::Ordering::SeqCst);
-            },
-            true,
-        )
-        .await;
-        assert_eq!(result.unwrap_err(), crate::PhaseError::UnknownStoreOutcome);
-        process::child::spawn(
-            "postgres::phase::process_tests::process_helper",
-            &fixture,
-            None,
-            &[],
-        )
-        .wait()
-        .await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::PostgresStore::connect(&url).await.unwrap();
+        for mode in process::Mode::ALL {
+            let fixture = process::pending(&store, mode).await;
+            let result = process::write(
+                &store,
+                &fixture,
+                |point| {
+                    store
+                        .phase_fault
+                        .store(point, std::sync::atomic::Ordering::SeqCst);
+                },
+                true,
+            )
+            .await;
+            assert_eq!(result.unwrap_err(), crate::PhaseError::UnknownStoreOutcome);
+            process::child::spawn(
+                "postgres::phase::process_tests::process_helper",
+                &fixture,
+                crabber_test_support::ChildDatabase::Postgres(&url),
+                &[],
+            )
+            .wait()
+            .await;
+        }
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn killed_writer_rolls_back_claim_start_and_all_resolution_choices() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::PostgresStore::connect(&url).await.unwrap();
-    for mode in process::Mode::ALL {
-        crash(&store, mode).await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::PostgresStore::connect(&url).await.unwrap();
+        for mode in process::Mode::ALL {
+            crash(&url, &store, mode).await;
+        }
+    })
+    .await
+    .unwrap();
 }
-async fn crash(store: &super::PostgresStore, mode: process::Mode) {
+async fn crash(url: &str, store: &super::PostgresStore, mode: process::Mode) {
     let fixture = process::pending(store, mode).await;
     let name = format!("phase_barrier_{}", uuid::Uuid::new_v4().simple());
     let operation = mode.operation();
@@ -83,20 +89,20 @@ async fn crash(store: &super::PostgresStore, mode: process::Mode) {
     let mut child = process::child::spawn(
         "postgres::phase::process_tests::process_helper",
         &fixture,
-        None,
+        crabber_test_support::ChildDatabase::Postgres(url),
         &[("CRABBER_PHASE_WRITE", "1".into())],
     );
     let waiter = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             assert!(child.running(), "writer exited before receipt barrier");
-            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
+            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
             if let Some(pid) = pid { break pid; }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }).await.expect("child must reach receipt insert before COMMIT");
     process::uncommitted(store, &fixture).await;
     child.kill();
-    sqlx::query("SELECT pg_terminate_backend($1)")
+    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
         .bind(waiter)
         .execute(&store.pool)
         .await

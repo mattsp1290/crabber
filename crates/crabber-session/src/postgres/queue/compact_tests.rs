@@ -130,123 +130,128 @@ pub(super) async fn prepared_values(
 
 #[tokio::test]
 async fn compact_projection_retains_actual_prepare_and_exact_former_capacity() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let (fixture, prepare, authority) = prepared_values(&store).await;
-    let before = original(&store, &fixture.session, &prepare.id).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let mut proof = Proof::bounded(32 << 20);
-    let selected =
-        super::reads::record_with_proof(&mut tx, &fixture.session, &fixture.queue, &mut proof)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let (fixture, prepare, authority) = prepared_values(&store).await;
+        let before = original(&store, &fixture.session, &prepare.id).await;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
             .await
-            .unwrap()
             .unwrap();
-    let expected = serde_json::to_vec(&selected.projection.view(selected.prepared().unwrap()))
-        .unwrap()
-        .len();
-    let mut exact = Proof::bounded(128);
-    let (count, actual) = super::capacity::pending(&mut tx, &fixture.session, &mut exact)
-        .await
-        .unwrap();
-    assert_eq!(exact.used(), 128);
-    let mut short = Proof::bounded(127);
-    assert!(
-        super::capacity::pending(&mut tx, &fixture.session, &mut short)
+        let mut proof = Proof::bounded(32 << 20);
+        let selected =
+            super::reads::record_with_proof(&mut tx, &fixture.session, &fixture.queue, &mut proof)
+                .await
+                .unwrap()
+                .unwrap();
+        let expected = serde_json::to_vec(&selected.projection.view(selected.prepared().unwrap()))
+            .unwrap()
+            .len();
+        let mut exact = Proof::bounded(128);
+        let (count, actual) = super::capacity::pending(&mut tx, &fixture.session, &mut exact)
             .await
-            .is_err()
-    );
-    let projected = serde_json::to_value(&selected.projection).unwrap();
-    assert_eq!(projected["prepared"].as_object().unwrap().len(), 2);
-    assert!(projected["prepared"].get("keyed").is_none());
-    assert_eq!((count, actual), (1, expected));
-    tx.rollback().await.unwrap();
-    let admit = crate::queue_contract::mutation(
-        &store,
-        &fixture,
-        QueueAction::Admit {
-            authority,
-            owner: "actual-capacity-owner".into(),
-            lease: Duration::from_secs(30),
-        },
-    )
-    .await;
-    assert!(matches!(
-        store.mutate_queue(admit).await.unwrap(),
-        crate::QueueOutcome::Applied {
-            admitted: Some(_),
-            ..
-        }
-    ));
-    assert_eq!(
-        original(&store, &fixture.session, &prepare.id).await,
-        before
-    );
-    let retained = store
-        .retained_queue(&fixture.session, &fixture.queue)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(retained.prepared.unwrap()).unwrap(),
-        serde_json::to_value(fixture.prepared).unwrap()
-    );
+            .unwrap();
+        assert_eq!(exact.used(), 128);
+        let mut short = Proof::bounded(127);
+        assert!(
+            super::capacity::pending(&mut tx, &fixture.session, &mut short)
+                .await
+                .is_err()
+        );
+        let projected = serde_json::to_value(&selected.projection).unwrap();
+        assert_eq!(projected["prepared"].as_object().unwrap().len(), 2);
+        assert!(projected["prepared"].get("keyed").is_none());
+        assert_eq!((count, actual), (1, expected));
+        tx.rollback().await.unwrap();
+        let admit = crate::queue_contract::mutation(
+            &store,
+            &fixture,
+            QueueAction::Admit {
+                authority,
+                owner: "actual-capacity-owner".into(),
+                lease: Duration::from_secs(30),
+            },
+        )
+        .await;
+        assert!(matches!(
+            store.mutate_queue(admit).await.unwrap(),
+            crate::QueueOutcome::Applied {
+                admitted: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            original(&store, &fixture.session, &prepare.id).await,
+            before
+        );
+        let retained = store
+            .retained_queue(&fixture.session, &fixture.queue)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(retained.prepared.unwrap()).unwrap(),
+            serde_json::to_value(fixture.prepared).unwrap()
+        );
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn compact_projection_rejects_foreign_prepare_reference_and_old_codec() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let (fixture, prepare, authority) = crate::queue_contract::corruption::prepared(&store).await;
-    let (foreign, _, _) = crate::queue_contract::corruption::prepared(&store).await;
-    let mut current = read_record(&store, &fixture).await;
-    let original = encode(&current).unwrap();
-    let other = read_record(&store, &foreign).await;
-    current.prepare_operation = other.prepare_operation;
-    current.prepared = other.prepared;
-    current
-        .validate(&fixture.session, &fixture.queue, current.summary.sequence)
-        .unwrap();
-    write_record(&store, &fixture, encode(&current).unwrap()).await;
-    crate::queue_contract::corruption::refused(
-        &store,
-        &fixture,
-        prepare.clone(),
-        authority.clone(),
-    )
-    .await;
-    write_record(&store, &fixture, original.clone()).await;
-    let (audit, _) = self::original(&store, &fixture.session, &prepare.id).await;
-    let audit: Audit = decode(&audit).unwrap();
-    let QueueAction::Prepare { prepared, .. } = audit.request.action else {
-        panic!("actual prepare");
-    };
-    let mut old: serde_json::Value = serde_json::from_str(&original).unwrap();
-    old.as_object_mut().unwrap().remove("version");
-    old["prepared"] = serde_json::to_value(prepared).unwrap();
-    assert!(decode::<Record>(&old.to_string()).is_err());
-    write_record(&store, &fixture, old.to_string()).await;
-    assert!(
-        store
-            .retained_queue(&fixture.session, &fixture.queue)
-            .await
-            .is_err()
-    );
-    write_record(&store, &fixture, original).await;
-    assert!(
-        store
-            .retained_queue(&fixture.session, &fixture.queue)
-            .await
-            .is_ok()
-    );
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let (fixture, prepare, authority) =
+            crate::queue_contract::corruption::prepared(&store).await;
+        let (foreign, _, _) = crate::queue_contract::corruption::prepared(&store).await;
+        let mut current = read_record(&store, &fixture).await;
+        let original = encode(&current).unwrap();
+        let other = read_record(&store, &foreign).await;
+        current.prepare_operation = other.prepare_operation;
+        current.prepared = other.prepared;
+        current
+            .validate(&fixture.session, &fixture.queue, current.summary.sequence)
+            .unwrap();
+        write_record(&store, &fixture, encode(&current).unwrap()).await;
+        crate::queue_contract::corruption::refused(
+            &store,
+            &fixture,
+            prepare.clone(),
+            authority.clone(),
+        )
+        .await;
+        write_record(&store, &fixture, original.clone()).await;
+        let (audit, _) = self::original(&store, &fixture.session, &prepare.id).await;
+        let audit: Audit = decode(&audit).unwrap();
+        let QueueAction::Prepare { prepared, .. } = audit.request.action else {
+            panic!("actual prepare");
+        };
+        let mut old: serde_json::Value = serde_json::from_str(&original).unwrap();
+        old.as_object_mut().unwrap().remove("version");
+        old["prepared"] = serde_json::to_value(prepared).unwrap();
+        assert!(decode::<Record>(&old.to_string()).is_err());
+        write_record(&store, &fixture, old.to_string()).await;
+        assert!(
+            store
+                .retained_queue(&fixture.session, &fixture.queue)
+                .await
+                .is_err()
+        );
+        write_record(&store, &fixture, original).await;
+        assert!(
+            store
+                .retained_queue(&fixture.session, &fixture.queue)
+                .await
+                .is_ok()
+        );
+    })
+    .await
+    .unwrap();
 }
 
 #[test]

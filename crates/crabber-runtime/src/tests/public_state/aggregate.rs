@@ -88,13 +88,15 @@ async fn sqlite_actual_worker_public_state_is_pure() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_actual_worker_public_state_is_pure() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    observe(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        observe(Arc::new(
+            crabber_session::PostgresStore::connect(&url).await.unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }

@@ -1,9 +1,9 @@
 #[tokio::test]
 async fn migration_preserves_predecessor_queue_bytes_and_legacy_membership() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
     let mut tx = crate::postgres::transaction::begin(&pool).await.unwrap();
     let namespace = format!("queue_migration_{}", uuid::Uuid::new_v4().simple());
@@ -47,4 +47,6 @@ async fn migration_preserves_predecessor_queue_bytes_and_legacy_membership() {
             .is_err()
     );
     tx.rollback().await.unwrap();
+
+    }).await.unwrap();
 }

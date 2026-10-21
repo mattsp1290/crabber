@@ -8,10 +8,10 @@ use crate::session_owner::{
 };
 #[tokio::test]
 async fn selected_driver_join_refuses_forgery_while_actual_main_waits() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     for unkeyed in [false, true] {
@@ -76,4 +76,6 @@ async fn selected_driver_join_refuses_forgery_while_actual_main_waits() {
         // Only now release and observe the actual main and independent cleanup task.
         active.finish(store.as_ref()).await;
     }
+
+    }).await.unwrap();
 }

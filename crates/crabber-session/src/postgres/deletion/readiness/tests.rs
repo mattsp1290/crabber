@@ -17,71 +17,73 @@ async fn coverage(
 }
 #[tokio::test]
 async fn empty_managed_scope_is_ready_and_pending_input_blocks_without_mutation() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let created = store
-        .manage_session(crate::management_contract::create())
-        .await
-        .unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let proof = coverage(&mut tx, &created.session_id).await;
-    let Readiness::Ready(scope) = readiness(&mut tx, &created.session_id, &proof)
-        .await
-        .unwrap()
-    else {
-        panic!("ready empty scope")
-    };
-    assert_eq!(scope.session(), &created.session_id);
-    assert_eq!(scope.revision(), created.revision);
-    sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1")
-        .bind(&created.session_id.0)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert!(matches!(
-        readiness(&mut tx, &created.session_id, &proof).await,
-        Err(DeletionError::RevisionConflict)
-    ));
-    tx.rollback().await.unwrap();
-    sqlx::query(
-        "INSERT INTO inbox(session_id,kind,data,snapshot_record) VALUES($1,'user',$2,'{}')",
-    )
-    .bind(&created.session_id.0)
-    .bind(sqlx::types::Json(serde_json::json!({})))
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let proof = coverage(&mut tx, &created.session_id).await;
-    assert!(matches!(
-        readiness(&mut tx, &created.session_id, &proof)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let created = store
+            .manage_session(crate::management_contract::create())
             .await
-            .unwrap(),
-        Readiness::Blocked(DeletionBlocker::PendingInput)
-    ));
-    tx.rollback().await.unwrap();
-    assert!(
-        store
-            .get_session(&created.session_id)
+            .unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let proof = coverage(&mut tx, &created.session_id).await;
+        let Readiness::Ready(scope) = readiness(&mut tx, &created.session_id, &proof)
             .await
             .unwrap()
-            .is_some()
-    );
+        else {
+            panic!("ready empty scope")
+        };
+        assert_eq!(scope.session(), &created.session_id);
+        assert_eq!(scope.revision(), created.revision);
+        sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1")
+            .bind(&created.session_id.0)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert!(matches!(
+            readiness(&mut tx, &created.session_id, &proof).await,
+            Err(DeletionError::RevisionConflict)
+        ));
+        tx.rollback().await.unwrap();
+        sqlx::query(
+            "INSERT INTO inbox(session_id,kind,data,snapshot_record) VALUES($1,'user',$2,'{}')",
+        )
+        .bind(&created.session_id.0)
+        .bind(sqlx::types::Json(serde_json::json!({})))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let proof = coverage(&mut tx, &created.session_id).await;
+        assert!(matches!(
+            readiness(&mut tx, &created.session_id, &proof)
+                .await
+                .unwrap(),
+            Readiness::Blocked(DeletionBlocker::PendingInput)
+        ));
+        tx.rollback().await.unwrap();
+        assert!(
+            store
+                .get_session(&created.session_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn native_cleanup_authenticates_output_before_reporting_phase_blocker() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
@@ -152,14 +154,16 @@ async fn native_cleanup_authenticates_output_before_reporting_phase_blocker() {
         Err(Failure::Error(DeletionError::UnknownStoreOutcome))
     ));
     tx.rollback().await.unwrap();
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn released_native_checkpoint_authenticates_exact_suspended_ancestry() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
@@ -239,30 +243,34 @@ async fn released_native_checkpoint_authenticates_exact_suspended_ancestry() {
         Err(Failure::Blocked(DeletionBlocker::ProofLimit))
     ));
     tx.rollback().await.unwrap();
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn generic_joined_registry_does_not_upgrade_creation_coverage() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let created = store
-        .manage_session(crate::management_contract::create())
-        .await
-        .unwrap();
-    crate::sql_deletion::readiness::contract::generic_joined(&store, &created.summary).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let coverage = coverage(&mut tx, &created.session_id).await;
-    assert!(matches!(
-        readiness(&mut tx, &created.session_id, &coverage)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let created = store
+            .manage_session(crate::management_contract::create())
             .await
-            .unwrap(),
-        Readiness::Blocked(DeletionBlocker::OwnershipUnknown)
-    ));
-    tx.rollback().await.unwrap();
+            .unwrap();
+        crate::sql_deletion::readiness::contract::generic_joined(&store, &created.summary).await;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let coverage = coverage(&mut tx, &created.session_id).await;
+        assert!(matches!(
+            readiness(&mut tx, &created.session_id, &coverage)
+                .await
+                .unwrap(),
+            Readiness::Blocked(DeletionBlocker::OwnershipUnknown)
+        ));
+        tx.rollback().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

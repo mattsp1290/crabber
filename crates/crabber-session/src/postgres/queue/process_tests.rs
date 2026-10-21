@@ -17,7 +17,6 @@ async fn queue_process_helper() {
 #[tokio::test]
 async fn queue_killed_after_claim_prepared_and_admit_commit() {
     TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
         crate::PostgresStore::migrate(&url).await.unwrap();
         let store = crate::PostgresStore::connect(&url).await.unwrap();
         for step in 0..3 {
@@ -46,7 +45,6 @@ async fn queue_killed_after_claim_prepared_and_admit_commit() {
 #[tokio::test]
 async fn queue_killed_before_claim_prepared_and_admit_commit() {
     TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
         crate::PostgresStore::migrate(&url).await.unwrap();
         let store = crate::PostgresStore::connect(&url).await.unwrap();
         for step in 0..3 {
@@ -76,7 +74,7 @@ async fn kill_before(url: &str, store: &crate::PostgresStore, step: u8) {
     let mut child = spawn(url, &request, &[("CRABBER_QUEUE_WRITE", "1".into())]);
     let waiter = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
-            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
+            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
             if let Some(pid) = pid { break pid; }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -93,7 +91,7 @@ async fn kill_before(url: &str, store: &crate::PostgresStore, step: u8) {
         revision
     );
     child.kill();
-    sqlx::query("SELECT pg_terminate_backend($1)")
+    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
         .bind(waiter)
         .execute(&store.pool)
         .await
@@ -123,12 +121,10 @@ async fn kill_before(url: &str, store: &crate::PostgresStore, step: u8) {
 }
 
 fn spawn(url: &str, request: &crate::QueueMutation, extras: &[(&str, String)]) -> process::Guard {
-    let mut environment = TestDatabase::child_environment(url).unwrap().to_vec();
-    environment.extend_from_slice(extras);
     process::spawn(
         "postgres::queue::process_tests::queue_process_helper",
         request,
-        None,
-        &environment,
+        crabber_test_support::ChildDatabase::Postgres(url),
+        extras,
     )
 }

@@ -24,7 +24,7 @@ async fn physical_successor_commit_boundaries() {
             let (request, now) = crate::successor_driver_contract::process::kill(
                 "sqlite::session_owner::drivers::tests::successor_process::child",
                 stage,
-                Some(&path),
+                crabber_test_support::ChildDatabase::Sqlite(&path),
                 directory.path(),
                 admission,
             );
@@ -49,7 +49,7 @@ async fn physical_approval_successor_commit_boundaries() {
             let (request, now) = crate::successor_driver_contract::process::kill_approval(
                 "sqlite::session_owner::drivers::tests::successor_process::child",
                 stage,
-                Some(&path),
+                crabber_test_support::ChildDatabase::Sqlite(&path),
                 directory.path(),
                 recovery,
             );

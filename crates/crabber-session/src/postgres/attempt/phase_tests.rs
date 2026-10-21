@@ -2,10 +2,10 @@ use crate::{AttemptCleanupResult, AttemptCommand, AttemptError, AttemptMutation,
 use crabber_core::ControlId;
 #[tokio::test]
 async fn cleanup_checks_the_independent_phase_quiescence_rows() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::super::PostgresStore::connect(&url).await.unwrap();
     let crate::attempt_contract::phase_fixture::Fixture {
@@ -60,4 +60,6 @@ async fn cleanup_checks_the_independent_phase_quiescence_rows() {
             revision
         );
     }
+
+    }).await.unwrap();
 }

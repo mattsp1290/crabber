@@ -254,7 +254,7 @@ async fn purge_process_rollback_and_cold_commit() {
     contract::spawn(
         "sqlite::deletion::purge::tests::process_helper",
         &request,
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
         true,
     )
     .await;
@@ -274,7 +274,7 @@ async fn purge_process_rollback_and_cold_commit() {
     contract::spawn(
         "sqlite::deletion::purge::tests::process_helper",
         &request,
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
         false,
     )
     .await;

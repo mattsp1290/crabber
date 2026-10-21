@@ -34,7 +34,7 @@ async fn durable_run_control_contract() {
     run_control_contract::process::run(
         &store,
         "sqlite::run_control::tests::durable_control_process_helper",
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
     )
     .await;
 }

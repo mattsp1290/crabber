@@ -191,88 +191,95 @@ mod tests {
     }
     #[tokio::test]
     async fn raw_driver_registration_and_activation_authenticate_birth() {
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
         let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
             time::OffsetDateTime::UNIX_EPOCH,
         ));
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        crate::PostgresStore::migrate(&url).await.unwrap();
-        let store = crate::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone());
-        crate::driver_raw_access_contract::run(&store, &clock).await;
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            crate::PostgresStore::migrate(&url).await.unwrap();
+            let store = crate::PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock.clone());
+            crate::driver_raw_access_contract::run(&store, &clock).await;
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn public_raw_credentials_require_original_enrollment_before_return() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        crate::PostgresStore::migrate(&url).await.unwrap();
-        let store = crate::PostgresStore::connect(&url).await.unwrap();
-        let admitted = contract::admit(&store).await;
-        let _other_scope = contract::admit(&store).await;
-        contract::succeeds(&store, &admitted).await;
-        let read = store.get_run(&admitted.run.id);
-        let list = store.list_unfinished_runs();
-        let acquire = store.execution(admitted.fence.clone());
-        let original: String =
-            sqlx::query_scalar("SELECT data FROM native_execution_unclassified WHERE run_id=$1")
-                .bind(&admitted.run.id.0)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        replace(&store, &admitted.run.id, "{}").await;
-        // These futures were constructed before corruption and first polled after.
-        // No individual credential or partial multi-scope list may escape.
-        let refused = (
-            read.await.is_err(),
-            list.await.is_err(),
-            acquire.await.is_err(),
-        );
-        replace(&store, &admitted.run.id, &original).await;
-        contract::succeeds(&store, &admitted).await;
-        assert_eq!(refused, (true, true, true));
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            crate::PostgresStore::migrate(&url).await.unwrap();
+            let store = crate::PostgresStore::connect(&url).await.unwrap();
+            let admitted = contract::admit(&store).await;
+            let _other_scope = contract::admit(&store).await;
+            contract::succeeds(&store, &admitted).await;
+            let read = store.get_run(&admitted.run.id);
+            let list = store.list_unfinished_runs();
+            let acquire = store.execution(admitted.fence.clone());
+            let original: String = sqlx::query_scalar(
+                "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
+            )
+            .bind(&admitted.run.id.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            replace(&store, &admitted.run.id, "{}").await;
+            // These futures were constructed before corruption and first polled after.
+            // No individual credential or partial multi-scope list may escape.
+            let refused = (
+                read.await.is_err(),
+                list.await.is_err(),
+                acquire.await.is_err(),
+            );
+            replace(&store, &admitted.run.id, &original).await;
+            contract::succeeds(&store, &admitted).await;
+            assert_eq!(refused, (true, true, true));
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn wrong_row_cannot_borrow_other_runs_raw_origin() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        crate::PostgresStore::migrate(&url).await.unwrap();
-        let store = crate::PostgresStore::connect(&url).await.unwrap();
-        let first = contract::admit(&store).await;
-        let other = contract::admit(&store).await;
-        let forged_route = RunFence {
-            run_id: first.run.id.clone(),
-            claim_token: other.run.claim_token.clone(),
-        };
-        sqlx::query("UPDATE runs SET data=$2::jsonb WHERE id=$1")
-            .bind(&first.run.id.0)
-            .bind(serde_json::to_string(&other.run).unwrap())
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        let refused = store.execution(forged_route).await.is_err();
-        sqlx::query("UPDATE runs SET data=$2::jsonb WHERE id=$1")
-            .bind(&first.run.id.0)
-            .bind(serde_json::to_string(&first.run).unwrap())
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        contract::succeeds(&store, &first).await;
-        assert!(refused, "a row cannot borrow a distinct genuine Run origin");
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            crate::PostgresStore::migrate(&url).await.unwrap();
+            let store = crate::PostgresStore::connect(&url).await.unwrap();
+            let first = contract::admit(&store).await;
+            let other = contract::admit(&store).await;
+            let forged_route = RunFence {
+                run_id: first.run.id.clone(),
+                claim_token: other.run.claim_token.clone(),
+            };
+            sqlx::query("UPDATE runs SET data=$2::jsonb WHERE id=$1")
+                .bind(&first.run.id.0)
+                .bind(serde_json::to_string(&other.run).unwrap())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            let refused = store.execution(forged_route).await.is_err();
+            sqlx::query("UPDATE runs SET data=$2::jsonb WHERE id=$1")
+                .bind(&first.run.id.0)
+                .bind(serde_json::to_string(&first.run).unwrap())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            contract::succeeds(&store, &first).await;
+            assert!(refused, "a row cannot borrow a distinct genuine Run origin");
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn genuine_pending_birth_refuses_copied_cached_raw_mutations() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
         crate::PostgresStore::migrate(&url).await.unwrap();
         let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
         let session = contract::pending(store.clone()).await;
@@ -291,5 +298,7 @@ mod tests {
             .bind(&session.0).fetch_one(&store.pool).await.unwrap();
         assert_eq!(after, data);
         store.purge_pending_initial_fixture(&session).await.unwrap();
+
+    }).await.unwrap();
     }
 }

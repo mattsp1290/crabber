@@ -6,78 +6,80 @@ use crate::{DeletionBlocker, DeletionError, Store};
 use crabber_core::{AdmissionReceipt, ContentBlock, Message};
 #[tokio::test]
 async fn run_history_sources_authenticate_owned_journal_and_original_input() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let receipt =
-        crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    assert!(matches!(
-        read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
-        Ok(true)
-    ));
-    assert!(matches!(
-        read(&mut tx, &receipt, 1).await,
-        Err(Failure::Blocked(DeletionBlocker::ProofLimit))
-    ));
-    let witness: crate::session_owner::preparation::admission::Witness = serde_json::from_str(
-        &sqlx::query_scalar::<_, String>(
-            "SELECT data_json FROM preparation_admission_witnesses WHERE run_id=$1",
-        )
-        .bind(&receipt.run_id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap(),
-    )
-    .unwrap();
-    tx.rollback().await.unwrap();
-    // Each original root/child audit is required, including historical Begin.
-    for operation in witness.audit_ids().unwrap() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let receipt =
+            crate::session_owner::preparation_contract::resources::successful(&store, false).await;
         let mut tx = crate::postgres::transaction::begin(&store.pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
-            .bind(&receipt.session_id.0)
-            .bind(&operation.0)
-            .execute(&mut *tx)
             .await
             .unwrap();
         assert!(matches!(
             read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
-            Err(Failure::Error(DeletionError::UnknownStoreOutcome))
+            Ok(true)
+        ));
+        assert!(matches!(
+            read(&mut tx, &receipt, 1).await,
+            Err(Failure::Blocked(DeletionBlocker::ProofLimit))
+        ));
+        let witness: crate::session_owner::preparation::admission::Witness = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>(
+                "SELECT data_json FROM preparation_admission_witnesses WHERE run_id=$1",
+            )
+            .bind(&receipt.run_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        tx.rollback().await.unwrap();
+        // Each original root/child audit is required, including historical Begin.
+        for operation in witness.audit_ids().unwrap() {
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+                .bind(&receipt.session_id.0)
+                .bind(&operation.0)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert!(matches!(
+                read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
+                Err(Failure::Error(DeletionError::UnknownStoreOutcome))
+            ));
+            tx.rollback().await.unwrap();
+        }
+        // The actual Begin transaction remains independently corroborated.
+        let run = store.get_run(&receipt.run_id).await.unwrap().unwrap();
+        store
+            .execution(crabber_core::RunFence {
+                run_id: run.id.clone(),
+                claim_token: run.claim_token,
+            })
+            .await
+            .unwrap()
+            .begin_admission_execution()
+            .await
+            .unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
+            Ok(true)
         ));
         tx.rollback().await.unwrap();
-    }
-    // The actual Begin transaction remains independently corroborated.
-    let run = store.get_run(&receipt.run_id).await.unwrap().unwrap();
-    store
-        .execution(crabber_core::RunFence {
-            run_id: run.id.clone(),
-            claim_token: run.claim_token,
-        })
-        .await
-        .unwrap()
-        .begin_admission_execution()
-        .await
-        .unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    assert!(matches!(
-        read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
-        Ok(true)
-    ));
-    tx.rollback().await.unwrap();
-    original_input(&store, &receipt).await;
-    bounds::oversized(&store, &receipt).await;
-    bounds::no_effect_still_requires_resource_policy(&store).await;
-    original_issuer(&store, &receipt).await;
-    unowned(&store).await;
+        original_input(&store, &receipt).await;
+        bounds::oversized(&store, &receipt).await;
+        bounds::no_effect_still_requires_resource_policy(&store).await;
+        original_issuer(&store, &receipt).await;
+        unowned(&store).await;
+    })
+    .await
+    .unwrap();
 }
 async fn read(
     tx: &mut Transaction<'_, Postgres>,

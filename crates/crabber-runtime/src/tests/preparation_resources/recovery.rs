@@ -233,18 +233,17 @@ async fn sqlite_scoped_recovery_and_native_ack_reconciliation() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_scoped_recovery_and_native_ack_reconciliation() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = crabber_session::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    contract(Arc::new(store), clock).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = crabber_session::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        contract(Arc::new(store), clock).await;
+    })
+    .await
+    .unwrap();
 }

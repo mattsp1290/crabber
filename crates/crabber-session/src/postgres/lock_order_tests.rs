@@ -1,9 +1,6 @@
 //! Real opposing connection paths: every writer waits at the session gate before
 //! locking a run, while independent sessions continue to make progress.
-use super::{
-    PostgresStore, load_run,
-    tests::{TEST_LOCK, input, test_url},
-};
+use super::{PostgresStore, load_run, tests::input};
 use crate::{ClaimUnstartedAdmissionRequest, KeyedAdmitOutcome, Store};
 use crabber_core::{
     AbandonAuthority, AbandonRequest, Clock, EventKind, ManualClock, RunStatus, SessionId,
@@ -12,9 +9,12 @@ use std::{sync::Arc, time::Duration};
 use time::OffsetDateTime;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Preserve the causal history inside its explicit fixture scope.
 async fn session_gate_precedes_run_rows_for_existing_mutation_paths() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let clock = Arc::new(ManualClock::new(OffsetDateTime::now_utc()));
     let store = PostgresStore::connect(&url)
@@ -115,6 +115,8 @@ async fn session_gate_precedes_run_rows_for_existing_mutation_paths() {
     );
     store.pool.close().await;
     other.pool.close().await;
+
+    }).await.unwrap();
 }
 
 async fn run_mutation(
@@ -266,96 +268,100 @@ async fn run_native_mutation(
 
 #[tokio::test]
 async fn foreign_run_records_are_rejected_before_taking_their_row_locks() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use super::tests::request;
     use crabber_core::{
         ContentBlock, Part, PartId, PartKind, ToolCallId, ToolCallRecord, ToolCallStatus,
         ToolResult, ToolResultStatus,
     };
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let a = store.admit_run(request(&SessionId::new())).await.unwrap();
-    let request_b = request(&SessionId::new());
-    let message_b = request_b.user_message.id.clone();
-    let b = store.admit_run(request_b).await.unwrap();
-    let execution_a = store.execution(a.fence.clone()).await.unwrap();
-    let execution_b = store.execution(b.fence.clone()).await.unwrap();
-    let call_b = ToolCallId::new();
-    execution_b
-        .create_tool_call(
-            ToolCallRecord {
-                id: call_b.clone(),
-                run_id: b.run.id.clone(),
-                name: "fixture".into(),
-                arguments: serde_json::json!({}),
-                status: ToolCallStatus::Pending,
-                retry_safe: false,
-                result: None,
-            },
-            crate::abandonment_contract::event(&b.run, EventKind::ToolCallPending),
-        )
-        .await
-        .unwrap();
-    let mut held = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    for (table, id) in [
-        ("messages", &message_b.0),
-        ("tool_calls", &call_b.0),
-        ("epochs", &b.run.epoch_id.0),
-    ] {
-        sqlx::query(&format!("SELECT id FROM {table} WHERE id=$1 FOR UPDATE"))
-            .bind(id)
-            .fetch_one(&mut *held)
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let a = store.admit_run(request(&SessionId::new())).await.unwrap();
+        let request_b = request(&SessionId::new());
+        let message_b = request_b.user_message.id.clone();
+        let b = store.admit_run(request_b).await.unwrap();
+        let execution_a = store.execution(a.fence.clone()).await.unwrap();
+        let execution_b = store.execution(b.fence.clone()).await.unwrap();
+        let call_b = ToolCallId::new();
+        execution_b
+            .create_tool_call(
+                ToolCallRecord {
+                    id: call_b.clone(),
+                    run_id: b.run.id.clone(),
+                    name: "fixture".into(),
+                    arguments: serde_json::json!({}),
+                    status: ToolCallStatus::Pending,
+                    retry_safe: false,
+                    result: None,
+                },
+                crate::abandonment_contract::event(&b.run, EventKind::ToolCallPending),
+            )
             .await
             .unwrap();
-    }
-    denied(execution_a.append_part(Part {
-        id: PartId::new(),
-        message_id: message_b.clone(),
-        ordinal: 99,
-        kind: PartKind::UserInputText,
-        content: ContentBlock::Text {
-            text: "foreign".into(),
-        },
-    }))
-    .await;
-    denied(execution_a.claim_tool_call(
-        &call_b,
-        crate::abandonment_contract::event(&a.run, EventKind::ToolCallRunning),
-    ))
-    .await;
-    let mut result_message = input(&a.run.session_id, "result");
-    result_message.run_id = Some(a.run.id.clone());
-    denied(execution_a.settle_tool_call(
-        &call_b,
-        ToolResult {
-            status: ToolResultStatus::Completed,
-            content: vec![],
-        },
-        result_message,
-        crate::abandonment_contract::event(&a.run, EventKind::ToolCallSettled),
-    ))
-    .await;
-    let mut summary = input(&a.run.session_id, "summary");
-    summary.run_id = Some(a.run.id.clone());
-    summary.parts[0].kind = PartKind::CompactionSummary;
-    denied(execution_a.finish_epoch(&b.run.epoch_id, summary)).await;
-    held.rollback().await.unwrap();
-    assert_eq!(
-        store.list_unfinished_tool_calls(&b.run.id).await.unwrap()[0].status,
-        ToolCallStatus::Pending
-    );
-    assert_eq!(
-        store
-            .list_all_messages(&b.run.session_id)
+        let mut held = crate::postgres::transaction::begin(&store.pool)
             .await
-            .unwrap()
-            .len(),
-        1
-    );
-    store.pool.close().await;
+            .unwrap();
+        for (table, id) in [
+            ("messages", &message_b.0),
+            ("tool_calls", &call_b.0),
+            ("epochs", &b.run.epoch_id.0),
+        ] {
+            sqlx::query(&format!("SELECT id FROM {table} WHERE id=$1 FOR UPDATE"))
+                .bind(id)
+                .fetch_one(&mut *held)
+                .await
+                .unwrap();
+        }
+        denied(execution_a.append_part(Part {
+            id: PartId::new(),
+            message_id: message_b.clone(),
+            ordinal: 99,
+            kind: PartKind::UserInputText,
+            content: ContentBlock::Text {
+                text: "foreign".into(),
+            },
+        }))
+        .await;
+        denied(execution_a.claim_tool_call(
+            &call_b,
+            crate::abandonment_contract::event(&a.run, EventKind::ToolCallRunning),
+        ))
+        .await;
+        let mut result_message = input(&a.run.session_id, "result");
+        result_message.run_id = Some(a.run.id.clone());
+        denied(execution_a.settle_tool_call(
+            &call_b,
+            ToolResult {
+                status: ToolResultStatus::Completed,
+                content: vec![],
+            },
+            result_message,
+            crate::abandonment_contract::event(&a.run, EventKind::ToolCallSettled),
+        ))
+        .await;
+        let mut summary = input(&a.run.session_id, "summary");
+        summary.run_id = Some(a.run.id.clone());
+        summary.parts[0].kind = PartKind::CompactionSummary;
+        denied(execution_a.finish_epoch(&b.run.epoch_id, summary)).await;
+        held.rollback().await.unwrap();
+        assert_eq!(
+            store.list_unfinished_tool_calls(&b.run.id).await.unwrap()[0].status,
+            ToolCallStatus::Pending
+        );
+        assert_eq!(
+            store
+                .list_all_messages(&b.run.session_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        store.pool.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn denied(future: impl std::future::Future<Output = Result<(), crate::StoreError>>) {

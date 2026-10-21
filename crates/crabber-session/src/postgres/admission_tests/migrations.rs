@@ -5,11 +5,15 @@ use sqlx::postgres::PgPoolOptions;
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn forward_migration_preserves_v1_and_connect_is_read_only() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    legacy_migration(&url, 1).await;
-    legacy_migration(&url, 2).await;
-    legacy_migration(&url, 3).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+        legacy_migration(&url, 1).await;
+        legacy_migration(&url, 2).await;
+        legacy_migration(&url, 3).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[allow(clippy::too_many_lines)] // One isolated-schema legacy migration lifecycle.
@@ -279,8 +283,10 @@ async fn legacy_migration(url: &str, legacy_version: i32) {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn v2_migration_preserves_receipts_and_never_authenticates_old_markers() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -492,13 +498,17 @@ async fn v2_migration_preserves_receipts_and_never_authenticates_old_markers() {
         .await
         .unwrap();
     admin.close().await;
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // Full retained-table comparison for both schema fixtures.
 async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evidence() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -632,6 +642,8 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             .unwrap();
     }
     admin.close().await;
+
+    }).await.unwrap();
 }
 
 /// A downgraded version roster must not retain the newer immutable birth DDL.
@@ -678,27 +690,31 @@ async fn pre_enrollment_rows(pool: &sqlx::PgPool, table: &str) -> serde_json::Va
 
 #[tokio::test]
 async fn current_migration_never_relocks_runtime_tables() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .unwrap();
-    let mut active = crate::postgres::transaction::begin(&pool).await.unwrap();
-    sqlx::query("LOCK TABLE operation_receipts IN ROW EXCLUSIVE MODE")
-        .execute(&mut *active)
-        .await
-        .unwrap();
-    let migrated = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        PostgresStore::migrate(&url),
-    )
-    .await;
-    active.rollback().await.unwrap();
-    pool.close().await;
-    migrated
-        .expect("current-schema migration must finish while runtime tables stay locked")
-        .unwrap();
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let mut active = crate::postgres::transaction::begin(&pool).await.unwrap();
+        sqlx::query("LOCK TABLE operation_receipts IN ROW EXCLUSIVE MODE")
+            .execute(&mut *active)
+            .await
+            .unwrap();
+        let migrated = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            PostgresStore::migrate(&url),
+        )
+        .await;
+        active.rollback().await.unwrap();
+        pool.close().await;
+        migrated
+            .expect("current-schema migration must finish while runtime tables stay locked")
+            .unwrap();
+    })
+    .await
+    .unwrap();
 }

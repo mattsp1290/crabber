@@ -250,20 +250,19 @@ async fn sqlite_replay_never_initializes_unavailable_or_closed_components() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_replay_never_initializes_unavailable_or_closed_components() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(
-            std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none(),
-            "required PostgreSQL fixture missing"
-        );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    run_contract(Arc::new(
-        crabber::session::PostgresStore::connect(&url)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
             .await
-            .unwrap(),
-    ))
-    .await;
+            .unwrap();
+        run_contract(Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }

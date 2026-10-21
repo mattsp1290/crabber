@@ -1,26 +1,15 @@
 use super::*;
 use crabber::session::PostgresStore;
+use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 use sqlx::{PgPool, Row};
 use std::process::{Command, Stdio};
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn url() -> Option<String> {
-    match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Ok(value) => Some(value),
-        Err(error) if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") => {
-            panic!("CRABBER_TEST_POSTGRES_URL is required: {error}")
-        }
-        Err(_) => None,
-    }
-}
-async fn pool() -> Option<PgPool> {
-    let url = url()?;
-    Some(PgPool::connect(&url).await.unwrap())
-}
 #[async_trait]
 impl abandonment_contract::FixtureStore for PostgresStore {
-    async fn seed_run(&self, run: Run) {
-        let pool = pool().await.unwrap();
+    async fn seed_run(&self, run: Run, fixture_url: Option<&str>) {
+        let pool = PgPool::connect(fixture_url.expect("explicit PostgreSQL fixture URL"))
+            .await
+            .unwrap();
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(&run.session_id.0)
@@ -62,8 +51,10 @@ impl abandonment_contract::FixtureStore for PostgresStore {
         tx.commit().await.unwrap();
         pool.close().await;
     }
-    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
-        let pool = pool().await.unwrap();
+    async fn calls(&self, run: &RunId, fixture_url: Option<&str>) -> Vec<ToolCallRecord> {
+        let pool = PgPool::connect(fixture_url.expect("explicit PostgreSQL fixture URL"))
+            .await
+            .unwrap();
         let rows = sqlx::query("SELECT data FROM tool_calls WHERE run_id=$1 ORDER BY id")
             .bind(&run.0)
             .fetch_all(&pool)
@@ -74,8 +65,10 @@ impl abandonment_contract::FixtureStore for PostgresStore {
             .map(|r| serde_json::from_value(r.get("data")).unwrap())
             .collect()
     }
-    async fn unconsumed_inbox(&self, session: &SessionId) -> usize {
-        let pool = pool().await.unwrap();
+    async fn unconsumed_inbox(&self, session: &SessionId, fixture_url: Option<&str>) -> usize {
+        let pool = PgPool::connect(fixture_url.expect("explicit PostgreSQL fixture URL"))
+            .await
+            .unwrap();
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL",
         )
@@ -89,19 +82,22 @@ impl abandonment_contract::FixtureStore for PostgresStore {
 }
 #[tokio::test]
 async fn public_postgres_pending_running_paused_zero_execution() {
-    let _guard = TEST_LOCK.lock().await;
-    let Some(config) = url() else { return };
-    PostgresStore::migrate(&config).await.unwrap();
-    let Some(url) = url() else { return };
-    PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(SystemClock.now()));
-    let store = Arc::new(
-        PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone()),
-    );
-    facade_matrix(store, clock).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let config = url.clone();
+        PostgresStore::migrate(&config).await.unwrap();
+
+        PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(SystemClock.now()));
+        let store = Arc::new(
+            PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock.clone()),
+        );
+        facade_matrix(store, clock, Some(&url)).await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn snapshot(pool: &PgPool, run: &Run) -> serde_json::Value {
@@ -203,99 +199,102 @@ async fn drop_trigger(pool: &PgPool, table: &str, name: &str) {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn each_atomic_write_failure_rolls_back_private_commit_and_retries() {
-    let _guard = TEST_LOCK.lock().await;
-    let Some(config) = url() else { return };
-    PostgresStore::migrate(&config).await.unwrap();
-    let Some(pool) = pool().await else { return };
-    let store = Arc::new(PostgresStore::connect(&url().unwrap()).await.unwrap());
-    for boundary in [
-        "fence",
-        "tool",
-        "message",
-        "part",
-        "tool_event",
-        "run",
-        "terminal_event",
-        "private_commit",
-    ] {
-        let (admitted, request) = fixture(&store).await;
-        let run = &admitted.run;
-        let (table, condition) = match boundary {
-            "fence" => (
-                "runs",
-                format!(
-                    "NEW.id='{}' AND NEW.data->>'claim_token' <> OLD.data->>'claim_token'",
-                    run.id
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let config = url.clone();
+        PostgresStore::migrate(&config).await.unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        for boundary in [
+            "fence",
+            "tool",
+            "message",
+            "part",
+            "tool_event",
+            "run",
+            "terminal_event",
+            "private_commit",
+        ] {
+            let (admitted, request) = fixture(&store).await;
+            let run = &admitted.run;
+            let (table, condition) = match boundary {
+                "fence" => (
+                    "runs",
+                    format!(
+                        "NEW.id='{}' AND NEW.data->>'claim_token' <> OLD.data->>'claim_token'",
+                        run.id
+                    ),
                 ),
-            ),
-            "tool" => (
-                "tool_calls",
-                format!("NEW.run_id='{}' AND NEW.status='interrupted'", run.id),
-            ),
-            "message" => (
-                "messages",
-                format!("NEW.run_id='{}' AND NEW.data->>'role'='tool'", run.id),
-            ),
-            "part" => (
-                "parts",
-                format!(
-                    "EXISTS (SELECT 1 FROM messages WHERE id=NEW.message_id AND run_id='{}')",
-                    run.id
+                "tool" => (
+                    "tool_calls",
+                    format!("NEW.run_id='{}' AND NEW.status='interrupted'", run.id),
                 ),
-            ),
-            "tool_event" => (
-                "events",
-                format!(
-                    "NEW.run_id='{}' AND NEW.data->>'kind'='tool_call_settled'",
-                    run.id
+                "message" => (
+                    "messages",
+                    format!("NEW.run_id='{}' AND NEW.data->>'role'='tool'", run.id),
                 ),
-            ),
-            "run" => (
-                "runs",
-                format!("NEW.id='{}' AND NEW.status='interrupted'", run.id),
-            ),
-            "terminal_event" => (
-                "events",
-                format!(
-                    "NEW.run_id='{}' AND NEW.data->>'kind'='run_settled'",
-                    run.id
+                "part" => (
+                    "parts",
+                    format!(
+                        "EXISTS (SELECT 1 FROM messages WHERE id=NEW.message_id AND run_id='{}')",
+                        run.id
+                    ),
                 ),
-            ),
-            _ => ("abandonment_commits", format!("NEW.run_id='{}'", run.id)),
-        };
-        let original = snapshot(&pool, run).await;
-        let name = trigger(&pool, run, table, &condition, false).await;
-        let count = Arc::new(AtomicUsize::new(0));
-        assert!(
-            matches!(
-                agent(store.clone(), count.clone())
-                    .abandon(request.clone())
-                    .await,
-                Err(AbandonError::Store(_))
-            ),
-            "{boundary}"
-        );
-        assert_eq!(snapshot(&pool, run).await, original, "{boundary}");
-        drop_trigger(&pool, table, &name).await;
-        let outcome = agent(store.clone(), count.clone())
-            .abandon(request.clone())
-            .await
-            .unwrap();
-        assert_eq!(outcome.run.status, RunStatus::Interrupted);
-        assert_eq!(outcome.interrupted_tools.len(), 2);
-        let committed = snapshot(&pool, run).await;
-        assert_eq!(
-            agent(store.clone(), count.clone())
-                .abandon(request)
+                "tool_event" => (
+                    "events",
+                    format!(
+                        "NEW.run_id='{}' AND NEW.data->>'kind'='tool_call_settled'",
+                        run.id
+                    ),
+                ),
+                "run" => (
+                    "runs",
+                    format!("NEW.id='{}' AND NEW.status='interrupted'", run.id),
+                ),
+                "terminal_event" => (
+                    "events",
+                    format!(
+                        "NEW.run_id='{}' AND NEW.data->>'kind'='run_settled'",
+                        run.id
+                    ),
+                ),
+                _ => ("abandonment_commits", format!("NEW.run_id='{}'", run.id)),
+            };
+            let original = snapshot(&pool, run).await;
+            let name = trigger(&pool, run, table, &condition, false).await;
+            let count = Arc::new(AtomicUsize::new(0));
+            assert!(
+                matches!(
+                    agent(store.clone(), count.clone())
+                        .abandon(request.clone())
+                        .await,
+                    Err(AbandonError::Store(_))
+                ),
+                "{boundary}"
+            );
+            assert_eq!(snapshot(&pool, run).await, original, "{boundary}");
+            drop_trigger(&pool, table, &name).await;
+            let outcome = agent(store.clone(), count.clone())
+                .abandon(request.clone())
                 .await
-                .unwrap(),
-            outcome
-        );
-        assert_eq!(snapshot(&pool, run).await, committed);
-        assert_eq!(count.load(Ordering::SeqCst), 0);
-        println!("atomic boundary {boundary}: unchanged rollback, complete exact retry");
-    }
-    pool.close().await;
+                .unwrap();
+            assert_eq!(outcome.run.status, RunStatus::Interrupted);
+            assert_eq!(outcome.interrupted_tools.len(), 2);
+            let committed = snapshot(&pool, run).await;
+            assert_eq!(
+                agent(store.clone(), count.clone())
+                    .abandon(request)
+                    .await
+                    .unwrap(),
+                outcome
+            );
+            assert_eq!(snapshot(&pool, run).await, committed);
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+            println!("atomic boundary {boundary}: unchanged rollback, complete exact retry");
+        }
+        pool.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -304,8 +303,9 @@ async fn abandonment_process_helper() {
         return;
     };
     let request: AbandonRequest = serde_json::from_str(&encoded).unwrap();
-    let pool = pool().await.unwrap();
-    let store = Arc::new(PostgresStore::connect(&url().unwrap()).await.unwrap());
+    let url = TestDatabase::attached_url().await.unwrap();
+    let pool = PgPool::connect(&url).await.unwrap();
+    let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
     if let Ok(expected) = std::env::var("CRABBER_FACADE_CHILD_SNAPSHOT") {
         let run = store
             .get_run(&request.expected.run_id)
@@ -328,8 +328,9 @@ async fn abandonment_process_helper() {
         outcome.run.id, outcome.terminal_event.cursor
     );
 }
-fn child(request: &AbandonRequest) -> Command {
+fn child(url: &str, request: &AbandonRequest) -> Command {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.envs(TestDatabase::child_environment(url).unwrap());
     cmd.args([
         "--exact",
         "postgres::abandonment_process_helper",
@@ -343,11 +344,12 @@ fn child(request: &AbandonRequest) -> Command {
 }
 #[tokio::test]
 async fn physical_abandonment_writer_crash_then_fresh_process_retry() {
-    let _guard = TEST_LOCK.lock().await;
-    let Some(config) = url() else { return };
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
+    let config = url.clone();
     PostgresStore::migrate(&config).await.unwrap();
-    let Some(pool) = pool().await else { return };
-    let store = PostgresStore::connect(&url().unwrap()).await.unwrap();
+    let pool = PgPool::connect(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
     let (admitted, request) = fixture(&store).await;
     let original = snapshot(&pool, &admitted.run).await;
     // Block at private evidence insertion, after rotation and all settlement writes.
@@ -364,10 +366,10 @@ async fn physical_abandonment_writer_crash_then_fresh_process_retry() {
         true,
     )
     .await;
-    let mut writer = child(&request).stdout(Stdio::null()).spawn().unwrap();
+    let mut writer = child(&url, &request).stdout(Stdio::null()).spawn().unwrap();
     let observed = tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE 'INSERT INTO abandonment_commits%'").fetch_one(&pool).await.unwrap();
+            let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE 'INSERT INTO abandonment_commits%'").fetch_one(&pool).await.unwrap();
             if waiting > 0 {break;} tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await;
@@ -385,7 +387,7 @@ async fn physical_abandonment_writer_crash_then_fresh_process_retry() {
     // Wait for PostgreSQL to observe the disconnected client and release row locks.
     tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE 'INSERT INTO abandonment_commits%'").fetch_one(&pool).await.unwrap();
+            let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE 'INSERT INTO abandonment_commits%'").fetch_one(&pool).await.unwrap();
             if waiting == 0 {break;} tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await.unwrap();
@@ -395,7 +397,7 @@ async fn physical_abandonment_writer_crash_then_fresh_process_retry() {
         "writer never reached the transaction boundary"
     );
     assert_eq!(snapshot(&pool, &admitted.run).await, original);
-    let output = child(&request)
+    let output = child(&url, &request)
         .env("CRABBER_FACADE_CHILD_SNAPSHOT", original.to_string())
         .output()
         .unwrap();
@@ -407,38 +409,46 @@ async fn physical_abandonment_writer_crash_then_fresh_process_retry() {
     );
     print!("{}", String::from_utf8_lossy(&output.stdout));
     pool.close().await;
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn postgres_stopped_process_and_error_semantics() {
-    let _guard = TEST_LOCK.lock().await;
-    let Some(config) = url() else { return };
-    PostgresStore::migrate(&config).await.unwrap();
-    let Some(pool) = pool().await else { return };
-    let store = Arc::new(PostgresStore::connect(&url().unwrap()).await.unwrap());
-    stopped_owner(store.clone()).await;
-    error_semantics(store).await;
-    pool.close().await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let config = url.clone();
+        PostgresStore::migrate(&config).await.unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        stopped_owner(store.clone()).await;
+        error_semantics(store).await;
+        pool.close().await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn facade_committed_response_loss_fresh_host_process_exact_replay() {
-    let _guard = TEST_LOCK.lock().await;
-    let Some(config) = url() else { return };
-    PostgresStore::migrate(&config).await.unwrap();
-    let Some(pool) = pool().await else { return };
-    let store = Arc::new(PostgresStore::connect(&url().unwrap()).await.unwrap());
-    let (request, outcome) = response_loss::verify_loss(store).await;
-    let original = snapshot(&pool, &outcome.run).await;
-    let output = child(&request)
-        .env("CRABBER_FACADE_CHILD_SNAPSHOT", original.to_string())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-    pool.close().await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let config = url.clone();
+        PostgresStore::migrate(&config).await.unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        let (request, outcome) = response_loss::verify_loss(store).await;
+        let original = snapshot(&pool, &outcome.run).await;
+        let output = child(&url, &request)
+            .env("CRABBER_FACADE_CHILD_SNAPSHOT", original.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        pool.close().await;
+    })
+    .await
+    .unwrap();
 }

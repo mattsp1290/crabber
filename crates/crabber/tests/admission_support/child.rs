@@ -4,7 +4,7 @@ use super::*;
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_child() {
-    let Some((backend, dir, mode)) = Backend::child() else {
+    let Some((backend, dir, mode)) = Backend::child().await else {
         return;
     };
     let session: SessionId =

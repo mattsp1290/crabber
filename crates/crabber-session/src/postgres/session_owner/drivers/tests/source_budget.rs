@@ -3,10 +3,10 @@ use super::super::{Error, source};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError};
 #[tokio::test]
 async fn original_driver_source_preserves_shared_budget_failure() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     for unkeyed in [false, true] {
@@ -97,4 +97,6 @@ async fn original_driver_source_preserves_shared_budget_failure() {
         ));
         tx.rollback().await.unwrap();
     }
+
+    }).await.unwrap();
 }

@@ -9,12 +9,13 @@ fn main() {
         .unwrap();
     #[cfg(feature = "postgres")]
     if mode == "--postgres-child" {
-        runtime.block_on(journey::child());
+        let url = std::env::var("CRABBER_TEST_POSTGRES_URL").expect("PostgreSQL endpoint required");
+        runtime.block_on(journey::child(Some(&url)));
         return;
     }
     #[cfg(feature = "sqlite")]
     if mode == "--sqlite-child" {
-        runtime.block_on(journey::child());
+        runtime.block_on(journey::child(None));
         return;
     }
     #[cfg(feature = "sqlite")]
@@ -33,11 +34,15 @@ fn main() {
     let (backend, stores, child) = match mode.as_str() {
         "--memory" => ("memory", journey::memory(), journey::ChildMode::None),
         #[cfg(feature = "postgres")]
-        "--postgres" => (
-            "postgres",
-            runtime.block_on(journey::postgres(true)),
-            journey::ChildMode::Demo(check),
-        ),
+        "--postgres" => {
+            let url =
+                std::env::var("CRABBER_TEST_POSTGRES_URL").expect("PostgreSQL endpoint required");
+            (
+                "postgres",
+                runtime.block_on(journey::postgres(&url, true)),
+                journey::ChildMode::Demo(url, check),
+            )
+        }
         #[cfg(feature = "sqlite")]
         "--sqlite" => {
             let path = directory.as_ref().unwrap().path().join("session.sqlite");

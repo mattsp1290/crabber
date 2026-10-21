@@ -3,10 +3,10 @@ use super::{Error, Proof};
 use crate::Store;
 #[tokio::test]
 async fn scope_birth_refuses_coherently_rewritten_creation_receipt_and_audit() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     for fork in [false, true] {
@@ -92,4 +92,6 @@ async fn scope_birth_refuses_coherently_rewritten_creation_receipt_and_audit() {
         );
         tx.rollback().await.unwrap();
     }
+
+    }).await.unwrap();
 }

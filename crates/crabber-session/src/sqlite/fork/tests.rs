@@ -57,7 +57,12 @@ async fn rollback_and_cold_process_commit() {
         .execute(&store.writer)
         .await
         .unwrap();
-    contract::spawn("sqlite::fork::tests::process_helper", &request, Some(&path)).await;
+    contract::spawn(
+        "sqlite::fork::tests::process_helper",
+        &request,
+        crabber_test_support::ChildDatabase::Sqlite(&path),
+    )
+    .await;
     let cold = SqliteStore::connect(&path).await.unwrap();
     contract::verify_cold(&cold, request).await;
 }

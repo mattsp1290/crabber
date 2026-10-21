@@ -6,101 +6,103 @@ use crabber_core::{Clock, ManualClock};
 use std::sync::Arc;
 #[tokio::test]
 async fn tool_fresh_current_carriers_and_exact_source() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let native = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = native.with_clock(clock.clone());
-    for (frontend, mixed) in [(false, false), (true, false), (true, true)] {
-        for recovery in [false, true] {
-            let f = fixture_for(&store, &clock, (frontend, mixed), recovery).await;
-            let run = store.get_run(&f.receipt.run_id).await.unwrap().unwrap();
-            let mut tx = store
-                .session_transaction(f.context.session_id())
-                .await
-                .unwrap();
-            let request = request(&mut tx, &f).await;
-            let mut proof = Proof::bounded(32 << 20);
-            Box::pin(fresh::fresh(
-                &mut tx,
-                &request,
-                None,
-                clock.now(),
-                &mut proof,
-            ))
-            .await
-            .unwrap();
-            Box::pin(fresh::fresh(
-                &mut tx,
-                &request,
-                None,
-                clock.now(),
-                &mut Proof::bounded(proof.used()),
-            ))
-            .await
-            .unwrap();
-            assert!(
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let native = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = native.with_clock(clock.clone());
+        for (frontend, mixed) in [(false, false), (true, false), (true, true)] {
+            for recovery in [false, true] {
+                let f = fixture_for(&store, &clock, (frontend, mixed), recovery).await;
+                let run = store.get_run(&f.receipt.run_id).await.unwrap().unwrap();
+                let mut tx = store
+                    .session_transaction(f.context.session_id())
+                    .await
+                    .unwrap();
+                let request = request(&mut tx, &f).await;
+                let mut proof = Proof::bounded(32 << 20);
                 Box::pin(fresh::fresh(
                     &mut tx,
                     &request,
                     None,
                     clock.now(),
-                    &mut Proof::bounded(proof.used() - 1)
+                    &mut proof,
                 ))
                 .await
-                .is_err()
-            );
-            for mutation in 0..5 {
-                sqlx::query("SAVEPOINT carrier")
-                    .execute(&mut *tx)
-                    .await
-                    .unwrap();
-                mutate(&mut tx, &f, mutation).await;
+                .unwrap();
+                Box::pin(fresh::fresh(
+                    &mut tx,
+                    &request,
+                    None,
+                    clock.now(),
+                    &mut Proof::bounded(proof.used()),
+                ))
+                .await
+                .unwrap();
                 assert!(
                     Box::pin(fresh::fresh(
                         &mut tx,
                         &request,
                         None,
                         clock.now(),
-                        &mut Proof::bounded(32 << 20)
+                        &mut Proof::bounded(proof.used() - 1)
                     ))
                     .await
-                    .is_err(),
-                    "frontend={frontend} recovery={recovery} mutation={mutation}"
+                    .is_err()
                 );
-                sqlx::query("ROLLBACK TO SAVEPOINT carrier")
-                    .execute(&mut *tx)
-                    .await
-                    .unwrap();
-                sqlx::query("RELEASE SAVEPOINT carrier")
-                    .execute(&mut *tx)
-                    .await
-                    .unwrap();
-            }
-            if mixed {
-                ordinary_later(&mut tx, &run, &f, &request, clock.now()).await;
+                for mutation in 0..5 {
+                    sqlx::query("SAVEPOINT carrier")
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                    mutate(&mut tx, &f, mutation).await;
+                    assert!(
+                        Box::pin(fresh::fresh(
+                            &mut tx,
+                            &request,
+                            None,
+                            clock.now(),
+                            &mut Proof::bounded(32 << 20)
+                        ))
+                        .await
+                        .is_err(),
+                        "frontend={frontend} recovery={recovery} mutation={mutation}"
+                    );
+                    sqlx::query("ROLLBACK TO SAVEPOINT carrier")
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                    sqlx::query("RELEASE SAVEPOINT carrier")
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                }
+                if mixed {
+                    ordinary_later(&mut tx, &run, &f, &request, clock.now()).await;
+                    if !recovery {
+                        status_carriers(&mut tx, &f, &request, clock.now()).await;
+                    }
+                }
+                if frontend {
+                    substitution(&mut tx, &f, &request, clock.now()).await;
+                }
                 if !recovery {
-                    status_carriers(&mut tx, &f, &request, clock.now()).await;
+                    later(&mut tx, &run, &f, clock.now()).await;
+                }
+                tx.rollback().await.unwrap();
+                if mixed {
+                    Box::pin(crate::successor_driver_contract::tools::fresh::exercise(
+                        &store, request,
+                    ))
+                    .await;
                 }
             }
-            if frontend {
-                substitution(&mut tx, &f, &request, clock.now()).await;
-            }
-            if !recovery {
-                later(&mut tx, &run, &f, clock.now()).await;
-            }
-            tx.rollback().await.unwrap();
-            if mixed {
-                Box::pin(crate::successor_driver_contract::tools::fresh::exercise(
-                    &store, request,
-                ))
-                .await;
-            }
         }
-    }
+    })
+    .await
+    .unwrap();
 }
 pub(super) async fn request(
     tx: &mut Transaction<'_, Postgres>,

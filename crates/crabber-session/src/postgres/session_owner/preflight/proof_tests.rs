@@ -3,31 +3,34 @@ use crate::session_owner::preparation::ReservePreparation;
 use crate::{Store, public_session::v2::proof::Proof};
 #[tokio::test]
 async fn expired_and_admission_recovery_preflight_keep_remaining_proof() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    let expired = Box::pin(crate::run_control_contract::expired::pending(
-        &store, &clock,
-    ))
-    .await;
-    check(
-        &store,
-        expired.joined.observed_grant().original_reservation(),
-    )
-    .await;
-    let (_, grant, _) =
-        Box::pin(crate::admission_execution_contract::inspection::reserved_fixture(&store, &clock))
-            .await;
-    check(&store, grant.original_reservation()).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        let expired = Box::pin(crate::run_control_contract::expired::pending(
+            &store, &clock,
+        ))
+        .await;
+        check(
+            &store,
+            expired.joined.observed_grant().original_reservation(),
+        )
+        .await;
+        let (_, grant, _) = Box::pin(
+            crate::admission_execution_contract::inspection::reserved_fixture(&store, &clock),
+        )
+        .await;
+        check(&store, grant.original_reservation()).await;
+    })
+    .await
+    .unwrap();
 }
 async fn check(store: &crate::PostgresStore, request: &ReservePreparation) {
     let session = &request.owner.binding.session_id;

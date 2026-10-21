@@ -2,30 +2,36 @@ use super::super::PostgresStore;
 use crate::{Store, sql_fork_contract as contract};
 #[tokio::test]
 async fn metadata_guards_and_controller_races() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let cold = PostgresStore::connect(&url).await.unwrap();
-    contract::guards(&store, &cold).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let cold = PostgresStore::connect(&url).await.unwrap();
+        contract::guards(&store, &cold).await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn process_helper() {
     if let Some(request) = contract::child_request() {
-        let store = PostgresStore::connect(&crate::postgres::tests::test_url().unwrap())
-            .await
-            .unwrap();
+        let store = PostgresStore::connect(
+            &crabber_test_support::postgres::TestDatabase::attached_url()
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         contract::child(&store, request).await;
     }
 }
 #[tokio::test]
 async fn rollback_and_cold_process_commit() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url).await.unwrap();
     let source = store
@@ -64,17 +70,19 @@ async fn rollback_and_cold_process_commit() {
     .execute(&store.pool)
     .await
     .unwrap();
-    contract::spawn("postgres::fork::tests::process_helper", &request, None).await;
+    contract::spawn("postgres::fork::tests::process_helper", &request, crabber_test_support::ChildDatabase::Postgres(&url)).await;
     let cold = PostgresStore::connect(&url).await.unwrap();
     contract::verify_cold(&cold, request).await;
     PostgresStore::migrate(&url).await.unwrap();
+
+    }).await.unwrap();
 }
 #[tokio::test]
 async fn retained_phase_cleanup_is_unsafe_and_forgery_is_unknown() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url)
         .await
@@ -126,6 +134,8 @@ async fn retained_phase_cleanup_is_unsafe_and_forgery_is_unknown() {
         store.fork_session(fixture.request).await.unwrap_err(),
         crate::ForkError::UnknownStoreOutcome
     );
+
+    }).await.unwrap();
 }
 
 mod identity;

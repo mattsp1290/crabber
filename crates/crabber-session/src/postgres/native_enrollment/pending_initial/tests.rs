@@ -8,71 +8,67 @@ use crate::session_owner::preparation_contract::resources;
 
 #[tokio::test]
 async fn postgres_pending_initial_original_assignment_and_immutable_roster() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
-    for keyed in [false, true] {
-        let original = if keyed {
-            let (root, bound) = resources::declaration::setup(store.as_ref()).await;
-            resources::initial_driver_observation(
-                store.as_ref(),
-                root,
-                crate::session_owner::preparation::PreparedOperation::AdmitKeyed(Box::new(bound)),
-            )
-            .await
-        } else {
-            resources::initial_unkeyed_observation(store.as_ref()).await
-        };
-        let binding = &original
-            .observed_grant()
-            .original_reservation()
-            .owner
-            .binding;
-        let context = crabber_core::SessionContext::new(
-            binding.session_id.clone(),
-            binding.workspace_id.clone(),
-            binding.directory.clone(),
-        );
-        let session = context.session_id().clone();
-        let source = SourceKey::expected(&original, &mut Proof::bounded(32 << 20)).unwrap();
-        let owner = PendingDriverTasks::default();
-        let mut producer =
-            PendingInitialProducer::register(&owner, store.clone(), context, original).unwrap();
-        producer.start().unwrap();
-        let observed = producer.join().await.unwrap();
-        let status = observed.status().clone();
-        let failed = observed.observation_failed();
-        let failure = format!("{:?}", observed.error());
-        owner.wait_for_supervision().await;
-        // Observe/retire the actual original producer before any diagnostic assertion.
-        assert!(
-            matches!(status, PendingInitialProducerStatus::ClosedAssignment),
-            "{status:?}: {failure}"
-        );
-        assert!(!failed);
-        verify_assignment(store.as_ref(), &session, &source).await;
-        verify_guards(store.as_ref(), &session, &source, keyed).await;
-        store.purge_pending_initial_fixture(&session).await.unwrap();
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+        for keyed in [false, true] {
+            let original = if keyed {
+                let (root, bound) = resources::declaration::setup(store.as_ref()).await;
+                resources::initial_driver_observation(
+                    store.as_ref(),
+                    root,
+                    crate::session_owner::preparation::PreparedOperation::AdmitKeyed(Box::new(
+                        bound,
+                    )),
+                )
+                .await
+            } else {
+                resources::initial_unkeyed_observation(store.as_ref()).await
+            };
+            let binding = &original
+                .observed_grant()
+                .original_reservation()
+                .owner
+                .binding;
+            let context = crabber_core::SessionContext::new(
+                binding.session_id.clone(),
+                binding.workspace_id.clone(),
+                binding.directory.clone(),
+            );
+            let session = context.session_id().clone();
+            let source = SourceKey::expected(&original, &mut Proof::bounded(32 << 20)).unwrap();
+            let owner = PendingDriverTasks::default();
+            let mut producer =
+                PendingInitialProducer::register(&owner, store.clone(), context, original).unwrap();
+            producer.start().unwrap();
+            let observed = producer.join().await.unwrap();
+            let status = observed.status().clone();
+            let failed = observed.observation_failed();
+            let failure = format!("{:?}", observed.error());
+            owner.wait_for_supervision().await;
+            // Observe/retire the actual original producer before any diagnostic assertion.
+            assert!(
+                matches!(status, PendingInitialProducerStatus::ClosedAssignment),
+                "{status:?}: {failure}"
+            );
+            assert!(!failed);
+            verify_assignment(store.as_ref(), &session, &source).await;
+            verify_guards(store.as_ref(), &session, &source, keyed).await;
+            store.purge_pending_initial_fixture(&session).await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn postgres_pending_initial_authentic_raw_already_completed_never_adopts() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     for keyed in [false, true] {
@@ -132,18 +128,16 @@ async fn postgres_pending_initial_authentic_raw_already_completed_never_adopts()
         );
         store.purge_pending_initial_fixture(&session).await.unwrap();
     }
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn postgres_pending_initial_real_session_gate_original_drop_then_seal() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     let original = resources::initial_unkeyed_observation(store.as_ref()).await;
@@ -202,18 +196,16 @@ async fn postgres_pending_initial_real_session_gate_original_drop_then_seal() {
         "Seal-before-Open registers no Complete loan"
     );
     store.purge_pending_initial_fixture(&session).await.unwrap();
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn postgres_pending_pre_run_slot_tombstone_and_scoped_purge() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     let (root, bound) = resources::declaration::setup_session(store.as_ref(), false).await;
@@ -299,6 +291,8 @@ async fn postgres_pending_pre_run_slot_tombstone_and_scoped_purge() {
             .is_some(),
         "other scope survives"
     );
+
+    }).await.unwrap();
 }
 
 async fn verify_pre_run_purge(store: &crate::PostgresStore, session: &crabber_core::SessionId) {

@@ -96,26 +96,29 @@ async fn cancellation(url: &str, operation: Operation) -> (bool, i64, bool) {
 
 #[tokio::test]
 async fn cancelled_finishing_and_savepoint_acknowledgments_discard_the_original_connection() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    for operation in [
-        Operation::Commit,
-        Operation::Rollback,
-        Operation::Savepoint,
-        Operation::Release,
-        Operation::RollbackTo,
-    ] {
-        let actual = cancellation(&url, operation).await;
-        assert!(actual.0, "{operation:?} reused an ambiguous connection");
-        assert_eq!(
-            actual.1,
-            i64::from(matches!(operation, Operation::Commit)),
-            "{operation:?}: actual committed data must survive loss of acknowledgment"
-        );
-        assert!(
-            actual.2,
-            "{operation:?}: ambiguous borrowed operation must poison its real parent"
-        );
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        for operation in [
+            Operation::Commit,
+            Operation::Rollback,
+            Operation::Savepoint,
+            Operation::Release,
+            Operation::RollbackTo,
+        ] {
+            let actual = cancellation(&url, operation).await;
+            assert!(actual.0, "{operation:?} reused an ambiguous connection");
+            assert_eq!(
+                actual.1,
+                i64::from(matches!(operation, Operation::Commit)),
+                "{operation:?}: actual committed data must survive loss of acknowledgment"
+            );
+            assert!(
+                actual.2,
+                "{operation:?}: ambiguous borrowed operation must poison its real parent"
+            );
+        }
+    })
+    .await
+    .unwrap();
 }

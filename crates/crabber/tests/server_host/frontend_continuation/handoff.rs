@@ -239,25 +239,24 @@ async fn sqlite_frontend_result_and_recovery_handoff_to_approval() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_frontend_result_and_recovery_handoff_to_approval() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    for recover in [false, true] {
-        journey(
-            Arc::new(
-                crabber::session::PostgresStore::connect(&url)
-                    .await
-                    .unwrap(),
-            ),
-            recover,
-        )
-        .await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        for recover in [false, true] {
+            journey(
+                Arc::new(
+                    crabber::session::PostgresStore::connect(&url)
+                        .await
+                        .unwrap(),
+                ),
+                recover,
+            )
+            .await;
+        }
+    })
+    .await
+    .unwrap();
 }

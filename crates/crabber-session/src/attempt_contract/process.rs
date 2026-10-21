@@ -1,4 +1,5 @@
 //! Test-only fresh-process attempt reconciliation, never a production fault API.
+use crabber_test_support::ChildDatabase;
 #[path = "process/conclusion.rs"]
 mod conclusion;
 #[path = "process/resume.rs"]
@@ -10,7 +11,7 @@ use crate::{
 };
 use crabber_core::{ControlId, RunFence, SessionId};
 use serde::{Deserialize, Serialize};
-use std::{path::Path, process::Command, time::Duration};
+use std::{process::Command, time::Duration};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum Mode {
@@ -302,7 +303,7 @@ impl Child {
 pub(crate) fn spawn(
     helper: &str,
     fixture: &Fixture,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     extra: &[(&str, String)],
 ) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -310,9 +311,7 @@ pub(crate) fn spawn(
         "CRABBER_ATTEMPT_CHILD",
         serde_json::to_string(fixture).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     for (key, value) in extra {
         command.env(key, value);
     }

@@ -4,6 +4,7 @@ use crate::{
     SessionSummary, Store,
 };
 use crabber_core::{ControlId, SessionId, SessionRevision};
+use crabber_test_support::ChildDatabase;
 
 pub(crate) fn create() -> ManageSession {
     ManageSession {
@@ -192,15 +193,13 @@ pub(crate) async fn verify_cold(store: &dyn Store, request: ForkSession) {
         matches!(store.fork_session(request).await.unwrap(),ForkOutcome::Replayed(value) if value==saved)
     );
 }
-pub(crate) async fn spawn(helper: &str, request: &ForkSession, path: Option<&std::path::Path>) {
+pub(crate) async fn spawn(helper: &str, request: &ForkSession, path: ChildDatabase<'_>) {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command.args(["--exact", helper, "--nocapture"]).env(
         "CRABBER_FORK_CHILD",
         serde_json::to_string(request).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     let mut child = command.spawn().unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {

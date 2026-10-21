@@ -59,100 +59,102 @@ async fn tombstone(tx: &mut Transaction<'_, Postgres>, request: &DeleteSession) 
 }
 #[tokio::test]
 async fn atomic_purge_preserves_survivor_cursors_and_registry() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock());
-    let (target, request) = graph(&store).await;
-    let survivor = crate::fork_pending_contract::fixture(&store).await;
-    let survivor_session = &survivor.request.source_session_id;
-    cross_scope(&store, &target, survivor_session, &request).await;
-    let before = store
-        .list_events(survivor_session, None, 128)
-        .await
-        .unwrap();
-    let continuation = contract::first_snapshot(&store, survivor_session).await;
-    let tail: i64 = sqlx::query_scalar(&target.event_sql())
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-    rollback_fault(&store, &request).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let receipt = tombstone(&mut tx, &request).await;
-    super::purge(
-        &mut tx,
-        &VerifiedScope::fixture(request.session_id.clone(), request.expected_revision),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    missing_scope(&store, &request).await;
-    assert_eq!(
-        store
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock());
+        let (target, request) = graph(&store).await;
+        let survivor = crate::fork_pending_contract::fixture(&store).await;
+        let survivor_session = &survivor.request.source_session_id;
+        cross_scope(&store, &target, survivor_session, &request).await;
+        let before = store
             .list_events(survivor_session, None, 128)
             .await
-            .unwrap(),
-        before
-    );
-    contract::unchanged_snapshot(&store, continuation).await;
-    assert_eq!(
-        store
-            .lookup_session_deletion(&request.session_id, &request.id)
-            .await
-            .unwrap(),
-        Some(receipt.clone())
-    );
-    assert!(matches!(
-        store
-            .session_disposition(&request.session_id)
-            .await
-            .unwrap(),
-        SessionDisposition::Deleted { .. }
-    ));
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tool_call_identities WHERE id=$1 OR id=$2")
-            .bind(&target.call)
-            .bind(&target.imported)
+            .unwrap();
+        let continuation = contract::first_snapshot(&store, survivor_session).await;
+        let tail: i64 = sqlx::query_scalar(&target.event_sql())
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    assert_eq!(count, 0);
-    let run = store.get_run(&survivor.run).await.unwrap().unwrap();
-    let mut event = before.last().unwrap().clone();
-    event.cursor = None;
-    event.correlation = None;
-    event.kind = crabber_core::EventKind::ExtensionNotice;
-    event.payload = serde_json::json!({"survivor": true});
-    store
-        .execution(RunFence {
-            run_id: run.id,
-            claim_token: run.claim_token,
-        })
-        .await
-        .unwrap()
-        .append_event(event)
-        .await
-        .unwrap();
-    let after = store
-        .list_events(survivor_session, Some(contract::cursor(tail)), 8)
-        .await
-        .unwrap();
-    assert_eq!(after.len(), 1);
-    assert!(after[0].cursor.unwrap().0 > u64::try_from(tail).unwrap());
-    let cold = PostgresStore::connect(&url).await.unwrap();
-    assert_eq!(
-        cold.lookup_session_deletion(&request.session_id, &request.id)
+        rollback_fault(&store, &request).await;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
             .await
-            .unwrap(),
-        Some(receipt)
-    );
+            .unwrap();
+        let receipt = tombstone(&mut tx, &request).await;
+        super::purge(
+            &mut tx,
+            &VerifiedScope::fixture(request.session_id.clone(), request.expected_revision),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        missing_scope(&store, &request).await;
+        assert_eq!(
+            store
+                .list_events(survivor_session, None, 128)
+                .await
+                .unwrap(),
+            before
+        );
+        contract::unchanged_snapshot(&store, continuation).await;
+        assert_eq!(
+            store
+                .lookup_session_deletion(&request.session_id, &request.id)
+                .await
+                .unwrap(),
+            Some(receipt.clone())
+        );
+        assert!(matches!(
+            store
+                .session_disposition(&request.session_id)
+                .await
+                .unwrap(),
+            SessionDisposition::Deleted { .. }
+        ));
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM tool_call_identities WHERE id=$1 OR id=$2")
+                .bind(&target.call)
+                .bind(&target.imported)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        let run = store.get_run(&survivor.run).await.unwrap().unwrap();
+        let mut event = before.last().unwrap().clone();
+        event.cursor = None;
+        event.correlation = None;
+        event.kind = crabber_core::EventKind::ExtensionNotice;
+        event.payload = serde_json::json!({"survivor": true});
+        store
+            .execution(RunFence {
+                run_id: run.id,
+                claim_token: run.claim_token,
+            })
+            .await
+            .unwrap()
+            .append_event(event)
+            .await
+            .unwrap();
+        let after = store
+            .list_events(survivor_session, Some(contract::cursor(tail)), 8)
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert!(after[0].cursor.unwrap().0 > u64::try_from(tail).unwrap());
+        let cold = PostgresStore::connect(&url).await.unwrap();
+        assert_eq!(
+            cold.lookup_session_deletion(&request.session_id, &request.id)
+                .await
+                .unwrap(),
+            Some(receipt)
+        );
+    })
+    .await
+    .unwrap();
 }
 async fn missing_scope(store: &PostgresStore, request: &DeleteSession) {
     let mut missing = crate::postgres::transaction::begin(&store.pool)
@@ -260,56 +262,58 @@ async fn rollback_fault(store: &PostgresStore, request: &DeleteSession) {
 }
 #[tokio::test]
 async fn purge_process_rollback_and_cold_commit() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock());
-    let (_, request) = graph(&store).await;
-    contract::spawn(
-        "postgres::deletion::purge::tests::process_helper",
-        &request,
-        None,
-        true,
-    )
-    .await;
-    let cold = PostgresStore::connect(&url).await.unwrap();
-    assert!(
-        cold.get_session(&request.session_id)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
             .await
             .unwrap()
-            .is_some()
-    );
-    assert_eq!(
-        cold.lookup_session_deletion(&request.session_id, &request.id)
-            .await
-            .unwrap(),
-        None
-    );
-    contract::spawn(
-        "postgres::deletion::purge::tests::process_helper",
-        &request,
-        None,
-        false,
-    )
-    .await;
-    let cold = PostgresStore::connect(&url).await.unwrap();
-    assert!(
-        cold.get_session(&request.session_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        cold.lookup_session_deletion(&request.session_id, &request.id)
-            .await
-            .unwrap()
-            .is_some()
-    );
+            .with_clock(clock());
+        let (_, request) = graph(&store).await;
+        contract::spawn(
+            "postgres::deletion::purge::tests::process_helper",
+            &request,
+            crabber_test_support::ChildDatabase::Postgres(&url),
+            true,
+        )
+        .await;
+        let cold = PostgresStore::connect(&url).await.unwrap();
+        assert!(
+            cold.get_session(&request.session_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            cold.lookup_session_deletion(&request.session_id, &request.id)
+                .await
+                .unwrap(),
+            None
+        );
+        contract::spawn(
+            "postgres::deletion::purge::tests::process_helper",
+            &request,
+            crabber_test_support::ChildDatabase::Postgres(&url),
+            false,
+        )
+        .await;
+        let cold = PostgresStore::connect(&url).await.unwrap();
+        assert!(
+            cold.get_session(&request.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            cold.lookup_session_deletion(&request.session_id, &request.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn process_helper() {
@@ -317,9 +321,13 @@ async fn process_helper() {
         return;
     };
     let (request, crash): (DeleteSession, bool) = serde_json::from_str(&raw).unwrap();
-    let store = PostgresStore::connect(&crate::postgres::tests::test_url().unwrap())
-        .await
-        .unwrap();
+    let store = PostgresStore::connect(
+        &crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap();
@@ -339,10 +347,10 @@ async fn process_helper() {
 
 #[tokio::test]
 async fn scoped_purge_removes_only_owned_admission_witness() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url)
         .await
@@ -394,14 +402,16 @@ async fn scoped_purge_removes_only_owned_admission_witness() {
             .is_none()
     );
     assert!(store.get_run(&survivor.run_id).await.unwrap().is_some());
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_run() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url).await.unwrap();
     let session = SessionId::new();
@@ -467,4 +477,6 @@ async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_
             .unwrap();
         assert_eq!(count, 0, "{table}");
     }
+
+    }).await.unwrap();
 }

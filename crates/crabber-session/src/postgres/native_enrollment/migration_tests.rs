@@ -3,10 +3,10 @@ use super::*;
 
 #[tokio::test]
 async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_sources() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
     let mut tx = crate::postgres::transaction::begin(&pool).await.unwrap();
     let namespace = format!("enrollment_migration_{}", uuid::Uuid::new_v4().simple());
@@ -82,4 +82,6 @@ async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_
         .unwrap();
     assert_eq!(saved, bytes);
     tx.rollback().await.unwrap();
+
+    }).await.unwrap();
 }

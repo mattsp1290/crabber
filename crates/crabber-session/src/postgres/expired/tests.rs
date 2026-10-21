@@ -6,80 +6,86 @@ use crabber_core::ManualClock;
 use std::sync::{Arc, atomic::Ordering};
 #[tokio::test]
 async fn expired_preparation_faults_and_sources() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::run_control_contract::expired::faults(&store, &clock, |point| {
-        store.binding_fault.store(point, Ordering::SeqCst);
-    })
-    .await;
-    crate::run_control_contract::expired::unkeyed::faults(&store, &clock, |point| {
-        store.binding_fault.store(point, Ordering::SeqCst);
-    })
-    .await;
-    crate::run_control_contract::expired::unkeyed::lost_admission_ack(&store, &clock, |point| {
-        store.binding_fault.store(point, Ordering::SeqCst);
-    })
-    .await;
-    crate::run_control_contract::expired::unstarted::faults(&store, &clock, |point| {
-        store.binding_fault.store(point, Ordering::SeqCst);
-    })
-    .await;
-    verify_begin_guard(&store, &clock).await;
-    let pending = crate::run_control_contract::expired::pending(&store, &clock).await;
-    let source = &pending.source;
-    let PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed { receipt, .. }) =
-        Box::pin(store.complete_preparation(pending.joined))
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
             .await
             .unwrap()
-    else {
-        panic!("fresh claim")
-    };
-    let session = &source.request().session_id;
-    let run = &source.request().expected_fence.run_id;
-    let original = store.get_run(run).await.unwrap().unwrap();
-    let mut oversized = original.clone();
-    oversized.checkpoint =
-        Some(serde_json::json!({"unused":"x".repeat(crate::MAX_RUN_BOUNDARY_BYTES+32768)}));
-    sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
-        .bind(&run.0)
-        .bind(sqlx::types::Json(serde_json::to_value(&oversized).unwrap()))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        store
-            .lookup_expired_run_preparation(session, run, source.expected_issuance())
+            .with_clock(clock.clone());
+        crate::run_control_contract::expired::faults(&store, &clock, |point| {
+            store.binding_fault.store(point, Ordering::SeqCst);
+        })
+        .await;
+        crate::run_control_contract::expired::unkeyed::faults(&store, &clock, |point| {
+            store.binding_fault.store(point, Ordering::SeqCst);
+        })
+        .await;
+        crate::run_control_contract::expired::unkeyed::lost_admission_ack(
+            &store,
+            &clock,
+            |point| {
+                store.binding_fault.store(point, Ordering::SeqCst);
+            },
+        )
+        .await;
+        crate::run_control_contract::expired::unstarted::faults(&store, &clock, |point| {
+            store.binding_fault.store(point, Ordering::SeqCst);
+        })
+        .await;
+        verify_begin_guard(&store, &clock).await;
+        let pending = crate::run_control_contract::expired::pending(&store, &clock).await;
+        let source = &pending.source;
+        let PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed { receipt, .. }) =
+            Box::pin(store.complete_preparation(pending.joined))
+                .await
+                .unwrap()
+        else {
+            panic!("fresh claim")
+        };
+        let session = &source.request().session_id;
+        let run = &source.request().expected_fence.run_id;
+        let original = store.get_run(run).await.unwrap().unwrap();
+        let mut oversized = original.clone();
+        oversized.checkpoint =
+            Some(serde_json::json!({"unused":"x".repeat(crate::MAX_RUN_BOUNDARY_BYTES+32768)}));
+        sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+            .bind(&run.0)
+            .bind(sqlx::types::Json(serde_json::to_value(&oversized).unwrap()))
+            .execute(&store.pool)
             .await
-            .unwrap(),
-        Some(receipt.clone())
-    );
-    let mut request = source.request().clone();
-    request
-        .expected_fence
-        .claim_token
-        .clone_from(&original.claim_token);
-    clock.set(original.lease_until);
-    assert!(
-        store
-            .inspect_expired_run_preparation(request)
+            .unwrap();
+        assert_eq!(
+            store
+                .lookup_expired_run_preparation(session, run, source.expected_issuance())
+                .await
+                .unwrap(),
+            Some(receipt.clone())
+        );
+        let mut request = source.request().clone();
+        request
+            .expected_fence
+            .claim_token
+            .clone_from(&original.claim_token);
+        clock.set(original.lease_until);
+        assert!(
+            store
+                .inspect_expired_run_preparation(request)
+                .await
+                .is_err()
+        );
+        sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
+            .bind(&run.0)
+            .bind(sqlx::types::Json(serde_json::to_value(&original).unwrap()))
+            .execute(&store.pool)
             .await
-            .is_err()
-    );
-    sqlx::query("UPDATE runs SET data=$2 WHERE id=$1")
-        .bind(&run.0)
-        .bind(sqlx::types::Json(serde_json::to_value(&original).unwrap()))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    verify_original_sources(&store, source, receipt, &url).await;
+            .unwrap();
+        verify_original_sources(&store, source, receipt, &url).await;
+    })
+    .await
+    .unwrap();
 }
 async fn verify_original_sources(
     store: &PostgresStore,
@@ -170,48 +176,57 @@ async fn write_issuer(
 
 #[tokio::test]
 async fn expired_preparation_process_boundaries() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::session_owner::preparation::expired::process;
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
     if std::env::var_os("CRABBER_EXPIRED_CHILD").is_some() {
+        let url = TestDatabase::attached_url().await.unwrap();
+
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
         process::child(&store, &clock).await;
         return;
     }
-    let directory = tempfile::tempdir().unwrap();
-    for stage in ["before", "after"] {
-        let key = process::kill(
-            "postgres::expired::tests::expired_preparation_process_boundaries",
-            stage,
-            None,
-            directory.path(),
-        );
-        let cold = PostgresStore::connect(&url).await.unwrap();
-        process::verify(&cold, key, stage == "after").await;
-        let unkeyed = tempfile::tempdir().unwrap();
-        let key = process::kill_unkeyed(
-            "postgres::expired::tests::expired_preparation_process_boundaries",
-            stage,
-            None,
-            unkeyed.path(),
-        );
-        process::verify(&cold, key, stage == "after").await;
-        let parent = tempfile::tempdir().unwrap();
-        let key = process::kill_unstarted(
-            "postgres::expired::tests::expired_preparation_process_boundaries",
-            stage,
-            None,
-            parent.path(),
-        );
-        process::verify(&cold, key, stage == "after").await;
-    }
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let _store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        let directory = tempfile::tempdir().unwrap();
+        for stage in ["before", "after"] {
+            let key = process::kill(
+                "postgres::expired::tests::expired_preparation_process_boundaries",
+                stage,
+                crabber_test_support::ChildDatabase::Postgres(&url),
+                directory.path(),
+            );
+            let cold = PostgresStore::connect(&url).await.unwrap();
+            process::verify(&cold, key, stage == "after").await;
+            let unkeyed = tempfile::tempdir().unwrap();
+            let key = process::kill_unkeyed(
+                "postgres::expired::tests::expired_preparation_process_boundaries",
+                stage,
+                crabber_test_support::ChildDatabase::Postgres(&url),
+                unkeyed.path(),
+            );
+            process::verify(&cold, key, stage == "after").await;
+            let parent = tempfile::tempdir().unwrap();
+            let key = process::kill_unstarted(
+                "postgres::expired::tests::expired_preparation_process_boundaries",
+                stage,
+                crabber_test_support::ChildDatabase::Postgres(&url),
+                parent.path(),
+            );
+            process::verify(&cold, key, stage == "after").await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 async fn verify_begin_guard(store: &PostgresStore, clock: &ManualClock) {

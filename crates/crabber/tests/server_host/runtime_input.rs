@@ -184,20 +184,19 @@ async fn sqlite_native_input_tool() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_native_input_tool() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(
-            std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none(),
-            "required PostgreSQL URL missing"
-        );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    Box::pin(journey(Arc::new(
-        crabber::session::PostgresStore::connect(&url)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
             .await
-            .unwrap(),
-    )))
-    .await;
+            .unwrap();
+        Box::pin(journey(Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        )))
+        .await;
+    })
+    .await
+    .unwrap();
 }

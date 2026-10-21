@@ -1,5 +1,6 @@
 //! Test-only process death at the actual atomic erasure boundary.
 use crate::{DeleteSession, DeletionOutcome, Store};
+use crabber_test_support::ChildDatabase;
 use std::{
     path::Path,
     process::{Child, Command},
@@ -85,7 +86,7 @@ impl Drop for Guard {
 pub(crate) fn spawn(
     helper: &str,
     request: &DeleteSession,
-    database: Option<&Path>,
+    database: ChildDatabase<'_>,
     kill: Option<(&str, &Path)>,
 ) -> Guard {
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -93,9 +94,7 @@ pub(crate) fn spawn(
         "CRABBER_DELETE_CHILD",
         serde_json::to_string(request).unwrap(),
     );
-    if let Some(path) = database {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    database.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     if let Some((point, marker)) = kill {
         command
             .env("CRABBER_DELETE_KILL_POINT", point)

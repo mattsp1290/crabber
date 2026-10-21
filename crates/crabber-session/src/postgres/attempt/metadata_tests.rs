@@ -1,10 +1,10 @@
 use crate::{AttemptError, AttemptMutationOutcome, Store};
 #[tokio::test]
 async fn metadata_replay_is_independent_of_private_record_and_rejects_tampering() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::super::PostgresStore::connect(&url).await.unwrap();
     let admitted =
@@ -92,4 +92,6 @@ async fn metadata_replay_is_independent_of_private_record_and_rejects_tampering(
             .len(),
         1
     );
+
+    }).await.unwrap();
 }

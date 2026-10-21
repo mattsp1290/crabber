@@ -5,6 +5,7 @@ use crate::{
     WaitingCancellation,
 };
 use crabber_core::{RunFence, TurnId};
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
@@ -151,7 +152,7 @@ impl Drop for Guard {
 fn spawn(
     helper: &str,
     operation: &Operation,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     point: Option<&str>,
     marker: &Path,
 ) -> Guard {
@@ -163,9 +164,7 @@ fn spawn(
             serde_json::to_string(operation).unwrap(),
         )
         .stdout(Stdio::null());
-    if let Some(path) = path {
-        child.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut child, "CRABBER_SQLITE_CHILD_PATH");
     if let Some(point) = point {
         child
             .env("CRABBER_CONTROL_KILL_POINT", point)
@@ -197,7 +196,7 @@ async fn joined(child: &mut Guard) {
     .await
     .unwrap();
 }
-pub(crate) async fn run(store: &impl Store, helper: &str, path: Option<&Path>) {
+pub(crate) async fn run(store: &impl Store, helper: &str, path: ChildDatabase<'_>) {
     for stage in ["accept", "boundary", "waiting", "toolaccept"] {
         for cancel in [false, true] {
             if matches!(stage, "waiting" | "toolaccept") && !cancel {

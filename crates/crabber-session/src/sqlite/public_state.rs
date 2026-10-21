@@ -374,7 +374,7 @@ mod tests {
         process::run(
             "sqlite::public_state::tests::process_helper",
             &fixture,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
         )
         .await;
     }
@@ -390,7 +390,7 @@ mod tests {
         process::run(
             "sqlite::public_state::tests::process_helper",
             &fixture,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
         )
         .await;
     }

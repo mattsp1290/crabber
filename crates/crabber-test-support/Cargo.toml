@@ -11,7 +11,7 @@ postgres = ["dep:sqlx", "dep:tokio", "dep:url", "dep:uuid"]
 
 [dependencies]
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls"], optional = true }
-tokio = { version = "1", features = ["time"], optional = true }
+tokio = { version = "1", features = ["rt", "time"], optional = true }
 url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 

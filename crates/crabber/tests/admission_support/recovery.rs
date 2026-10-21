@@ -304,28 +304,18 @@ async fn unstarted(store: &dyn Store, session: &SessionId) {
     );
 }
 #[cfg(feature = "postgres")]
-fn test_url() -> Option<String> {
-    if let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Some(url)
-    } else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1"),
-            "CRABBER_TEST_POSTGRES_URL required"
-        );
-        None
-    }
-}
-
-#[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_unstarted_completion_and_projection_journey() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else { return };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    projection_journey(BackendKind::Postgres(url)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        projection_journey(BackendKind::Postgres(url)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]

@@ -1,6 +1,7 @@
 //! Real controller death across the atomic root-Join/native-claim commit.
 use crate::Store;
 use crabber_core::{ManualClock, RunId, SessionId, SessionOwnerId};
+use crabber_test_support::ChildDatabase;
 use std::{
     path::Path,
     process::{Command, Stdio},
@@ -38,16 +39,16 @@ pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
         .unwrap();
     panic!("controller failed to stop at commit boundary");
 }
-pub(crate) fn kill(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
+pub(crate) fn kill(test: &str, stage: &str, path: ChildDatabase<'_>, dir: &Path) -> Key {
     kill_kind(test, stage, path, dir, "paused")
 }
-pub(crate) fn kill_unkeyed(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
+pub(crate) fn kill_unkeyed(test: &str, stage: &str, path: ChildDatabase<'_>, dir: &Path) -> Key {
     kill_kind(test, stage, path, dir, "unkeyed")
 }
-pub(crate) fn kill_unstarted(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
+pub(crate) fn kill_unstarted(test: &str, stage: &str, path: ChildDatabase<'_>, dir: &Path) -> Key {
     kill_kind(test, stage, path, dir, "unstarted")
 }
-fn kill_kind(test: &str, stage: &str, path: Option<&Path>, dir: &Path, kind: &str) -> Key {
+fn kill_kind(test: &str, stage: &str, path: ChildDatabase<'_>, dir: &Path, kind: &str) -> Key {
     let marker = dir.join(format!("{stage}.marker"));
     let key = dir.join(format!("{stage}.key"));
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -64,9 +65,7 @@ fn kill_kind(test: &str, stage: &str, path: Option<&Path>, dir: &Path, kind: &st
     } else if kind == "unstarted" {
         command.env("CRABBER_EXPIRED_PARENT", "1");
     }
-    if let Some(path) = path {
-        command.env("CRABBER_EXPIRED_DATABASE", path);
-    }
+    path.configure(&mut command, "CRABBER_EXPIRED_DATABASE");
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     while !marker.exists() {

@@ -183,27 +183,21 @@ async fn sqlite_persists_typed_output_through_the_public_loop() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_persists_typed_output_through_the_public_loop() {
-    let url = match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent)
-            if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
-        {
-            panic!("CRABBER_TEST_POSTGRES_URL is required")
-        }
-        Err(std::env::VarError::NotPresent) => return,
-        Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("CRABBER_TEST_POSTGRES_URL must be valid Unicode")
-        }
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = Arc::new(
-        crabber::session::PostgresStore::connect(&url)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
             .await
-            .unwrap(),
-    );
-    run_mixed_output(store, true, false).await;
+            .unwrap();
+        let store = Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        );
+        run_mixed_output(store, true, false).await;
+    })
+    .await
+    .unwrap();
 }
 async fn assert_output(
     store: &dyn Store,

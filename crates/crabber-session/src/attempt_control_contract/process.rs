@@ -1,6 +1,7 @@
 //! Physical writer death and cold receipt recovery for parent controls.
 use super::*;
 use crate::attempt_control::Control;
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Fixture {
@@ -98,7 +99,7 @@ impl Drop for Guard {
 pub(crate) fn spawn(
     helper: &str,
     f: &Fixture,
-    path: Option<&std::path::Path>,
+    path: ChildDatabase<'_>,
     extra: &[(&str, String)],
 ) -> Guard {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
@@ -106,9 +107,7 @@ pub(crate) fn spawn(
         "CRABBER_PARENT_CONTROL_CHILD",
         serde_json::to_string(f).unwrap(),
     );
-    if let Some(path) = path {
-        cmd.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut cmd, "CRABBER_SQLITE_CHILD_PATH");
     for (k, v) in extra {
         cmd.env(k, v);
     }

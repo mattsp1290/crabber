@@ -33,7 +33,7 @@ async fn queue_killed_after_claim_prepared_and_admit_commit() {
         let mut child = process::spawn(
             "sqlite::queue::process_tests::queue_process_helper",
             &request,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[
                 ("CRABBER_QUEUE_WRITE", "1".into()),
                 (
@@ -47,7 +47,7 @@ async fn queue_killed_after_claim_prepared_and_admit_commit() {
         process::spawn(
             "sqlite::queue::process_tests::queue_process_helper",
             &request,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[],
         )
         .wait()
@@ -66,7 +66,7 @@ async fn queue_killed_before_claim_prepared_and_admit_commit() {
         let mut child = process::spawn(
             "sqlite::queue::process_tests::queue_process_helper",
             &request,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[
                 ("CRABBER_QUEUE_WRITE", "1".into()),
                 (
@@ -107,7 +107,7 @@ async fn queue_killed_before_claim_prepared_and_admit_commit() {
         process::spawn(
             "sqlite::queue::process_tests::queue_process_helper",
             &request,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[],
         )
         .wait()

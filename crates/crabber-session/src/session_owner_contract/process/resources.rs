@@ -4,6 +4,7 @@ use crate::session_owner::preparation::{
     OWNED_PREPARATION_COMPONENT, PreparationGrant, PreparationKey, PreparationPurpose,
     PreparationResourceLink, ReservePreparation,
 };
+use crabber_test_support::ChildDatabase;
 pub(super) async fn retain(store: &impl Store, request: ReservePreparation) {
     let (reserved, authority) = applied(store.reserve_preparation(request.clone()).await.unwrap());
     let authority = authority.unwrap();
@@ -79,7 +80,7 @@ pub(super) async fn verify(store: &impl Store, request: ReservePreparation, comm
     ));
     assert!(store.get_session(session).await.unwrap().is_none());
 }
-pub(super) async fn run(helper: &str, path: Option<&Path>) {
+pub(super) async fn run(helper: &str, path: ChildDatabase<'_>) {
     for committed in [false, true] {
         let mut request = ReservePreparation {
             owner: reservation(SessionId::new()),

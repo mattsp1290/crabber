@@ -344,10 +344,12 @@ databases, schemas or roles. Missing Docker fails before tests. Handled SIGTERM
 returned 143 and removed its container; the forced-kill test manually reclaimed
 its verified owned container afterward.
 
-The full runner currently retains the original 24 Cargo CI commands and existing
-per-binary locks. Caller adoption, final per-test ownership, nextest scheduling,
-resource measurements and full performance qualification remain pending. These
-infrastructure checks alone do not prove complete PostgreSQL behavioral coverage.
+The full runner retains the original 24 Cargo CI commands. PostgreSQL callers
+now allocate a separate database per parent history; subprocess helpers attach
+to that parent. Cross-test database locks have been removed after isolating their
+resources. Full concurrent adoption qualification, nextest scheduling, resource
+measurements and performance qualification remain pending. Infrastructure checks
+alone do not prove complete PostgreSQL behavioral coverage.
 
 ## Offline and source inventories
 
@@ -397,6 +399,46 @@ passed this handoff against their parent's owned fixture.
 
 While caller adoption is in progress, the Cargo PostgreSQL runner limits libtest
 to two test threads per invocation. `--test-threads 1`, `2` or `4` selects a bounded
-functional qualification setting; existing cross-test locks remain until all
-users of their shared resources are isolated. This is not nextest scheduling or
-a measured concurrency recommendation.
+functional qualification setting. This is not nextest scheduling or a measured
+concurrency recommendation.
+
+
+## Per-history PostgreSQL adoption
+
+Session, runtime, facade and host-probe parents use explicit owned fixtures.
+Current-schema histories clone the migrated template and still execute their
+original migration/current-fast-path calls. Migration and predecessor histories
+use blank databases and preserve their original schema setup. Every reconnect,
+raw pool and child receives the same explicit history URL. Shared process helpers
+carry either an explicit PostgreSQL URL or the original SQLite path; they never
+infer a current database from process-wide state. Backend termination and activity
+queries filter on `datname = current_database()` before selecting worker PIDs.
+
+The removed guards protected the shared test database: session `TEST_LOCK` and
+its two accessors, facade admission/fenced locks and trace journey lock. Each
+history now owns its schema and data, temporary files use unique paths, and
+workers attach to their own parent. Intra-history barriers and transaction locks
+remain intact. The fixture qualification deliberately uses identical logical
+keys in two databases, then truncates and changes one schema while checking the
+other remains correct; it also proves advisory-lock independence.
+
+Seven histories intentionally retain uncertain controllers until their original
+Tokio test runtime shuts down. Their synchronous wrappers preserve that exact
+runtime configuration and drop the history runtime before normal fixture drain.
+They cover two pending-tool None-ack histories, three service/acquisition
+histories, facade future-queue and facade session-defaults. The original history
+helpers and their assertions are unchanged. Provider disposal failure additionally
+retains a sticky owner after runtime shutdown: it runs in an actual controller
+process, verifies attachment to its parent's database, and acknowledges completion
+with the opaque identity. The parent requires both that acknowledgement and
+successful process exit before normal cleanup. A zero-match helper invocation or
+foreign acknowledgement is rejected. This process boundary never fabricates a
+native Join or changes persisted uncertainty.
+
+Initial adoption runs exposed connection-drain failures after business assertions
+passed. Those failures are retained in local evidence, rather than counted as
+successes. Focused reruns passed for expired-session child handoff, each runtime
+shutdown-order family, controller-process disposal, future queue, session owners
+and session defaults. The latest PostgreSQL+SQLite all-target Clippy check passed
+after removal of the cross-test locks. The full required schedule at two test
+threads is still in progress; no complete concurrent coverage claim is made yet.

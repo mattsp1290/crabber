@@ -3,10 +3,10 @@ use super::*;
 use crate::session_owner::driver::history_fixture;
 #[tokio::test]
 async fn selected_driver_join_requires_actual_join_and_original_sources() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     for unkeyed in [false, true] {
@@ -60,6 +60,8 @@ async fn selected_driver_join_requires_actual_join_and_original_sources() {
             tx.rollback().await.unwrap();
         }
     }
+
+    }).await.unwrap();
 }
 
 #[path = "history_tests/forged.rs"]

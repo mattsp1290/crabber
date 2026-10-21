@@ -39,24 +39,29 @@ async fn sqlite_queue_dispatch() {
     .await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_queue_dispatch() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let clock = clock();
-    Box::pin(contract::run(
-        Arc::new(
-            crabber::session::PostgresStore::connect(&url)
+#[test]
+fn postgres_queue_dispatch() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_with_runtime(
+        DatabaseMode::Current,
+        tokio::runtime::Builder::new_current_thread(),
+        async move |url| {
+            crabber::session::PostgresStore::migrate(&url)
                 .await
-                .unwrap()
-                .with_clock(clock.clone()),
-        ),
-        clock,
-    ))
-    .await;
+                .unwrap();
+            let clock = clock();
+            Box::pin(contract::run(
+                Arc::new(
+                    crabber::session::PostgresStore::connect(&url)
+                        .await
+                        .unwrap()
+                        .with_clock(clock.clone()),
+                ),
+                clock,
+            ))
+            .await;
+        },
+    )
+    .unwrap();
 }

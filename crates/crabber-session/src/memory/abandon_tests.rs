@@ -139,7 +139,7 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
         input_tokens: 123,
         output_tokens: 45,
     };
-    crate::abandonment_contract::FixtureStore::seed_run(&store, pending).await;
+    crate::abandonment_contract::FixtureStore::seed_run(&store, pending, None).await;
     store.state.lock().unwrap().abandon_fail_after_tools = true;
     clock.set(now + time::Duration::seconds(30));
     let original_run = store.get_run(&admitted.run.id).await.unwrap().unwrap();

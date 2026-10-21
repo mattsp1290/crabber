@@ -175,18 +175,17 @@ async fn pending_queue_runtime_same_task_and_original_replay_sqlite() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn pending_queue_runtime_same_task_and_original_replay_postgres() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    same_task(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        same_task(Arc::new(
+            crabber_session::PostgresStore::connect(&url).await.unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn pending_queue_runtime_waiter_drop_and_stop_retain_committed_ack_and_original_plan() {

@@ -76,8 +76,12 @@ impl Backend {
     pub(super) fn child_environment(&self, command: &mut Command, dir: &Path, mode: &str) {
         match self {
             #[cfg(feature = "postgres")]
-            Self::Postgres(_) => {
+            Self::Postgres(url) => {
                 command
+                    .envs(
+                        crabber_test_support::postgres::TestDatabase::child_environment(url)
+                            .unwrap(),
+                    )
                     .env("CRABBER_RECEIPT_CHILD", mode)
                     .env("CRABBER_RECEIPT_HANDOFF", dir);
                 // A PostgreSQL child cannot accidentally select an inherited SQLite file.
@@ -93,7 +97,7 @@ impl Backend {
         }
     }
 
-    pub(super) fn child() -> Option<(Self, PathBuf, String)> {
+    pub(super) async fn child() -> Option<(Self, PathBuf, String)> {
         #[cfg(feature = "sqlite")]
         if let Some(path) = std::env::var_os("CRABBER_SQLITE_CHILD_PATH") {
             let mode = std::env::var("CRABBER_SQLITE_RECEIPT_CHILD").ok()?;
@@ -104,7 +108,9 @@ impl Backend {
         {
             let mode = std::env::var("CRABBER_RECEIPT_CHILD").ok()?;
             let dir = PathBuf::from(std::env::var_os("CRABBER_RECEIPT_HANDOFF").unwrap());
-            let url = std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap();
+            let url = crabber_test_support::postgres::TestDatabase::attached_url()
+                .await
+                .unwrap();
             Some((Self::Postgres(url), dir, mode))
         }
         #[cfg(not(feature = "postgres"))]

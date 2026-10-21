@@ -86,33 +86,36 @@ async fn safe_reuse(url: &str, case: Case) -> (bool, Option<String>, bool) {
 
 #[tokio::test]
 async fn cancelled_begin_never_returns_an_open_transaction_to_the_pool() {
-    let Some(url) = super::tests::test_url() else {
-        return;
-    };
-    let complete = safe_reuse(&url, Case::Complete).await;
-    let established = safe_reuse(&url, Case::CancelEstablished).await;
-    let cancelled = safe_reuse(&url, Case::CancelBegin).await;
-    assert!(complete.0, "no-cancel control failed: {:?}", complete.1);
-    assert!(
-        complete.2,
-        "ordinary completed transaction must reuse its connection"
-    );
-    assert!(
-        established.0,
-        "established-Tx cancellation failed: {:?}",
-        established.1
-    );
-    assert!(
-        established.2,
-        "established transaction Drop must retain normal reuse"
-    );
-    assert!(
-        cancelled.0,
-        "cancelled BEGIN leaked its transaction; SQLSTATE {:?}, reused original backend {}",
-        cancelled.1, cancelled.2
-    );
-    assert!(
-        !cancelled.2,
-        "cancelled opening owner must discard its original connection"
-    );
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let complete = safe_reuse(&url, Case::Complete).await;
+        let established = safe_reuse(&url, Case::CancelEstablished).await;
+        let cancelled = safe_reuse(&url, Case::CancelBegin).await;
+        assert!(complete.0, "no-cancel control failed: {:?}", complete.1);
+        assert!(
+            complete.2,
+            "ordinary completed transaction must reuse its connection"
+        );
+        assert!(
+            established.0,
+            "established-Tx cancellation failed: {:?}",
+            established.1
+        );
+        assert!(
+            established.2,
+            "established transaction Drop must retain normal reuse"
+        );
+        assert!(
+            cancelled.0,
+            "cancelled BEGIN leaked its transaction; SQLSTATE {:?}, reused original backend {}",
+            cancelled.1, cancelled.2
+        );
+        assert!(
+            !cancelled.2,
+            "cancelled opening owner must discard its original connection"
+        );
+    })
+    .await
+    .unwrap();
 }

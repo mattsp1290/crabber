@@ -64,14 +64,12 @@ async fn sqlite_initial_inspection_private_binding() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_initial_inspection_private_binding() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::test_lock().lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    private_binding(&crate::PostgresStore::connect(&url).await.unwrap()).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        private_binding(&crate::PostgresStore::connect(&url).await.unwrap()).await;
+    })
+    .await
+    .unwrap();
 }

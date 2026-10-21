@@ -77,24 +77,18 @@ impl<'ast> Visit<'ast> for Inventory<'_> {
         });
         let mut facts = Facts::default();
         facts.visit_block(&function.block);
-        if test
-            || facts
-                .environment
-                .iter()
-                .any(|name| name.contains("POSTGRES"))
-            || function.sig.ident == "test_url"
-        {
-            let mut cfg = self.cfg.clone();
-            cfg.extend(guards(self.source, &function.attrs));
-            self.records.push(json!({
+        let mut cfg = self.cfg.clone();
+        cfg.extend(guards(self.source, &function.attrs));
+        self.records.push(json!({
                 "file":self.file,"modules":self.modules,"name":function.sig.ident.to_string(),"test":test,
                 "ignored":function.attrs.iter().any(|attr|attr.path().is_ident("ignore")),
                 "unit_return":matches!(function.sig.output,syn::ReturnType::Default),
-                "cfg":cfg,"environment_names":facts.environment,"calls":facts.calls,"locals":facts.locals,
+                "cfg":cfg,"environment_names":facts.environment,"calls":facts.calls,
+                "call_sites":facts.call_sites,"locals":facts.locals,
+                "async":function.sig.asyncness.is_some(),
                 "body_start":function.block.brace_token.span.open().byte_range().end,
                 "body_end":function.block.brace_token.span.close().byte_range().start,
-            }));
-        }
+        }));
         visit::visit_item_fn(self, function);
     }
 }
@@ -102,20 +96,30 @@ impl<'ast> Visit<'ast> for Inventory<'_> {
 struct Facts {
     environment: BTreeSet<String>,
     calls: BTreeSet<String>,
+    call_sites: Vec<Value>,
     locals: Vec<Value>,
 }
 impl<'ast> Visit<'ast> for Facts {
     fn visit_item_fn(&mut self, _: &'ast syn::ItemFn) {} // nested functions own their facts
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = call.func.as_ref() {
-            self.calls.insert(
-                path.path
-                    .segments
-                    .iter()
-                    .map(|segment| segment.ident.to_string())
-                    .collect::<Vec<_>>()
-                    .join("::"),
-            );
+            let name = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            self.calls.insert(name.clone());
+            self.call_sites.push(json!({
+                "path":name,
+                "start":call.span().byte_range().start,
+                "end":call.span().byte_range().end,
+                "arguments":call.args.iter().map(|argument| {
+                    let range=argument.span().byte_range();
+                    json!({"start":range.start,"end":range.end})
+                }).collect::<Vec<_>>()
+            }));
             if path
                 .path
                 .segments
@@ -176,7 +180,21 @@ mod tests {
         );
         assert_eq!(record["modules"], json!(["nested"]));
         assert_eq!(record["locals"][0]["name"], "url");
+        assert_eq!(record["async"], true);
         assert!(record["locals"][0]["has_else"].as_bool().unwrap());
+        let environment_call = record["call_sites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|call| call["path"] == "std::env::var")
+            .unwrap();
+        let argument = &environment_call["arguments"][0];
+        let argument_start = usize::try_from(argument["start"].as_u64().unwrap()).unwrap();
+        let argument_end = usize::try_from(argument["end"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            &source[argument_start..argument_end],
+            "\"CRABBER_TEST_POSTGRES_URL\""
+        );
         let start = usize::try_from(record["body_start"].as_u64().unwrap()).unwrap();
         let end = usize::try_from(record["body_end"].as_u64().unwrap()).unwrap();
         assert!(source[start..end].trim().starts_with("let Ok(url)"));

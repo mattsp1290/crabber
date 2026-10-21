@@ -3,36 +3,56 @@ use crabber_core::{Clock, ManualClock};
 
 #[tokio::test]
 async fn approval_metadata_is_scoped_bounded_and_checks_question_identity() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    let f = crate::approval_contract::fixture::staged(&store, &clock).await;
-    check_scope(&store, &f).await;
-    let record = seed_record(&store, &f, &clock).await;
-    let original = serde_json::to_string(&record).unwrap();
-    let expected = record.snapshot(store.session_revision(&f.run.session_id).await.unwrap());
-    assert_eq!(
-        store
-            .approval_snapshot(&f.run.session_id, &f.run.id)
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::super::PostgresStore::connect(&url)
             .await
-            .unwrap(),
-        Some(expected.clone())
-    );
-    for data in [
-        "x".repeat(4 * 1024 * 1024 + 1),
-        "{}".into(),
-        original.replace("\"version\":1", "\"version\":9"),
-    ] {
+            .unwrap()
+            .with_clock(clock.clone());
+        let f = crate::approval_contract::fixture::staged(&store, &clock).await;
+        check_scope(&store, &f).await;
+        let record = seed_record(&store, &f, &clock).await;
+        let original = serde_json::to_string(&record).unwrap();
+        let expected = record.snapshot(store.session_revision(&f.run.session_id).await.unwrap());
+        assert_eq!(
+            store
+                .approval_snapshot(&f.run.session_id, &f.run.id)
+                .await
+                .unwrap(),
+            Some(expected.clone())
+        );
+        for data in [
+            "x".repeat(4 * 1024 * 1024 + 1),
+            "{}".into(),
+            original.replace("\"version\":1", "\"version\":9"),
+        ] {
+            sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+                .bind(&record.batch.continuation.id.0)
+                .bind(data)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .approval_snapshot(&f.run.session_id, &f.run.id)
+                    .await
+                    .unwrap_err(),
+                Error::UnknownStoreOutcome
+            );
+        }
         sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
             .bind(&record.batch.continuation.id.0)
-            .bind(data)
+            .bind(&original)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let id = &record.questions[0].view.id;
+        sqlx::query("UPDATE continuation_interactions SET call_id=$2 WHERE id=$1")
+            .bind(&id.0)
+            .bind(&record.batch.calls[2].target.call_id.0)
             .execute(&store.pool)
             .await
             .unwrap();
@@ -43,41 +63,23 @@ async fn approval_metadata_is_scoped_bounded_and_checks_question_identity() {
                 .unwrap_err(),
             Error::UnknownStoreOutcome
         );
-    }
-    sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
-        .bind(&record.batch.continuation.id.0)
-        .bind(&original)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let id = &record.questions[0].view.id;
-    sqlx::query("UPDATE continuation_interactions SET call_id=$2 WHERE id=$1")
-        .bind(&id.0)
-        .bind(&record.batch.calls[2].target.call_id.0)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        store
-            .approval_snapshot(&f.run.session_id, &f.run.id)
+        sqlx::query("UPDATE continuation_interactions SET call_id=$2 WHERE id=$1")
+            .bind(&id.0)
+            .bind(&record.batch.calls[0].target.call_id.0)
+            .execute(&store.pool)
             .await
-            .unwrap_err(),
-        Error::UnknownStoreOutcome
-    );
-    sqlx::query("UPDATE continuation_interactions SET call_id=$2 WHERE id=$1")
-        .bind(&id.0)
-        .bind(&record.batch.calls[0].target.call_id.0)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        store
-            .approval_snapshot(&f.run.session_id, &f.run.id)
-            .await
-            .unwrap(),
-        Some(expected)
-    );
-    check_answer(&store, &f).await;
+            .unwrap();
+        assert_eq!(
+            store
+                .approval_snapshot(&f.run.session_id, &f.run.id)
+                .await
+                .unwrap(),
+            Some(expected)
+        );
+        check_answer(&store, &f).await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn seed_record(
@@ -247,116 +249,123 @@ async fn check_answer(
 
 #[tokio::test]
 async fn recovery_rejects_coherently_changed_consumed_answer() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    let p = crate::approval_contract::recovery::prepare(&store, &clock).await;
-    clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31));
-    let data: String = sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
-        .bind(&p.original.continuation.id.0)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-    for change in 0..2 {
-        let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&data).unwrap();
-        if change == 0 {
-            record.questions[0].answer.as_mut().unwrap().reply = crate::ApprovalReply::Deny;
-            record.questions[0].view.state = crabber_core::InteractionState::Denied;
-        } else {
-            record.batch.calls[2].decision = crate::CallApproval::Deny;
-        }
-        record
-            .validate(&p.original.session_id, &p.original.run_id)
-            .unwrap();
-        sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::super::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        let p = crate::approval_contract::recovery::prepare(&store, &clock).await;
+        clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31));
+        let data: String = sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
             .bind(&p.original.continuation.id.0)
-            .bind(serde_json::to_string(&record).unwrap())
-            .execute(&store.pool)
+            .fetch_one(&store.pool)
             .await
             .unwrap();
-        let before = crate::approval_contract::origin::evidence(&store, &p).await;
-        assert_eq!(
-            store
-                .reclaim_approval_continuation(p.request.clone())
+        for change in 0..2 {
+            let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&data).unwrap();
+            if change == 0 {
+                record.questions[0].answer.as_mut().unwrap().reply = crate::ApprovalReply::Deny;
+                record.questions[0].view.state = crabber_core::InteractionState::Denied;
+            } else {
+                record.batch.calls[2].decision = crate::CallApproval::Deny;
+            }
+            record
+                .validate(&p.original.session_id, &p.original.run_id)
+                .unwrap();
+            sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+                .bind(&p.original.continuation.id.0)
+                .bind(serde_json::to_string(&record).unwrap())
+                .execute(&store.pool)
                 .await
-                .unwrap_err(),
-            Error::UnknownStoreOutcome
-        );
-        assert_eq!(
-            crate::approval_contract::origin::evidence(&store, &p).await,
-            before
-        );
-    }
+                .unwrap();
+            let before = crate::approval_contract::origin::evidence(&store, &p).await;
+            assert_eq!(
+                store
+                    .reclaim_approval_continuation(p.request.clone())
+                    .await
+                    .unwrap_err(),
+                Error::UnknownStoreOutcome
+            );
+            assert_eq!(
+                crate::approval_contract::origin::evidence(&store, &p).await,
+                before
+            );
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn approval_origin_rejects_coherent_deadline_and_source_changes() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::approval_contract::origin::run(&store, &clock, |id, case| {
-        let pool = store.pool.clone();
-        async move {
-            let data: String =
-                sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
-                    .bind(&id.0)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&data).unwrap();
-            let fingerprint = record
-                .batch
-                .fingerprint(&record.session_id, &record.run_id)
-                .unwrap();
-            crate::approval_contract::origin::corrupt(&mut record, case);
-            record.validate(&record.session_id, &record.run_id).unwrap();
-            assert_eq!(
-                record
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::super::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::approval_contract::origin::run(&store, &clock, |id, case| {
+            let pool = store.pool.clone();
+            async move {
+                let data: String =
+                    sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
+                        .bind(&id.0)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                let mut record: crate::approval::ApprovalRecord =
+                    serde_json::from_str(&data).unwrap();
+                let fingerprint = record
                     .batch
                     .fingerprint(&record.session_id, &record.run_id)
-                    .unwrap(),
-                fingerprint
-            );
-            sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
-                .bind(&record.batch.continuation.id.0)
-                .bind(serde_json::to_string(&record).unwrap())
-                .execute(&pool)
-                .await
-                .unwrap();
-        }
+                    .unwrap();
+                crate::approval_contract::origin::corrupt(&mut record, case);
+                record.validate(&record.session_id, &record.run_id).unwrap();
+                assert_eq!(
+                    record
+                        .batch
+                        .fingerprint(&record.session_id, &record.run_id)
+                        .unwrap(),
+                    fingerprint
+                );
+                sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+                    .bind(&record.batch.continuation.id.0)
+                    .bind(serde_json::to_string(&record).unwrap())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn original_approval_terminal_source_binds_request_and_actual_settlement() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::approval::terminal::contract::run(&store, &clock).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::approval::terminal::contract::run(&store, &clock).await;
+    })
+    .await
+    .unwrap();
 }

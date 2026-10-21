@@ -202,23 +202,17 @@ async fn fresh_agent_resumes_native_and_wasm_plan() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn freshly_connected_postgres_agent_resumes_native_and_wasm_plan() {
-    let url = match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent)
-            if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
-        {
-            panic!("CRABBER_TEST_POSTGRES_URL is required")
-        }
-        Err(std::env::VarError::NotPresent) => return,
-        Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("CRABBER_TEST_POSTGRES_URL must be valid Unicode")
-        }
-    };
-    PostgresStore::migrate(&url).await.unwrap();
-    let first_store: Arc<dyn Store> = Arc::new(PostgresStore::connect(&url).await.unwrap());
-    // Reconnect between admission and resume to exercise the durable host path.
-    let second_store: Arc<dyn Store> = Arc::new(PostgresStore::connect(&url).await.unwrap());
-    fresh_agent_resumes_paused_run(first_store, second_store).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let first_store: Arc<dyn Store> = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        // Reconnect between admission and resume to exercise the durable host path.
+        let second_store: Arc<dyn Store> = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        fresh_agent_resumes_paused_run(first_store, second_store).await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn admit_expired_retry_safe_run(

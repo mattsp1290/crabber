@@ -1,5 +1,6 @@
 //! Physical controller death before commit and after commit, then cold replay.
 use super::*;
+use crabber_test_support::ChildDatabase;
 #[path = "process/owned_scope.rs"]
 mod owned_scope;
 #[path = "process/resources.rs"]
@@ -148,7 +149,7 @@ impl Drop for Guard {
 fn spawn(
     helper: &str,
     operation: &Operation,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     point: Option<&str>,
     marker: &Path,
 ) -> Guard {
@@ -159,9 +160,7 @@ fn spawn(
             serde_json::to_string(operation).unwrap(),
         )
         .stdout(Stdio::null());
-    if let Some(path) = path {
-        cmd.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut cmd, "CRABBER_SQLITE_CHILD_PATH");
     if let Some(point) = point {
         cmd.env("CRABBER_OWNER_KILL_POINT", point)
             .env("CRABBER_OWNER_MARKER", marker);
@@ -192,7 +191,7 @@ async fn joined(child: &mut Guard) {
     .await
     .unwrap();
 }
-pub(crate) async fn run(store: &impl Store, helper: &str, path: Option<&Path>) {
+pub(crate) async fn run(store: &impl Store, helper: &str, path: ChildDatabase<'_>) {
     run_preparation(store, helper, path).await;
     resources::run(helper, path).await;
     owned_scope::run(helper, path).await;
@@ -278,7 +277,7 @@ async fn verify_preparation(
     }
     assert!(store.get_session(session).await.unwrap().is_none());
 }
-async fn run_preparation(_store: &impl Store, helper: &str, path: Option<&Path>) {
+async fn run_preparation(_store: &impl Store, helper: &str, path: ChildDatabase<'_>) {
     use crate::session_owner::preparation::{
         PreparationKey, PreparationPurpose, ReservePreparation,
     };
@@ -319,7 +318,7 @@ async fn run_preparation(_store: &impl Store, helper: &str, path: Option<&Path>)
 
 /// Both request commit boundaries survive process death, and a genuinely killed
 /// Active worker never supplies signal acknowledgement or cleanup evidence.
-pub(crate) async fn run_cancellation(store: &impl Store, helper: &str, path: Option<&Path>) {
+pub(crate) async fn run_cancellation(store: &impl Store, helper: &str, path: ChildDatabase<'_>) {
     use crate::session_owner::cancellation_contract as contract;
     for committed in [false, true] {
         let (owner, _) = contract::reserve(store).await;

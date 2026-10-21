@@ -301,45 +301,48 @@ async fn transaction_scope_outcomes_and_redaction() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "current_thread")]
 async fn postgres_transaction_spans_record_scope_and_outcome() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        return;
-    };
-    let (captured, _guard) = capture();
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    drop(store);
-    let pool = sqlx::PgPool::connect(&url).await.unwrap();
-    crate::transaction::begin_scoped(&pool, crate::transaction::StoreScope::Admission)
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    pool.close().await;
-    let records = captured.0.lock().unwrap();
-    let record = records
-        .iter()
-        .find(|r| {
-            r.name == "crabber.store.transaction"
-                && r.fields
-                    .get("crabber.store.scope")
-                    .is_some_and(|v| v == "admission")
-        })
-        .unwrap();
-    assert_eq!(record.target, "crabber::session");
-    assert_eq!(record.fields["db.system"], "postgresql");
-    assert_eq!(record.fields["outcome"], "committed");
-    assert_eq!(record.level, "INFO");
-    for record in records
-        .iter()
-        .filter(|record| record.target == crate::targets::SESSION)
-    {
-        for (field, value) in &record.fields {
-            assert!(
-                !value.contains(&url) && !value.contains("SELECT"),
-                "store signal {} leaked database content in field {field}",
-                record.name
-            );
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let (captured, _guard) = capture();
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        drop(store);
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        crate::transaction::begin_scoped(&pool, crate::transaction::StoreScope::Admission)
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+        pool.close().await;
+        let records = captured.0.lock().unwrap();
+        let record = records
+            .iter()
+            .find(|r| {
+                r.name == "crabber.store.transaction"
+                    && r.fields
+                        .get("crabber.store.scope")
+                        .is_some_and(|v| v == "admission")
+            })
+            .unwrap();
+        assert_eq!(record.target, "crabber::session");
+        assert_eq!(record.fields["db.system"], "postgresql");
+        assert_eq!(record.fields["outcome"], "committed");
+        assert_eq!(record.level, "INFO");
+        for record in records
+            .iter()
+            .filter(|record| record.target == crate::targets::SESSION)
+        {
+            for (field, value) in &record.fields {
+                assert!(
+                    !value.contains(&url) && !value.contains("SELECT"),
+                    "store signal {} leaked database content in field {field}",
+                    record.name
+                );
+            }
         }
-    }
+    })
+    .await
+    .unwrap();
 }

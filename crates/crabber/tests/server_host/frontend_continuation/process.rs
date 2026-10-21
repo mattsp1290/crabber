@@ -73,7 +73,9 @@ async fn child() {
         {
             Arc::new(
                 crabber::session::PostgresStore::connect(
-                    &std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap(),
+                    &crabber_test_support::postgres::TestDatabase::attached_url()
+                        .await
+                        .unwrap(),
                 )
                 .await
                 .unwrap(),
@@ -167,7 +169,7 @@ async fn child() {
         assert_eq!(protected.load(Ordering::SeqCst), 4);
     }
 }
-fn journey(postgres: bool) {
+fn journey(postgres_url: Option<&str>) {
     let directory = tempfile::tempdir().unwrap();
     for step in 0..2 {
         let mut child = Command::new(std::env::current_exe().unwrap());
@@ -179,7 +181,13 @@ fn journey(postgres: bool) {
             ])
             .env("CRABBER_FRONTEND_CHILD", directory.path())
             .env("CRABBER_FRONTEND_STEP", step.to_string());
-        if postgres {
+        if let Some(url) = postgres_url {
+            #[cfg(not(feature = "postgres"))]
+            let _ = url;
+            #[cfg(feature = "postgres")]
+            child.envs(
+                crabber_test_support::postgres::TestDatabase::child_environment(url).unwrap(),
+            );
             child.env("CRABBER_FRONTEND_POSTGRES", "1");
         } else {
             child.env_remove("CRABBER_FRONTEND_POSTGRES");
@@ -196,17 +204,19 @@ fn journey(postgres: bool) {
 }
 #[test]
 fn sqlite_mixed_frontend_batch_survives_fresh_process() {
-    journey(false);
+    journey(None);
 }
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_mixed_frontend_batch_survives_fresh_process() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    journey(true);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        journey(Some(&url));
+    })
+    .await
+    .unwrap();
 }

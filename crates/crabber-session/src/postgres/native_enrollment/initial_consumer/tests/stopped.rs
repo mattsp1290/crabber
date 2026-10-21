@@ -2,14 +2,10 @@
 use super::*;
 #[tokio::test]
 async fn postgres_scripted_original_open_refusal_has_absorbing_no_opened_member() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
 
@@ -64,4 +60,6 @@ async fn postgres_scripted_original_open_refusal_has_absorbing_no_opened_member(
             "actual absorbing no-opened-member guard"
         );
     }
+
+    }).await.unwrap();
 }

@@ -121,7 +121,7 @@ async fn multi_process_writers_serialize_and_keep_fences() {
     let contested = store.admit_run(request(&SessionId::new())).await.unwrap();
     let mut expired = contested.run.clone();
     expired.lease_until = OffsetDateTime::now_utc() - time::Duration::seconds(1);
-    store.seed_run(expired.clone()).await;
+    store.seed_run(expired.clone(), None).await;
     let gate = directory.path().join("writers.go");
     let sessions: Vec<_> = (0..3).map(|_| SessionId::new()).collect();
     for session in &sessions {

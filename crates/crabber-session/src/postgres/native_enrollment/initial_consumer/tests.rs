@@ -16,30 +16,25 @@ use crate::session_owner::owned_scope::{
 };
 #[tokio::test]
 async fn postgres_closed_initial_scripted_consumer_preserves_all_actual_originals() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    for keyed in [false, true] {
-        let source = crabber_extension::LibraryScriptedSource::new(
-            crabber::Selection {
-                provider_id: "library".into(),
-                model_id: "text".into(),
-            },
-            vec![RESPONSE.into()],
-        )
-        .unwrap();
-        let (context, original) =
-            initial_consumer_fixture::prepared_with(store.as_ref(), keyed, &source, |bound| {
-                let old = bound.keyed.request.input_envelope.as_ref().unwrap();
-                let input = crabber_core::InputEnvelope::new(
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+
+        for keyed in [false, true] {
+            let source = crabber_extension::LibraryScriptedSource::new(
+                crabber::Selection {
+                    provider_id: "library".into(),
+                    model_id: "text".into(),
+                },
+                vec![RESPONSE.into()],
+            )
+            .unwrap();
+            let (context, original) =
+                initial_consumer_fixture::prepared_with(store.as_ref(), keyed, &source, |bound| {
+                    let old = bound.keyed.request.input_envelope.as_ref().unwrap();
+                    let input = crabber_core::InputEnvelope::new(
                     old.messages().to_vec(),
                     old.frontend_tools().to_vec(),
                     vec![crabber_core::InputContext {
@@ -51,45 +46,51 @@ async fn postgres_closed_initial_scripted_consumer_preserves_all_actual_original
                     old.admission_kind().clone(),
                 )
                 .unwrap();
-                *bound = crate::typed_admission_contract::prepare(
-                    bound.clone(),
-                    input,
-                    time::OffsetDateTime::UNIX_EPOCH,
-                );
-            })
+                    *bound = crate::typed_admission_contract::prepare(
+                        bound.clone(),
+                        input,
+                        time::OffsetDateTime::UNIX_EPOCH,
+                    );
+                })
+                .await;
+            let session = context.session_id().clone();
+            let key = SourceKey::expected(&original, &mut Proof::bounded(32 << 20)).unwrap();
+            let owner = PendingDriverTasks::default();
+            let mut producer = PendingInitialProducer::register_scripted(
+                &owner,
+                store.clone(),
+                context,
+                original,
+                source,
+            )
+            .unwrap();
+            producer.start().unwrap();
+            let observed = producer.join().await.unwrap();
+            let status = observed.status().clone();
+            let failure = format!("{:?}", observed.error());
+            let failed = observed.observation_failed();
+            owner.wait_for_supervision().await;
+            // Genuine original task and resources are observed before diagnostics assert.
+            assert!(
+                matches!(status, PendingInitialProducerStatus::ClosedAssignment),
+                "{status:?}: {failure}"
+            );
+            assert!(!failed, "{failure}");
+            verify(store.as_ref(), &session, &key, keyed).await;
+            Box::pin(
+                crate::postgres::deletion::verify_initial_classifier_fixture(
+                    store.as_ref(),
+                    &session,
+                ),
+            )
             .await;
-        let session = context.session_id().clone();
-        let key = SourceKey::expected(&original, &mut Proof::bounded(32 << 20)).unwrap();
-        let owner = PendingDriverTasks::default();
-        let mut producer = PendingInitialProducer::register_scripted(
-            &owner,
-            store.clone(),
-            context,
-            original,
-            source,
-        )
-        .unwrap();
-        producer.start().unwrap();
-        let observed = producer.join().await.unwrap();
-        let status = observed.status().clone();
-        let failure = format!("{:?}", observed.error());
-        let failed = observed.observation_failed();
-        owner.wait_for_supervision().await;
-        // Genuine original task and resources are observed before diagnostics assert.
-        assert!(
-            matches!(status, PendingInitialProducerStatus::ClosedAssignment),
-            "{status:?}: {failure}"
-        );
-        assert!(!failed, "{failure}");
-        verify(store.as_ref(), &session, &key, keyed).await;
-        Box::pin(
-            crate::postgres::deletion::verify_initial_classifier_fixture(store.as_ref(), &session),
-        )
-        .await;
-        guards::verify(store.as_ref(), &session, &key).await;
-        Box::pin(erased::verify(store.as_ref(), &session, &key)).await;
-        store.purge_pending_initial_fixture(&session).await.unwrap();
-    }
+            guards::verify(store.as_ref(), &session, &key).await;
+            Box::pin(erased::verify(store.as_ref(), &session, &key)).await;
+            store.purge_pending_initial_fixture(&session).await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 async fn verify(
     store: &crate::PostgresStore,

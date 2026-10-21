@@ -5,6 +5,7 @@ use crate::{
     ToolContinuationRecovery, ToolContinuationSuspension, ToolInteractionAnswer,
 };
 use crabber_core::{Clock, ControlId, InputFingerprint, SessionId};
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -171,7 +172,7 @@ impl Drop for Guard {
         let _ = self.0.wait();
     }
 }
-pub(crate) async fn journey(helper: &str, database: Option<&Path>) {
+pub(crate) async fn journey(helper: &str, database: ChildDatabase<'_>) {
     for step in 0..4 {
         let directory = tempfile::tempdir().unwrap();
         let mut writer = spawn(helper, database, directory.path(), step, true);
@@ -192,7 +193,13 @@ pub(crate) async fn journey(helper: &str, database: Option<&Path>) {
         .expect("cold reader timed out");
     }
 }
-fn spawn(helper: &str, database: Option<&Path>, directory: &Path, step: u8, write: bool) -> Guard {
+fn spawn(
+    helper: &str,
+    database: ChildDatabase<'_>,
+    directory: &Path,
+    step: u8,
+    write: bool,
+) -> Guard {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", helper, "--nocapture"])
@@ -203,8 +210,6 @@ fn spawn(helper: &str, database: Option<&Path>, directory: &Path, step: u8, writ
     } else {
         command.env_remove("CRABBER_TOOL_SQL_WRITE");
     }
-    if let Some(database) = database {
-        command.env("CRABBER_TOOL_SQL_DATABASE", database);
-    }
+    database.configure(&mut command, "CRABBER_TOOL_SQL_DATABASE");
     Guard(command.spawn().unwrap())
 }

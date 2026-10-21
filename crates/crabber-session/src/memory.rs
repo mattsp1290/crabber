@@ -2182,7 +2182,7 @@ mod snapshot_impl;
 #[cfg(test)]
 #[async_trait]
 impl crate::abandonment_contract::FixtureStore for MemoryStore {
-    async fn seed_run(&self, run: Run) {
+    async fn seed_run(&self, run: Run, _fixture_url: Option<&str>) {
         let mut state = self.state.lock().unwrap();
         let previous = state.runs.get(&run.id).cloned();
         // This helper establishes an intentional fixture state, unlike the
@@ -2190,7 +2190,7 @@ impl crate::abandonment_contract::FixtureStore for MemoryStore {
         native_parent::record_run(&mut state, previous.as_ref(), &run).unwrap();
         state.runs.insert(run.id.clone(), run);
     }
-    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
+    async fn calls(&self, run: &RunId, _fixture_url: Option<&str>) -> Vec<ToolCallRecord> {
         self.state
             .lock()
             .unwrap()
@@ -2200,7 +2200,7 @@ impl crate::abandonment_contract::FixtureStore for MemoryStore {
             .cloned()
             .collect()
     }
-    async fn unconsumed_inbox(&self, session: &SessionId) -> usize {
+    async fn unconsumed_inbox(&self, session: &SessionId, _fixture_url: Option<&str>) -> usize {
         self.state
             .lock()
             .unwrap()

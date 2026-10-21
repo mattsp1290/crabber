@@ -259,7 +259,7 @@ impl Store for SqliteFixture {
 }
 #[async_trait]
 impl abandonment_contract::FixtureStore for SqliteFixture {
-    async fn seed_run(&self, run: Run) {
+    async fn seed_run(&self, run: Run, _fixture_url: Option<&str>) {
         let mut tx = self.raw.begin_with("BEGIN IMMEDIATE").await.unwrap();
         let previous: String = sqlx::query_scalar("SELECT data FROM runs WHERE id=$1")
             .bind(&run.id.0)
@@ -294,7 +294,7 @@ impl abandonment_contract::FixtureStore for SqliteFixture {
             .unwrap();
         tx.commit().await.unwrap();
     }
-    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
+    async fn calls(&self, run: &RunId, _fixture_url: Option<&str>) -> Vec<ToolCallRecord> {
         sqlx::query("SELECT data FROM tool_calls WHERE run_id=$1 ORDER BY id")
             .bind(&run.0)
             .fetch_all(&self.raw)
@@ -304,7 +304,7 @@ impl abandonment_contract::FixtureStore for SqliteFixture {
             .map(|row| serde_json::from_str(row.get("data")).unwrap())
             .collect()
     }
-    async fn unconsumed_inbox(&self, session: &SessionId) -> usize {
+    async fn unconsumed_inbox(&self, session: &SessionId, _fixture_url: Option<&str>) -> usize {
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL",
         )

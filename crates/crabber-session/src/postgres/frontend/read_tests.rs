@@ -3,106 +3,113 @@ use crate::PublicSessionLimitV2;
 use crate::postgres::transaction::begin;
 use crate::public_session::v2::proof::{Proof, ReadError};
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Preserve the causal history inside its explicit fixture scope.
 async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let f = crate::frontend_contract::fixture::fixture(&store).await;
-    f.execution
-        .stage_frontend_call(f.request.clone(), f.authority.clone())
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let f = crate::frontend_contract::fixture::fixture(&store).await;
+        f.execution
+            .stage_frontend_call(f.request.clone(), f.authority.clone())
+            .await
+            .unwrap();
+        let mut tx = begin(&store.pool).await.unwrap();
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let mut first = Proof::bounded(32 * 1024 * 1024);
+        let scope = read::scope_with_proof(
+            &mut tx,
+            &f.request.session_id,
+            &f.request.run_id,
+            &mut first,
+        )
         .await
         .unwrap();
-    let mut tx = begin(&store.pool).await.unwrap();
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *tx)
+        let start = first.used();
+        let original = read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.receipt.operation_id, f.request.id);
+        let once = first.used() - start;
+        assert!(once > 1000);
+        // Every repeated source read consumes this SAME remaining allowance.
+        let mut repeated = Proof::bounded(once * 2 - 1);
+        read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut repeated)
+            .await
+            .unwrap();
+        assert_eq!(repeated.used(), once);
+        assert!(matches!(
+            read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut repeated).await,
+            Err(ReadError::Budget(
+                crate::public_session::v2::proof::Failure::Limited(
+                    PublicSessionLimitV2::ProofBytes
+                )
+            ))
+        ));
+        tx.rollback().await.unwrap();
+        // Irrelevant private Run data is neither materialized nor charged.
+        sqlx::query(CHECKPOINT)
+            .bind(&f.request.run_id.0)
+            .bind("private-checkpoint-marker".repeat(100_000))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut tx = begin(&store.pool).await.unwrap();
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let mut proof = Proof::bounded(start + once);
+        let scope = read::scope_with_proof(
+            &mut tx,
+            &f.request.session_id,
+            &f.request.run_id,
+            &mut proof,
+        )
         .await
         .unwrap();
-    let mut first = Proof::bounded(32 * 1024 * 1024);
-    let scope = read::scope_with_proof(
-        &mut tx,
-        &f.request.session_id,
-        &f.request.run_id,
-        &mut first,
-    )
+        read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut proof)
+            .await
+            .unwrap();
+        assert_eq!(proof.used(), first.used());
+        tx.rollback().await.unwrap();
+        sqlx::query("UPDATE frontend_tool_origins SET data_json=$2 WHERE call_id=$1")
+            .bind(&f.request.call.id.0)
+            .bind("malformed-private-origin".repeat(100_000))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut tx = begin(&store.pool).await.unwrap();
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let mut proof = Proof::bounded(8192);
+        let scope = read::scope_with_proof(
+            &mut tx,
+            &f.request.session_id,
+            &f.request.run_id,
+            &mut proof,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut proof).await,
+            Err(ReadError::Budget(
+                crate::public_session::v2::proof::Failure::Limited(
+                    PublicSessionLimitV2::ProofBytes
+                )
+            ))
+        ));
+        tx.rollback().await.unwrap();
+    })
     .await
     .unwrap();
-    let start = first.used();
-    let original = read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut first)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(original.receipt.operation_id, f.request.id);
-    let once = first.used() - start;
-    assert!(once > 1000);
-    // Every repeated source read consumes this SAME remaining allowance.
-    let mut repeated = Proof::bounded(once * 2 - 1);
-    read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut repeated)
-        .await
-        .unwrap();
-    assert_eq!(repeated.used(), once);
-    assert!(matches!(
-        read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut repeated).await,
-        Err(ReadError::Budget(
-            crate::public_session::v2::proof::Failure::Limited(PublicSessionLimitV2::ProofBytes)
-        ))
-    ));
-    tx.rollback().await.unwrap();
-    // Irrelevant private Run data is neither materialized nor charged.
-    sqlx::query(CHECKPOINT)
-        .bind(&f.request.run_id.0)
-        .bind("private-checkpoint-marker".repeat(100_000))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let mut tx = begin(&store.pool).await.unwrap();
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    let mut proof = Proof::bounded(start + once);
-    let scope = read::scope_with_proof(
-        &mut tx,
-        &f.request.session_id,
-        &f.request.run_id,
-        &mut proof,
-    )
-    .await
-    .unwrap();
-    read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut proof)
-        .await
-        .unwrap();
-    assert_eq!(proof.used(), first.used());
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE frontend_tool_origins SET data_json=$2 WHERE call_id=$1")
-        .bind(&f.request.call.id.0)
-        .bind("malformed-private-origin".repeat(100_000))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let mut tx = begin(&store.pool).await.unwrap();
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    let mut proof = Proof::bounded(8192);
-    let scope = read::scope_with_proof(
-        &mut tx,
-        &f.request.session_id,
-        &f.request.run_id,
-        &mut proof,
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        read::origin_with_proof(&mut tx, &scope, &f.request.call.id, &mut proof).await,
-        Err(ReadError::Budget(
-            crate::public_session::v2::proof::Failure::Limited(PublicSessionLimitV2::ProofBytes)
-        ))
-    ));
-    tx.rollback().await.unwrap();
 }
 const CHECKPOINT: &str =
     "UPDATE runs SET data=jsonb_set(data,'{checkpoint}',to_jsonb(CAST($2 AS TEXT))) WHERE id=$1";

@@ -1,8 +1,5 @@
 //! Live PostgreSQL evidence: each child opens its own pool in a fresh process.
-use super::{
-    tests::{TEST_LOCK, request, test_url},
-    *,
-};
+use super::{tests::request, *};
 use crate::{KeyedAdmitOutcome, KeyedAdmitRequest};
 use crabber_core::{AdmissionOptions, EventKind, InputFingerprint, ManualClock};
 use std::{
@@ -64,120 +61,131 @@ async fn counts(store: &PostgresStore, session: &SessionId) -> (i64, i64, i64) {
 
 #[tokio::test]
 async fn postgres_admission_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    crate::admission_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
-    store.pool.close().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::admission_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
+        store.pool.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Preserve the causal history inside its explicit fixture scope.
 async fn independent_pools_and_saturated_existing_session() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let other = PostgresStore::connect(&url).await.unwrap();
-    let session = SessionId::new();
-    let (a, b) = tokio::join!(
-        store.admit_keyed_run(keyed(&session, "first")),
-        other.admit_keyed_run(keyed(&session, "first"))
-    );
-    let (a, b) = (a.unwrap(), b.unwrap());
-    assert_eq!(receipt(a.clone()), receipt(b.clone()));
-    let ((KeyedAdmitOutcome::Started { admitted, .. }, KeyedAdmitOutcome::Replayed(_))
-    | (KeyedAdmitOutcome::Replayed(_), KeyedAdmitOutcome::Started { admitted, .. })) = (a, b)
-    else {
-        panic!("exactly one contender must start");
-    };
-    assert_eq!(counts(&store, &session).await, (1, 1, 1));
-    finish(&store, &admitted).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    // Force all contenders to hold a pooled connection while waiting on the same
-    // session lock. The winner must read history on its already-held connection.
-    let mut held = other.session_transaction(&session).await.unwrap();
-    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut *held)
-        .await
-        .unwrap();
-    let mut tasks = Vec::new();
-    for _ in 0..10 {
-        let store = store.clone();
-        let request = keyed(&session, "second");
-        tasks.push(tokio::spawn(async move {
-            store.admit_keyed_run(request).await.unwrap()
-        }));
-    }
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let waiting: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-            )
-            .bind(blocker)
-            .fetch_one(&other.pool)
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let other = PostgresStore::connect(&url).await.unwrap();
+        let session = SessionId::new();
+        let (a, b) = tokio::join!(
+            store.admit_keyed_run(keyed(&session, "first")),
+            other.admit_keyed_run(keyed(&session, "first"))
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(receipt(a.clone()), receipt(b.clone()));
+        let ((KeyedAdmitOutcome::Started { admitted, .. }, KeyedAdmitOutcome::Replayed(_))
+        | (KeyedAdmitOutcome::Replayed(_), KeyedAdmitOutcome::Started { admitted, .. })) = (a, b)
+        else {
+            panic!("exactly one contender must start");
+        };
+        assert_eq!(counts(&store, &session).await, (1, 1, 1));
+        finish(&store, &admitted).await;
+
+        // Force all contenders to hold a pooled connection while waiting on the same
+        // session lock. The winner must read history on its already-held connection.
+        let mut held = other.session_transaction(&session).await.unwrap();
+        let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *held)
             .await
             .unwrap();
-            if waiting == 10 {
-                break;
+        let mut tasks = Vec::new();
+        for _ in 0..10 {
+            let store = store.clone();
+            let request = keyed(&session, "second");
+            tasks.push(tokio::spawn(async move {
+                store.admit_keyed_run(request).await.unwrap()
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1 = ANY(pg_blocking_pids(pid))",
+                )
+                .bind(blocker)
+                .fetch_one(&other.pool)
+                .await
+                .unwrap();
+                if waiting == 10 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("all pool connections must be waiting");
+        let independent = SessionId::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            other.admit_keyed_run(keyed(&independent, "first")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        held.rollback().await.unwrap();
+        let outputs = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut outputs = Vec::new();
+            for task in tasks {
+                outputs.push(task.await.unwrap());
+            }
+            outputs
+        })
+        .await
+        .expect("admission must not need another pooled connection");
+        let expected = receipt(outputs[0].clone());
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|o| matches!(o, KeyedAdmitOutcome::Started { .. }))
+                .count(),
+            1
+        );
+        for output in outputs {
+            if let KeyedAdmitOutcome::Started { admitted, .. } = &output {
+                assert_eq!(admitted.prior_history.len(), 1);
+            }
+            assert_eq!(receipt(output), expected);
         }
+        assert_eq!(counts(&store, &session).await, (2, 2, 2));
+        assert_eq!(
+            other
+                .admit_keyed_run(keyed(&session, "busy"))
+                .await
+                .unwrap_err(),
+            StoreError::Busy
+        );
+        let mut changed = keyed(&session, "second");
+        changed.request.config_hash = "changed".into();
+        assert_eq!(
+            other.admit_keyed_run(changed).await.unwrap_err(),
+            StoreError::AdmissionConflict
+        );
+        store.pool.close().await;
+        other.pool.close().await;
     })
     .await
-    .expect("all pool connections must be waiting");
-    let independent = SessionId::new();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        other.admit_keyed_run(keyed(&independent, "first")),
-    )
-    .await
-    .unwrap()
     .unwrap();
-    held.rollback().await.unwrap();
-    let outputs = tokio::time::timeout(Duration::from_secs(10), async {
-        let mut outputs = Vec::new();
-        for task in tasks {
-            outputs.push(task.await.unwrap());
-        }
-        outputs
-    })
-    .await
-    .expect("admission must not need another pooled connection");
-    let expected = receipt(outputs[0].clone());
-    assert_eq!(
-        outputs
-            .iter()
-            .filter(|o| matches!(o, KeyedAdmitOutcome::Started { .. }))
-            .count(),
-        1
-    );
-    for output in outputs {
-        if let KeyedAdmitOutcome::Started { admitted, .. } = &output {
-            assert_eq!(admitted.prior_history.len(), 1);
-        }
-        assert_eq!(receipt(output), expected);
-    }
-    assert_eq!(counts(&store, &session).await, (2, 2, 2));
-    assert_eq!(
-        other
-            .admit_keyed_run(keyed(&session, "busy"))
-            .await
-            .unwrap_err(),
-        StoreError::Busy
-    );
-    let mut changed = keyed(&session, "second");
-    changed.request.config_hash = "changed".into();
-    assert_eq!(
-        other.admit_keyed_run(changed).await.unwrap_err(),
-        StoreError::AdmissionConflict
-    );
-    store.pool.close().await;
-    other.pool.close().await;
 }
 
-fn child(session: &SessionId, mode: &str, expected: Option<&AdmissionReceipt>) -> Child {
+fn child(url: &str, session: &SessionId, mode: &str, expected: Option<&AdmissionReceipt>) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
+    command.envs(crabber_test_support::postgres::TestDatabase::child_environment(url).unwrap());
     command
         .args([
             "--exact",
@@ -222,9 +230,13 @@ async fn process_helper() {
         return;
     };
     let session = SessionId(session);
-    let store = PostgresStore::connect(&test_url().expect("child database required"))
-        .await
-        .unwrap();
+    let store = PostgresStore::connect(
+        &crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .expect("child database required"),
+    )
+    .await
+    .unwrap();
     let mut request = keyed(&session, "process");
     let mode = std::env::var("CRABBER_RECEIPT_CHILD_MODE").unwrap();
     if mode == "start-recoverable" {
@@ -272,83 +284,91 @@ async fn process_helper() {
 
 #[tokio::test]
 async fn independent_processes_and_fresh_process_lifecycle() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let session = SessionId::new();
-    let mut children: Vec<_> = (0..4).map(|_| child(&session, "start", None)).collect();
-    for child in &mut children {
-        wait_child(child).await;
-    }
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let expected = store
-        .lookup_admission(&session, &AdmissionKey::new("process").unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(counts(&store, &session).await, (1, 1, 1));
-    let original = store.get_run(&expected.run_id).await.unwrap().unwrap();
-    store.pool.close().await;
-    wait_child(&mut child(&session, "replay", Some(&expected))).await;
-    // Persist a truly expired lease so the fresh child uses its ordinary system clock.
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let mut expired = original.clone();
-    expired.lease_until = OffsetDateTime::now_utc() - time::Duration::seconds(1);
-    save_run(&mut tx, &expired).await.unwrap();
-    tx.commit().await.unwrap();
-    store.pool.close().await;
-    wait_child(&mut child(&session, "replay", Some(&expected))).await;
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let fence = store
-        .claim_expired_run(&expected.run_id, "reclaimer")
-        .await
-        .unwrap();
-    assert_ne!(fence.claim_token, original.claim_token);
-    assert!(matches!(
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let session = SessionId::new();
+        let mut children: Vec<_> = (0..4)
+            .map(|_| child(&url, &session, "start", None))
+            .collect();
+        for child in &mut children {
+            wait_child(child).await;
+        }
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let expected = store
+            .lookup_admission(&session, &AdmissionKey::new("process").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(counts(&store, &session).await, (1, 1, 1));
+        let original = store.get_run(&expected.run_id).await.unwrap().unwrap();
+        store.pool.close().await;
+        wait_child(&mut child(&url, &session, "replay", Some(&expected))).await;
+        // Persist a truly expired lease so the fresh child uses its ordinary system clock.
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let mut expired = original.clone();
+        expired.lease_until = OffsetDateTime::now_utc() - time::Duration::seconds(1);
+        save_run(&mut tx, &expired).await.unwrap();
+        tx.commit().await.unwrap();
+        store.pool.close().await;
+        wait_child(&mut child(&url, &session, "replay", Some(&expected))).await;
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let fence = store
+            .claim_expired_run(&expected.run_id, "reclaimer")
+            .await
+            .unwrap();
+        assert_ne!(fence.claim_token, original.claim_token);
+        assert!(matches!(
+            store
+                .execution(RunFence {
+                    run_id: original.id,
+                    claim_token: original.claim_token
+                })
+                .await,
+            Err(StoreError::Conflict)
+        ));
+        store.pool.close().await;
+        wait_child(&mut child(&url, &session, "replay", Some(&expected))).await;
+        let store = PostgresStore::connect(&url).await.unwrap();
         store
-            .execution(RunFence {
-                run_id: original.id,
-                claim_token: original.claim_token
-            })
-            .await,
-        Err(StoreError::Conflict)
-    ));
-    store.pool.close().await;
-    wait_child(&mut child(&session, "replay", Some(&expected))).await;
-    let store = PostgresStore::connect(&url).await.unwrap();
-    store
-        .execution(fence)
-        .await
-        .unwrap()
-        .settle_run(
-            RunStatus::Completed,
-            None,
-            Usage::default(),
-            EventRecord {
-                cursor: None,
-                session_id: session.clone(),
-                run_id: expected.run_id.clone(),
-                turn_id: None,
-                kind: EventKind::RunSettled,
-                payload: serde_json::Value::Null,
-                correlation: None,
-                live_only: false,
-                created_at: OffsetDateTime::now_utc(),
-            },
-        )
-        .await
-        .unwrap();
-    store.pool.close().await;
-    wait_child(&mut child(&session, "replay", Some(&expected))).await;
+            .execution(fence)
+            .await
+            .unwrap()
+            .settle_run(
+                RunStatus::Completed,
+                None,
+                Usage::default(),
+                EventRecord {
+                    cursor: None,
+                    session_id: session.clone(),
+                    run_id: expected.run_id.clone(),
+                    turn_id: None,
+                    kind: EventKind::RunSettled,
+                    payload: serde_json::Value::Null,
+                    correlation: None,
+                    live_only: false,
+                    created_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+            .unwrap();
+        store.pool.close().await;
+        wait_child(&mut child(&url, &session, "replay", Some(&expected))).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn process_crash_before_commit_rolls_back_every_record() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url).await.unwrap();
     let session = SessionId::new();
@@ -369,10 +389,10 @@ async fn process_crash_before_commit_rolls_back_every_record() {
         .fetch_one(&mut *held)
         .await
         .unwrap();
-    let mut process = child(&session, "start-recoverable", None);
+    let mut process = child(&url, &session, "start-recoverable", None);
     let waiter = tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO admission_executions%'")
+            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO admission_executions%'")
                 .bind(blocker).fetch_optional(&store.pool).await.unwrap();
             if let Some(pid) = pid { break pid; }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -390,7 +410,7 @@ async fn process_crash_before_commit_rolls_back_every_record() {
     process.wait().unwrap();
     // Terminate the blocked backend too: PostgreSQL may not notice a disconnected
     // client until its blocked statement returns. This guarantees server rollback.
-    sqlx::query("SELECT pg_terminate_backend($1)")
+    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
         .bind(waiter)
         .execute(&store.pool)
         .await
@@ -421,7 +441,7 @@ async fn process_crash_before_commit_rolls_back_every_record() {
     assert_eq!(capsules, 0);
 
     store.pool.close().await;
-    wait_child(&mut child(&session, "start-recoverable", None)).await;
+    wait_child(&mut child(&url, &session, "start-recoverable", None)).await;
     let reopened = PostgresStore::connect(&url).await.unwrap();
     assert_eq!(counts(&reopened, &session).await, (1, 1, 1));
 
@@ -433,15 +453,21 @@ async fn process_crash_before_commit_rolls_back_every_record() {
             .is_some()
     );
     reopened.pool.close().await;
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn postgres_admission_execution_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    crate::admission_execution_contract::run_contract(|clock| store.clone().with_clock(clock))
-        .await;
-    store.pool.close().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::admission_execution_contract::run_contract(|clock| store.clone().with_clock(clock))
+            .await;
+        store.pool.close().await;
+    })
+    .await
+    .unwrap();
 }

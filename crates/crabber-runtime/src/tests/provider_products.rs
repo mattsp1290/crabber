@@ -252,18 +252,17 @@ async fn sqlite_actual_box_provider_owner() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_actual_box_provider_owner() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    contract(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        contract(Arc::new(
+            crabber_session::PostgresStore::connect(&url).await.unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 struct DisposalPanic {
@@ -344,20 +343,25 @@ async fn sqlite_box_provider_disposal_failure() {
     .await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_box_provider_disposal_failure() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    failure_contract(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+#[test]
+fn postgres_box_provider_disposal_failure() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    let mut history_runtime = tokio::runtime::Builder::new_multi_thread();
+    history_runtime.worker_threads(4);
+    TestDatabase::run_in_process(
+        DatabaseMode::Current,
+        "tests::provider_products::postgres_box_provider_disposal_failure",
+        history_runtime,
+        async move |url| {
+            crabber_session::PostgresStore::migrate(&url).await.unwrap();
+            failure_contract(Arc::new(
+                crabber_session::PostgresStore::connect(&url).await.unwrap(),
+            ))
+            .await;
+        },
+    )
+    .unwrap();
 }
 #[path = "provider_products/preparation.rs"]
 mod preparation;

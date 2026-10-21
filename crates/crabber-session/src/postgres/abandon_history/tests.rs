@@ -4,10 +4,10 @@ use crate::{DeletionBlocker, Store};
 use crabber_core::{AbandonAuthority, AbandonRequest};
 #[tokio::test]
 async fn original_unstarted_abandonment_has_bounded_positive_domain_proof() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::super::PostgresStore::connect(&url).await.unwrap();
     let now = time::OffsetDateTime::now_utc();
@@ -94,4 +94,6 @@ async fn original_unstarted_abandonment_has_bounded_positive_domain_proof() {
         }
     }
     store.pool.close().await;
+
+    }).await.unwrap();
 }

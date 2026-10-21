@@ -332,7 +332,7 @@ async fn reavailability_refusal(
 
 #[tokio::test]
 async fn cold_backend_child() {
-    let Some((backend, dir, mode)) = Backend::child() else {
+    let Some((backend, dir, mode)) = Backend::child().await else {
         return;
     };
     let session: SessionId =
@@ -501,17 +501,14 @@ async fn sqlite_cold_backend_unavailable_preserves_original() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_cold_backend_unavailable_preserves_original() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1"),
-            "CRABBER_TEST_POSTGRES_URL required"
-        );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    journey(BackendKind::Postgres(url)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        journey(BackendKind::Postgres(url)).await;
+    })
+    .await
+    .unwrap();
 }

@@ -34,9 +34,15 @@ async fn bindings_survive_lost_ack_in_fresh_process() {
             .binding_fault
             .store(2, std::sync::atomic::Ordering::SeqCst);
         process::write(&store, &target, true).await;
-        process::spawn(HELPER, &target, Some(&path), false, None)
-            .wait()
-            .await;
+        process::spawn(
+            HELPER,
+            &target,
+            crabber_test_support::ChildDatabase::Sqlite(&path),
+            false,
+            None,
+        )
+        .wait()
+        .await;
     }
 }
 #[tokio::test]
@@ -50,7 +56,13 @@ async fn killed_binding_insert_rolls_back_entire_admission() {
         let target = process::Fixture::new(keyed, typed);
         let marker = directory.path().join(format!("binding-{index}.marker"));
         sqlx::query("CREATE TRIGGER binding_barrier AFTER INSERT ON run_execution_bindings BEGIN SELECT 1 WHERE 'a' < 'b' COLLATE crabber_test_barrier; END").execute(&store.writer).await.unwrap();
-        let mut child = process::spawn(HELPER, &target, Some(&path), true, Some(&marker));
+        let mut child = process::spawn(
+            HELPER,
+            &target,
+            crabber_test_support::ChildDatabase::Sqlite(&path),
+            true,
+            Some(&marker),
+        );
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while !marker.exists() {
                 assert!(child.running(), "writer exited before binding insert");

@@ -5,6 +5,7 @@ use crabber::{
     core::{AdmissionReceipt, SessionId},
     session::Store,
 };
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 use std::{
     process::Command,
@@ -27,7 +28,12 @@ impl Cold {
         }
     }
 }
-pub(super) async fn run(native: Arc<dyn Store>, sqlite_path: Option<std::path::PathBuf>) {
+pub(super) async fn run(native: Arc<dyn Store>, database: ChildDatabase<'_>) {
+    let sqlite_path = match database {
+        ChildDatabase::Sqlite(path) => Some(path.to_owned()),
+        #[cfg(feature = "postgres")]
+        ChildDatabase::Postgres(_) => None,
+    };
     let session = create(
         native.as_ref(),
         defaults(Some("cold-original"), Some("cold-original-model")),
@@ -71,7 +77,9 @@ pub(super) async fn run(native: Arc<dyn Store>, sqlite_path: Option<std::path::P
         receipt: receipt.clone(),
         sqlite_path,
     };
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    database.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
+    let mut child = command
         .args(["--exact", "default_selection_process_helper", "--nocapture"])
         .env(
             "CRABBER_DEFAULT_SELECTION_CHILD",
@@ -170,7 +178,9 @@ async fn connect(fixture: &Cold) -> Arc<dyn Store> {
     #[cfg(feature = "postgres")]
     return Arc::new(
         crabber::session::PostgresStore::connect(
-            &std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap(),
+            &crabber_test_support::postgres::TestDatabase::attached_url()
+                .await
+                .unwrap(),
         )
         .await
         .unwrap(),

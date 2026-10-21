@@ -15,6 +15,7 @@ mod schedule;
 struct Options {
     package: Option<String>,
     filter: Option<String>,
+    target: Option<String>,
     fixtures_only: bool,
     cleanup: Option<String>,
     test_threads: Option<String>,
@@ -30,6 +31,9 @@ impl Options {
                 }
                 "--filter" if options.filter.is_none() => {
                     options.filter = Some(args.next().ok_or("--filter needs a substring")?.clone());
+                }
+                "--test" if options.target.is_none() => {
+                    options.target = Some(args.next().ok_or("--test needs a target")?.clone());
                 }
                 "--test-threads" if options.test_threads.is_none() => {
                     let threads = args.next().ok_or("--test-threads needs 1, 2 or 4")?;
@@ -47,7 +51,7 @@ impl Options {
             }
         }
         if (options.cleanup.is_some() || options.fixtures_only)
-            && (options.package.is_some() || options.filter.is_some())
+            && (options.package.is_some() || options.filter.is_some() || options.target.is_some())
         {
             return Err("cleanup/fixture qualification cannot be combined with test selection");
         }
@@ -62,6 +66,22 @@ impl Options {
             })
         {
             return Err("package has no required PostgreSQL coverage");
+        }
+        if let Some(target) = &options.target {
+            let package = options
+                .package
+                .as_ref()
+                .ok_or("--test requires --package")?;
+            if !schedule::COMMANDS.iter().any(|command| {
+                command
+                    .windows(2)
+                    .any(|pair| pair[0] == "-p" && pair[1] == package)
+                    && command
+                        .windows(2)
+                        .any(|pair| pair[0] == "--test" && pair[1] == target)
+            }) {
+                return Err("test target is not listed as a required PostgreSQL command");
+            }
         }
         Ok(options)
     }
@@ -166,17 +186,20 @@ async fn execute_schedule(
         if options.filter.is_some() && args[0] != "test" {
             continue;
         }
-        // This transitional Cargo schedule retains original per-binary locks.
-        // WP4 moves ownership into individual tests before nextest is enabled.
-        let database = TestDatabase::for_run(
-            run,
-            if args[2] == "crabber-session" {
-                DatabaseMode::Blank
-            } else {
-                DatabaseMode::Current
-            },
-        )
-        .await?;
+        if options.target.as_ref().is_some_and(|target| {
+            !args
+                .windows(2)
+                .any(|pair| pair[0] == "--test" && pair[1] == target)
+        }) {
+            continue;
+        }
+        // Tests own their fixtures. Actual demo executables receive one database
+        // per invocation; no ambient application URL is supplied to test binaries.
+        let database = if args[0] == "run" {
+            Some(TestDatabase::for_run(run, DatabaseMode::Current).await?)
+        } else {
+            None
+        };
         let mut arguments = args.to_vec();
         if let Some(filter) = &options.filter {
             let position = arguments
@@ -198,11 +221,27 @@ async fn execute_schedule(
             .current_dir(crate::workspace())
             .envs(run.environment())
             .env("CRABBER_REQUIRE_POSTGRES", "1")
-            .env("CRABBER_TEST_POSTGRES_URL", database.url())
-            .env("CRABBER_POSTGRES_URL", database.url())
+            .env_remove("CRABBER_TEST_POSTGRES_URL")
+            .env_remove("CRABBER_POSTGRES_URL")
+            .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
+            .env_remove("CRABBER_TEST_HISTORY_CHILD")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("OPENCODE_GO_API_KEY")
+            .env_remove("CRABBER_TRACE_LIVE")
+            .env_remove("CRABBER_OBS_VERIFY_MARKER")
             .env_remove("DD_API_KEY")
+            .env_remove("DD_APP_KEY")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
-            .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+            .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+            .env_remove("OTEL_EXPORTER_OTLP_HEADERS")
+            .env_remove("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+        if let Some(database) = &database {
+            command
+                .env("CRABBER_TEST_POSTGRES_URL", database.url())
+                .env("CRABBER_POSTGRES_URL", database.url())
+                .env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", database.identity());
+        }
         let mut gates = crate::checks::Checks::default();
         gates.command(
             crate::workspace(),
@@ -210,8 +249,14 @@ async fn execute_schedule(
             "required PostgreSQL CI obligation",
         );
         let code = gates.execute(&crate::checks::Options::default());
-        let cleanup = database.finish().await;
-        cleanup?;
+        if let Some(database) = database
+            && let Err(error) = database.finish().await
+        {
+            if code == 0 {
+                return Err(error.into());
+            }
+            eprintln!("demo database cleanup also failed: {error}");
+        }
         if code != 0 {
             return Ok(code);
         }

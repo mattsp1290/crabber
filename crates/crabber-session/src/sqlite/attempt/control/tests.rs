@@ -55,7 +55,7 @@ async fn parent_controls_lost_ack_survives_fresh_process() {
         process::spawn(
             "sqlite::attempt::control::tests::process_helper",
             &f,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[],
         )
         .wait()
@@ -97,7 +97,7 @@ async fn killed_parent_control_writer_rolls_back_every_boundary() {
         process::spawn(
             "sqlite::attempt::control::tests::process_helper",
             &f,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[],
         )
         .wait()

@@ -3,3 +3,6 @@
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
+
+mod child_database;
+pub use child_database::ChildDatabase;

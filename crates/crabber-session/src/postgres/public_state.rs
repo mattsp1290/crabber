@@ -309,28 +309,32 @@ mod tests {
     use crate::public_state_contract::process;
     #[tokio::test]
     async fn exhausted_revision_leaves_no_partial_write() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        super::PostgresStore::migrate(&url).await.unwrap();
-        let store = super::PostgresStore::connect(&url).await.unwrap();
-        let admitted =
-            crate::public_state_contract::admit(&store, time::OffsetDateTime::now_utc()).await;
-        sqlx::query("UPDATE sessions SET public_revision=$1 WHERE id=$2")
-            .bind(i64::MAX)
-            .bind(&admitted.session.id.0)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        crate::public_state_contract::exhausted(&store, admitted).await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            super::PostgresStore::migrate(&url).await.unwrap();
+            let store = super::PostgresStore::connect(&url).await.unwrap();
+            let admitted =
+                crate::public_state_contract::admit(&store, time::OffsetDateTime::now_utc()).await;
+            sqlx::query("UPDATE sessions SET public_revision=$1 WHERE id=$2")
+                .bind(i64::MAX)
+                .bind(&admitted.session.id.0)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            crate::public_state_contract::exhausted(&store, admitted).await;
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn process_helper() {
         let Some(fixture) = process::fixture() else {
             return;
         };
-        let url = crate::postgres::tests::test_url().expect("child database required");
+        let url = crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .expect("child database required");
         let store = super::PostgresStore::connect(&url).await.unwrap();
         if std::env::var_os("CRABBER_PUBLIC_STATE_WRITE").is_some() {
             process::write(&store, &fixture).await;
@@ -340,10 +344,10 @@ mod tests {
     }
     #[tokio::test]
     async fn killed_writer_before_commit_rolls_back_state_event_revision_and_receipt() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
         super::PostgresStore::migrate(&url).await.unwrap();
         let store = super::PostgresStore::connect(&url).await.unwrap();
         let fixture = process::pending(&store).await;
@@ -367,12 +371,12 @@ mod tests {
         let mut child = process::spawn(
             "postgres::public_state::tests::process_helper",
             &fixture,
-            None,
+            crabber_test_support::ChildDatabase::Postgres(&url),
             &[("CRABBER_PUBLIC_STATE_WRITE", "1".into())],
         );
         let waiter = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'")
+                let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'")
                     .bind(blocker).fetch_optional(&store.pool).await.unwrap();
                 if let Some(pid) = pid { break pid; }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -382,7 +386,7 @@ mod tests {
         child.kill();
         // Release server-side work too; a disconnected blocked backend can
         // otherwise remain alive until its statement wakes up.
-        sqlx::query("SELECT pg_terminate_backend($1)")
+        sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
             .bind(waiter)
             .execute(&store.pool)
             .await
@@ -401,82 +405,92 @@ mod tests {
         process::run(
             "postgres::public_state::tests::process_helper",
             &fixture,
-            None,
+            crabber_test_support::ChildDatabase::Postgres(&url),
         )
         .await;
+
+    }).await.unwrap();
     }
     #[tokio::test]
     async fn committed_response_loss_survives_fresh_process() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        super::PostgresStore::migrate(&url).await.unwrap();
-        let store = super::PostgresStore::connect(&url).await.unwrap();
-        let fixture = process::prepare(&store, |point| {
-            store
-                .public_state_fault
-                .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            super::PostgresStore::migrate(&url).await.unwrap();
+            let store = super::PostgresStore::connect(&url).await.unwrap();
+            let fixture = process::prepare(&store, |point| {
+                store
+                    .public_state_fault
+                    .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+            process::run(
+                "postgres::public_state::tests::process_helper",
+                &fixture,
+                crabber_test_support::ChildDatabase::Postgres(&url),
+            )
+            .await;
         })
-        .await;
-        process::run(
-            "postgres::public_state::tests::process_helper",
-            &fixture,
-            None,
-        )
-        .await;
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn public_state_fault_contract() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        super::PostgresStore::migrate(&url).await.unwrap();
-        let store = super::PostgresStore::connect(&url).await.unwrap();
-        crate::public_state_contract::run_fault_contract(&store, |point| {
-            store
-                .public_state_fault
-                .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            super::PostgresStore::migrate(&url).await.unwrap();
+            let store = super::PostgresStore::connect(&url).await.unwrap();
+            crate::public_state_contract::run_fault_contract(&store, |point| {
+                store
+                    .public_state_fault
+                    .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
         })
-        .await;
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn native_public_source_contract() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        super::PostgresStore::migrate(&url).await.unwrap();
-        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-            time::OffsetDateTime::UNIX_EPOCH,
-        ));
-        let store = super::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock);
-        crate::public_state_contract::source::run(&store).await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            super::PostgresStore::migrate(&url).await.unwrap();
+            let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+                time::OffsetDateTime::UNIX_EPOCH,
+            ));
+            let store = super::PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock);
+            crate::public_state_contract::source::run(&store).await;
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn native_public_source_fault_contract() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        super::PostgresStore::migrate(&url).await.unwrap();
-        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-            time::OffsetDateTime::UNIX_EPOCH,
-        ));
-        let store = super::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock);
-        crate::public_state_contract::source::faults(&store, |point| {
-            store
-                .public_state_fault
-                .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            super::PostgresStore::migrate(&url).await.unwrap();
+            let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+                time::OffsetDateTime::UNIX_EPOCH,
+            ));
+            let store = super::PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock);
+            crate::public_state_contract::source::faults(&store, |point| {
+                store
+                    .public_state_fault
+                    .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
         })
-        .await;
+        .await
+        .unwrap();
     }
 }
 

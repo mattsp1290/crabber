@@ -1,35 +1,39 @@
 #[tokio::test]
 async fn attempt_control_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::super::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = super::super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    crate::attempt_control_contract::run_contract(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::super::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        let store = super::super::super::PostgresStore::connect(&url)
+            .await
+            .unwrap();
+        crate::attempt_control_contract::run_contract(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn attempt_control_faults() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::super::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = super::super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    crate::attempt_control_contract::faults::run(&store, |point| {
-        store
-            .attempt_fault
-            .store(point, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::super::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        let store = super::super::super::PostgresStore::connect(&url)
+            .await
+            .unwrap();
+        crate::attempt_control_contract::faults::run(&store, |point| {
+            store
+                .attempt_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 use crate::attempt_control_contract::process;
 #[tokio::test]
@@ -37,10 +41,13 @@ async fn process_helper() {
     let Some(f) = process::fixture() else {
         return;
     };
-    let store =
-        super::super::super::PostgresStore::connect(&crate::postgres::tests::test_url().unwrap())
+    let store = super::super::super::PostgresStore::connect(
+        &crabber_test_support::postgres::TestDatabase::attached_url()
             .await
-            .unwrap();
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     if std::env::var_os("CRABBER_PARENT_CONTROL_WRITE").is_some() {
         process::write(&store, &f).await.unwrap();
     } else {
@@ -49,44 +56,46 @@ async fn process_helper() {
 }
 #[tokio::test]
 async fn parent_controls_lost_ack_survives_fresh_process() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::super::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = super::super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    for retire in [false, true] {
-        let f = process::pending(&store, retire).await;
-        store
-            .attempt_fault
-            .store(2, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(
-            process::write(&store, &f).await.unwrap_err(),
-            crate::AttemptError::UnknownStoreOutcome
-        );
-        store
-            .attempt_fault
-            .store(0, std::sync::atomic::Ordering::SeqCst);
-        process::spawn(
-            "postgres::attempt::control::tests::process_helper",
-            &f,
-            None,
-            &[],
-        )
-        .wait()
-        .await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::super::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        let store = super::super::super::PostgresStore::connect(&url)
+            .await
+            .unwrap();
+        for retire in [false, true] {
+            let f = process::pending(&store, retire).await;
+            store
+                .attempt_fault
+                .store(2, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                process::write(&store, &f).await.unwrap_err(),
+                crate::AttemptError::UnknownStoreOutcome
+            );
+            store
+                .attempt_fault
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            process::spawn(
+                "postgres::attempt::control::tests::process_helper",
+                &f,
+                crabber_test_support::ChildDatabase::Postgres(&url),
+                &[],
+            )
+            .wait()
+            .await;
+        }
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn killed_parent_control_writer_rolls_back_every_boundary() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::super::PostgresStore::migrate(&url)
         .await
         .unwrap();
@@ -112,13 +121,13 @@ async fn killed_parent_control_writer_rolls_back_every_boundary() {
         let mut child = process::spawn(
             "postgres::attempt::control::tests::process_helper",
             &f,
-            None,
+            crabber_test_support::ChildDatabase::Postgres(&url),
             &[("CRABBER_PARENT_CONTROL_WRITE", "1".into())],
         );
-        let waiter=tokio::time::timeout(std::time::Duration::from_secs(10),async{loop{let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();if let Some(pid)=pid{break pid;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.expect("parent writer must reach receipt barrier");
+        let waiter=tokio::time::timeout(std::time::Duration::from_secs(10),async{loop{let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();if let Some(pid)=pid{break pid;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.expect("parent writer must reach receipt barrier");
         process::unchanged(&store, &f).await;
         child.kill();
-        sqlx::query("SELECT pg_terminate_backend($1)")
+        sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
             .bind(waiter)
             .execute(&store.pool)
             .await
@@ -137,20 +146,22 @@ async fn killed_parent_control_writer_rolls_back_every_boundary() {
         process::spawn(
             "postgres::attempt::control::tests::process_helper",
             &f,
-            None,
+            crabber_test_support::ChildDatabase::Postgres(&url),
             &[],
         )
         .wait()
         .await;
     }
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn parent_retirement_rejects_forged_terminal_records() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::super::PostgresStore::migrate(&url)
         .await
         .unwrap();
@@ -200,40 +211,45 @@ async fn parent_retirement_rejects_forged_terminal_records() {
         }
         crate::attempt_control_contract::integrity::refused(&store, request).await;
     }
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn parent_retirement_requires_original_claimed_approval_provenance() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::super::super::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = super::super::super::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    for case in 0..6 {
-        let (request, id) =
-            crate::attempt_control_contract::integrity::claimed(&store, &clock).await;
-        let text: String = sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
-            .bind(&id.0)
-            .fetch_one(&store.pool)
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::super::super::PostgresStore::migrate(&url)
             .await
             .unwrap();
-        let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&text).unwrap();
-        crate::attempt_control_contract::integrity::forge_approval(&mut record, case);
-        sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
-            .bind(&id.0)
-            .bind(serde_json::to_string(&record).unwrap())
-            .execute(&store.pool)
+        let store = super::super::super::PostgresStore::connect(&url)
             .await
-            .unwrap();
-        crate::attempt_control_contract::integrity::refused(&store, request).await;
-    }
+            .unwrap()
+            .with_clock(clock.clone());
+        for case in 0..6 {
+            let (request, id) =
+                crate::attempt_control_contract::integrity::claimed(&store, &clock).await;
+            let text: String =
+                sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
+                    .bind(&id.0)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&text).unwrap();
+            crate::attempt_control_contract::integrity::forge_approval(&mut record, case);
+            sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+                .bind(&id.0)
+                .bind(serde_json::to_string(&record).unwrap())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            crate::attempt_control_contract::integrity::refused(&store, request).await;
+        }
+    })
+    .await
+    .unwrap();
 }

@@ -925,24 +925,17 @@ async fn model_middleware_resume_keeps_plan_seal_but_refreshes_host_content() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn model_middleware_postgres_resume_reconstructs_plan_and_rejects_changes_before_claim() {
-    let url = match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_))
-            if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
-        {
-            panic!("CRABBER_TEST_POSTGRES_URL is required")
-        }
-        Err(_error) => {
-            eprintln!("skipping PostgreSQL test: CRABBER_TEST_POSTGRES_URL is unset");
-            return;
-        }
-    };
-    PostgresStore::migrate(&url).await.unwrap();
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
 
-    durable::verify(|| async {
-        Arc::new(PostgresStore::connect(&url).await.unwrap()) as Arc<dyn Store>
+        durable::verify(|| async {
+            Arc::new(PostgresStore::connect(&url).await.unwrap()) as Arc<dyn Store>
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 
 // The forged-context authority boundary is intentionally covered by

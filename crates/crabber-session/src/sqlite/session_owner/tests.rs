@@ -20,7 +20,7 @@ async fn session_owner_contract() {
     session_owner_contract::process::run(
         &store,
         "sqlite::session_owner::tests::session_owner_process_helper",
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
     )
     .await;
 }
@@ -117,7 +117,7 @@ async fn owner_cancellation_contract() {
     crate::session_owner_contract::process::run_cancellation(
         &store,
         "sqlite::session_owner::tests::session_owner_process_helper",
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
     )
     .await;
 }

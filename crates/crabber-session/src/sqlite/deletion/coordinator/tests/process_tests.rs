@@ -18,7 +18,7 @@ async fn quiet_deletion_killed_before_and_after_commit() {
         let mut child = process::spawn(
             "sqlite::deletion::coordinator::tests::process_tests::quiet_deletion_process_helper",
             &request,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             Some((point, &marker)),
         );
         process::marker(&marker).await;
@@ -64,7 +64,7 @@ async fn quiet_deletion_killed_before_and_after_commit() {
         process::spawn(
             "sqlite::deletion::coordinator::tests::process_tests::quiet_deletion_process_helper",
             &request,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             None,
         )
         .wait()

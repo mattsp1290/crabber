@@ -1,6 +1,7 @@
 //! Deliberately relational fixtures: the test-only scope never certifies readiness.
 use crate::{SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
 use crabber_core::{EventCursor, SessionId};
+use crabber_test_support::ChildDatabase;
 
 pub(crate) struct Graph {
     pub session: SessionId,
@@ -235,7 +236,7 @@ pub(crate) fn cursor(value: i64) -> EventCursor {
 pub(crate) async fn spawn(
     helper: &str,
     request: &crate::DeleteSession,
-    path: Option<&std::path::Path>,
+    path: ChildDatabase<'_>,
     crash: bool,
 ) {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -243,9 +244,7 @@ pub(crate) async fn spawn(
         "CRABBER_PURGE_CHILD",
         serde_json::to_string(&(request, crash)).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     let mut child = command.spawn().unwrap();
     let status = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {

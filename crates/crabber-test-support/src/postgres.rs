@@ -34,6 +34,7 @@ pub enum DatabaseMode {
 mod child;
 mod config;
 mod database;
+mod history_process;
 mod runner;
 use config::Config;
 pub use database::TestDatabase;

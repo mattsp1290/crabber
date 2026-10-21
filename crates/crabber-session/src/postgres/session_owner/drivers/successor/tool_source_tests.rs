@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn tool_original_sources_authenticate_all_four_compound_origins() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let native = crate::PostgresStore::connect(&url).await.unwrap();
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
@@ -93,6 +93,8 @@ async fn tool_original_sources_authenticate_all_four_compound_origins() {
             }
         }
     }
+
+    }).await.unwrap();
 }
 
 async fn substituted_content(

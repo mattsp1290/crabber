@@ -137,24 +137,22 @@ async fn sqlite_pending_approval_same_task() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_pending_approval_same_task() {
-    let _guard = crate::postgres::pending_initial_test_lock().await;
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(
-            crate::PostgresStore::connect(&url)
-                .await
-                .unwrap()
-                .with_clock(clock.clone()),
-        ),
-        clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        Box::pin(contract(
+            Arc::new(
+                crate::PostgresStore::connect(&url)
+                    .await
+                    .unwrap()
+                    .with_clock(clock.clone()),
+            ),
+            clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
