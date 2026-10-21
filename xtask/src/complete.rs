@@ -51,7 +51,7 @@ pub(crate) fn schedule(environment: Vec<(String, String)>, directory: &Path) -> 
     let workspace = crate::workspace();
     let mut gates = Checks::required(environment);
     let fixture_lease = preflight(&mut gates, directory);
-    feature_boundaries(&mut gates);
+    feature_boundaries(&mut gates, directory);
     behavior_graph(&mut gates, directory);
     gates.script(
         workspace,
@@ -99,26 +99,9 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     crate::schedule_fixtures(workspace, gates)
 }
 
-fn feature_boundaries(gates: &mut Checks) {
+fn feature_boundaries(gates: &mut Checks, directory: &Path) {
     let workspace = crate::workspace();
-    // Driver-free session/runtime compilation cannot borrow the facade's raw
-    // SQLx PostgreSQL dev dependency. Broad execution does not prove absence.
-    gates.cargo(
-        workspace,
-        &[
-            "check",
-            "-p",
-            "crabber-session",
-            "-p",
-            "crabber-runtime",
-            "-p",
-            "crabber-obs",
-            "--no-default-features",
-            "--features",
-            "crabber-session/sqlite,crabber-runtime/sqlite",
-            "--lib",
-        ],
-    );
+    driver_free_libraries(gates, directory.join("boundary-features.json"));
     gates.script(
         workspace,
         "custom HTTP feature visibility and raw-escape boundaries",
@@ -133,9 +116,59 @@ fn feature_boundaries(gates: &mut Checks) {
         "locked server-host consumer",
         "testdata/server-host-consumer/check.sh",
     );
-    // The standalone external consumer builds and runs the genuine WASM-only
-    // API. Combined behavior owns wasm_state/wasm_roles; rebuilding their full
-    // test crates in two narrower feature graphs adds no distinct detector.
+}
+
+fn driver_free_libraries(gates: &mut Checks, destination: PathBuf) {
+    let workspace = crate::workspace();
+    // Driver-free session/runtime compilation cannot borrow the facade's raw
+    // SQLx PostgreSQL dev dependency. Broad execution does not prove absence.
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "check",
+            "-p",
+            "crabber-session",
+            "-p",
+            "crabber-runtime",
+            "-p",
+            "crabber-obs",
+            "--no-default-features",
+            "--features",
+            "crabber-session/sqlite,crabber-runtime/sqlite",
+            "--lib",
+            "--message-format=json",
+        ])
+        .current_dir(workspace);
+    gates.captured(
+        workspace,
+        command,
+        "SQLite libraries without a PostgreSQL driver; observations without OTLP",
+        move |output| {
+            let mut observed = std::collections::BTreeMap::new();
+            for message in serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Value>()
+            {
+                let message = message.expect("Cargo JSON artifact message");
+                if message["reason"] == "compiler-artifact"
+                    && let Some(name) = message["target"]["name"].as_str()
+                    && ["sqlx", "crabber_session", "crabber_runtime", "crabber_obs"].contains(&name)
+                {
+                    observed.insert(name.to_owned(), message["features"].clone());
+                }
+            }
+            for name in ["sqlx", "crabber_session", "crabber_runtime", "crabber_obs"] {
+                let features = observed
+                    .get(name)
+                    .expect("required production library compiled");
+                let features = features.as_array().unwrap();
+                assert!(!features.iter().any(|f| f == "postgres" || f == "otlp"));
+                if name != "crabber_obs" {
+                    assert!(features.iter().any(|f| f == "sqlite"));
+                }
+            }
+            fs::write(destination, serde_json::to_vec_pretty(&observed).unwrap())
+                .expect("persist negative feature boundary evidence");
+        },
+    );
 }
 
 fn behavior_graph(gates: &mut Checks, directory: &Path) {
