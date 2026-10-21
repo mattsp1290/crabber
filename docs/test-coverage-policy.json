@@ -287,6 +287,22 @@
         {
           "package": "crabber-session",
           "suffix": "postgres::admission_tests::process_crash_before_commit_rolls_back_every_record"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::queue::process_tests::queue_killed_after_claim_prepared_and_admit_commit"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::queue::process_tests::queue_killed_before_claim_prepared_and_admit_commit"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::queue::process_tests::queue_killed_after_claim_prepared_and_admit_commit"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::queue::process_tests::queue_killed_before_claim_prepared_and_admit_commit"
         }
       ]
     },
@@ -363,6 +379,14 @@
         {
           "package": "crabber-session",
           "suffix": "postgres::tests::migrate_reopen_and_concurrent_sessions"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::migrations::forward_migration_preserves_v1_and_connect_is_read_only"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::migrations::current_migration_never_relocks_runtime_tables"
         }
       ]
     },
