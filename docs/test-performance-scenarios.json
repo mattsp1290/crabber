@@ -1,6 +1,6 @@
 {
   "base_revision": "670880022c17d52d4c5253aad2bdc2f42a867524",
-  "status": "memory/SQLite single-thread and five scheduler repetitions passed; PostgreSQL execution pending",
+  "status": "All affected backend cases passed at one slot and in five complete four-slot repetitions; quiet PostgreSQL 1/2/4 comparison passed",
   "families": [
     {
       "family": "session_native_pending_tool",
@@ -1696,14 +1696,33 @@
     "instance_mode": "PerCall"
   },
   "validation": {
+    "source_revision": "190e73356044529fd599e21dac26fe6e5296ee0a",
+    "cases_per_repetition": {
+      "memory": 8,
+      "sqlite": 12,
+      "postgres": 12
+    },
+    "single_slot_backends": [
+      "memory",
+      "sqlite",
+      "postgres"
+    ],
+    "complete_four_slot_repetitions": 5,
+    "individual_retries": 0,
+    "postgres_resource_settings": [
+      1,
+      2,
+      4
+    ],
+    "selected_postgres_slots": 4,
+    "resource_report": "test-performance-resource-selection.json",
+    "complete_gate_performance_qualification": "pending",
     "memory_sqlite": {
       "case_count": 20,
       "single_thread_test_wall_seconds": 294.223,
       "repetitions_at_four_slots": 5,
       "all_repetitions_passed": true,
       "retries": 0
-    },
-    "postgres": "compile and execution qualification pending",
-    "performance_qualification": false
+    }
   }
 }

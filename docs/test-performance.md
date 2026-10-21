@@ -614,7 +614,7 @@ threads, including all required demos, and its exact owned container was verifie
 absent afterward. The one- and four-thread checks are still being assessed.
 
 
-## Independent contract families (draft qualification)
+## Independent contract families
 
 The scenario ledger in `test-performance-scenarios.json` maps every original
 parameter tuple to its new named test family. Native pending-tool coverage keeps
@@ -639,10 +639,16 @@ The WASM growth contract remains one 212-run causal history with its original
 check was already a separate test. Splitting the growth sequence would discard
 the retained-state obligation, so it is deliberately kept intact.
 
-The memory/SQLite draft passed all-target Clippy and all 20 changed cases at one
-thread. Five complete repetitions under the four-slot scheduler limit also
-passed all 20 cases without retries. Their test execution wall times were
-114.806, 116.221, 117.416, 118.987 and 119.700 seconds under concurrent host load;
-these are functional repetition measurements, not final performance samples.
-PostgreSQL execution of this split awaits the main fixture adoption qualification;
-no live PostgreSQL split result is claimed yet.
+All 20 affected Memory/SQLite cases and all 12 affected PostgreSQL cases passed
+at one slot. Each backend then passed five complete repetitions under the
+four-slot limit, with no individual retries. All 15 PostgreSQL containers from
+those repetitions were independently verified absent afterward.
+
+The quiet PostgreSQL comparison used the same source and fixed xtask binary at
+one, two and four slots. Nextest execution across the three sequential family
+commands took 596.999, 457.223 and 213.574 seconds respectively. Four slots was
+selected; runtime contracts retain weight two. The observed connection peaks
+were 5, 7 and 13. The first setting rebuilt artifacts, so its compilation CPU/RSS
+must not be compared with the warm settings as test-only resource usage. See
+`test-performance-resource-selection.json` for the measured scope and resources.
+The whole-gate cold/warm qualification remains separate.

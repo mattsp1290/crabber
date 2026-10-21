@@ -2,7 +2,7 @@
 nextest-version = { required = "0.9.138" }
 
 [test-groups]
-postgres = { max-threads = 2 }
+postgres = { max-threads = 4 }
 postgres-one = { max-threads = 1 }
 postgres-four = { max-threads = 4 }
 wasm = { max-threads = 4 }
@@ -44,7 +44,7 @@ fail-fast = false
 filter = 'all()'
 test-group = 'postgres'
 
-# Explicit experiments; the normal PostgreSQL profile remains capped at two.
+# Explicit comparison profiles; the measured normal profile uses four slots.
 [profile.postgres-one]
 test-threads = 1
 retries = 0
