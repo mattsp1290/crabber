@@ -142,9 +142,10 @@ fn check() -> checks::Checks {
             "test",
             "--workspace",
             "--features",
-            "server-host-probe/sqlite,server-host-probe/wasm,workspace-context-probe/sqlite",
+            nextest::WORKSPACE_FEATURES,
         ],
     );
+    nextest::group_gate(workspace, &mut gates);
     gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "agui-sse", "--", "--check"],

@@ -35,9 +35,11 @@ mod child;
 mod config;
 mod database;
 mod history_process;
+mod metrics;
 mod runner;
 use config::Config;
 pub use database::TestDatabase;
+pub use metrics::{FixtureMetrics, METRICS_FILE};
 pub use runner::RunFixture;
 
 #[cfg(test)]

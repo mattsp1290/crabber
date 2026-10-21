@@ -1,8 +1,15 @@
 //! Run-owned PostgreSQL prerequisite and the required CI obligation schedule.
 
-use std::{env, process::Command, time::Instant};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Instant,
+};
 
-use crabber_test_support::postgres::{DatabaseMode, RunFixture, TestDatabase};
+use crabber_test_support::postgres::{
+    DatabaseMode, FixtureMetrics, METRICS_FILE, RunFixture, TestDatabase,
+};
 use futures_util::FutureExt;
 
 pub(crate) mod child;
@@ -27,6 +34,7 @@ struct Options {
     cleanup: Option<String>,
     test_threads: Option<String>,
     runner: Option<Runner>,
+    fixture_metrics: Option<PathBuf>,
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, &'static str> {
@@ -34,6 +42,12 @@ impl Options {
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--fixture-metrics" if options.fixture_metrics.is_none() => {
+                    options.fixture_metrics = Some(PathBuf::from(
+                        args.next()
+                            .ok_or("--fixture-metrics needs a new event-file path")?,
+                    ));
+                }
                 "--runner" if options.runner.is_none() => {
                     options.runner = Some(match args.next().map(String::as_str) {
                         Some("cargo") => Runner::Cargo,
@@ -148,44 +162,51 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
             return Ok(code);
         }
     }
+    let metrics_path = options.fixture_metrics.as_ref().map(|path| {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            crate::workspace().join(path)
+        }
+    });
+    let metrics = metrics_path
+        .as_deref()
+        .map(FixtureMetrics::create)
+        .transpose()?;
     let endpoint = Endpoint::start().await?;
     let admin = &endpoint.admin;
     let result = async {
-        crate::process::check_cancelled()?;
-        let run = RunFixture::start(admin).await?;
-        println!(
-            "PostgreSQL 14 fixture run {} provisioned in {:.3}s",
-            run.identity(),
-            started.elapsed().as_secs_f64()
-        );
-        let outcome = std::panic::AssertUnwindSafe(async {
-            crabber_session::PostgresStore::migrate(&run.template_url())
-                .await
-                .map_err(|_| "cannot migrate run-owned PostgreSQL template")?;
-            crate::process::check_cancelled()?;
-            if options.fixtures_only {
-                fixtures::verify(&run, admin).await?;
-                return Ok(0);
-            }
-            execute_schedule(&run, &options).await
-        })
-        .catch_unwind()
+        if let Some(metrics) = &metrics {
+            metrics.record("server_setup", "runner", None, started.elapsed())?;
+        }
+        execute_owned_run(
+            admin,
+            &options,
+            metrics.as_ref(),
+            metrics_path.as_deref(),
+            started,
+        )
         .await
-        .unwrap_or_else(|_| Err("fixture qualification panicked; performing owned cleanup".into()));
-        #[cfg(target_os = "linux")]
-        crate::process::verify_drained()?;
-        let cleanup = run.finish().await;
-        // Always attempt sweep, but never turn a primary failure into success.
-        cleanup?;
-        outcome
     }
     .await;
+    let server_cleanup = Instant::now();
     endpoint.finish().await?;
+    if let Some(metrics) = &metrics {
+        metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())?;
+    }
     println!(
         "PostgreSQL gate wall time {:.3}s",
         started.elapsed().as_secs_f64()
     );
     let interrupted = signal.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some(metrics) = &metrics {
+        let phase = if matches!(&result, Ok(0)) && interrupted == 0 {
+            "gate_passed"
+        } else {
+            "gate_failed"
+        };
+        metrics.record(phase, "runner", None, started.elapsed())?;
+    }
     if interrupted != 0 {
         Ok(128 + i32::try_from(interrupted).unwrap_or(1))
     } else {
@@ -193,9 +214,67 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
     }
 }
 
+async fn execute_owned_run(
+    admin: &str,
+    options: &Options,
+    metrics: Option<&FixtureMetrics>,
+    metrics_path: Option<&Path>,
+    started: Instant,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    crate::process::check_cancelled()?;
+    let setup = Instant::now();
+    let run = RunFixture::start(admin).await?;
+    println!(
+        "PostgreSQL 14 fixture run {} provisioned in {:.3}s",
+        run.identity(),
+        started.elapsed().as_secs_f64()
+    );
+    let outcome = std::panic::AssertUnwindSafe(async {
+        if let Some(metrics) = metrics {
+            metrics.record("run_setup", run.identity(), None, setup.elapsed())?;
+        }
+        let migration = Instant::now();
+        crabber_session::PostgresStore::migrate(&run.template_url())
+            .await
+            .map_err(|_| "cannot migrate run-owned PostgreSQL template")?;
+        if let Some(metrics) = metrics {
+            metrics.record(
+                "template_migration",
+                run.identity(),
+                None,
+                migration.elapsed(),
+            )?;
+        }
+        crate::process::check_cancelled()?;
+        if options.fixtures_only {
+            fixtures::verify(&run, admin).await?;
+            return Ok(0);
+        }
+        execute_schedule(&run, options, metrics, metrics_path).await
+    })
+    .catch_unwind()
+    .await
+    .unwrap_or_else(|_| Err("fixture qualification panicked; performing owned cleanup".into()));
+    #[cfg(target_os = "linux")]
+    crate::process::verify_drained()?;
+    let cleanup_started = Instant::now();
+    let identity = run.identity().to_owned();
+    let cleanup = run.finish().await;
+    if cleanup.is_ok()
+        && let Some(metrics) = metrics
+    {
+        metrics.record("run_cleanup", &identity, None, cleanup_started.elapsed())?;
+    }
+    // Always attempt sweep, but never turn a primary failure into success.
+    cleanup?;
+    outcome
+}
+
 async fn execute_schedule(
     run: &RunFixture,
     options: &Options,
+    metrics: Option<&FixtureMetrics>,
+    metrics_path: Option<&Path>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     for args in schedule::COMMANDS {
         crate::process::check_cancelled()?;
@@ -219,7 +298,17 @@ async fn execute_schedule(
         // Tests own their fixtures. Actual demo executables receive one database
         // per invocation; no ambient application URL is supplied to test binaries.
         let database = if args[0] == "run" {
-            Some(TestDatabase::for_run(run, DatabaseMode::Current).await?)
+            let started = Instant::now();
+            let database = TestDatabase::for_run(run, DatabaseMode::Current).await?;
+            if let Some(metrics) = metrics {
+                metrics.record(
+                    "demo_created",
+                    database.identity(),
+                    Some(DatabaseMode::Current),
+                    started.elapsed(),
+                )?;
+            }
+            Some(database)
         } else {
             None
         };
@@ -235,6 +324,7 @@ async fn execute_schedule(
                 .env_remove("CRABBER_POSTGRES_URL")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD")
+                .env_remove(METRICS_FILE)
                 .env_remove("ANTHROPIC_API_KEY")
                 .env_remove("OPENAI_API_KEY")
                 .env_remove("OPENCODE_GO_API_KEY")
@@ -246,6 +336,9 @@ async fn execute_schedule(
                 .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
                 .env_remove("OTEL_EXPORTER_OTLP_HEADERS")
                 .env_remove("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+            if let Some(path) = metrics_path {
+                command.env(METRICS_FILE, path);
+            }
             if let Some(database) = &database {
                 command
                     .env("CRABBER_TEST_POSTGRES_URL", database.url())
@@ -263,13 +356,17 @@ async fn execute_schedule(
                 break;
             }
         }
-        if let Some(database) = database
-            && let Err(error) = database.finish().await
-        {
-            if code == 0 {
-                return Err(error.into());
+        if let Some(database) = database {
+            let identity = database.identity().to_owned();
+            let started = Instant::now();
+            if let Err(error) = database.finish().await {
+                if code == 0 {
+                    return Err(error.into());
+                }
+                eprintln!("demo database cleanup also failed: {error}");
+            } else if let Some(metrics) = metrics {
+                metrics.record("demo_finished", &identity, None, started.elapsed())?;
             }
-            eprintln!("demo database cleanup also failed: {error}");
         }
         if code != 0 {
             return Ok(code);

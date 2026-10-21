@@ -151,6 +151,7 @@ impl Checks {
                 "CRABBER_TEST_POSTGRES_RUN",
                 "CRABBER_TEST_POSTGRES_CHILD_DATABASE",
                 "CRABBER_TEST_HISTORY_CHILD",
+                "CRABBER_TEST_POSTGRES_METRICS_FILE",
                 "CRABBER_TRACE_LIVE",
                 "CRABBER_OBS_VERIFY_MARKER",
                 "ANTHROPIC_API_KEY",

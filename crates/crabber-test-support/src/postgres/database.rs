@@ -1,8 +1,10 @@
 //! PostgreSQL fixture database implementation.
 
-use super::{ADMIN_URL, Config, DatabaseMode, FixtureError, RUN_ID, Result, RunFixture};
+use super::{
+    ADMIN_URL, Config, DatabaseMode, FixtureError, FixtureMetrics, RUN_ID, Result, RunFixture,
+};
 use sqlx::PgPool;
-use std::env;
+use std::{env, time::Instant};
 
 /// A database owned by one test history. Drop cannot perform asynchronous cleanup;
 /// normal paths must call `finish` after every Store/child has been released.
@@ -10,6 +12,7 @@ pub struct TestDatabase {
     config: Config,
     pool: PgPool,
     name: String,
+    metrics: Option<FixtureMetrics>,
 }
 impl TestDatabase {
     /// Preserve Tokio-test shutdown order for histories that intentionally retain
@@ -91,19 +94,37 @@ impl TestDatabase {
         })?;
         let nonce = env::var(RUN_ID)
             .map_err(|_| FixtureError("missing PostgreSQL fixture run identity"))?;
-        Self::on_config(Config::new(&admin, &nonce)?, mode).await
+        Self::on_config(
+            Config::new(&admin, &nonce)?,
+            mode,
+            FixtureMetrics::inherited(),
+        )
+        .await
     }
-    async fn on_config(config: Config, mode: DatabaseMode) -> Result<Self> {
+    async fn on_config(
+        config: Config,
+        mode: DatabaseMode,
+        metrics: Option<FixtureMetrics>,
+    ) -> Result<Self> {
+        let started = Instant::now();
         let pool = config.pool().await?;
         let name = config.database();
         config.create(&pool, &name, mode).await?;
-        Ok(Self { config, pool, name })
+        if let Some(metrics) = &metrics {
+            metrics.record("created", &name, Some(mode), started.elapsed())?;
+        }
+        Ok(Self {
+            config,
+            pool,
+            name,
+            metrics,
+        })
     }
     /// Attach a newly provisioned test to an explicitly held runner (runner tests).
     /// # Errors
     /// Fails when cloning or registration fails.
     pub async fn for_run(run: &RunFixture, mode: DatabaseMode) -> Result<Self> {
-        Self::on_config(run.config.clone(), mode).await
+        Self::on_config(run.config.clone(), mode, None).await
     }
     /// Endpoint for this database only. Do not log it.
     #[must_use]
@@ -119,10 +140,14 @@ impl TestDatabase {
     /// # Errors
     /// Fails rather than silently terminating a leaked test connection.
     pub async fn finish(self) -> Result<()> {
+        let started = Instant::now();
         self.config
             .drop_database(&self.pool, &self.name, false)
             .await?;
         self.pool.close().await;
+        if let Some(metrics) = &self.metrics {
+            metrics.record("finished", &self.name, None, started.elapsed())?;
+        }
         Ok(())
     }
 }

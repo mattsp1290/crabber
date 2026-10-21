@@ -575,3 +575,40 @@ nextest's immediate success/failure output without forcing serial no-capture
 mode. `--test-threads 1`, `2`, `4` select matching explicit PostgreSQL resource
 profiles for measurement; the normal profile remains capped at two. No required
 nextest execution is accepted until database ownership qualification completes.
+
+
+## Fixture timing events
+
+Use a new file for each run; existing event files are rejected:
+
+```sh
+cargo run -p xtask --features postgres-check -- check-postgres \
+  --fixture-metrics target/test-performance/run-01/fixtures.jsonl
+```
+
+The optional append-only event stream records server/run setup, the actual
+template migration, current/blank history provisioning, normal database drain and
+drop, demo provisioning/drop, and run/server cleanup. A terminal `gate_passed` or
+`gate_failed` distinguishes successful cleanup from successful obligations. A
+missing terminal event is incomplete evidence. Each row contains a phase, opaque
+identity, mode, timestamp and duration; it never contains a URL. A per-write file
+lock prevents child events interleaving. File creation refuses reuse, invalid
+labels are rejected, and write errors fail the gate. Root setup-event failures
+remain inside the resource cleanup boundary. No host environment is mutated.
+
+These timings distinguish template migration, current clones and blank fixture
+creation; a blank database count is not a count of calls to the migration API.
+Migration/current-fast-path assertions still run in the original tests. A real
+queue crash/restart history produced one matched current create/finish pair
+across its attached children. A real predecessor queue migration produced one
+matched blank pair. Both completed their cleanup and terminal success event.
+Six support tests, including concurrent event writes, refused file reuse and
+failed writes, and all 23 optional xtask tests passed without credentials. The
+support/runner all-target Clippy check passed.
+
+The second full offline attempt passed its workspace and exporter test phases,
+then correctly failed the final provenance check after tracked sources changed
+while the gate ran. That failed aggregate is retained. A stable committed-source
+run is still required. The original 24-command PostgreSQL schedule passed at two
+threads, including all required demos, and its exact owned container was verified
+absent afterward. The one- and four-thread checks are still being assessed.

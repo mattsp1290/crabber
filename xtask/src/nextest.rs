@@ -4,6 +4,45 @@ use std::{path::Path, process::Command};
 
 use crate::checks::Checks;
 
+pub(crate) const WORKSPACE_FEATURES: &str =
+    "server-host-probe/sqlite,server-host-probe/wasm,workspace-context-probe/sqlite";
+
+pub(crate) fn group_gate(workspace: &Path, gates: &mut Checks) {
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "nextest",
+            "list",
+            "--workspace",
+            "--features",
+            WORKSPACE_FEATURES,
+            "--profile",
+            "postgres",
+            "-E",
+            "not group(postgres)",
+            "--message-format",
+            "json",
+        ])
+        .current_dir(workspace);
+    gates.captured(
+        workspace,
+        command,
+        "every discovered entrypoint is bounded by the required PostgreSQL group",
+        |output| {
+            let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(list["test-count"].as_u64().is_some_and(|count| count > 0));
+            for suite in list["rust-suites"].as_object().unwrap().values() {
+                for test in suite["testcases"].as_object().unwrap().values() {
+                    assert_ne!(
+                        test["filter-match"]["status"], "matches",
+                        "a discovered test bypasses the PostgreSQL resource group"
+                    );
+                }
+            }
+        },
+    );
+}
+
 pub(crate) fn version_gate(workspace: &Path, gates: &mut Checks) {
     let mut command = Command::new("cargo");
     command
