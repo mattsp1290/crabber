@@ -307,7 +307,23 @@
         {
           "package": "crabber",
           "suffix": "public_host_stopped_requires_exact_owner_and_fence"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "sqlite_mixed_products_both_scope_orders"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "postgres_initial_driver_malformed_join_ack_retains_original_proof"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "sqlite_initial_driver_malformed_join_ack_retains_original_proof"
         }
+      ],
+      "known_regressions": [
+        "crabber-pxdk",
+        "crabber-09ku"
       ]
     },
     {
