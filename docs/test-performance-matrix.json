@@ -1,0 +1,720 @@
+{
+  "base_revision": "58535cfc234c2a3d514487b0f72d646e4ba33110",
+  "status": "all transferred test names present; actual execution remains required",
+  "workspace_features": [
+    "server-host-probe/sqlite",
+    "server-host-probe/wasm",
+    "workspace-context-probe/sqlite"
+  ],
+  "transfers": [
+    {
+      "baseline_variant": 0,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "server-host-probe",
+        "--features",
+        "wasm",
+        "--test",
+        "shared_wasm"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "server-host-probe",
+          "target": "shared_wasm",
+          "baseline_features": [
+            "default",
+            "wasm"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 1,
+          "baseline_tests_sha256": "51578ff43c843398d62203ba7e719bac8cfb79ed98833edd15ced17b95756ab8",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 1,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "server-host-probe",
+        "--features",
+        "sqlite"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "server-host-probe",
+          "target": "server_host_probe",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        },
+        {
+          "package": "server-host-probe",
+          "target": "server-host-probe",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        },
+        {
+          "package": "server-host-probe",
+          "target": "conformance",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 2,
+          "baseline_tests_sha256": "2579473c64a3bf8a8d831628d5aa1ae0f83c863da41cecc9c5e968b6905cde03",
+          "missing_tests": []
+        },
+        {
+          "package": "server-host-probe",
+          "target": "journeys",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 2,
+          "baseline_tests_sha256": "49790a46efa7b376df7c0ac2d559f8576aa86d962145d7aef40c93ca2a5df52d",
+          "missing_tests": []
+        },
+        {
+          "package": "server-host-probe",
+          "target": "shared_wasm",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        },
+        {
+          "package": "doc:server_host_probe",
+          "target": "doc:server_host_probe",
+          "baseline_features": [],
+          "workspace_features": [],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 2,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber",
+        "--features",
+        "sqlite",
+        "--test",
+        "server_host",
+        "--test",
+        "durable_interactions",
+        "--test",
+        "durable_controls",
+        "--test",
+        "session_management"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber",
+          "target": "durable_controls",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 3,
+          "baseline_tests_sha256": "1e56722768efc40e22bd943cc15615bd99cccaaf55ec25da402c771e48769cc2",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "durable_interactions",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 27,
+          "baseline_tests_sha256": "5b03537e17f0cd806cb94088a8cf75f9f23b23d4d79daf030927b2afb0d02c83",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "server_host",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 18,
+          "baseline_tests_sha256": "0341d3960d6bbc58a1997d57cef821213db6e76879ec7cc06bdb505df6ac6407",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "session_management",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 9,
+          "baseline_tests_sha256": "f1db439efdc330419d9cc419bc8d38ee58866040c84b252473d20057c07947b6",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 6,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber-session",
+        "--features",
+        "sqlite"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber-session",
+          "target": "crabber_session",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "postgres",
+            "sqlite"
+          ],
+          "baseline_test_count": 858,
+          "baseline_tests_sha256": "5c1c2953fcd5095a1863dfadd9e9852e5ce62429b3f5de47276b87f3c8d75fb9",
+          "missing_tests": []
+        },
+        {
+          "package": "doc:crabber_session",
+          "target": "doc:crabber_session",
+          "baseline_features": [],
+          "workspace_features": [],
+          "baseline_test_count": 4,
+          "baseline_tests_sha256": "ec90fe03f2317770e446d907f7be707b0045b8714bb3b5c29df6420b4753855c",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 7,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber",
+        "--features",
+        "sqlite",
+        "--test",
+        "admission_receipts",
+        "--test",
+        "bounded_snapshots",
+        "--test",
+        "fenced_abandon",
+        "--test",
+        "result_transform_interrupt",
+        "--test",
+        "unknown_tool_depth",
+        "--test",
+        "sqlite_builder"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber",
+          "target": "admission_receipts",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 27,
+          "baseline_tests_sha256": "1fdb655366674c84456f071fc37e8966c944acfbef027d471eeb197877e91f27",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "bounded_snapshots",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 3,
+          "baseline_tests_sha256": "5652fce0f50cab1f6de3b4802230897b6bdb73d6a91a478f9cecb6b979c33917",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "fenced_abandon",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 311,
+          "baseline_tests_sha256": "e4eb675aa4f01c37b15b9b24f42d09e86fc40099f925cbde17ef9ea6ad0c2740",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "result_transform_interrupt",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 7,
+          "baseline_tests_sha256": "a7bca61c373e18551a1626d480515347b2b61ba057665f0cddf59674f4c91332",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "sqlite_builder",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 1,
+          "baseline_tests_sha256": "f65f4ae5ec19e8520a5b64a5eb1f00601a087ffb656324b5044839d799aeb6d9",
+          "missing_tests": []
+        },
+        {
+          "package": "crabber",
+          "target": "unknown_tool_depth",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 1,
+          "baseline_tests_sha256": "0822bc01d4d7472ff6dcda5344234bd6083976381ecc5c5076baed48bcc07cde",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 9,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber",
+        "--features",
+        "wasm,sqlite",
+        "--test",
+        "wasm_roles"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber",
+          "target": "wasm_roles",
+          "baseline_features": [
+            "default",
+            "sqlite",
+            "wasm"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 11,
+          "baseline_tests_sha256": "7a395305d4f4335d9217359f5a29246ccdcef7e5d923baa319e5f45337359961",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 10,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber-runtime",
+        "--features",
+        "sqlite"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber-runtime",
+          "target": "crabber_runtime",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite"
+          ],
+          "baseline_test_count": 403,
+          "baseline_tests_sha256": "2c97a96aae335e184ac062449895b2a59d605d3a8038359045987c6e76d0b408",
+          "missing_tests": []
+        },
+        {
+          "package": "doc:crabber_runtime",
+          "target": "doc:crabber_runtime",
+          "baseline_features": [],
+          "workspace_features": [],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 11,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "workspace-context-probe",
+        "--features",
+        "sqlite"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "workspace-context-probe",
+          "target": "workspace_context_probe",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite"
+          ],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        },
+        {
+          "package": "workspace-context-probe",
+          "target": "memory",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite"
+          ],
+          "baseline_test_count": 7,
+          "baseline_tests_sha256": "922b64d90c811c4ba05811dbbffd35c021252c0e7131713f77b3076addd750b2",
+          "missing_tests": []
+        },
+        {
+          "package": "workspace-context-probe",
+          "target": "postgres",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite"
+          ],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        },
+        {
+          "package": "workspace-context-probe",
+          "target": "sqlite",
+          "baseline_features": [
+            "default",
+            "sqlite"
+          ],
+          "workspace_features": [
+            "default",
+            "sqlite"
+          ],
+          "baseline_test_count": 2,
+          "baseline_tests_sha256": "929a4f828a4f121e9e4a59182a6ade77dc93c7396aecc74661eabf11ceff61ce",
+          "missing_tests": []
+        },
+        {
+          "package": "doc:workspace_context_probe",
+          "target": "doc:workspace_context_probe",
+          "baseline_features": [],
+          "workspace_features": [],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 12,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "minimal-embed",
+        "sqlite_interrupt_then_fresh_process_continues_session"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "minimal-embed",
+          "target": "minimal-embed",
+          "baseline_features": [],
+          "workspace_features": [],
+          "baseline_test_count": 0,
+          "baseline_tests_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "missing_tests": []
+        },
+        {
+          "package": "minimal-embed",
+          "target": "stdout",
+          "baseline_features": [],
+          "workspace_features": [],
+          "baseline_test_count": 1,
+          "baseline_tests_sha256": "7bcdee5b2422db129d89e8974a35ea02d3be95f8a7dba398d715a227b95b9a28",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 19,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber",
+        "--features",
+        "wasm",
+        "--test",
+        "wasm_state"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber",
+          "target": "wasm_state",
+          "baseline_features": [
+            "default",
+            "wasm"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 2,
+          "baseline_tests_sha256": "24db40d98c3561854fe7c9852e75fc723cf4d5c9a4ff04ab3c442c1279b0a85e",
+          "missing_tests": []
+        }
+      ]
+    },
+    {
+      "baseline_variant": 20,
+      "baseline_argv": [
+        "cargo",
+        "test",
+        "-p",
+        "crabber",
+        "--features",
+        "wasm",
+        "--test",
+        "wasm_roles"
+      ],
+      "replacement": "workspace unit/integration run plus Cargo workspace doctests",
+      "targets": [
+        {
+          "package": "crabber",
+          "target": "wasm_roles",
+          "baseline_features": [
+            "default",
+            "wasm"
+          ],
+          "workspace_features": [
+            "all-providers",
+            "anthropic",
+            "datadog",
+            "default",
+            "openai",
+            "otlp",
+            "postgres",
+            "sqlite",
+            "wasm"
+          ],
+          "baseline_test_count": 10,
+          "baseline_tests_sha256": "248f87007bc3dd6f5150ad0e998d2179e5e61758962723c55e2812111366d982",
+          "missing_tests": []
+        }
+      ]
+    }
+  ]
+}

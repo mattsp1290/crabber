@@ -101,6 +101,22 @@ fn check() -> checks::Checks {
         ],
     );
     check_sqlite(workspace, &mut gates);
+    for features in ["wasm", "wasm,sqlite"] {
+        gates.cargo(
+            workspace,
+            &[
+                "check",
+                "-p",
+                "crabber",
+                "--features",
+                features,
+                "--test",
+                "wasm_state",
+                "--test",
+                "wasm_roles",
+            ],
+        );
+    }
     gates.cargo(
         workspace,
         &[
@@ -112,7 +128,17 @@ fn check() -> checks::Checks {
             "warnings",
         ],
     );
-    gates.cargo(workspace, &["test", "--workspace"]);
+    // Workspace owns common behavior, including both explicit probe backends.
+    // Minimal feature builds below retain absence/boundary compilation checks.
+    gates.cargo(
+        workspace,
+        &[
+            "test",
+            "--workspace",
+            "--features",
+            "server-host-probe/sqlite,server-host-probe/wasm,workspace-context-probe/sqlite",
+        ],
+    );
     gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "agui-sse", "--", "--check"],
@@ -131,30 +157,6 @@ fn check() -> checks::Checks {
     );
     check_observability(workspace, &mut gates);
     check_journeys(workspace, &mut gates);
-    gates.cargo(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm",
-            "--test",
-            "wasm_state",
-        ],
-    );
-    gates.cargo(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm",
-            "--test",
-            "wasm_roles",
-        ],
-    );
     gates.script(
         workspace,
         "external consumer check",
@@ -165,44 +167,33 @@ fn check() -> checks::Checks {
 
 // This local adoption probe deliberately needs no network provider or AG-UI SDK.
 fn check_server_host(workspace: &Path, gates: &mut checks::Checks) {
-    // check() builds the actual local component fixtures before this gate.
+    for features in ["wasm", "sqlite"] {
+        gates.cargo(
+            workspace,
+            &[
+                "check",
+                "-p",
+                "server-host-probe",
+                "--features",
+                features,
+                "--all-targets",
+            ],
+        );
+    }
     gates.cargo(
         workspace,
         &[
-            "test",
+            "check",
             "-p",
-            "server-host-probe",
+            "workspace-context-probe",
             "--features",
-            "wasm",
-            "--test",
-            "shared_wasm",
+            "sqlite",
+            "--all-targets",
         ],
-    );
-    gates.cargo(
-        workspace,
-        &["test", "-p", "server-host-probe", "--features", "sqlite"],
     );
     gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
-    );
-    gates.cargo(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "sqlite",
-            "--test",
-            "server_host",
-            "--test",
-            "durable_interactions",
-            "--test",
-            "durable_controls",
-            "--test",
-            "session_management",
-        ],
     );
     gates.script(
         workspace,
@@ -218,55 +209,16 @@ fn check_sqlite(workspace: &Path, gates: &mut checks::Checks) {
             "clippy",
             "-p",
             "crabber-session",
+            "-p",
+            "crabber-runtime",
+            "-p",
+            "crabber",
             "--features",
             "sqlite",
             "--all-targets",
             "--",
             "-D",
             "warnings",
-        ],
-    );
-    gates.cargo(
-        workspace,
-        &["test", "-p", "crabber-session", "--features", "sqlite"],
-    );
-
-    for package in ["crabber", "crabber-runtime"] {
-        gates.cargo(
-            workspace,
-            &[
-                "clippy",
-                "-p",
-                package,
-                "--features",
-                "sqlite",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        );
-    }
-    gates.cargo(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "sqlite",
-            "--test",
-            "admission_receipts",
-            "--test",
-            "bounded_snapshots",
-            "--test",
-            "fenced_abandon",
-            "--test",
-            "result_transform_interrupt",
-            "--test",
-            "unknown_tool_depth",
-            "--test",
-            "sqlite_builder",
         ],
     );
     gates.cargo(
@@ -279,30 +231,6 @@ fn check_sqlite(workspace: &Path, gates: &mut checks::Checks) {
             "datadog,sqlite",
             "--test",
             "trace_context",
-        ],
-    );
-    gates.cargo(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm,sqlite",
-            "--test",
-            "wasm_roles",
-        ],
-    );
-    for package in ["crabber-runtime", "workspace-context-probe"] {
-        gates.cargo(workspace, &["test", "-p", package, "--features", "sqlite"]);
-    }
-    gates.cargo(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "minimal-embed",
-            "sqlite_interrupt_then_fresh_process_continues_session",
         ],
     );
 }

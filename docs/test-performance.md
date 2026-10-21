@@ -35,8 +35,8 @@ supervision and resource sweeping remain required for the PostgreSQL runner.
 
 The baseline owner of each row below is the corresponding invocation in
 `xtask/src/main.rs` at the implementation base; the current owner is the same
-invocation in the data-driven schedule. **No invocations have been deleted or
-replaced yet.** Each selected Cargo test target owns all of its discovered tests,
+invocation in the data-driven schedule except the explicit transfers below.
+Each selected test target owns all of its discovered tests,
 assertions, backend branches, and actual subprocess journeys. A helper returning
 early without its marker is not a durability test execution. Workspace feature
 unification must be inspected before transferring ownership to the workspace run.
@@ -54,8 +54,8 @@ nextest replacement must explicitly transfer doctest ownership to Cargo.
 `cmd-*` IDs below are abbreviated only by omitting the `command-` prefix. The
 machine inventory is authoritative for argv and ordering. Formatting and static
 WIT/glue checks now run before compilation. The table maps baseline obligations;
-cache-release rows are additional resource-lifecycle checks. Every row currently
-has replacement evidence **pending/not replaced**. Scripts retain all internal
+cache-release rows are additional resource-lifecycle checks. The transfer table
+below supersedes ownership for consolidated rows. Scripts retain all internal
 commands and expected failures described after the table.
 
 | Gate | Package/target or static check | Backend/feature boundary | Role and external prerequisites |
@@ -452,3 +452,43 @@ fixture crate's PostgreSQL cfg without linking its optional dependencies. A smal
 independent workspace reproduced that failure and the root-default correction.
 The first broad discovery build failed before executing tests; its diagnostics
 are retained locally. Broad discovery is being repeated after the correction.
+
+
+## Consolidated offline ownership
+
+[The machine-readable matrix](test-performance-matrix.json) records the original
+revision, argv, resolved target features, counts and SHA-256 hashes of sorted test
+names. Cargo discovery passed for the updated workspace feature selection: all
+1,710 entries from the eleven transferred invocations are present. The owner
+currently discovers 2,860 tests across 128 test/doc targets. These are discovery
+counts, including unmarked helpers and optional PostgreSQL wrappers; they are not
+claims of executed durability histories. Full execution remains necessary.
+
+| Original execution | Replacement execution | Retained boundary |
+| --- | --- | --- |
+| Session SQLite suite and its doctests | Workspace session suite and workspace doctests | SQLite-only all-target Clippy |
+| Runtime SQLite suite | Workspace runtime suite; resolved features remain exactly `default,sqlite` | SQLite-only all-target Clippy |
+| Facade SQLite admission/bounded/fenced/result-transform/unknown-tool/builder targets | Same target cases in workspace | SQLite-only facade all-target Clippy |
+| Facade SQLite host/interactions/controls/session-management targets | Same target cases in workspace | SQLite-only facade all-target Clippy |
+| Minimal embedding SQLite restart filter | Same stdout target case in workspace | Original executable and fresh-process assertions |
+| Server host WASM and SQLite suites | Workspace explicitly enables both probe features | Separate WASM-only and SQLite-only all-target checks |
+| Workspace context SQLite suite | Workspace explicitly enables probe SQLite | SQLite-only all-target check; independent pinned consumer remains |
+| WASM state, WASM roles, WASM+SQLite roles | Same tests in workspace | WASM-only and WASM+SQLite target checks |
+
+The session broad run adds PostgreSQL wrappers; SQLite implementation branches
+and shared Memory/SQLite contract calls remain the same. Runtime's package
+features are identical in the original narrow and broad discovery. Facade
+backend wrappers are additive; SQLite cases still pass explicit SQLite paths and
+use the same Store implementations. The WASM state history has only its WASM
+module guard; role backend wrappers are separately guarded and the SQLite
+continuation is retained. No test functions were removed by consolidation.
+Minimal-feature compilation still checks the configurations excluded from the
+broader execution. Compatible SQLite Clippy passes now select all three packages
+in one invocation, with the same all-target scope and warnings-as-errors policy.
+
+Exporter-isolated Datadog+SQLite, Datadog-only, OTLP-only and OTLP+SQLite execution
+remain separate because the workspace enables multiple exporters. Custom-HTTP
+only, built-in-only and mixed constructor/negative probes also remain separate,
+as does mixed-feature typed I/O execution. Live PostgreSQL still belongs solely
+to the required fixture runner. External consumers, executable examples, WIT,
+fixture builds, provenance checks and glue assertions retain their owners.
