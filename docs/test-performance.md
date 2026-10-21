@@ -1,0 +1,247 @@
+# Test execution and performance evidence
+
+The implementation base is `58535cfc234c2a3d514487b0f72d646e4ba33110` (use `git rev-parse 58535cfc` for the full revision).
+Implementation lives on `feat/test-suite-performance` in its own checkout. The
+pre-existing provider and orchestrator edits are excluded. This document records
+coverage ownership; it is not a claim that performance qualification has passed.
+
+## Commands and reports
+
+```sh
+cargo xtask check --list > target/test-performance/inventory.json
+cargo xtask check --timings target/test-performance/run-01/timings.json \
+  > target/test-performance/run-01/raw.log 2>&1
+```
+
+Create the raw-log parent directory before shell redirection. `--list` constructs
+the same ordered schedule as execution, without preparing probes, building WASM,
+or starting tests. IDs are derived from the logical working directory and argv;
+internal assertions have descriptive IDs. JSON includes argv, feature selection,
+environment override **names**, prerequisites, expected checks, and directory.
+Environment values, service URLs, and captured telemetry output are excluded.
+Raw command output goes to the caller's stdout/stderr. Store raw logs locally,
+separately from sanitized summaries; do not publish credentials from raw logs.
+
+The timing document is atomically replaced before and after each gate. A failed
+command or assertion makes the aggregate fail, records the child exit status, and
+marks every later gate cancelled. Build-and-test durations include compilation;
+they must not be presented as test-only durations or summed with their nested
+Cargo summaries. SIGINT/SIGTERM cancel the active Unix process group, reap its leader, record
+a cancelled phase and cancel later obligations. A forcibly killed runner can
+still leave a running record; that is not completed evidence. Full descendant
+supervision and resource sweeping remain required for the PostgreSQL runner.
+
+## Coverage rules
+
+The baseline owner of each row below is the corresponding invocation in
+`xtask/src/main.rs` at the implementation base; the current owner is the same
+invocation in the data-driven schedule. **No invocations have been deleted or
+replaced yet.** Each selected Cargo test target owns all of its discovered tests,
+assertions, backend branches, and actual subprocess journeys. A helper returning
+early without its marker is not a durability test execution. Workspace feature
+unification must be inspected before transferring ownership to the workspace run.
+
+Backend labels describe requested features, not proof of executed live tests.
+Offline PostgreSQL early returns give no required-service credit. At baseline,
+PostgreSQL URLs are supplied only in the separate required lane. Minimal-feature
+compilation, provider feature absence, exporter differences, consumer builds,
+doctoring WIT copies, and example output assertions remain distinct obligations.
+Default Cargo test invocations also own their applicable doctests. A future
+nextest replacement must explicitly transfer doctest ownership to Cargo.
+
+## Offline gate ledger
+
+`cmd-*` IDs below are abbreviated only by omitting the `command-` prefix. The
+machine inventory is authoritative for argv and ordering. Every row currently
+has replacement evidence **pending/not replaced**. Scripts retain all internal
+commands and expected failures described after the table.
+
+| Gate | Package/target or static check | Backend/feature boundary | Role and external prerequisites |
+| --- | --- | --- | --- |
+| `telemetry-messages` | telemetry-messages | static/filesystem | all runtime telemetry message sites use the qualified redacted vocabulary |
+| `agui-pins` | agui-pins | static/filesystem | all consumer manifests and locks use the qualified AG-UI source and revision |
+| `prepare-workspace-context-probe` | prepare-workspace-context-probe | static/filesystem | all preparation/assertion steps succeed |
+| `cmd-07239b217ad94fa8` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `prepare-prompt-contribution-probe` | prepare-prompt-contribution-probe | static/filesystem | all preparation/assertion steps succeed |
+| `cmd-6e656c3736d9645a` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `prepare-result-transform-probe` | prepare-result-transform-probe | static/filesystem | all preparation/assertion steps succeed |
+| `cmd-04a924128173e8c5` | `cargo check --all-targets` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `wit-copies` | wit-copies | static/filesystem | all guest and macro WIT copies equal the root contract |
+| `cmd-0e8659e26ed9a7b1` | `wasm-tools component wit wit -o /dev/null` | independent tool/consumer boundary | WIT contract validation |
+| `cmd-da42e73f3d0adeb6` | `cargo build --workspace --target wasm32-wasip2 --release` | default/workspace-unified | WASM fixture build; installed wasm32-wasip2 target |
+| `wasm-fixture-aliases` | wasm-fixture-aliases | static/filesystem | positive aliases and SHA-256 fixture manifest generated |
+| `cmd-61d36d44900fc33e` | `cargo build --workspace --target wasm32-wasip2 --release` | default/workspace-unified | WASM fixture build; installed wasm32-wasip2 target |
+| `cmd-09af9e43612942a4` | `cargo fmt --all -- --check` | default/workspace-unified | local API consumer against checkout; recorded Git pin retained |
+| `cmd-2be6715887258370` | `cargo test -p server-host-probe --features wasm --test shared_wasm` | wasm | all selected tests and doctests; child/helper journeys retained |
+| `cmd-425c570625856998` | `cargo test -p server-host-probe --features sqlite` | sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-309d78a12aadb850` | `cargo run --quiet -p server-host-probe -- memory` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-0d1598ecd5a72eef` | `cargo test -p crabber --features sqlite --test server_host --test durable_interactions --test durable_controls --test session_management` | sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-19873bec77bda067` | `testdata/server-host-consumer/check.sh` | independent tool/consumer boundary | locked server-host consumer |
+| `cmd-5d8503862eaca8d2` | `cargo check -p crabber --no-default-features --features custom-http` | custom-http | compile/lint boundary; no behavioral replacement credit |
+| `cmd-cb271c2c6c24aa54` | `testdata/custom-http-feature-probe/check.sh` | independent tool/consumer boundary | custom HTTP positive and negative feature-boundary probe |
+| `cmd-02f397e4e04ae2cb` | `cargo clippy -p crabber-providers --all-targets --features all-providers,custom-http -- -D warnings` | all-providers,custom-http | compile/lint boundary; no behavioral replacement credit |
+| `cmd-3380040f41f8db79` | `cargo test -p crabber-providers --no-default-features --features custom-http --test custom_http` | custom-http | all selected tests and doctests; child/helper journeys retained |
+| `cmd-ccdcf6a2093f6996` | `cargo test -p crabber-providers --features all-providers,custom-http` | all-providers,custom-http | all selected tests and doctests; child/helper journeys retained |
+| `cmd-8a66597aa6b7e596` | `cargo test -p crabber --features wasm,sqlite,postgres,custom-http --test typed_input --test typed_output` | wasm,sqlite,postgres,custom-http | all selected tests and doctests; child/helper journeys retained |
+| `cmd-fff1a10359c7475f` | `cargo clippy -p crabber-session --features sqlite --all-targets -- -D warnings` | sqlite | compile/lint boundary; no behavioral replacement credit |
+| `cmd-b76ea856f30f200d` | `cargo test -p crabber-session --features sqlite` | sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-11cf6b830b966628` | `cargo clippy -p crabber --features sqlite --all-targets -- -D warnings` | sqlite | compile/lint boundary; no behavioral replacement credit |
+| `cmd-5af306f94ddff2e3` | `cargo clippy -p crabber-runtime --features sqlite --all-targets -- -D warnings` | sqlite | compile/lint boundary; no behavioral replacement credit |
+| `cmd-4294abf030ba0abd` | `cargo test -p crabber --features sqlite --test admission_receipts --test bounded_snapshots --test fenced_abandon --test result_transform_interrupt --test unknown_tool_depth --test sqlite_builder` | sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-a370b11d6e19992c` | `cargo test -p crabber --features datadog,sqlite --test trace_context` | datadog,sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-415680cd339f9a49` | `cargo test -p crabber --features wasm,sqlite --test wasm_roles` | wasm,sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-059d755fa985bdd7` | `cargo test -p crabber-runtime --features sqlite` | sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-d863f32692e745d7` | `cargo test -p workspace-context-probe --features sqlite` | sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-108edd111ef82dbd` | `cargo test -p minimal-embed sqlite_interrupt_then_fresh_process_continues_session` | default/workspace-unified | all selected tests and doctests; child/helper journeys retained |
+| `cmd-5c54708068501ac7` | `cargo clippy --workspace --all-targets -- -D warnings` | default/workspace-unified | compile/lint boundary; no behavioral replacement credit |
+| `cmd-a1d543035e4af382` | `cargo test --workspace` | default/workspace-unified | all selected tests and doctests; child/helper journeys retained |
+| `cmd-2d6a44860c9e86db` | `cargo run --quiet -p agui-sse -- --check` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-04f6931ed55c3c0b` | `cargo test -p crabber --features opencode-go --test opencode_go_chat` | opencode-go | all selected tests and doctests; child/helper journeys retained |
+| `cmd-3fc7a3979f742da8` | `cargo test -p crabber --features datadog --test trace_context` | datadog | all selected tests and doctests; child/helper journeys retained |
+| `cmd-8879e998d2360767` | `cargo test -p crabber-obs --features otlp` | otlp | all selected tests and doctests; child/helper journeys retained |
+| `cmd-20d1c2666a9863fe` | `cargo clippy -p crabber-obs --features otlp --all-targets -- -D warnings` | otlp | compile/lint boundary; no behavioral replacement credit |
+| `cmd-12c5addc557a28a8` | `cargo test -p crabber --features otlp --test trace_context` | otlp | all selected tests and doctests; child/helper journeys retained |
+| `cmd-f8e272ca77b98da0` | `cargo test -p crabber --features otlp,sqlite --test telemetry` | otlp,sqlite | all selected tests and doctests; child/helper journeys retained |
+| `cmd-ee76f91780f221ed` | `cargo run --quiet -p datadog-export` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-6ca6d9007e873ae7` | `cargo run --quiet -p host-trace -- memory` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-97f5f7c7cfe8f2a9` | `cargo run --quiet -p admission-receipt -- --memory` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-3a8d74dd0fe6fa92` | `cargo run --quiet -p bounded-snapshot -- --memory --check` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-38d7df54f3fa0ba8` | `cargo run --quiet -p operational-telemetry -- --check` | default/workspace-unified | host/example execution; offline inputs |
+| `cmd-2812235c1e19ff3a` | `cargo run --quiet -p host-trace --features sqlite -- sqlite` | sqlite | host/example execution; offline inputs |
+| `cmd-d3e5d127f3c11c81` | `cargo run --quiet -p admission-receipt --features sqlite -- --sqlite` | sqlite | host/example execution; offline inputs |
+| `cmd-997a253eaeec4f9b` | `cargo run --quiet -p bounded-snapshot --features sqlite -- --sqlite --check` | sqlite | host/example execution; offline inputs |
+| `cmd-742a5c6c14708059` | `cargo run --quiet -p fenced-abandon --features sqlite -- --sqlite` | sqlite | host/example execution; offline inputs |
+| `cmd-82b3527680b9c3ad` | `cargo test -p crabber --features wasm --test wasm_state` | wasm | all selected tests and doctests; child/helper journeys retained |
+| `cmd-d19ccc04599f83b2` | `cargo test -p crabber --features wasm --test wasm_roles` | wasm | all selected tests and doctests; child/helper journeys retained |
+| `cmd-6a65ac97a97dc1e0` | `testdata/external-consumer/check.sh` | independent tool/consumer boundary | external consumer check |
+| `minimal-embed-glue` | minimal-embed-glue | static/filesystem | exactly one glue marker pair and at most 60 glue lines |
+
+The three local-source probes each own a preparation action and an all-targets
+Cargo check. They copy the workspace lock and original source, rewrite only the
+disposable Crabber dependency to the current checkout, and validate the original
+full Git revision without changing tracked pins. Their scratch owner survives
+until schedule teardown, including failed-command paths. At baseline their
+source/target caches are disposable; cache persistence is separate pending work.
+
+The WASM prerequisite builds both positive and negative fixture workspaces,
+copies positive aliases, and writes SHA-256 manifest entries. Its target override
+is `fixtures/wasm/target`, including negative fixtures. WIT assertions compare
+root, guest, and macro copies before the independent `wasm-tools component wit`
+validation. Minimal embed has exactly one glue marker pair and a 60-line limit.
+
+The custom HTTP script owns its positive compilation and dependency-feature
+graph check, four built-in constructor absence cases, nine custom API absence
+cases in built-in-only mode, eight mixed-feature setter absence cases, and seven
+raw-client escape absence cases. Each case must fail for its own forbidden API;
+infrastructure/build failure is not equivalent evidence. The baseline script's
+failure classification and shared `.probe-tmp` directory need strengthening.
+Provider-only and mixed-provider unit/integration runs remain separate.
+
+The server-host consumer runs its locked external host. The external consumer
+builds `external-guest` and `external-controls` for wasm32-wasip2 in release mode
+and runs `external-host`. Local API probes do not replace these consumers.
+
+The captured Datadog example requires `status=Completed`, a retry diagnostic on
+stderr, and absence of all three fixture-secret sentinels on both streams. Its
+child removes `DD_API_KEY`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, and configures the stderr layer. The
+operational-telemetry example verifies compiled root, exact SHA and clean Git
+state; qualify only a committed checkout using its own target artifacts.
+
+## Required PostgreSQL baseline ledger
+
+The baseline owner is `.github/workflows/ci.yml`'s `postgres` job. Every command
+below is retained and has no replacement evidence yet. The baseline service is
+PostgreSQL 14 with normal durability, and the job requires service execution via
+`CRABBER_REQUIRE_POSTGRES`. Test inputs use `CRABBER_TEST_POSTGRES_URL`; examples
+use `CRABBER_POSTGRES_URL`. They are test-only connection variable names, never
+permission to delete an application database. The new managed runner must own
+its own isolated endpoint/databases before changing any of these commands.
+
+| Baseline command | Scenario/assertion family and subprocess role |
+| --- | --- |
+| `cargo test -p crabber-session --features postgres` | PostgreSQL contracts, concurrency, migration and process durability; every selected assertion and marked child journey |
+| `cargo test -p crabber-runtime --features postgres` | Typed middleware durable resume and plan-seal reconstruction; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test result_transform_interrupt -- --nocapture` | Public result-transform interruption and protected durable settlement; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test admission_receipts -- --nocapture` | Public facade response-loss and fresh-process reconciliation; every selected assertion and marked child journey |
+| `cargo run --quiet -p admission-receipt --features postgres -- --postgres` | Noninteractive PostgreSQL admission demo; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test bounded_snapshots -- --nocapture` | Public bounded snapshot journey and fresh-process continuation; every selected assertion and marked child journey |
+| `cargo run --quiet -p bounded-snapshot --features postgres -- --postgres` | Noninteractive PostgreSQL bounded snapshot demo; every selected assertion and marked child journey |
+| `cargo test -p crabber --features datadog,postgres --test trace_context -- --nocapture` | Required real Datadog payload and fresh-process recovery contracts; every selected assertion and marked child journey |
+| `cargo run --quiet -p host-trace --features postgres -- postgres` | Noninteractive PostgreSQL host tracing and export capture; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test fenced_abandon -- --nocapture` | Public fenced abandonment atomic rollback and process crash; every selected assertion and marked child journey |
+| `cargo run --quiet -p fenced-abandon --features postgres -- --postgres` | Noninteractive PostgreSQL fenced abandonment demo; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test unknown_tool_depth -- --nocapture` | Deeply nested unknown-tool record stays decodable; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test storable_records -- --nocapture` | Storable records remain readable; every selected assertion and marked child journey |
+| `cargo test -p workspace-context-probe --features postgres -- --nocapture` | Public workspace context probe and fresh-process resume; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test server_host -- --nocapture` | Public configured host and scoped execution ownership; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test durable_interactions -- --nocapture` | Public durable interactions and frozen continuation recovery; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test session_management -- --nocapture` | Public session management, imported history and quiet deletion; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test typed_output -- --nocapture` | Public typed tool output persistence and next-provider request; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test future_queue -- --nocapture` | Public future queue claim, preparation and process recovery; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test session_defaults -- --nocapture` | Public session defaults and cold selection binding; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test durable_controls -- --nocapture` | Public exact-run cancellation and ordered steer controls; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test admission_replay -- --nocapture` | Public original admission replay without replacement factories; every selected assertion and marked child journey |
+| `cargo test -p crabber --features postgres --test session_owners -- --nocapture` | Public pre-session ownership and independent session resources; every selected assertion and marked child journey |
+| `cargo test -p server-host-probe --features postgres -- --nocapture` | Offline customized server host and injected Store adoption; every selected assertion and marked child journey |
+
+Migration obligations include blank databases, each legacy predecessor,
+unsupported schema rejection, current-schema idempotence and fast path. A
+pre-migrated template cannot replace those migrations under test. Runtime and
+facade obligations include actual old-owner fencing, native resource Join,
+response loss, fresh executable processes, killed workers, pending tools,
+queue before/after commit, rollback and durable exact budget/receipt readback.
+Fixed IDs, truncations, schema mutation and advisory locks require a database
+owned by the logical journey before process-parallel execution is enabled.
+
+## Long-contract scenario accounting
+
+Before splitting, extract a tuple ledger from each original loop. In particular:
+
+* Runtime `preparation_resources/successor/sql.rs`: core, retention, recovery,
+  and pending histories for each supported SQL backend.
+* Runtime `preparation_resources/pending_tool.rs`: frontend × unkeyed × fault
+  cases, preserving fault stage and causal transitions within each history.
+* Session `session_owner/owned_scope/task/pending/tool_tests.rs`: frontend,
+  recovery, unkeyed, fault and actual same-task identity obligations.
+* Facade `wasm_state`: 212-run state-bound journey and its >=1000 assertion;
+  replay/configuration cases may separate only when state independence is shown.
+
+The tuple-to-named-test bijections and family timing evidence are pending. No
+loop has been shortened and no production Store optimization is authorized.
+
+## Reproducible qualification
+
+Record exact source/tree, tool versions, machine CPU/RAM, concurrent workload,
+profile settings, installed tools, registry/Git cache state and PostgreSQL image
+identity. Use dedicated baseline/candidate checkouts and output roots. Inventory
+the main target, `fixtures/wasm/target`, all three standalone-consumer targets,
+and generated probe targets. A fresh main `CARGO_TARGET_DIR` alone is not cold.
+Do not borrow binaries from another checkout or delete a user's global caches.
+
+Run the original offline and required PostgreSQL schedules before deleting
+coverage. Collect one cold full run and three alternating paired warm full runs
+per revision on the same machine. Prewarm equivalent full inventories, including
+probes and fixtures. Preserve every failed run with exit status; a later pass
+does not erase or causally explain it. Record full wall time and phase times,
+peak RSS/CPU, connections, separate installation/image-pull time, CI critical
+path and aggregate job-seconds without double-counting nested durations.
+
+Acceptance is >=30% lower warm full-gate median, <=10% cold wall regression and
+<=10% aggregate CI job-time regression. PostgreSQL execution's 50% reduction is
+a target. Compare concurrency 1/2/4 with unchanged deadlines and no retries.
+Run changed failure-prone contract families five consecutive times and retain
+first failures. All baseline obligations need passing replacement evidence;
+equal discovered counts alone do not prove equivalent semantics.
+
+## Current evidence and limitations
+
+The initial instrumented schedule preserves all baseline command families and
+assertions. Focused orchestration tests cover nonzero child exit propagation,
+terminal reports for panics, cancellation of later obligations and exclusion of
+environment values. Performance thresholds, required PostgreSQL isolation,
+nextest parity, descendant/resource cleanup, source-refresh races and CI qualification
+are pending. Exploratory runs under concurrent machine load must be labeled
+unqualified and must not supply threshold evidence. Existing issues
+`crabber-pxdk`, `crabber-09ku`, `crabber-9e8u`, and `crabber-7j4w` retain their
+separate scopes; timing changes do not prove them fixed.
