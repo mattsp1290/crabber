@@ -535,7 +535,8 @@ which recorded failure and cancelled the following gate. The qualification
 fixture has its own minimal config because its standalone workspace has no
 production packages for repository-specific selectors. The first full offline
 run reached SQLite Clippy and exposed an async helper whose await is enabled
-only with PostgreSQL; that feature-specific lint is being corrected. Full
+only with PostgreSQL; the narrowly scoped lint correction passed the combined
+SQLite all-target Clippy check. Full
 execution and final clean-source qualification remain pending.
 
 The full session required suite passed with two libtest threads: 831 tests and
@@ -543,3 +544,12 @@ four doctests. A server snapshot recorded active connections to two distinct
 owned history databases simultaneously. The remaining required schedule is
 still running, so this does not establish the complete PostgreSQL gate or a
 performance threshold.
+
+
+The combined facade/session/runtime SQLite Clippy graph retains the facade's
+pre-existing raw SQLx PostgreSQL dev dependency. A separate all-target
+session/runtime SQLite compilation check therefore preserves the original
+PostgreSQL-driver-free boundary. Its feature graph was checked independently;
+private fixture defaults remain disabled in every consumer. The shared child
+helper retains an async signature across features, with its unused-async lint
+allowance limited to configurations that compile out PostgreSQL verification.

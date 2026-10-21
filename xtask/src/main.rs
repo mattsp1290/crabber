@@ -208,6 +208,21 @@ fn check_server_host(workspace: &Path, gates: &mut checks::Checks) {
 }
 
 fn check_sqlite(workspace: &Path, gates: &mut checks::Checks) {
+    // The facade already has a raw PostgreSQL SQLx dev dependency. Keep this
+    // driver-free boundary separate from its otherwise compatible Clippy pass.
+    gates.cargo(
+        workspace,
+        &[
+            "check",
+            "-p",
+            "crabber-session",
+            "-p",
+            "crabber-runtime",
+            "--features",
+            "sqlite",
+            "--all-targets",
+        ],
+    );
     gates.cargo(
         workspace,
         &[

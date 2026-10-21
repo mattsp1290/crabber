@@ -97,6 +97,12 @@ impl Backend {
         }
     }
 
+    // PostgreSQL attachment verifies the actual database asynchronously; SQLite
+    // uses the same helper signature with an explicit filesystem path.
+    #[cfg_attr(
+        not(feature = "postgres"),
+        allow(clippy::unused_async, clippy::unused_async_trait_impl)
+    )]
     pub(super) async fn child() -> Option<(Self, PathBuf, String)> {
         #[cfg(feature = "sqlite")]
         if let Some(path) = std::env::var_os("CRABBER_SQLITE_CHILD_PATH") {
