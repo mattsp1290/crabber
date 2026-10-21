@@ -180,6 +180,8 @@ def main():
                   interrupted_signal=interrupted,
                   status='passed' if child.returncode == 0 and interrupted is None and unchanged else 'failed')
     write_report(path, report)
+    if interrupted is not None:
+        return 128 + interrupted
     if child.returncode == 0 and not unchanged:
         return 1
     return child.returncode if child.returncode >= 0 else 128 - child.returncode
