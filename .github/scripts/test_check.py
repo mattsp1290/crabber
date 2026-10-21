@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,45 @@ class DeadlineTests(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.wait()
+
+    def test_deadline_during_child_test_allows_supervisor_cleanup(self):
+        # An executable named xtask exercises the launcher's cooperative
+        # handoff rather than its pre-compiler kill-all path. The running child
+        # acknowledges cancellation before its parent writes the cleanup marker.
+        supervisor = self.root / 'xtask'
+        shutil.copyfile(Path(sys.executable).resolve(), supervisor)
+        supervisor.chmod(0o700)
+        ready = self.root / 'test-ready'
+        stopped = self.root / 'test-stopped'
+        cleaned = self.root / 'fixture-cleaned'
+        child = (
+            'import pathlib,signal,sys,time; '
+            f'signal.signal(signal.SIGTERM,lambda *_:(pathlib.Path({str(stopped)!r}).write_text("stopped"),sys.exit(0))); '
+            f'pathlib.Path({str(ready)!r}).write_text("ready"); time.sleep(60)'
+        )
+        program = '\n'.join([
+            'import pathlib,signal,subprocess,sys,time',
+            f'p=subprocess.Popen({[sys.executable, '-I', '-S', '-B', '-c', child]!r})',
+            'def cleanup(*_):',
+            '    p.terminate()',
+            '    p.wait(timeout=.5)',
+            f'    assert pathlib.Path({str(stopped)!r}).exists()',
+            f'    pathlib.Path({str(cleaned)!r}).write_text("cleaned")',
+            '    raise SystemExit(0)',
+            'signal.signal(signal.SIGTERM,cleanup)',
+            'time.sleep(60)',
+        ])
+        report = self.root / 'live-test.json'
+        code = check.supervise([str(supervisor), '-I', '-S', '-B', '-c', program],
+                               ROOT, report, budget=3, reserve=1)
+        result = json.loads(report.read_text())
+        self.assertEqual(code, 124)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['reason'], 'budget-expired')
+        self.assertEqual(result['child_exit_code'], 0)
+        self.assertTrue(ready.exists())
+        self.assertTrue(cleaned.exists())
+        self.assertLess(result['wall_seconds'], 3)
 
 
 if __name__ == '__main__':
