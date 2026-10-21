@@ -339,6 +339,20 @@ fn validate_manifest(workspace: &Path, metadata: &Path, manifest: &Path) {
             }
         }
     }
+    for behavior in policy["required_behaviors"].as_array().unwrap() {
+        for detector in behavior["required_detectors"].as_array().unwrap() {
+            let package = detector["package"].as_str().unwrap();
+            let suffix = detector["suffix"].as_str().unwrap();
+            assert!(
+                selected
+                    .iter()
+                    .any(|(actual_package, test)| *actual_package == package
+                        && test.ends_with(suffix)),
+                "required behavior {} lacks selected detector {package}::{suffix}",
+                behavior["behavior"]
+            );
+        }
+    }
 }
 
 pub(crate) fn binary_command(name: &str) -> Command {

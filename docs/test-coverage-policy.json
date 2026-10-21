@@ -194,61 +194,213 @@
       "behavior": "Receipt/actor/version/source/grant binding and replay",
       "primary_owner": "Shared validator and session contracts",
       "required_layer": "Cheap branch tables plus genuine SQL authentication and runtime no-dispatch",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "pending_tool::none_ack::memory_none_grant_ack_integrity"
+        }
+      ]
     },
     {
       "behavior": "Tool/approval keyed/unkeyed fresh/recovery transitions",
       "primary_owner": "Session storage implementations",
       "required_layer": "Memory branch coverage plus distinct SQLite/PostgreSQL transitions",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::tool_continuation::tests::tool_continuation_contract"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::tool_continuation::tests::tool_continuation_contract"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::approval::process_tests::lost_acknowledgements_reconcile_in_fresh_process"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::approval::process_tests::lost_acknowledgements_reconcile_in_fresh_process"
+        }
+      ]
     },
     {
       "behavior": "Atomic rollback and unknown commit response",
       "primary_owner": "SQL transaction implementations",
       "required_layer": "Real SQLite/PostgreSQL and one public cold-reconciliation journey per backend",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::abandon_tests::rollback_unknown_response_and_fresh_process_replay"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::abandon_tests::rollback_unknown_response_and_fresh_process_replay"
+        },
+        {
+          "package": "crabber",
+          "suffix": "sqlite_replay_never_initializes_unavailable_or_closed_components"
+        },
+        {
+          "package": "crabber",
+          "suffix": "postgres_replay_never_initializes_unavailable_or_closed_components"
+        }
+      ]
     },
     {
       "behavior": "Kill/reconnect/exact replay",
       "primary_owner": "Durable protocol process histories",
       "required_layer": "Actual OS processes for admission/queue/distinct tool and approval paths",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::approval::process_tests::killed_writer_rolls_back_suspend_answer_and_claim"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::approval::process_tests::killed_writer_rolls_back_suspend_answer_and_claim"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::tool_continuation::tests::committed_controls_survive_killed_writer"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::tool_continuation::tests::committed_controls_survive_killed_writer"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::admission_tests::process_crash_before_commit_rolls_back_every_record"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::process_crash_before_commit_rolls_back_every_record"
+        }
+      ]
     },
     {
       "behavior": "Contention/fencing/cancellation/ownership/cleanup",
       "primary_owner": "Backend concurrency and runtime ownership",
       "required_layer": "Real SQL concurrency and one public controller lifecycle",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::independent_pools_and_saturated_existing_session"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "cancelled_factory_with_actual_failed_cleanup_stays_uncertain"
+        },
+        {
+          "package": "crabber",
+          "suffix": "public_host_stopped_requires_exact_owner_and_fence"
+        }
+      ]
     },
     {
       "behavior": "Limits and overflow",
       "primary_owner": "Owning limit implementation",
       "required_layer": "Pure boundaries and SQL enforcement/rollback",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "memory::queue::tests::queue_bounds"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::queue::tests::queue_bounds"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::queue::tests::queue_bounds"
+        }
+      ]
     },
     {
       "behavior": "Migration/corruption/unsupported data",
       "primary_owner": "Backend storage",
       "required_layer": "Real Blank/legacy/current schema fixtures",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::lifecycle_tests::migrate_is_idempotent_and_keeps_the_snapshot_secret"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::lifecycle_tests::unknown_schema_version_is_refused_without_changes"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::tests::migrate_reopen_and_concurrent_sessions"
+        }
+      ]
     },
     {
       "behavior": "Feature absence/custom HTTP visibility",
       "primary_owner": "Narrow compile probes",
       "required_layer": "Positive/negative compilation",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [],
+      "required_commands": [
+        "cargo check -p crabber-session -p crabber-runtime --features sqlite --lib",
+        "testdata/custom-http-feature-probe/check.sh",
+        "cargo check -p crabber-obs --no-default-features --all-targets"
+      ]
     },
     {
       "behavior": "Redaction/credentials/authorization before effects",
       "primary_owner": "Owning boundary",
       "required_layer": "Sentinel/effect checks and captured transport/log wiring",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-obs",
+          "suffix": "all_intake_and_transport_diagnostics_hide_response_and_endpoint_secrets"
+        },
+        {
+          "package": "crabber-obs",
+          "suffix": "mock_intake_receives_linked_redacted_signals"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "invalid_generic_checkpoint_call_sets_are_rejected_before_claim_or_effects"
+        }
+      ]
     },
     {
       "behavior": "WASM state/limits/embedding/telemetry",
       "primary_owner": "Component and host integration",
       "required_layer": "Real component bound plus short executable wiring per CLI",
-      "status": "retained-pending-schedule-audit"
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-wasm",
+          "suffix": "state_import_enforces_default_entry_and_value_limits"
+        },
+        {
+          "package": "crabber-wasm",
+          "suffix": "counter_state_crosses_thousand_between_fresh_instances"
+        },
+        {
+          "package": "crabber",
+          "suffix": "counter_state_survives_independent_agent_runs"
+        }
+      ]
     }
   ]
 }
