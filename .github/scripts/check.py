@@ -90,6 +90,9 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
               'resource_scope': 'launcher and owned process descendants; PostgreSQL server is outside this process tree; shared RSS pages may be counted twice',
               'cpu_affinity_count': len(os.sched_getaffinity(0)),
               'physical_memory_bytes': os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'),
+              'cgroup_limits': {name: path.read_text().strip()
+                                for name in ['cpu.max', 'memory.max', 'cpuset.cpus.effective']
+                                if (path := Path('/sys/fs/cgroup') / name).is_file()},
               'profile': {k: child_env.get(k) for k in ['CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',
                             'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG']}}
     interrupted = None
