@@ -15,7 +15,7 @@ use std::{
 mod tree;
 #[cfg(target_os = "linux")]
 pub(crate) use tree::enable as enable_tree_supervision;
-#[cfg(all(target_os = "linux", feature = "postgres-check"))]
+#[cfg(target_os = "linux")]
 pub(crate) use tree::verify_drained;
 
 static SIGNAL: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
@@ -124,6 +124,10 @@ pub(crate) fn status(command: &mut Command, signal: &AtomicUsize) -> io::Result<
         terminate(&mut child)?;
         child.wait()?;
     }
+    #[cfg(target_os = "linux")]
+    if result.is_err() && tree::Tree::new().is_some() {
+        verify_drained()?;
+    }
     result
 }
 
@@ -146,6 +150,10 @@ pub(crate) fn output(command: &mut Command, signal: &AtomicUsize) -> io::Result<
     if status.is_err() && child.try_wait()?.is_none() {
         terminate(&mut child)?;
         child.wait()?;
+    }
+    #[cfg(target_os = "linux")]
+    if status.is_err() && tree::Tree::new().is_some() {
+        verify_drained()?;
     }
     let stdout = stdout
         .join()

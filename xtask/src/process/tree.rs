@@ -47,14 +47,19 @@ impl Tree {
             }
             let tasks = match fs::read_dir(format!("/proc/{parent}/task")) {
                 Ok(tasks) => tasks,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) if vanished(&error) => continue,
                 Err(error) => return Err(error),
             };
             for task in tasks {
-                let path = task?.path().join("children");
+                let task = match task {
+                    Ok(task) => task,
+                    Err(error) if vanished(&error) => continue,
+                    Err(error) => return Err(error),
+                };
+                let path = task.path().join("children");
                 let children = match fs::read_to_string(path) {
                     Ok(children) => children,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) if vanished(&error) => continue,
                     Err(error) => return Err(error),
                 };
                 for child in children.split_whitespace() {
@@ -131,7 +136,7 @@ impl Tree {
 fn identity(pid: i32) -> io::Result<Option<(u64, String)>> {
     let record = match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if vanished(&error) => return Ok(None),
         Err(error) => return Err(error),
     };
     let (_, fields) = record
@@ -146,9 +151,12 @@ fn identity(pid: i32) -> io::Result<Option<(u64, String)>> {
     Ok(Some((start, fields[0].to_owned())))
 }
 
-#[cfg(feature = "postgres-check")]
 pub(crate) fn verify_drained() -> io::Result<()> {
     let mut tree =
         Tree::new().ok_or_else(|| io::Error::other("process supervision is not enabled"))?;
     tree.finish()
+}
+
+fn vanished(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(Errno::ESRCH as i32)
 }
