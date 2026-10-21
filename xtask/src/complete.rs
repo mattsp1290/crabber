@@ -174,7 +174,7 @@ fn driver_free_libraries(gates: &mut Checks, destination: PathBuf) {
                     assert!(features.iter().any(|f| f == "sqlite"));
                 }
             }
-            fs::write(destination, serde_json::to_vec_pretty(&observed).unwrap())
+            fs::write(&destination, serde_json::to_vec_pretty(&observed).unwrap())
                 .expect("persist negative feature boundary evidence");
         },
     );
