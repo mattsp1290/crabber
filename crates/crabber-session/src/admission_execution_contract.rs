@@ -78,7 +78,7 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
             model_id: "model".into(),
             system_prompt: Some("system-secret".into()),
             max_output_tokens: None,
-            model_controls: Default::default(),
+            model_controls: crabber_core::ModelControls::default(),
         },
         runtime_semantics: semantics,
         config_hash: keyed.request.config_hash.clone(),

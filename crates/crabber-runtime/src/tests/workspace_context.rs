@@ -256,7 +256,7 @@ fn request(session: Option<&SessionId>, workspace_id: &str, directory: &str) -> 
         },
         system_prompt: None,
         max_output_tokens: None,
-        model_controls: Default::default(),
+        model_controls: crabber_core::ModelControls::default(),
     }
 }
 

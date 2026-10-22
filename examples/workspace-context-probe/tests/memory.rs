@@ -288,7 +288,7 @@ async fn replacement_fence_never_authorizes_pending_approval() {
             selection: config("ws-fence", "/srv/fence").selection,
             system_prompt: None,
             max_output_tokens: None,
-            model_controls: Default::default(),
+            model_controls: crabber::core::ModelControls::default(),
         })
         .await
         .unwrap();
