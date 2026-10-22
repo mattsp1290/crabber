@@ -53,6 +53,18 @@ where
     }
 }
 
+fn check_worker_dispatch(lifetimes: &SpanLifetimes) {
+    let parent = tracing::info_span!("fixture.parent");
+    let id = parent.id().unwrap().into_u64();
+    let child = tracing::info_span!(parent: &parent, "fixture.child");
+    drop(parent);
+    std::thread::spawn(move || drop(child)).join().unwrap();
+    assert!(
+        !lifetimes.live.lock().unwrap().contains_key(&id),
+        "worker-thread child closure must release its parent"
+    );
+}
+
 async fn close_host(agent: Agent, lifetimes: &SpanLifetimes) {
     // Run completion joins its main worker; whole-host close also observes
     // retained preparation, dependent and resource supervision before export.
@@ -88,13 +100,18 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
     });
     let telemetry = Telemetry::new(config).unwrap();
     let lifetimes = Arc::new(SpanLifetimes::default());
-    let _guard = tracing::subscriber::set_default(
+    // SQLite can drop a captured child span on its worker thread. Registry
+    // parent closure uses that thread's default dispatcher, so the host's
+    // subscriber must also be installed there. This binary has one test.
+    tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(telemetry.layer())
             // Layer close callbacks run inside-out, so OTel has ended the span
             // before this outer observer wakes the flushing task.
             .with(HostClosed(lifetimes.clone())),
-    );
+    )
+    .unwrap();
+    check_worker_dispatch(&lifetimes);
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("trace.sqlite");
     SqliteStore::migrate(&path).await.unwrap();
