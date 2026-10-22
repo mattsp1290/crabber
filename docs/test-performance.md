@@ -810,3 +810,5 @@ their success, exact replay, malformed ACK, cleanup, source-authentication and
 native fault detectors. General successor/approval process tests do not replace
 Tool/Frontend physical-death coverage. Assertions, capacity, durability settings
 and deadlines are unchanged. Complete-check benefits require measurement.
+
+Frontend conformance fixtures, races, and fault histories use borrowed `dyn Store` parameters in six internal helpers. Their complete bodies, factory callbacks, fault callbacks, test registrations, assertions, and deadlines remain unchanged. The frontend journey, process helpers, and large-result factory remain generic. These are test conformance helpers, including the source-embedded facade harness. This removes the Store type as one internal code-generation dimension; callback-specific copies remain, and compilation savings and full qualification are unverified.
