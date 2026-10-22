@@ -34,6 +34,8 @@ impl Intake {
             while !stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // BSD sockets inherit the listener's non-blocking mode.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(3)))
                             .unwrap();
