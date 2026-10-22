@@ -463,8 +463,24 @@ async fn tail(reader: &dyn Store, session: &SessionId, h: EventCursor) -> Vec<Ev
     ids
 }
 
-#[allow(clippy::too_many_lines)]
 pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: ChildMode) {
+    journey_with_messages(stores, backend, source, mode, 1024).await;
+}
+
+/// CLI wiring keeps a real continuation and cold child; the facade tests own
+/// the full history and allocation proofs through `journey` above.
+pub async fn smoke(stores: Stores, backend: &str, source: &Source, mode: ChildMode) {
+    journey_with_messages(stores, backend, source, mode, 8).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn journey_with_messages(
+    stores: Stores,
+    backend: &str,
+    source: &Source,
+    mode: ChildMode,
+    fixture_messages: usize,
+) {
     let (reader, writer) = stores;
     let session = SessionId::from(format!("bounded-{backend}-{}", std::process::id()));
     let admitted = admit(&*writer, &session, "fake").await;
@@ -473,7 +489,7 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
     // Large fixture; expectation derives solely from construction, never from an
     // unbounded Store read. The host retains only IDs while walking pages.
     let mut expected = vec![MessageId::from(format!("{session}:user"))];
-    for index in 0..1024 {
+    for index in 0..fixture_messages {
         let id = format!("fake-{index}");
         execution
             .append_message(text(&session, Some(run.clone()), &id, "é fake reasoning"))

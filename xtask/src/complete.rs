@@ -289,11 +289,11 @@ fn cli_journeys(gates: &mut Checks) {
     for (name, arguments) in [
         ("host-trace", vec!["memory"]),
         ("admission-receipt", vec!["--memory"]),
-        ("bounded-snapshot", vec!["--memory", "--check"]),
+        ("bounded-snapshot", vec!["--memory", "--check", "--smoke"]),
         ("operational-telemetry", vec!["--check"]),
         ("host-trace", vec!["sqlite"]),
         ("admission-receipt", vec!["--sqlite"]),
-        ("bounded-snapshot", vec!["--sqlite", "--check"]),
+        ("bounded-snapshot", vec!["--sqlite", "--check", "--smoke"]),
         ("fenced-abandon", vec!["--sqlite"]),
         ("server-host-probe", vec!["memory"]),
         ("agui-sse", vec!["--check"]),

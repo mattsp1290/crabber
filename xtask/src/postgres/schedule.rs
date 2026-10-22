@@ -56,6 +56,7 @@ pub(super) const COMMANDS: &[&[&str]] = &[
         "postgres",
         "--",
         "--postgres",
+        "--smoke",
     ],
     &[
         "test",

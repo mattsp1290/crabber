@@ -693,3 +693,5 @@ were 5, 7 and 13. The first setting rebuilt artifacts, so its compilation CPU/RS
 must not be compared with the warm settings as test-only resource usage. See
 `test-performance-resource-selection.json` for the measured scope and resources.
 The whole-gate cold/warm qualification remains separate.
+
+The required bounded-snapshot CLI checks use `--smoke`: eight fixture messages still cross the seven-message page limit, preserve the event high-water mark, settle the tool relation, and pass the continuation into the actual durable child entrypoint. The native `bounded_snapshots` facade tests retain the same source-included journey with 1024 messages and the unchanged allocation proof over 512KiB/32MiB histories on Memory, SQLite and PostgreSQL. The default example continues running its full demonstration.

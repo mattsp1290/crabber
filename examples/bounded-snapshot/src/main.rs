@@ -34,6 +34,7 @@ fn main() {
         None
     };
     let check = std::env::args().any(|arg| arg == "--check");
+    let smoke = std::env::args().any(|arg| arg == "--smoke");
     let source = journey::source(!check);
     let (backend, stores, child) = match mode.as_str() {
         "--memory" => ("memory", journey::memory(), journey::ChildMode::None),
@@ -65,6 +66,10 @@ fn main() {
             "usage: bounded-snapshot --memory | --postgres | --sqlite (durable modes require their Cargo feature)"
         ),
     };
-    runtime.block_on(journey::journey(stores.clone(), backend, &source, child));
-    journey::allocation_proof(&runtime, &stores, backend, &source);
+    if smoke {
+        runtime.block_on(journey::smoke(stores, backend, &source, child));
+    } else {
+        runtime.block_on(journey::journey(stores.clone(), backend, &source, child));
+        journey::allocation_proof(&runtime, &stores, backend, &source);
+    }
 }

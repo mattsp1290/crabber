@@ -8,6 +8,7 @@ Each costly family records the failure, production owner, required backend, reta
 | --- | --- | --- | --- |
 | SQL successor tool faults | MERGE | All seven fault/refusal boundaries per SQLite/PostgreSQL, with three alternate-origin faults; existing source/guard contracts retain all four origins | 28 histories become ten independently scheduled histories per backend |
 | WASM state | MOVE-CHEAPER | Two actual Agent runs, real guest imports at64entries/16KiB, direct1000countertransition and existing concurrent isolation | 210 redundant model turns |
+| Bounded snapshot CLI | DELETE-REDUNDANT | Full native Memory/SQLite/PostgreSQL history and allocation proofs; short CLI pagination with genuine durable child entrypoints | Repeating 1024-message and 32MiB histories in each CLI |
 | Embedded Memory queue bounds | DELETE-REDUNDANT | Native Memory plus both SQL item/byte-budget contracts; adapter-specific fenced journeys stay | One named duplicate private contract registration |
 | Narrow feature builds | MERGE | Real production library/CLI checks and standalone WASM-only consumer | Recompiling full private test crates in additional feature graphs |
 | Pending tool malformed ACK | MOVE-CHEAPER | Twelve corruptions through real shared pending execution on Memory; forged metadata and wrong outcome through each of four SQL origin paths; zero dispatch/register assertions retained | SQL corruption preparations fall from 48 to eight per backend |

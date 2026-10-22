@@ -215,6 +215,30 @@
       "after": "Memory retains all four payload and six None corruption variants for each origin. Each SQL backend keeps four altered-payload histories and12 None corruption histories (checkpoint/result mutation and both opaque foreign-capability substitutions), plus all four None positive/replay paths.",
       "rationale": "Runtime prepared_tool_authority calls the same backend-independent ToolContinuationGrant::verify_native_ack before protection or dispatch. Public checkpoint/result, answer/descriptor, turns_used and source_turn_id are covered by that same native ACK commitment. Memory keeps each distinct public-field branch for Tool/Frontend claim/recovery. Each SQL issuer still supplies real authentic grants for all four origins; changed checkpoint/result and both independently typed opaque attempt/phase authority substitutions remain real SQL. Existing Some-source inspection, SQL source/authentication and runtime task/cancellation/cold-recovery histories are unchanged. Current PostgreSQL clones already contain the migrated schema; these wrappers assert no migration behavior.",
       "validation": "Previous full combined run measured PostgreSQL payload54.957s and None55.010s; SQLite payload33.241s. Targeted changed-family qualification is pending."
+    },
+    {
+      "id": "bounded-snapshot-cli-smoke",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-pending-validation",
+      "failure": "CLI argument/backend selection, output, continuation serialization and cold child database wiring must work; reads must remain bounded independently of total history.",
+      "owner": [
+        "examples/bounded-snapshot/src/main.rs",
+        "examples/bounded-snapshot/src/journey.rs",
+        "crates/crabber/tests/bounded_snapshots.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_embedding_pages_settled_relations_then_resumes_events",
+        "sqlite_embedding_independent_stores_and_fresh_process",
+        "postgres_embedding_independent_pools_and_fresh_process"
+      ],
+      "before": "Each CLI backend repeats the canonical 1024-message, 147-page and 512KiB/32MiB allocation histories already required in facade tests.",
+      "after": "Required native facade tests keep the full fixture and allocation proof unchanged; CLI --smoke uses eight fixture messages and the same continuation, settled relation, invalidation, event-tail and actual cold-child assertions.",
+      "rationale": "Facade tests source-include the exact journey.rs and still call journey with 1024 messages plus allocation_proof for every backend. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing; smoke keeps those actual executable child entrypoints and requires a multi-page continuation. No allocation or large-history detector is removed from the required native graph."
     }
   ],
   "required_behaviors": [
