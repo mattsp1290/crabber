@@ -78,9 +78,18 @@ pub(crate) fn complete_group_gate(
     } else {
         "postgres"
     };
+    let config: toml::Value = std::fs::read_to_string(workspace.join(".config/nextest.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let non_unit = other_weights(&config, profile, 1);
+    let non_double = other_weights(&config, profile, 2);
     let filter = format!(
         "(test(/postgres/) & not group({postgres})) | \
-         (test(/sqlite/) & not test(/postgres/) & not group(sqlite))"
+         (test(/sqlite/) & not test(/postgres/) & not group(sqlite)) | \
+         ((group({postgres}) | group(sqlite)) & ({non_unit})) | \
+         (group(wasm) & ({non_double})) | \
+         (not group(@global) & not group({postgres}) & not group(sqlite) & not group(wasm))"
     );
     let destination = metadata.with_file_name("resource-groups.json");
     let mut command = Command::new("cargo");
@@ -101,7 +110,7 @@ pub(crate) fn complete_group_gate(
     gates.captured(
         workspace,
         command,
-        "real backend cases cannot bypass service limits through WASM classification",
+        "backend cases retain service limits and each custom group has uniform worker weights",
         move |output| {
             let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert!(list["test-count"].as_u64().is_some_and(|count| count > 0));
@@ -109,7 +118,7 @@ pub(crate) fn complete_group_gate(
                 for (name, case) in suite["testcases"].as_object().unwrap() {
                     assert_ne!(
                         case["filter-match"]["status"], "matches",
-                        "backend case {name} bypasses its service group"
+                        "case {name} bypasses its service group or has an unsafe grouped worker weight"
                     );
                 }
             }
@@ -117,6 +126,54 @@ pub(crate) fn complete_group_gate(
                 .expect("persist resolved resource group audit");
         },
     );
+}
+
+// future-queue 0.4.0 can strand a group's heavier queued work after its last
+// lighter member completes. Uniform weights within each group avoid that
+// defect. Let nextest resolve these filtersets against the actual manifest;
+// preserve its first-setting precedence, including inherited default rules.
+#[cfg(feature = "postgres-check")]
+fn other_weights(config: &toml::Value, profile: &str, expected: i64) -> String {
+    let mut preceding = vec!["none()".to_owned()];
+    let mut different = Vec::new();
+    for name in [profile, "default"] {
+        let settings = &config["profile"][name];
+        assert!(
+            settings
+                .get("inherits")
+                .is_none_or(|value| value.as_str() == Some("default")),
+            "weight audit requires the complete profile's default inheritance"
+        );
+        let Some(overrides) = settings.get("overrides").and_then(toml::Value::as_array) else {
+            continue;
+        };
+        for rule in overrides {
+            let Some(weight) = rule.get("threads-required") else {
+                continue;
+            };
+            assert!(
+                rule.get("platform").is_none(),
+                "audit platform-specific worker weights explicitly"
+            );
+            let filter = rule
+                .get("filter")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("all()");
+            if weight.as_integer() != Some(expected) {
+                different.push(format!("(({filter}) & not ({}))", preceding.join(" | ")));
+            }
+            preceding.push(format!("({filter})"));
+        }
+    }
+    // Nextest's implicit worker reservation is one.
+    if expected != 1 {
+        different.push(format!("not ({})", preceding.join(" | ")));
+    }
+    if different.is_empty() {
+        "none()".into()
+    } else {
+        different.join(" | ")
+    }
 }
 
 pub(crate) fn schedule(workspace: &Path, gates: &mut Checks, arguments: &[&str]) {

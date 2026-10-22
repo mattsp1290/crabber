@@ -76,6 +76,12 @@ priority = 20
 
 # Service limits take priority even inside a WASM binary. The later WASM
 # override independently retains its two general scheduler reservations.
+# These reconnect journeys compile/register echo WASM but dispatch a native tool.
+# Weight one keeps SQL groups uniform while heavy WASM cases retain weight two.
+[[profile.complete.overrides]]
+filter = 'package(crabber) & binary(=wasm_roles) & (test(=freshly_connected_postgres_agent_resumes_native_and_wasm_plan) | test(=freshly_connected_sqlite_agent_resumes_native_and_wasm_plan))'
+threads-required = 1
+
 [[profile.complete.overrides]]
 filter = 'test(/postgres/)'
 test-group = 'postgres'
@@ -122,6 +128,12 @@ priority = 20
 
 # Service limits take priority even inside a WASM binary. The later WASM
 # override independently retains its two general scheduler reservations.
+# These reconnect journeys compile/register echo WASM but dispatch a native tool.
+# Weight one keeps SQL groups uniform while heavy WASM cases retain weight two.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber) & binary(=wasm_roles) & (test(=freshly_connected_postgres_agent_resumes_native_and_wasm_plan) | test(=freshly_connected_sqlite_agent_resumes_native_and_wasm_plan))'
+threads-required = 1
+
 [[profile.complete-ci.overrides]]
 filter = 'test(/postgres/)'
 test-group = 'postgres-ci'
