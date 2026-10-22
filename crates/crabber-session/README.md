@@ -1,8 +1,8 @@
 # Crabber session stores
 
-The `postgres` feature uses `sqlx` with Tokio, rustls, and a PostgreSQL pool. It targets PostgreSQL 14 or newer and requires a dedicated database. Migrations create the Crabber tables in the default schema, so do not run them in a shared application schema.
+The `postgres` feature uses `sqlx` with Tokio, rustls, and a PostgreSQL pool. It targets PostgreSQL 14 or newer and requires a dedicated database whose schema the migrating role owns. Migrations create the Crabber tables in the default schema, so do not run them in a shared application schema.
 
-Current bundled storage requires PostgreSQL 24 / SQLite 20, defined by
+Current bundled storage requires PostgreSQL 25 / SQLite 20, defined by
 `POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION` in [lib.rs](src/lib.rs).
 Numbered schema introductions below are historical; they are not the versions
 accepted by current `connect`.
@@ -255,7 +255,7 @@ trait source changes require updating struct literals and forwarding wrappers.
 Memory state survives host recreation only while the shared store exists.
 
 Historical introduction: PostgreSQL schema 5 added retained private execution
-records without backfilling legacy runs. Current storage requires PostgreSQL 24 /
+records without backfilling legacy runs. Current storage requires PostgreSQL 25 /
 SQLite 20 (`POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION`). Stop writers, back
 up, migrate explicitly and deploy the matching binary. Connect is read-only and
 rejects other schemas; mixed-version writers are unsupported.
@@ -550,3 +550,20 @@ The public [probe conformance target](../../examples/server-host-probe/tests/con
 runs them against an injected forwarding adapter on Memory, SQLite and PostgreSQL.
 A forwarding adapter must retain the complete native transactional capability
 contract; a new storage backend must implement and independently qualify it.
+
+
+### PostgreSQL workspace roles (schema 25)
+
+Migration creates the NOLOGIN groups `crabber_worker` and `crabber_host`.
+The migrating owner needs `CREATEROLE`, or a DBA must pre-create both groups.
+Connect runtime LOGIN roles through either group: workers receive explicit rows
+in `crabber_workspace_grants(role_name, workspace_id)`, while hosts see all
+workspaces. The schema owner alone runs migrations and retains DDL authority.
+Workers may call `migrate` on an already current schema; that path is read-only.
+
+Migration is transactional. There is no down-migration; restore a backup to
+recover the previous schema. To clean a partially provisioned LOGIN role, first
+`DELETE FROM crabber_workspace_grants WHERE role_name = '<role>'`, then run
+`DROP OWNED BY <role>` and `DROP ROLE <role>` as the administrator. Leaked
+`crabber_test_*` test roles have only their explicitly granted workspaces and
+can be cleaned with the same procedure.
