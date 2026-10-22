@@ -137,7 +137,7 @@ fn kill_family(
     (wire.request(), now)
 }
 pub(crate) async fn verify(
-    store: &impl Store,
+    store: &dyn Store,
     request: RegisterSuccessorExecutionDriver,
     committed: bool,
 ) {

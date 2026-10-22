@@ -4,7 +4,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{ExpiredRunOutcome, PreparationCompletion, lookup, prepare};
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let (source, binding) = source(store, clock).await;
     assert!(matches!(
         source.target().origin,
@@ -14,7 +14,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     legacy(store, clock).await;
 }
 pub(crate) async fn source(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
 ) -> (ExpiredRunPreparation, crate::ExecutionBindingCapsule) {
     let admitted = super::owned_admission::admit(store, clock).await;
@@ -46,7 +46,7 @@ pub(crate) async fn source(
     )
 }
 #[cfg(test)]
-pub(crate) async fn faults(store: &impl Store, clock: &ManualClock, inject: impl Fn(u8)) {
+pub(crate) async fn faults(store: &dyn Store, clock: &ManualClock, inject: impl Fn(u8)) {
     for point in [1, 2] {
         let (source, binding) = source(store, clock).await;
         let joined = prepare(store, &source, binding).await;
@@ -74,7 +74,7 @@ pub(crate) async fn faults(store: &impl Store, clock: &ManualClock, inject: impl
 
 #[cfg(test)]
 pub(crate) async fn lost_admission_ack(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     inject: impl Fn(u8),
 ) {
@@ -141,13 +141,13 @@ pub(crate) async fn lost_admission_ack(
     assert_eq!(effects.load(Ordering::SeqCst), 1);
 }
 #[cfg(test)]
-pub(crate) async fn pending(store: &impl Store, clock: &ManualClock) -> super::Pending {
+pub(crate) async fn pending(store: &dyn Store, clock: &ManualClock) -> super::Pending {
     let (source, binding) = source(store, clock).await;
     let joined = prepare(store, &source, binding).await;
     super::Pending { source, joined }
 }
 
-async fn legacy(store: &impl Store, clock: &ManualClock) {
+async fn legacy(store: &dyn Store, clock: &ManualClock) {
     let session = crabber_core::SessionId::new();
     let mut bound = super::bound(&session, clock.now());
     bound.keyed.request.session_id = None;
@@ -173,7 +173,7 @@ async fn legacy(store: &impl Store, clock: &ManualClock) {
 }
 #[cfg(test)]
 pub(crate) async fn assert_refuses(
-    store: &impl Store,
+    store: &dyn Store,
     source: &ExpiredRunPreparation,
     binding: &crate::ExecutionBindingCapsule,
 ) {

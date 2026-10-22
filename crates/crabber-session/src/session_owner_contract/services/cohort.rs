@@ -11,7 +11,7 @@ use crate::{
 };
 use crabber_core::{SessionId, SessionOwnerOperationId};
 use std::sync::Arc;
-async fn end_root(store: &impl Store, grant: &PreparationGrant) {
+async fn end_root(store: &dyn Store, grant: &PreparationGrant) {
     store
         .mutate_session_owner(
             MutateSessionOwner {
@@ -116,7 +116,7 @@ pub(crate) async fn run<S: Store + Clone + 'static>(store: Arc<S>) {
 }
 
 pub(crate) async fn source_fixture(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (
     RegisterSessionServiceDependency,
     crate::session_owner::service::SessionServiceDependencyReceipt,
@@ -139,7 +139,7 @@ pub(crate) async fn source_fixture(
     (request, *receipt, next)
 }
 pub(crate) async fn source_refuses(
-    store: &impl Store,
+    store: &dyn Store,
     request: RegisterSessionServiceDependency,
     receipt: crate::session_owner::service::SessionServiceDependencyReceipt,
     expected: SessionOwnerError,
@@ -170,7 +170,7 @@ pub(crate) async fn source_refuses(
 /// A later root captures the real session revision after a genuine service cancellation.
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) async fn cancelled_across_roots(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (
     crate::session_owner::service::SessionServiceDependencyAccess,
     super::handoff::Service,

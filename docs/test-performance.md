@@ -741,3 +741,11 @@ The native pending-approval case is split into same-task, held-claim, held-recov
 For an owned PostgreSQL container on a local Linux Docker host, the runner prefers a reachable bridge address and avoids the published port TCP proxy. Within a 500 ms probe, both routes must report the same [`system_identifier`](https://www.postgresql.org/docs/14/functions-info.html) from PostgreSQL before any fixture administration. Non-Unix Docker daemon configurations and unreachable or mismatched bridges keep the existing published endpoint. `CRABBER_TEST_POSTGRES_TRANSPORT` selects `auto` (default), `bridge` (require a reachable local bridge), or `published` for a controlled comparison. The same owned container, PostgreSQL image, durability settings, database isolation and cleanup remain in use; logs record the transport label without an endpoint or URL.
 
 The Attempt and Attempt-control conformance helpers also use borrowed `dyn Store` for57 private parameters (36 attempt,21 control). Public factory and fault entrypoints and callback generics remain unchanged, as do all histories, assertions, child-process boundaries and deadlines. These helpers are normal-library conformance code as well as native/source-embedded test dependencies. This removes the Store type as one private code-generation dimension; callback-specific copies remain. Compiler, cache and complete-check improvements remain unmeasured until the new revision is validated.
+
+Another 72 private conformance parameters use borrowed `dyn Store`: 24 in
+run-control, 16 in successor-driver and 32 in session-owner helpers. Public
+entrypoints, factories, callback generics and helpers requiring concrete Store
+types remain unchanged. All other Rust bytes in this change are preserved,
+including test bodies and process histories. This includes normal-library
+conformance helpers; successor-driver is test-only. Compilation and complete-check
+improvements require measurement.

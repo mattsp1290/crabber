@@ -6,7 +6,7 @@ use super::{
     Store, bound,
 };
 use crate::session_owner::preparation::{OWNED_PREPARATION_COMPONENT, bind_resource_contract};
-pub(super) async fn admit(store: &impl Store, clock: &ManualClock) -> crate::AdmitOutcome {
+pub(super) async fn admit(store: &dyn Store, clock: &ManualClock) -> crate::AdmitOutcome {
     let joined = pending(store, clock, std::sync::Arc::default()).await;
     let PreparationCompletion::Admitted(admitted) =
         Box::pin(store.complete_preparation(joined)).await.unwrap()
@@ -16,7 +16,7 @@ pub(super) async fn admit(store: &impl Store, clock: &ManualClock) -> crate::Adm
     admitted
 }
 pub(super) async fn pending(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     effects: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) -> JoinedPreparation {
@@ -62,7 +62,7 @@ pub(super) async fn pending(
 }
 
 async fn reserve(
-    store: &impl Store,
+    store: &dyn Store,
     binding: &crate::ExecutionBindingCapsule,
     revision: SessionRevision,
     contract: crabber_core::InputFingerprint,

@@ -153,7 +153,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     races::run(&store).await;
 }
 async fn immutable_resource_contract(
-    store: &impl Store,
+    store: &dyn Store,
     original: &ReserveSessionOwner,
     revision: SessionRevision,
 ) {
@@ -173,7 +173,7 @@ async fn immutable_resource_contract(
 }
 
 async fn reserve_and_create(
-    store: &impl Store,
+    store: &dyn Store,
     request: &ReserveSessionOwner,
 ) -> (SessionOwnerReceipt, SessionOwnerAuthority, SessionRevision) {
     let session = &request.binding.session_id;
@@ -216,7 +216,7 @@ async fn reserve_and_create(
     let created = store.manage_session(create).await.unwrap();
     (reserved, authority, created.revision)
 }
-async fn unstarted(store: &impl Store, clock: &ManualClock, session: &SessionId) {
+async fn unstarted(store: &dyn Store, clock: &ManualClock, session: &SessionId) {
     let request = reservation(session.clone());
     let (original, old_authority) = applied(
         store

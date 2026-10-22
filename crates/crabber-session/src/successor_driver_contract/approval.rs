@@ -327,7 +327,7 @@ async fn staged(
     (context, f)
 }
 
-async fn bare_admission(store: &impl Store) -> crate::AdmitOutcome {
+async fn bare_admission(store: &dyn Store) -> crate::AdmitOutcome {
     let mut bound = crate::session_owner::preparation_contract::fixture(
         &crabber_core::SessionId::new(),
         crabber_core::SessionRevision::INITIAL,

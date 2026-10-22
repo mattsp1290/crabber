@@ -1,6 +1,6 @@
 //! Decoder-valid mutations must still disagree with protected original sources.
 use super::*;
-pub(crate) async fn advance(store: &impl Store, f: &Fixture) -> crabber_core::SessionRevision {
+pub(crate) async fn advance(store: &dyn Store, f: &Fixture) -> crabber_core::SessionRevision {
     let mut request = crate::session_owner_contract::reservation(f.receipt.session_id.clone());
     request.binding.workspace_id = f.request.context.workspace_id().into();
     request.binding.directory = f.request.context.directory().into();
@@ -43,7 +43,7 @@ pub(crate) fn refreshed_event(
     crate::approval::verify_receipt(receipt, event).unwrap();
 }
 
-pub(crate) async fn begin(store: &impl Store, f: &Fixture) -> crate::AttemptReceipt {
+pub(crate) async fn begin(store: &dyn Store, f: &Fixture) -> crate::AttemptReceipt {
     let execution = store.execution(f.native.fence.clone()).await.unwrap();
     let crate::AttemptMutationOutcome::Applied { receipt, .. } = execution
         .mutate_attempt(

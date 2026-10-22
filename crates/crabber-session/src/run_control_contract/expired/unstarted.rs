@@ -2,7 +2,7 @@
 use super::{Clock, Error, ManualClock, Store};
 use crate::{AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptTarget};
 use crabber_core::{AttemptGeneration, AttemptId, ControlId};
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for unkeyed in [false, true] {
         let (admitted, reserved, old) = reserved(store, clock, unkeyed).await;
         let stale = store.execution(admitted.fence.clone()).await.unwrap();
@@ -90,7 +90,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     revision_changed(store, clock).await;
 }
 pub(crate) async fn reserved(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     unkeyed: bool,
 ) -> (
@@ -141,7 +141,7 @@ pub(crate) async fn reserved(
     };
     (admitted, receipt, authority)
 }
-async fn revision_changed(store: &impl Store, clock: &ManualClock) {
+async fn revision_changed(store: &dyn Store, clock: &ManualClock) {
     let (admitted, receipt, _) = reserved(store, clock, true).await;
     clock.set(admitted.run.lease_until);
     let request = super::InspectExpiredRunPreparation {
@@ -200,7 +200,7 @@ async fn revision_changed(store: &impl Store, clock: &ManualClock) {
     );
 }
 #[cfg(test)]
-pub(crate) async fn pending(store: &impl Store, clock: &ManualClock) -> super::Pending {
+pub(crate) async fn pending(store: &dyn Store, clock: &ManualClock) -> super::Pending {
     let (admitted, _, _) = reserved(store, clock, true).await;
     clock.set(admitted.run.lease_until);
     let source = store
@@ -225,7 +225,7 @@ pub(crate) async fn pending(store: &impl Store, clock: &ManualClock) -> super::P
     super::Pending { source, joined }
 }
 #[cfg(test)]
-pub(crate) async fn faults(store: &impl Store, clock: &ManualClock, inject: impl Fn(u8)) {
+pub(crate) async fn faults(store: &dyn Store, clock: &ManualClock, inject: impl Fn(u8)) {
     for point in [1, 2] {
         let pending = Box::pin(self::pending(store, clock)).await;
         inject(point);

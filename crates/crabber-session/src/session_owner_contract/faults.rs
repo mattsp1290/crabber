@@ -3,7 +3,7 @@ use super::*;
 fn change(owner: &SessionOwnerSnapshot, command: SessionOwnerCommand) -> MutateSessionOwner {
     mutation(owner, command)
 }
-pub(crate) async fn run(store: &impl Store, clock: &ManualClock, set: impl Fn(u8)) {
+pub(crate) async fn run(store: &dyn Store, clock: &ManualClock, set: impl Fn(u8)) {
     let request = reservation(SessionId::new());
     let session = &request.binding.session_id;
     set(1);
@@ -81,7 +81,7 @@ pub(crate) async fn run(store: &impl Store, clock: &ManualClock, set: impl Fn(u8
     .await;
 }
 async fn fault_mutation(
-    store: &impl Store,
+    store: &dyn Store,
     request: MutateSessionOwner,
     authority: Option<SessionOwnerAuthority>,
     set: &impl Fn(u8),

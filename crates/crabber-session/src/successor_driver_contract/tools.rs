@@ -223,7 +223,7 @@ fn context_run(operation: &PreparedOperation) -> crabber_core::RunId {
 }
 
 async fn complete(
-    store: &impl Store,
+    store: &dyn Store,
     joined: JoinedPreparation,
 ) -> (
     ToolContinuationReceipt,
@@ -400,7 +400,7 @@ pub(crate) fn replace_frontend_result(
 /// Compare the actual publisher against independent native-source selection and
 /// exercise only safe metadata inspection, including wrong-family refusal.
 pub(crate) async fn inspect_captured(
-    store: &impl Store,
+    store: &dyn Store,
     f: &Fixture,
     request: &crate::session_owner::driver::RegisterSuccessorExecutionDriver,
     frontend: bool,

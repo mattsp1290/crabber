@@ -1,6 +1,6 @@
 //! Capacity follows immutable latest state and actual joins.
 use super::*;
-pub(crate) async fn fill(store: &impl Store) -> (ReserveSessionOwner, SessionOwnerAuthority) {
+pub(crate) async fn fill(store: &dyn Store) -> (ReserveSessionOwner, SessionOwnerAuthority) {
     let first = reservation(SessionId::new());
     let (receipt, authority) = applied(
         store
@@ -25,7 +25,7 @@ pub(crate) async fn fill(store: &impl Store) -> (ReserveSessionOwner, SessionOwn
     (first, authority.unwrap())
 }
 pub(crate) async fn joined_slot(
-    store: &impl Store,
+    store: &dyn Store,
     first: ReserveSessionOwner,
     authority: SessionOwnerAuthority,
 ) {

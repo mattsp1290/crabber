@@ -5,7 +5,7 @@ use crate::session_owner::preparation::{
     PreparationResourceLink, ReservePreparation,
 };
 use crabber_test_support::ChildDatabase;
-pub(super) async fn retain(store: &impl Store, request: ReservePreparation) {
+pub(super) async fn retain(store: &dyn Store, request: ReservePreparation) {
     let (reserved, authority) = applied(store.reserve_preparation(request.clone()).await.unwrap());
     let authority = authority.unwrap();
     store
@@ -27,7 +27,7 @@ pub(super) async fn retain(store: &impl Store, request: ReservePreparation) {
         .await
         .unwrap();
 }
-pub(super) async fn verify(store: &impl Store, request: ReservePreparation, committed: bool) {
+pub(super) async fn verify(store: &dyn Store, request: ReservePreparation, committed: bool) {
     let metadata = request.reconciliation().unwrap();
     let session = &metadata.session_id;
     let link = PreparationResourceLink {

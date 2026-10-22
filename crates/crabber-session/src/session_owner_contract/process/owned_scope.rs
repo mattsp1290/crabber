@@ -13,7 +13,7 @@ pub(crate) struct Metadata {
 fn sidecar(marker: &Path) -> std::path::PathBuf {
     marker.with_extension("scope")
 }
-pub(super) async fn act(store: &impl Store, reserve: ReserveSessionOwner, joining: bool) {
+pub(super) async fn act(store: &dyn Store, reserve: ReserveSessionOwner, joining: bool) {
     let (reserved, authority) = applied(store.reserve_session_owner(reserve, None).await.unwrap());
     let authority = authority.unwrap();
     let command = mutation(&reserved.owner, SessionOwnerCommand::Begin);
@@ -71,7 +71,7 @@ pub(super) async fn act(store: &impl Store, reserve: ReserveSessionOwner, joinin
         store.join_owned_scope(proof, authority).await.unwrap();
     }
 }
-pub(super) async fn verify(store: &impl Store, metadata: Metadata, committed: bool) {
+pub(super) async fn verify(store: &dyn Store, metadata: Metadata, committed: bool) {
     let activation = metadata.activation;
     let session = activation.session_id();
     let key = metadata.join.as_ref().unwrap_or(activation.operation_id());

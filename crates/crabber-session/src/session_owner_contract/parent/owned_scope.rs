@@ -5,7 +5,7 @@ use crate::session_owner::owned_scope::{
     OwnedScopeSource, OwnedTaskRegistration,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let (mut request, parent, admitted, _) = fixture(store).await;
     request.lease_ms = 60_000;
     let (reserved, authority) = applied(
@@ -63,7 +63,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     late_parent(store, clock, request, parent, &admitted, &effects).await;
 }
 async fn late_parent(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     mut request: ReserveSessionOwner,
     parent: SessionOwnerParentAuthority,

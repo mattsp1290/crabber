@@ -76,7 +76,7 @@ fn bound(session: &SessionId, now: time::OffsetDateTime) -> crate::BoundKeyedAdm
         now,
     )
 }
-async fn running(store: &impl Store, clock: &ManualClock) {
+async fn running(store: &dyn Store, clock: &ManualClock) {
     let session = SessionId::new();
     let bound = bound(&session, clock.now());
     let binding = bound.binding.clone();
@@ -235,7 +235,7 @@ pub(crate) fn begin_request(
     }
 }
 pub(crate) async fn prepare(
-    store: &impl Store,
+    store: &dyn Store,
     source: &ExpiredRunPreparation,
     binding: crate::ExecutionBindingCapsule,
 ) -> JoinedPreparation {
@@ -294,7 +294,7 @@ pub(crate) async fn prepare(
     .1
 }
 async fn atomic(
-    store: &impl Store,
+    store: &dyn Store,
     source: ExpiredRunPreparation,
     binding: crate::ExecutionBindingCapsule,
 ) {
@@ -345,7 +345,7 @@ async fn atomic(
     metadata(store, &source, &receipt, joined).await;
 }
 async fn metadata(
-    store: &impl Store,
+    store: &dyn Store,
     source: &ExpiredRunPreparation,
     receipt: &ExpiredRunReceipt,
     joined: JoinedPreparation,
@@ -371,7 +371,7 @@ async fn metadata(
     };
     assert_eq!(&original, receipt);
 }
-async fn lookup(store: &impl Store, source: &ExpiredRunPreparation) -> Option<ExpiredRunReceipt> {
+async fn lookup(store: &dyn Store, source: &ExpiredRunPreparation) -> Option<ExpiredRunReceipt> {
     store
         .lookup_expired_run_preparation(
             &source.request().session_id,
@@ -420,7 +420,7 @@ pub(crate) async fn faults(store: &impl Store, clock: &ManualClock, inject: impl
 
 /// Genuine keyed initial source before a cold prepared claim.
 #[cfg(test)]
-pub(crate) async fn pending_keyed(store: &impl Store, clock: &ManualClock) -> Pending {
+pub(crate) async fn pending_keyed(store: &dyn Store, clock: &ManualClock) -> Pending {
     let session = SessionId::new();
     let bound = bound(&session, clock.now());
     let binding = bound.binding.clone();

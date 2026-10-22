@@ -71,7 +71,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     }
 }
 async fn alter(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     request: &RegisterSuccessorExecutionDriver,
     grant: &SuccessorExecutionDriverGrant,
@@ -119,7 +119,7 @@ async fn alter(
         }
     }
 }
-async fn rename(store: &impl Store, request: &RegisterSuccessorExecutionDriver) {
+async fn rename(store: &dyn Store, request: &RegisterSuccessorExecutionDriver) {
     store
         .manage_session(crate::ManageSession {
             id: crabber_core::ControlId::new(),

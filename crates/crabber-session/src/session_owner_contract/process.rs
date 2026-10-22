@@ -58,7 +58,7 @@ pub(crate) fn pause(point: &str) {
         }
     }
 }
-pub(crate) async fn execute(store: &impl Store, command: Operation) {
+pub(crate) async fn execute(store: &dyn Store, command: Operation) {
     match command {
         Operation::OwnedScope { request, joining } => {
             owned_scope::act(store, request, joining).await;
@@ -191,7 +191,7 @@ async fn joined(child: &mut Guard) {
     .await
     .unwrap();
 }
-pub(crate) async fn run(store: &impl Store, helper: &str, path: ChildDatabase<'_>) {
+pub(crate) async fn run(store: &dyn Store, helper: &str, path: ChildDatabase<'_>) {
     run_preparation(store, helper, path).await;
     resources::run(helper, path).await;
     owned_scope::run(helper, path).await;
@@ -247,7 +247,7 @@ pub(crate) async fn run(store: &impl Store, helper: &str, path: ChildDatabase<'_
 }
 
 async fn verify_preparation(
-    store: &impl Store,
+    store: &dyn Store,
     request: crate::session_owner::preparation::ReservePreparation,
     committed: bool,
 ) {
@@ -277,7 +277,7 @@ async fn verify_preparation(
     }
     assert!(store.get_session(session).await.unwrap().is_none());
 }
-async fn run_preparation(_store: &impl Store, helper: &str, path: ChildDatabase<'_>) {
+async fn run_preparation(_store: &dyn Store, helper: &str, path: ChildDatabase<'_>) {
     use crate::session_owner::preparation::{
         PreparationKey, PreparationPurpose, ReservePreparation,
     };
@@ -381,7 +381,7 @@ pub(crate) async fn run_cancellation(store: &impl Store, helper: &str, path: Chi
 }
 
 async fn verify_cancel(
-    store: &impl Store,
+    store: &dyn Store,
     request: crate::session_owner::RequestSessionOwnerCancel,
     committed: bool,
 ) {
