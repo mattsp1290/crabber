@@ -141,6 +141,15 @@ enum AdapterKind {
     Custom,
 }
 
+/// Model catalog endpoint owned by a built-in adapter; custom adapters have none.
+enum CatalogRoute {
+    None,
+    #[cfg(feature = "opencode-go")]
+    OpenCode,
+    #[cfg(feature = "anthropic")]
+    Anthropic,
+}
+
 #[derive(Clone)]
 /// HTTP implementation of Crabber's public provider contracts.
 pub struct HttpAdapter {
@@ -345,6 +354,16 @@ impl HttpAdapter {
     }
     fn uses_opencode_session(&self) -> bool {
         self.uses_opencode_models()
+    }
+    fn catalog_route(&self) -> CatalogRoute {
+        #[allow(unreachable_patterns)]
+        match self.kind {
+            #[cfg(feature = "opencode-go")]
+            AdapterKind::OpenCode => CatalogRoute::OpenCode,
+            #[cfg(feature = "anthropic")]
+            AdapterKind::Anthropic => CatalogRoute::Anthropic,
+            _ => CatalogRoute::None,
+        }
     }
     fn api_key(&self) -> Result<String, ProviderError> {
         if let Some(key) = &self.key_override {
@@ -613,15 +632,43 @@ impl ProviderAdapter for HttpAdapter {
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
         let span = tracing::info_span!(target: crate::targets::PROVIDERS, "crabber.provider.models", provider.id = %self.id, outcome = tracing::field::Empty, error.kind = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
         let result = async {
-            if !self.uses_opencode_models() {
+            // Request, redaction credentials, and whether entries carry limits.
+            let catalog: Option<(reqwest::RequestBuilder, Vec<String>, bool)> =
+                match self.catalog_route() {
+                    CatalogRoute::None => None,
+                    #[cfg(feature = "opencode-go")]
+                    CatalogRoute::OpenCode => {
+                        let key = self.api_key()?;
+                        Some((
+                            self.client
+                                .get(format!("{}/models", self.base_url.trim_end_matches('/')))
+                                .bearer_auth(&key),
+                            vec![key.clone(), format!("Bearer {key}")],
+                            false,
+                        ))
+                    }
+                    #[cfg(feature = "anthropic")]
+                    CatalogRoute::Anthropic => {
+                        let key = self.api_key()?;
+                        let mut value = HeaderValue::from_str(&key).map_err(|_| invalid())?;
+                        value.set_sensitive(true);
+                        Some((
+                            self.client
+                                .get(format!(
+                                    "{}/models?limit=1000",
+                                    self.base_url.trim_end_matches('/')
+                                ))
+                                .header("x-api-key", value)
+                                .header("anthropic-version", "2023-06-01"),
+                            vec![key],
+                            true,
+                        ))
+                    }
+                };
+            let Some((request, credentials, reads_limits)) = catalog else {
                 return Ok(Vec::new());
-            }
-            let key = self.api_key()?;
-            let credentials = vec![key.clone(), format!("Bearer {key}")];
-            let response = self
-                .client
-                .get(format!("{}/models", self.base_url.trim_end_matches('/')))
-                .bearer_auth(key)
+            };
+            let response = request
                 .header("user-agent", self.user_agent.clone())
                 .send()
                 .await
@@ -638,11 +685,16 @@ impl ProviderAdapter for HttpAdapter {
                 .as_array()
                 .ok_or_else(invalid)?
                 .iter()
-                .filter_map(|m| m["id"].as_str())
-                .map(|id| ModelDescriptor {
+                .filter_map(|m| Some((m["id"].as_str()?, m)))
+                .map(|(id, m)| ModelDescriptor {
                     provider_id: self.id.clone(),
                     id: id.into(),
-                    context_limit: 0,
+                    // 0 means unknown; only the Anthropic catalog reports limits.
+                    context_limit: if reads_limits {
+                        m["max_input_tokens"].as_u64().unwrap_or(0)
+                    } else {
+                        0
+                    },
                 })
                 .collect())
         }

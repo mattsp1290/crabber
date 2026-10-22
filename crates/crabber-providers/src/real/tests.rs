@@ -1127,3 +1127,90 @@ async fn anthropic_user_image_reaches_wire_without_custom_http() {
         serde_json::json!({"type":"text","text":"describe"})
     );
 }
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_models_request_uses_x_api_key_version_and_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, request) = accept_loopback_request(&listener).await;
+        assert!(request.starts_with("GET /models?limit=1000 HTTP/1.1"));
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.contains("x-api-key: k\r\n"));
+        assert!(lower.contains("anthropic-version: 2023-06-01\r\n"));
+        assert!(lower.contains("user-agent: crabber-channels/0.1.0 crabber/0.1\r\n"));
+        assert!(!lower.contains("authorization:"));
+        let body = r#"{"data":[{"id":"claude-fixture","max_input_tokens":200000},{"id":"no-limit","max_input_tokens":null}],"has_more":false}"#;
+        let response = loopback_response("200 OK", "application/json", body);
+        write_loopback_response(&mut socket, response.as_bytes()).await;
+    });
+    let models = HttpAdapter::anthropic()
+        .with_api_key("k")
+        .with_base_url(&base_url)
+        .try_with_user_agent_product("crabber-channels/0.1.0")
+        .unwrap()
+        .models()
+        .await
+        .unwrap();
+    timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+    assert_eq!(
+        models,
+        [
+            ModelDescriptor {
+                provider_id: "anthropic".into(),
+                id: "claude-fixture".into(),
+                context_limit: 200_000,
+            },
+            ModelDescriptor {
+                provider_id: "anthropic".into(),
+                id: "no-limit".into(),
+                context_limit: 0,
+            },
+        ]
+    );
+}
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_models_error_redacts_x_api_key() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = accept_loopback_request(&listener).await;
+        let response = loopback_response("500 Server Error", "text/plain", "model-secret");
+        write_loopback_response(&mut socket, response.as_bytes()).await;
+    });
+    let error = HttpAdapter::anthropic()
+        .with_api_key("model-secret")
+        .with_base_url(&base_url)
+        .models()
+        .await
+        .expect_err("model endpoint 500 should fail");
+    assert_eq!(error.kind, ProviderErrorKind::Server);
+    assert!(error.retryable);
+    assert!(!error.message.contains("model-secret"));
+    assert!(error.message.ends_with("[REDACTED]"));
+    timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+}
+
+#[cfg(all(feature = "anthropic", feature = "custom-http"))]
+#[tokio::test]
+async fn anthropic_catalog_is_builtin_only() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let custom = HttpAdapter::custom("anthropic", &base_url, Protocol::Messages).with_api_key("k");
+    assert_eq!(
+        custom.models().await.unwrap(),
+        Vec::<ModelDescriptor>::new()
+    );
+    assert_eq!(
+        listener.accept().err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::WouldBlock)
+    );
+    assert!(matches!(
+        HttpAdapter::anthropic().catalog_route(),
+        CatalogRoute::Anthropic
+    ));
+}
