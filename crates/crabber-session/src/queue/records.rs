@@ -77,7 +77,7 @@ pub(crate) fn validate_heads(request: &crate::QueueHeadsRequest) -> Result<(), S
         ));
     }
     if let Some(cursor) = &request.cursor {
-        identifier(&cursor.0)?;
+        scope(cursor, &ControlId("queue-heads".into()))?;
     }
     Ok(())
 }
@@ -162,6 +162,7 @@ pub(crate) fn verify_prepared(
         || actual.workspace_id != original.workspace_id
         || actual.directory != original.directory
         || actual.text != original.text
+        || actual.model_controls != original.model_controls
         || actual.selection_policy.is_explicit() != original.selection_policy.is_explicit()
         || (original.selection_policy.is_explicit()
             && (actual.provider_id != original.provider_id || actual.model_id != original.model_id))

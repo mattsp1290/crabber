@@ -202,15 +202,12 @@ impl AgentBuilder {
     ))]
     #[must_use]
     pub fn providers_from_env(mut self) -> Self {
-        match crabber_providers::HttpResolver::try_from_env() {
-            Ok(resolver) => {
-                self.provider_env_error = false;
-                self.provider(Arc::new(resolver))
-            }
-            Err(_) => {
-                self.provider_env_error = true;
-                self
-            }
+        if let Ok(resolver) = crabber_providers::HttpResolver::try_from_env() {
+            self.provider_env_error = false;
+            self.provider(Arc::new(resolver))
+        } else {
+            self.provider_env_error = true;
+            self
         }
     }
     #[must_use]

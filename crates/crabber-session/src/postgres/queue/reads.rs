@@ -242,7 +242,7 @@ impl PostgresStore {
             .map_err(db)?;
         // Restrict the candidate page before transferring or validating summaries.
         // Reuse the exact item decoder and its receipt/identity checks.
-        let projection = SUMMARY.replacen("SELECT ", "SELECT CASE WHEN octet_length(q.session_id)<=128 THEN q.session_id END AS session_id, ", 1).replace("FROM future_queue q", "FROM entries q").replace(" WHERE q.session_id=$1 AND q.queue_id=$2", " ORDER BY q.session_id COLLATE \"C\"");
+        let projection = SUMMARY.replacen("SELECT ", "SELECT CASE WHEN octet_length(q.session_id)<=512 THEN q.session_id END AS session_id, ", 1).replace("FROM future_queue q", "FROM entries q").replace(" WHERE q.session_id=$1 AND q.queue_id=$2", " ORDER BY q.session_id COLLATE \"C\"");
         let projection = projection.replace("octet_length(q.summary_json)<=16384", "octet_length(q.summary_json)<=16384 AND SUM(octet_length(q.summary_json)+COALESCE(octet_length(r.data_json),0)) OVER ()<=262144");
         let query = format!(
             "WITH entries AS (SELECT q.session_id,q.queue_id,q.sequence,q.state,q.prepared,q.summary_json,q.admission_key FROM future_queue q JOIN sessions s ON s.id=q.session_id WHERE s.workspace_id=$1 AND q.state IN ('Queued','Claimed') AND q.sequence=(SELECT MIN(h.sequence) FROM future_queue h WHERE h.session_id=q.session_id AND h.state IN ('Queued','Claimed')) AND ($2::text IS NULL OR q.session_id COLLATE \"C\">$2) ORDER BY q.session_id COLLATE \"C\" LIMIT $3) {projection}"

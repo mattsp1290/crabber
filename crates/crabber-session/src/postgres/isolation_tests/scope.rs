@@ -165,8 +165,8 @@ async fn with_check_blocks_key_reassignment() {
         ),
     )
     .await;
-    // Existing native identity trigger may reject immutable reassignment before
-    // WITH CHECK. A legacy-protocol row lets this test reach RLS itself.
+    // Both native and execution identity triggers protect legacy rows too.
+    // Keep their production rejection separate from the isolated RLS probe below.
     sqlx::query("INSERT INTO sessions(id,data) VALUES($1,'{\"workspace_id\":\"ws-a\"}');")
         .bind(format!("legacy-{}", a.session.id.0))
         .execute(&admin.pool)
@@ -181,7 +181,7 @@ async fn with_check_blocks_key_reassignment() {
         .execute(&worker.pool)
         .await
         .unwrap_err();
-    assert!([Some("42501"), Some("23503"), Some("P0001")].contains(&code(&error).as_deref()));
+    assert_eq!(code(&error).as_deref(), Some("P0001"));
     let unchanged: String = sqlx::query_scalar("SELECT session_id FROM runs WHERE id=$1")
         .bind(&run)
         .fetch_one(&admin.pool)
@@ -212,6 +212,7 @@ async fn with_check_blocks_key_reassignment() {
     );
     own.pool.close().await;
     worker.cleanup().await;
+    super::reassignment::run(&url, &admin.pool).await;
 }
 
 #[tokio::test]

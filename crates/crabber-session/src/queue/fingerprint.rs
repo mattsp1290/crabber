@@ -54,7 +54,7 @@ impl QueueMutation {
             } else {
                 serde_json::json!(["session_defaults"])
             };
-            serde_json::json!([
+            let mut intent = serde_json::json!([
                 "crabber.future-queue.enqueue.v1",
                 self.session_id,
                 self.id,
@@ -65,7 +65,16 @@ impl QueueMutation {
                 input.input,
                 input.admission,
                 selection
-            ])
+            ]);
+            // Preserve historical default-control fingerprints while binding
+            // every non-default control to the retained enqueue intent.
+            if input.request.model_controls != crabber_core::ModelControls::default() {
+                intent
+                    .as_array_mut()
+                    .ok_or_else(invalid)?
+                    .push(serde_json::json!(input.request.model_controls));
+            }
+            intent
         } else {
             serde_json::json!(["crabber.future-queue.control.v1", self])
         };

@@ -239,7 +239,7 @@ impl SqliteStore {
 
         // Restrict the candidate page before transferring or validating summaries.
         // Reuse the exact item decoder and its receipt/identity checks.
-        let projection = SUMMARY.replacen("SELECT ", "SELECT CASE WHEN length(CAST(q.session_id AS BLOB))<=128 THEN q.session_id END AS session_id, ", 1).replace("FROM future_queue q", "FROM entries q").replace(" WHERE q.session_id=$1 AND q.queue_id=$2", " ORDER BY q.session_id COLLATE BINARY");
+        let projection = SUMMARY.replacen("SELECT ", "SELECT CASE WHEN length(CAST(q.session_id AS BLOB))<=512 THEN q.session_id END AS session_id, ", 1).replace("FROM future_queue q", "FROM entries q").replace(" WHERE q.session_id=$1 AND q.queue_id=$2", " ORDER BY q.session_id COLLATE BINARY");
         let projection = projection.replace("length(CAST(q.summary_json AS BLOB))<=16384", "length(CAST(q.summary_json AS BLOB))<=16384 AND SUM(length(CAST(q.summary_json AS BLOB))+COALESCE(length(CAST(r.data_json AS BLOB)),0)) OVER ()<=262144");
         let query = format!(
             "WITH entries AS (SELECT q.session_id,q.queue_id,q.sequence,q.state,q.prepared,q.summary_json,q.admission_key FROM future_queue q JOIN sessions s ON s.id=q.session_id WHERE json_extract(s.data, '$.workspace_id')=$1 AND q.state IN ('Queued','Claimed') AND q.sequence=(SELECT MIN(h.sequence) FROM future_queue h WHERE h.session_id=q.session_id AND h.state IN ('Queued','Claimed')) AND ($2 IS NULL OR q.session_id COLLATE BINARY>$2) ORDER BY q.session_id COLLATE BINARY LIMIT $3) {projection}"

@@ -219,6 +219,7 @@ impl Orchestrator {
             || current.workspace_id != original.workspace_id
             || current.directory != original.directory
             || current.text != original.text
+            || current.model_controls != original.model_controls
             || current.selection_policy.is_explicit() != original.selection_policy.is_explicit()
             || request.input_envelope.as_ref() != Some(&retained.input.input)
             || retained.input.admission.behavior_fingerprint != self.behavior_fingerprint

@@ -244,7 +244,7 @@ execution capability. New runtime admissions retain binding capsule version 3,
 keyed execution capsule version 2 and canonical input digest version 2. The
 binding codec is bounded to 16 MiB encoded JSON and 64 levels of configuration
 nesting. Historically, PostgreSQL schema 7 and fresh SQLite schema 3 expanded
-the private codec carriers. Current storage requires PostgreSQL 24 / SQLite 20;
+the private codec carriers. Current storage requires PostgreSQL 25 / SQLite 20;
 retained older payloads are not rewritten or made executable. Custom
 adapters default to `HostUnsupported` and must implement the atomic capability.
 The runtime uses these atomic APIs for both ordinary and keyed admission. It
@@ -750,7 +750,7 @@ request before choosing another key. Changed semantics conflict; exact replay
 precedes current CAS. This is logical erasure, not cryptographic erasure of backups
 or proof that arbitrary native resource types have joined.
 
-Current bundled storage versions are PostgreSQL 24 and SQLite 20. PostgreSQL uses
+Current bundled storage versions are PostgreSQL 25 and SQLite 20. PostgreSQL uses
 its versioned migration roster; SQLite accepts fresh current files and rejects
 older schemas rather than silently upgrading. Always run explicit migration
 before read-only `connect`; see [SQLite storage](sqlite-store.md).

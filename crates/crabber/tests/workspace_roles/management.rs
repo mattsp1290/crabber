@@ -45,35 +45,23 @@ async fn foreign_management_fork_and_delete_preserve_rows() {
         Err(ForkError::NotFound)
     ));
     f.unchanged(id, before).await;
-    // The owner deletes a separate positive-control session to preserve B's fixture.
-    let positive = f.create(false).await;
-    let deleted = f
-        .host
-        .delete_session(DeleteSession {
-            id: ControlId::new(),
-            session_id: positive.session().session_id().clone(),
-            expected_revision: f
-                .native
-                .session_revision(positive.session().session_id())
-                .await
-                .unwrap(),
-        })
-        .await
-        .unwrap();
-    assert!(matches!(deleted, DeletionOutcome::Applied(_)));
+    let delete = DeleteSession {
+        id: ControlId::new(),
+        session_id: id.clone(),
+        expected_revision: f.native.session_revision(id).await.unwrap(),
+    };
     let before = f.snapshot(id).await;
     assert_eq!(
-        f.worker
-            .delete_session(DeleteSession {
-                id: ControlId::new(),
-                session_id: id.clone(),
-                expected_revision: f.native.session_revision(id).await.unwrap()
-            })
-            .await
-            .unwrap_err(),
+        f.worker.delete_session(delete.clone()).await.unwrap_err(),
         DeletionError::NotFound
     );
     f.unchanged(id, before).await;
+    // Deletion's positive control must follow the integrity check so the
+    // worker denial is tested while this exact target still exists.
+    assert!(matches!(
+        f.host.delete_session(delete).await.unwrap(),
+        DeletionOutcome::Applied(_)
+    ));
     let a = f.create(true).await;
     let aid = a.session().session_id();
     let rev = f.worker_native.session_revision(aid).await.unwrap();

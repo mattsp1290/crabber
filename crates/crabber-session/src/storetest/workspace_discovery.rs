@@ -16,6 +16,11 @@ const WORKSPACE_B: &str = "discovery-other";
 
 async fn create(store: &dyn Store, workspace: &str) -> SessionId {
     let session = SessionId::new();
+    create_id(store, workspace, &session).await;
+    session
+}
+
+async fn create_id(store: &dyn Store, workspace: &str, session: &SessionId) {
     store
         .manage_session(ManageSession {
             session_id: session.clone(),
@@ -30,7 +35,6 @@ async fn create(store: &dyn Store, workspace: &str) -> SessionId {
         })
         .await
         .unwrap();
-    session
 }
 
 async fn enqueue(store: &dyn Store, session: &SessionId, workspace: &str) -> crate::QueueSummary {
@@ -277,6 +281,70 @@ where
             store
                 .list_queue_heads(QueueHeadsRequest {
                     limit,
+                    ..request.clone()
+                })
+                .await,
+            Err(StoreError::Validation(_))
+        ));
+    }
+    opaque_heads(&store).await;
+}
+
+async fn opaque_heads(store: &dyn Store) {
+    let unique = SessionId::new().0;
+    let workspace = format!("discovery-opaque-{unique}");
+    let sessions = [
+        SessionId(format!("a/{unique}")),
+        SessionId(format!("b/所有者-{unique}")),
+        SessionId(format!("c{unique}{}", "x".repeat(512 - unique.len() - 1))),
+    ];
+    let mut expected = Vec::new();
+    for session in &sessions {
+        create_id(store, &workspace, session).await;
+        expected.push(enqueue(store, session, &workspace).await);
+    }
+    expected.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    let request = QueueHeadsRequest {
+        workspace_id: workspace,
+        limit: 1,
+        cursor: None,
+    };
+    let mut cursor = None;
+    let mut actual = Vec::new();
+    // A bounded walk prevents a broken cursor from turning the contract into a hang.
+    for (index, head) in expected.iter().enumerate() {
+        let page = store
+            .list_queue_heads(QueueHeadsRequest {
+                cursor,
+                ..request.clone()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.heads, vec![head.clone()]);
+        if index + 1 == expected.len() {
+            assert!(page.next.is_none());
+        } else {
+            assert_eq!(page.next, Some(head.session_id.clone()));
+        }
+        cursor = page.next;
+        actual.extend(page.heads);
+    }
+    assert_eq!(actual, expected);
+    // A final long cursor is valid even when there are no later heads.
+    let empty = store
+        .list_queue_heads(QueueHeadsRequest {
+            cursor: Some(sessions[2].clone()),
+            ..request.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(empty.heads, vec![]);
+    assert!(empty.next.is_none());
+    for invalid in [String::new(), "bad\nid".into(), "x".repeat(513)] {
+        assert!(matches!(
+            store
+                .list_queue_heads(QueueHeadsRequest {
+                    cursor: Some(SessionId(invalid)),
                     ..request.clone()
                 })
                 .await,

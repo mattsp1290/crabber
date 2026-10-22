@@ -79,6 +79,13 @@ async fn foreign_reads_and_admissions_are_hidden_without_provider_calls() {
         vec![]
     );
     f.unchanged(id, before).await;
+    f.host
+        .prompt_in(&b, "host positive control", None)
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
     super::positive::reads(&f).await;
     f.cleanup().await;
 }

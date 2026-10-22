@@ -124,6 +124,11 @@ async fn scoped_recovery_has_a_real_foreign_candidate() {
     f.unchanged(&admitted.session.id, before).await;
     let host_report = f.host.recover_workspace(&f.workspace_b).await.unwrap();
     super::recovery::assert_legacy_skip(&host_report, &admitted.run.id);
+    let global_host_report = f.host.recover().await.unwrap();
+    assert!(global_host_report.skipped.iter().any(|skip| {
+        skip.run_id == admitted.run.id
+            && skip.reason == RecoverySkipReason::Store(StoreError::HostUnsupported)
+    }));
     assert!(
         f.native
             .list_workspace_unfinished_runs(WorkspaceRunsRequest {

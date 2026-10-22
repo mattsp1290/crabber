@@ -6,6 +6,7 @@ mod foreign_seed;
 mod helpers;
 mod migration;
 mod native_seed;
+mod reassignment;
 mod scope;
 mod workload;
 use helpers::*;

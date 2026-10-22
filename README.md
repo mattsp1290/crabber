@@ -349,7 +349,7 @@ envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
 Result-transform contract version 3 carries typed `ToolOutput`; WASM extensions
 use `crabber:extensions@0.2.0`. Old frozen plans fail with `PlanChanged`. Typed
 completion itself adds no storage migration. Current bundled storage requires
-PostgreSQL 24 / SQLite 20; see the constants in
+PostgreSQL 25 / SQLite 20; see the constants in
 [crabber-session](crates/crabber-session/src/lib.rs).
 Finish or settle unfinished runs before upgrading or rolling back; rollback
 pins the previous host revision and compatible guests. Await

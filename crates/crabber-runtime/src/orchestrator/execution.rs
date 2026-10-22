@@ -259,6 +259,11 @@ impl Orchestrator {
             });
             let run_future = crabber_extension::with_public_source(public_source, run_future);
             tokio::pin!(run_future);
+            let mut control = super::run_control::ControlObservation::start(
+                self_,
+                Arc::clone(&execution),
+                fence.clone(),
+            )?;
             loop {
                 tokio::select! {
                     biased;
@@ -267,7 +272,7 @@ impl Orchestrator {
                         Ok(()) => (),
                         Err(_) => break run_future.as_mut().await,
                     },
-                    control = self_.wait_durable_cancel(execution.as_ref(), &fence) => {
+                    control = control.wait() => {
                         match control {
                             Ok(()) => { tracing::info!(target: targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); break run_future.as_mut().await; }
                             Err(error) => {

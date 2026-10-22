@@ -1,5 +1,7 @@
 #[path = "contexts.rs"]
 mod contexts;
+#[path = "model_controls.rs"]
+mod model_controls;
 #[path = "races.rs"]
 mod races;
 use super::{fixture::*, store::TestStore};
@@ -39,6 +41,7 @@ pub(super) async fn run(native: Arc<dyn Store>, clock: Arc<ManualClock>) {
     fallback_and_defaults(native.clone()).await;
     Box::pin(unknown_ack(native.clone(), &clock)).await;
     contexts::explicit_and_foreign_context(native.clone()).await;
+    Box::pin(model_controls::retained(native.clone())).await;
     contexts::unsupported(native.clone()).await;
     races::defaults_cas(native.clone()).await;
     Box::pin(races::same_key_prepare(native.clone())).await;
