@@ -299,6 +299,30 @@
       "after": "The locked consumer still executes the full shared public host journey, asserts all12reportfields and adaptercalls, and serializes Report. The actual normal CLI executes one fake-provider turn through the selected Store/adapter and closes resources. Default CLI behavior remains the full journey.",
       "rationale": "The shared library journey has no feature-conditional branches; the consumer has stronger assertions than the former CLI call. Full combined-feature CLI compilation and real main/argument/backend/facade/JSON execution remain. No normal PostgreSQL server-host CLI owner is claimed. Existing native SQL/WASM integration tests remain required.",
       "validation": "At c9772172 with tracked source unchanged, current complete-feature normal binaries built; full locked consumer passed20.128s with all12reportassertions; actual memory --smoke passed0.126s with Completed,oneproviderrequest,adaptercalls,resourceclose andexpectedJSON. Diagnostic Python bytecode was untracked during these partial checks and removed afterward; full clean local/CI budget qualification remains pending."
+    },
+    {
+      "id": "embedded-memory-owner-capacity",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "targeted-canonical-qualified",
+      "failure": "At the exact 1024-owner bound, an unjoined reservation must retain capacity and an actual authenticated Join must free exactly one slot.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/ledger.rs",
+        "crates/crabber-session/src/session_owner_contract/capacity.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory::session_owner::tests::session_owner_shared_capacity",
+        "sqlite::session_owner::tests::session_owner_contract",
+        "postgres::session_owner::tests::session_owner_contract"
+      ],
+      "before": "The same private Memory root-capacity history runs in the canonical session crate and source-embedded fenced-abandon adapter.",
+      "after": "Only the exact embedded duplicate registration is omitted via native_store_unit_tests; canonical Memory, SQL immutable-capacity and adapter-specific parent/fault/fenced histories remain.",
+      "rationale": "Both wrappers compile identical MemoryStore, immutable owner ledger, record authentication and capacity helpers. Root Preparation reservations have parent=None and resource_contract=None, so they never enter the opaque attempt/phase adapter bridge or pending native transport. All 1024 insertions, overflow refusal and actual Join/slot reuse assertions remain unchanged in the canonical owner.",
+      "validation": "All three affected canonical capacity and blocked-drop tests passed; actual complete native inventory differs by exactly the intended embedded test (3038 to3037). No full timing qualification claim."
     }
   ],
   "required_behaviors": [
@@ -471,6 +495,18 @@
         {
           "package": "crabber-session",
           "suffix": "postgres::queue::tests::queue_bounds"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "memory::session_owner::tests::session_owner_shared_capacity"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::session_owner::tests::session_owner_contract"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::session_owner::tests::session_owner_contract"
         }
       ]
     },
