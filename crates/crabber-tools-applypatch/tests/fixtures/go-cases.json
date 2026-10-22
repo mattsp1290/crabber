@@ -1,0 +1,108 @@
+[
+  {
+    "name": "TestRunAppliesAddUpdateMoveAndDelete/patch",
+    "patch_text": "*** Begin Patch\n*** Add File: new/added.txt\n+first\n+second\n*** Update File: old.txt\n@@\n hello\n-old\n+new\n bye\n*** Update File: move.txt\n*** Move to: moved.txt\n@@\n-name\n+renamed\n*** Delete File: delete.txt\n*** End Patch\n",
+    "files": {
+      "old.txt": "hello\nold\nbye\n",
+      "move.txt": "name\n",
+      "delete.txt": "remove\n"
+    },
+    "symlinks": {},
+    "category": null
+  },
+  {
+    "name": "TestRunPreflightRejectsAndDoesNotWrite/patch",
+    "patch_text": "*** Begin Patch\n*** Add File: created.txt\n+created\n*** Update File: target.txt\n@@\n-missing\n+changed\n*** End Patch\n",
+    "files": {
+      "target.txt": "alpha\n"
+    },
+    "symlinks": {},
+    "category": "conflict"
+  },
+  {
+    "name": "TestRunRejectsLineHunkSuffixMatch/patch",
+    "patch_text": "*** Begin Patch\n*** Update File: target.txt\n@@\n-foo\n+bar\n*** End Patch\n",
+    "files": {
+      "target.txt": "prefixfoo\n"
+    },
+    "symlinks": {},
+    "category": "conflict"
+  },
+  {
+    "name": "TestRunRejectsDuplicateTargetsAndPathEscapes/dup",
+    "patch_text": "*** Begin Patch\n*** Add File: same.txt\n+one\n*** Add File: same.txt\n+two\n*** End Patch\n",
+    "files": {},
+    "symlinks": {},
+    "category": "validation"
+  },
+  {
+    "name": "TestRunRejectsDuplicateTargetsAndPathEscapes/escape",
+    "patch_text": "*** Begin Patch\n*** Add File: ../outside.txt\n+nope\n*** End Patch\n",
+    "files": {},
+    "symlinks": {},
+    "category": "path_escape"
+  },
+  {
+    "name": "TestRunRejectsParentChildTargetsBeforeWriting/patch",
+    "patch_text": "*** Begin Patch\n*** Add File: foo\n+plain file\n*** Add File: foo/bar.txt\n+nested file\n*** End Patch\n",
+    "files": {},
+    "symlinks": {},
+    "category": "validation"
+  },
+  {
+    "name": "TestRunRejectsExistingAddMissingUpdateAndMissingDelete/existingAdd",
+    "patch_text": "*** Begin Patch\n*** Add File: exists.txt\n+new\n*** End Patch\n",
+    "files": {
+      "exists.txt": "exists\n"
+    },
+    "symlinks": {},
+    "category": "validation"
+  },
+  {
+    "name": "TestRunRejectsExistingAddMissingUpdateAndMissingDelete/missingUpdate",
+    "patch_text": "*** Begin Patch\n*** Update File: missing.txt\n@@\n-old\n+new\n*** End Patch\n",
+    "files": {
+      "exists.txt": "exists\n"
+    },
+    "symlinks": {},
+    "category": "not_found"
+  },
+  {
+    "name": "TestRunRejectsExistingAddMissingUpdateAndMissingDelete/missingDelete",
+    "patch_text": "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch\n",
+    "files": {
+      "exists.txt": "exists\n"
+    },
+    "symlinks": {},
+    "category": "not_found"
+  },
+  {
+    "name": "TestRunRejectsSymlinkDeleteSourceWithoutRemovingTarget/patch",
+    "patch_text": "*** Begin Patch\n*** Delete File: link.txt\n*** End Patch\n",
+    "files": {
+      "real.txt": "real\n"
+    },
+    "symlinks": {
+      "link.txt": "real.txt"
+    },
+    "category": "unsupported"
+  },
+  {
+    "name": "TestRunDeletesBinaryFile/patch",
+    "patch_text": "*** Begin Patch\n*** Delete File: bin.dat\n*** End Patch\n",
+    "files": {
+      "bin.dat": "b\u0000n"
+    },
+    "symlinks": {},
+    "category": null
+  },
+  {
+    "name": "TestRunRejectsSymlinkEscape/patch",
+    "patch_text": "*** Begin Patch\n*** Update File: link.txt\n@@\n-outside\n+changed\n*** End Patch\n",
+    "files": {},
+    "symlinks": {
+      "link.txt": "$OUTSIDE/outside.txt"
+    },
+    "category": "path_escape"
+  }
+]

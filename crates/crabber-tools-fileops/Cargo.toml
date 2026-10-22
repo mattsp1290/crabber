@@ -1,0 +1,29 @@
+[package]
+name = "crabber-tools-fileops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+crabber = { path = "../crabber" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = "0.7"
+crabber-tools-core = { path = "../crabber-tools-core" }
+async-trait = "0.1"
+cap-std = "4"
+rustix = { version = "1", features = ["process", "fs"] }
+libc = "0.2"
+
+[dev-dependencies]
+crabber-tools-testkit = { path = "../crabber-tools-testkit" }
+tempfile = "3"

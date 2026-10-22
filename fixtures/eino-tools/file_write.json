@@ -1,0 +1,27 @@
+{
+  "description": "Write (create or overwrite) a workspace-relative file. Content is capped at 256 KiB. Optional create_dirs=true mkdir -p's the parent chain. Returns a structured error envelope on path_escape, not_found (missing parent), too_large, or io.",
+  "name": "file_write",
+  "parameters": {
+    "properties": {
+      "path": {
+        "minLength": 1,
+        "description": "Workspace-relative target file.",
+        "type": "string"
+      },
+      "content": {
+        "description": "File content. May be empty (truncates the target to 0 bytes).",
+        "type": "string"
+      },
+      "create_dirs": {
+        "description": "If true, mkdir -p the parent chain. Default false.",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "path",
+      "content"
+    ],
+    "type": "object"
+  }
+}

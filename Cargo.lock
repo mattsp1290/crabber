@@ -305,6 +305,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "serde_core",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,6 +342,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "cap-fs-ext"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56ff379b70af8e08307a8f65e7040c7301cb4a572538ade16b4984f0da77847f"
+dependencies = [
+ "cap-primitives",
+ "cap-std",
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "cap-primitives"
 version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,6 +369,18 @@ dependencies = [
  "rustix-linux-procfs",
  "windows-sys 0.61.2",
  "winx",
+]
+
+[[package]]
+name = "cap-std"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ec78e242cfa2cfe276807ac2ecc00315a6c97786977414bcd1c3963b6c91b8"
+dependencies = [
+ "cap-primitives",
+ "io-extras",
+ "io-lifetimes 3.0.1",
+ "rustix",
 ]
 
 [[package]]
@@ -584,6 +618,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "crabber-extensions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-fs-ext",
+ "cap-std",
+ "crabber",
+ "jsonschema",
+ "libc",
+ "regex",
+ "regex-syntax",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "crabber-guest"
 version = "0.1.0"
 dependencies = [
@@ -704,6 +760,193 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "crabber-tools-applypatch"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-std",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-catalog"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-tools-applypatch",
+ "crabber-tools-core",
+ "crabber-tools-fileops",
+ "crabber-tools-glob",
+ "crabber-tools-search",
+ "crabber-tools-shell",
+ "crabber-tools-testkit",
+ "crabber-tools-trackerwrite",
+ "crabber-tools-urlfetch",
+ "crabber-tools-userinteract",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "crabber-tools-core"
+version = "0.1.0"
+dependencies = [
+ "cap-std",
+ "crabber",
+ "getrandom 0.3.4",
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-fileops"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-std",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-glob"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-std",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "globset",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-search"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-shell"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-tools-core",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-trackerwrite"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "crabber-tools-urlfetch"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-std",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-testkit",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "crabber-tools-userinteract"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-tools-core",
+ "crabber-tools-fileops",
+ "crabber-tools-testkit",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1377,6 +1620,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1564,6 +1820,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -2067,6 +2324,18 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mount-standard"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-tools-catalog",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2885,6 +3154,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -3017,6 +3287,18 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework",
 ]
 
 [[package]]

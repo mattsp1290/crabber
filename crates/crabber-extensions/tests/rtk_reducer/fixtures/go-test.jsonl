@@ -1,0 +1,109 @@
+{"Time":"2026-10-11T14:50:19.428612336Z","Action":"start","Package":"synthetic/fixture"}
+{"Time":"2026-10-11T14:50:19.431121997Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass000"}
+{"Time":"2026-10-11T14:50:19.431156221Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass000","Output":"=== RUN   TestPass000\n"}
+{"Time":"2026-10-11T14:50:19.431169629Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass000","Output":"    fixture_test.go:3: passed\n"}
+{"Time":"2026-10-11T14:50:19.431173933Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass000","Output":"--- PASS: TestPass000 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431175725Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass000","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431178189Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass001"}
+{"Time":"2026-10-11T14:50:19.431179261Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass001","Output":"=== RUN   TestPass001\n"}
+{"Time":"2026-10-11T14:50:19.431180813Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass001","Output":"    fixture_test.go:4: passed\n"}
+{"Time":"2026-10-11T14:50:19.431182445Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass001","Output":"--- PASS: TestPass001 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431183949Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass001","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431185085Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass002"}
+{"Time":"2026-10-11T14:50:19.431186509Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass002","Output":"=== RUN   TestPass002\n"}
+{"Time":"2026-10-11T14:50:19.431187613Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass002","Output":"    fixture_test.go:5: passed\n"}
+{"Time":"2026-10-11T14:50:19.431189277Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass002","Output":"--- PASS: TestPass002 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431190461Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass002","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431192045Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass003"}
+{"Time":"2026-10-11T14:50:19.431192925Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass003","Output":"=== RUN   TestPass003\n"}
+{"Time":"2026-10-11T14:50:19.431194493Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass003","Output":"    fixture_test.go:6: passed\n"}
+{"Time":"2026-10-11T14:50:19.431196045Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass003","Output":"--- PASS: TestPass003 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431197565Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass003","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431198653Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass004"}
+{"Time":"2026-10-11T14:50:19.431199645Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass004","Output":"=== RUN   TestPass004\n"}
+{"Time":"2026-10-11T14:50:19.431200701Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass004","Output":"    fixture_test.go:7: passed\n"}
+{"Time":"2026-10-11T14:50:19.431202077Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass004","Output":"--- PASS: TestPass004 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431205549Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass004","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431207069Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass005"}
+{"Time":"2026-10-11T14:50:19.431207981Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass005","Output":"=== RUN   TestPass005\n"}
+{"Time":"2026-10-11T14:50:19.431209277Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass005","Output":"    fixture_test.go:8: passed\n"}
+{"Time":"2026-10-11T14:50:19.431210813Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass005","Output":"--- PASS: TestPass005 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431212381Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass005","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431213357Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass006"}
+{"Time":"2026-10-11T14:50:19.431214749Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass006","Output":"=== RUN   TestPass006\n"}
+{"Time":"2026-10-11T14:50:19.431216157Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass006","Output":"    fixture_test.go:9: passed\n"}
+{"Time":"2026-10-11T14:50:19.431217933Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass006","Output":"--- PASS: TestPass006 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431219389Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass006","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431220941Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass007"}
+{"Time":"2026-10-11T14:50:19.431222365Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass007","Output":"=== RUN   TestPass007\n"}
+{"Time":"2026-10-11T14:50:19.431223853Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass007","Output":"    fixture_test.go:10: passed\n"}
+{"Time":"2026-10-11T14:50:19.431224941Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass007","Output":"--- PASS: TestPass007 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431226365Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass007","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431227229Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass008"}
+{"Time":"2026-10-11T14:50:19.431229453Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass008","Output":"=== RUN   TestPass008\n"}
+{"Time":"2026-10-11T14:50:19.431231277Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass008","Output":"    fixture_test.go:11: passed\n"}
+{"Time":"2026-10-11T14:50:19.431232509Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass008","Output":"--- PASS: TestPass008 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431235485Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass008","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431237133Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass009"}
+{"Time":"2026-10-11T14:50:19.431237917Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass009","Output":"=== RUN   TestPass009\n"}
+{"Time":"2026-10-11T14:50:19.431239533Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass009","Output":"    fixture_test.go:12: passed\n"}
+{"Time":"2026-10-11T14:50:19.431240941Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass009","Output":"--- PASS: TestPass009 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431242301Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass009","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431243165Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass010"}
+{"Time":"2026-10-11T14:50:19.431244285Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass010","Output":"=== RUN   TestPass010\n"}
+{"Time":"2026-10-11T14:50:19.431246573Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass010","Output":"    fixture_test.go:13: passed\n"}
+{"Time":"2026-10-11T14:50:19.431247693Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass010","Output":"--- PASS: TestPass010 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431249325Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass010","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431250301Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass011"}
+{"Time":"2026-10-11T14:50:19.431251645Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass011","Output":"=== RUN   TestPass011\n"}
+{"Time":"2026-10-11T14:50:19.431252605Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass011","Output":"    fixture_test.go:14: passed\n"}
+{"Time":"2026-10-11T14:50:19.431256829Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass011","Output":"--- PASS: TestPass011 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431258237Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass011","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431260637Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass012"}
+{"Time":"2026-10-11T14:50:19.431261645Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass012","Output":"=== RUN   TestPass012\n"}
+{"Time":"2026-10-11T14:50:19.431262605Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass012","Output":"    fixture_test.go:15: passed\n"}
+{"Time":"2026-10-11T14:50:19.431263629Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass012","Output":"--- PASS: TestPass012 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431264765Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass012","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431266205Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass013"}
+{"Time":"2026-10-11T14:50:19.431267021Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass013","Output":"=== RUN   TestPass013\n"}
+{"Time":"2026-10-11T14:50:19.431268381Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass013","Output":"    fixture_test.go:16: passed\n"}
+{"Time":"2026-10-11T14:50:19.431269453Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass013","Output":"--- PASS: TestPass013 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431271261Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass013","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431272317Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass014"}
+{"Time":"2026-10-11T14:50:19.431273789Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass014","Output":"=== RUN   TestPass014\n"}
+{"Time":"2026-10-11T14:50:19.431274797Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass014","Output":"    fixture_test.go:17: passed\n"}
+{"Time":"2026-10-11T14:50:19.431276717Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass014","Output":"--- PASS: TestPass014 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431278205Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass014","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431279885Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass015"}
+{"Time":"2026-10-11T14:50:19.431280829Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass015","Output":"=== RUN   TestPass015\n"}
+{"Time":"2026-10-11T14:50:19.431282462Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass015","Output":"    fixture_test.go:18: passed\n"}
+{"Time":"2026-10-11T14:50:19.431283774Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass015","Output":"--- PASS: TestPass015 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431285374Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass015","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431286638Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass016"}
+{"Time":"2026-10-11T14:50:19.43128819Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass016","Output":"=== RUN   TestPass016\n"}
+{"Time":"2026-10-11T14:50:19.431291406Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass016","Output":"    fixture_test.go:19: passed\n"}
+{"Time":"2026-10-11T14:50:19.431297886Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass016","Output":"--- PASS: TestPass016 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431298814Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass016","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431300302Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass017"}
+{"Time":"2026-10-11T14:50:19.431301246Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass017","Output":"=== RUN   TestPass017\n"}
+{"Time":"2026-10-11T14:50:19.431303262Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass017","Output":"    fixture_test.go:20: passed\n"}
+{"Time":"2026-10-11T14:50:19.43130467Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass017","Output":"--- PASS: TestPass017 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431306254Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass017","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.43130707Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass018"}
+{"Time":"2026-10-11T14:50:19.43130843Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass018","Output":"=== RUN   TestPass018\n"}
+{"Time":"2026-10-11T14:50:19.431309326Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass018","Output":"    fixture_test.go:21: passed\n"}
+{"Time":"2026-10-11T14:50:19.431311358Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass018","Output":"--- PASS: TestPass018 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431312686Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass018","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431314222Z","Action":"run","Package":"synthetic/fixture","Test":"TestPass019"}
+{"Time":"2026-10-11T14:50:19.43131515Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass019","Output":"=== RUN   TestPass019\n"}
+{"Time":"2026-10-11T14:50:19.431316766Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass019","Output":"    fixture_test.go:22: passed\n"}
+{"Time":"2026-10-11T14:50:19.431318014Z","Action":"output","Package":"synthetic/fixture","Test":"TestPass019","Output":"--- PASS: TestPass019 (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.43132003Z","Action":"pass","Package":"synthetic/fixture","Test":"TestPass019","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431323246Z","Action":"run","Package":"synthetic/fixture","Test":"TestFAILURE_SENTINEL"}
+{"Time":"2026-10-11T14:50:19.431325038Z","Action":"output","Package":"synthetic/fixture","Test":"TestFAILURE_SENTINEL","Output":"=== RUN   TestFAILURE_SENTINEL\n"}
+{"Time":"2026-10-11T14:50:19.431330462Z","Action":"output","Package":"synthetic/fixture","Test":"TestFAILURE_SENTINEL","Output":"    fixture_test.go:23: FAILURE_SENTINEL\n"}
+{"Time":"2026-10-11T14:50:19.431332446Z","Action":"output","Package":"synthetic/fixture","Test":"TestFAILURE_SENTINEL","Output":"--- FAIL: TestFAILURE_SENTINEL (0.00s)\n"}
+{"Time":"2026-10-11T14:50:19.431334126Z","Action":"fail","Package":"synthetic/fixture","Test":"TestFAILURE_SENTINEL","Elapsed":0}
+{"Time":"2026-10-11T14:50:19.431336798Z","Action":"output","Package":"synthetic/fixture","Output":"FAIL\n"}
+{"Time":"2026-10-11T14:50:19.431855888Z","Action":"output","Package":"synthetic/fixture","Output":"FAIL\tsynthetic/fixture\t0.003s\n"}
+{"Time":"2026-10-11T14:50:19.431881008Z","Action":"fail","Package":"synthetic/fixture","Elapsed":0.003}

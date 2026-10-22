@@ -1,0 +1,54 @@
+   Compiling rtk_fixture v0.1.0 (/synthetic/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src/lib.rs (target/debug/deps/rtk_fixture-e370ac3b9e31a439)
+
+running 31 tests
+test passes_001 ... ok
+test FAILURE_SENTINEL ... FAILED
+test passes_000 ... ok
+test passes_002 ... ok
+test passes_003 ... ok
+test passes_004 ... ok
+test passes_005 ... ok
+test passes_006 ... ok
+test passes_007 ... ok
+test passes_008 ... ok
+test passes_009 ... ok
+test passes_010 ... ok
+test passes_011 ... ok
+test passes_012 ... ok
+test passes_013 ... ok
+test passes_014 ... ok
+test passes_015 ... ok
+test passes_016 ... ok
+test passes_017 ... ok
+test passes_018 ... ok
+test passes_019 ... ok
+test passes_020 ... ok
+test passes_021 ... ok
+test passes_023 ... ok
+test passes_022 ... ok
+test passes_024 ... ok
+test passes_025 ... ok
+test passes_026 ... ok
+test passes_027 ... ok
+test passes_028 ... ok
+test passes_029 ... ok
+
+failures:
+
+---- FAILURE_SENTINEL stdout ----
+
+thread 'FAILURE_SENTINEL' (3242669) panicked at src/lib.rs:31:58:
+assertion `left == right` failed
+  left: 4
+ right: 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    FAILURE_SENTINEL
+
+test result: FAILED. 30 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
