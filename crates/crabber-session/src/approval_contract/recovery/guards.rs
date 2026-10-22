@@ -2,7 +2,7 @@ use super::{
     ApprovalClaimOutcome, ApprovalError, ControlId, Duration, ManualClock, OffsetDateTime, Store,
     evidence, prepare,
 };
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for native_live in [false, true] {
         let p = prepare(store, clock).await;
         clock.set(OffsetDateTime::UNIX_EPOCH + Duration::milliseconds(31));

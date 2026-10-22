@@ -54,12 +54,7 @@ pub(crate) fn corrupt(record: &mut crate::approval::ApprovalRecord, case: Case) 
     }
     record.validate(&record.session_id, &record.run_id).unwrap();
 }
-pub(crate) async fn run<F, Fut, R>(
-    store: &impl Store,
-    clock: &ManualClock,
-    case: Case,
-    save: F,
-) -> R
+pub(crate) async fn run<F, Fut, R>(store: &dyn Store, clock: &ManualClock, case: Case, save: F) -> R
 where
     F: FnOnce(Target) -> Fut,
     Fut: Future<Output = R>,
@@ -140,7 +135,7 @@ where
     }
     restore
 }
-async fn rejected(store: &impl Store, f: &super::fixture::Fixture) {
+async fn rejected(store: &dyn Store, f: &super::fixture::Fixture) {
     let run = store.get_run(&f.run.id).await.unwrap();
     let revision = store.session_revision(&f.run.session_id).await.unwrap();
     let events = store
@@ -223,7 +218,7 @@ async fn rejected(store: &impl Store, f: &super::fixture::Fixture) {
         messages
     );
 }
-async fn generic_cleanup(store: &impl Store, p: &super::recovery::Prepared) {
+async fn generic_cleanup(store: &dyn Store, p: &super::recovery::Prepared) {
     let execution = store.execution(p.grant.fence.clone()).await.unwrap();
     let target = p.request.attempt.clone();
     for command in [
@@ -256,7 +251,7 @@ async fn generic_cleanup(store: &impl Store, p: &super::recovery::Prepared) {
     }
 }
 
-pub(crate) async fn retired(store: &impl Store, clock: &ManualClock) {
+pub(crate) async fn retired(store: &dyn Store, clock: &ManualClock) {
     let p = super::recovery::prepare(store, clock).await;
     let execution = store.execution(p.grant.fence.clone()).await.unwrap();
     execution

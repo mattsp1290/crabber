@@ -3,7 +3,7 @@ use super::{
     applied, evidence, prepare,
 };
 use crate::public_state_contract::FaultPoint;
-pub(super) async fn run(store: &impl Store, clock: &ManualClock, set_fault: &impl Fn(FaultPoint)) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock, set_fault: &impl Fn(FaultPoint)) {
     for point in [FaultPoint::BeforeCommit, FaultPoint::AfterCommit] {
         let p = prepare(store, clock).await;
         clock.set(OffsetDateTime::UNIX_EPOCH + Duration::milliseconds(31));

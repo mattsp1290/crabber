@@ -7,7 +7,7 @@ use crabber_core::{
     Clock, ControlId, EventKind, InteractionState, ManualClock, RunStatus, ToolResultStatus,
 };
 
-pub(crate) async fn request(store: &impl Store, f: &Fixture, expire: bool) -> ApprovalTermination {
+pub(crate) async fn request(store: &dyn Store, f: &Fixture, expire: bool) -> ApprovalTermination {
     let mut resolver = answer(store, f, 0, ApprovalReply::Grant).await.resolver;
     resolver.authority =
         crabber_core::AuthorityRequirement::new("host-administration", "v1").unwrap();
@@ -30,7 +30,7 @@ pub(crate) async fn request(store: &impl Store, f: &Fixture, expire: bool) -> Ap
         },
     }
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for answered in 0..=2 {
         for expire in [false, true] {
             clock.set(time::OffsetDateTime::UNIX_EPOCH);
@@ -127,7 +127,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     }
     guards(store, clock).await;
 }
-async fn verify(store: &impl Store, f: &Fixture, request: &ApprovalTermination, answered: usize) {
+async fn verify(store: &dyn Store, f: &Fixture, request: &ApprovalTermination, answered: usize) {
     assert_eq!(
         store.get_run(&f.run.id).await.unwrap().unwrap().status,
         request.run_status()
@@ -189,7 +189,7 @@ async fn verify(store: &impl Store, f: &Fixture, request: &ApprovalTermination, 
         crate::AttemptState::Suspended
     );
 }
-async fn guards(store: &impl Store, clock: &ManualClock) {
+async fn guards(store: &dyn Store, clock: &ManualClock) {
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
     let f = staged(store, clock).await;
     f.execution
@@ -223,7 +223,7 @@ async fn guards(store: &impl Store, clock: &ManualClock) {
 }
 
 pub(crate) async fn calls(
-    store: &impl Store,
+    store: &dyn Store,
     session: &crabber_core::SessionId,
 ) -> Vec<crabber_core::ToolCallRecord> {
     let crate::SnapshotOutcome::Page(page) = store

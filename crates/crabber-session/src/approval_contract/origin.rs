@@ -4,7 +4,7 @@ use crate::{ApprovalError as Error, ApprovalReply, Store, approval::ApprovalReco
 use crabber_core::{Clock, ManualClock, TurnId};
 use std::future::Future;
 
-pub(crate) async fn run<F, Fut>(store: &impl Store, clock: &ManualClock, mut save: F)
+pub(crate) async fn run<F, Fut>(store: &dyn Store, clock: &ManualClock, mut save: F)
 where
     F: FnMut(crabber_core::ContinuationId, usize) -> Fut,
     Fut: Future<Output = ()>,
@@ -12,7 +12,7 @@ where
     waiting(store, clock, &mut save).await;
     recovery(store, clock, &mut save).await;
 }
-async fn waiting<F, Fut>(store: &impl Store, clock: &ManualClock, save: &mut F)
+async fn waiting<F, Fut>(store: &dyn Store, clock: &ManualClock, save: &mut F)
 where
     F: FnMut(crabber_core::ContinuationId, usize) -> Fut,
     Fut: Future<Output = ()>,
@@ -107,7 +107,7 @@ where
         );
     }
 }
-async fn recovery<F, Fut>(store: &impl Store, clock: &ManualClock, save: &mut F)
+async fn recovery<F, Fut>(store: &dyn Store, clock: &ManualClock, save: &mut F)
 where
     F: FnMut(crabber_core::ContinuationId, usize) -> Fut,
     Fut: Future<Output = ()>,
@@ -179,7 +179,7 @@ pub(crate) fn corrupt(record: &mut ApprovalRecord, case: usize) {
 
 /// Failed safe reads are evidence too: corruption must not trigger any write.
 pub(crate) async fn evidence(
-    store: &impl Store,
+    store: &dyn Store,
     p: &super::recovery::Prepared,
 ) -> serde_json::Value {
     let run = store.get_run(&p.original.run_id).await.unwrap().unwrap();
@@ -194,7 +194,7 @@ pub(crate) async fn evidence(
         "revision":store.session_revision(&run.session_id).await.unwrap()})
 }
 
-async fn aggregate_rejects(store: &impl Store, session: crabber_core::SessionId) {
+async fn aggregate_rejects(store: &dyn Store, session: crabber_core::SessionId) {
     assert_eq!(
         store
             .public_session_snapshot(crate::PublicSessionRequest {

@@ -4,7 +4,7 @@ use crate::{ApprovalReceipt, Store};
 use crabber_core::{Clock, EventKind, ManualClock, TurnId};
 
 pub(super) async fn suspend(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     f: &mut Fixture,
 ) -> ApprovalReceipt {

@@ -19,7 +19,7 @@ pub(crate) struct Prepared {
     pub grant: Box<ApprovalGrant>,
     pub request: ApprovalContinuationRecovery,
 }
-pub(crate) async fn prepare(store: &impl Store, clock: &ManualClock) -> Prepared {
+pub(crate) async fn prepare(store: &dyn Store, clock: &ManualClock) -> Prepared {
     clock.set(OffsetDateTime::UNIX_EPOCH);
     let mut f = staged(store, clock).await;
     f.batch.source_turn_id = Some(crabber_core::TurnId("turn:/λ/frozen".into()));
@@ -71,7 +71,7 @@ pub(super) fn applied(outcome: ApprovalClaimOutcome) -> (ApprovalReceipt, Box<Ap
     };
     (receipt, grant)
 }
-pub(crate) async fn evidence(store: &impl Store, p: &Prepared) -> serde_json::Value {
+pub(crate) async fn evidence(store: &dyn Store, p: &Prepared) -> serde_json::Value {
     let run = store.get_run(&p.original.run_id).await.unwrap().unwrap();
     serde_json::json!({"run":run, "attempt":store.latest_execution_attempt(&run.id).await.unwrap(),
         "approval":store.approval_snapshot(&run.session_id,&run.id).await.unwrap(),
@@ -80,7 +80,7 @@ pub(crate) async fn evidence(store: &impl Store, p: &Prepared) -> serde_json::Va
         "events":store.list_events(&run.session_id,None,1000).await.unwrap(),
         "revision":store.session_revision(&run.session_id).await.unwrap()})
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let p = prepare(store, clock).await;
     clock.set(OffsetDateTime::UNIX_EPOCH + Duration::milliseconds(31));
     let before = evidence(store, &p).await;
@@ -151,7 +151,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     guards::run(store, clock).await;
 }
 pub(super) async fn fault_contract(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     set_fault: &impl Fn(crate::public_state_contract::FaultPoint),
 ) {

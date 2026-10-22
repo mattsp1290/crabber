@@ -2,7 +2,7 @@ use super::{Fixture, Mode};
 use crate::{ApprovalClaimOutcome, AttemptCleanup, AttemptState, Store};
 use crabber_core::RunStatus;
 
-pub(crate) async fn uncommitted(store: &impl Store, f: &Fixture) {
+pub(crate) async fn uncommitted(store: &dyn Store, f: &Fixture) {
     assert_eq!(
         store.lookup_approval(&f.session, f.key()).await.unwrap(),
         None
@@ -72,7 +72,7 @@ pub(crate) async fn uncommitted(store: &impl Store, f: &Fixture) {
         }
     );
 }
-pub(crate) async fn verify_loss(store: &impl Store, f: &Fixture) {
+pub(crate) async fn verify_loss(store: &dyn Store, f: &Fixture) {
     let receipt = store
         .lookup_approval(&f.session, f.key())
         .await
@@ -173,7 +173,7 @@ pub(crate) async fn verify_loss(store: &impl Store, f: &Fixture) {
 }
 
 async fn verify_terminated(
-    store: &impl Store,
+    store: &dyn Store,
     f: &Fixture,
     receipt: &crate::ApprovalReceipt,
     run: &crabber_core::Run,

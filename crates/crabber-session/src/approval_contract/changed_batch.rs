@@ -2,7 +2,7 @@
 use super::{Error, Store, fixture};
 use crabber_core::{Clock, EventKind, EventRecord, ManualClock, ToolCallRecord, ToolCallStatus};
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let f = fixture::staged(store, clock).await;
     f.execution
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
