@@ -20,6 +20,8 @@ impl HttpAdapter {
             codec: Codec,
             queue: VecDeque<StreamDelta>,
             protocol_complete: bool,
+            /// Observers have seen output, so any retry would repeat it.
+            observed: bool,
             ended: bool,
         }
         let state = State {
@@ -28,6 +30,7 @@ impl HttpAdapter {
             codec,
             queue: VecDeque::new(),
             protocol_complete: false,
+            observed: false,
             ended: false,
         };
         Box::pin(stream::unfold(state, |mut state| async move {
@@ -50,6 +53,7 @@ impl HttpAdapter {
                                     if queue_items(
                                         &mut state.queue,
                                         &mut state.protocol_complete,
+                                        &mut state.observed,
                                         items,
                                     ) {
                                         state.ended = true;
@@ -67,9 +71,10 @@ impl HttpAdapter {
                         }
                     }
                     Some(Err(error)) => {
-                        state
-                            .queue
-                            .push_back(StreamDelta::Error(transport_from_reqwest(&error)));
+                        state.queue.push_back(StreamDelta::Error(after_output(
+                            transport_from_reqwest(&error),
+                            state.observed,
+                        )));
                         state.ended = true;
                     }
                     None => {
@@ -79,23 +84,28 @@ impl HttpAdapter {
                                     let protocol_error = queue_items(
                                         &mut state.queue,
                                         &mut state.protocol_complete,
+                                        &mut state.observed,
                                         items,
                                     );
                                     if !protocol_error {
                                         if state.protocol_complete {
                                             state.queue.push_back(StreamDelta::Completed);
                                         } else {
-                                            state.queue.push_back(StreamDelta::Error(transport(
-                                                TransportCause::Body,
-                                            )));
+                                            state.queue.push_back(StreamDelta::Error(
+                                                after_output(
+                                                    transport(TransportCause::Body),
+                                                    state.observed,
+                                                ),
+                                            ));
                                         }
                                     }
                                 }
                                 Err(error) => state.queue.push_back(StreamDelta::Error(error)),
                             },
-                            Err(_) => state
-                                .queue
-                                .push_back(StreamDelta::Error(transport(TransportCause::Body))),
+                            Err(_) => state.queue.push_back(StreamDelta::Error(after_output(
+                                transport(TransportCause::Body),
+                                state.observed,
+                            ))),
                         }
                         state.ended = true;
                     }
@@ -121,19 +131,44 @@ fn decode_events(
     }
     Ok(out)
 }
+/// An error after published output must not be retried.
+fn after_output(mut error: ProviderError, observed: bool) -> ProviderError {
+    if observed {
+        error.retryable = false;
+    }
+    error
+}
+/// Deltas the runtime publishes to observers as they arrive.
+fn is_observable(item: &StreamDelta) -> bool {
+    match item {
+        StreamDelta::TextDelta(_)
+        | StreamDelta::ToolCallStart { .. }
+        | StreamDelta::ToolCallArgsDelta { .. }
+        | StreamDelta::ToolCallDone { .. } => true,
+        StreamDelta::Reasoning { provenance, .. } => {
+            *provenance == crabber_core::ReasoningProvenance::PublicSummary
+        }
+        _ => false,
+    }
+}
 fn queue_items(
     queue: &mut VecDeque<StreamDelta>,
     protocol_complete: &mut bool,
+    observed: &mut bool,
     items: Vec<StreamDelta>,
 ) -> bool {
     for item in items {
+        *observed |= !*protocol_complete && is_observable(&item);
         if matches!(item, StreamDelta::Completed) {
             *protocol_complete = true;
             continue;
         }
-        if matches!(item, StreamDelta::Error(_)) {
+        if let StreamDelta::Error(error) = item {
+            // A retry after published output or a completed message would
+            // repeat what observers already saw.
+            let error = after_output(error, *observed || *protocol_complete);
             *protocol_complete = false;
-            queue.push_back(item);
+            queue.push_back(StreamDelta::Error(error));
             return true;
         }
         if !*protocol_complete {

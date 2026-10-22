@@ -210,7 +210,10 @@ impl HttpAdapter {
         headers.insert("user-agent", self.user_agent.clone());
         headers.insert("content-type", HeaderValue::from_static("application/json"));
         if self.protocol == Protocol::Messages {
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert(
+                "anthropic-version",
+                HeaderValue::from_static(super::ANTHROPIC_VERSION),
+            );
         }
         let (name, value) = match self.credential_placement {
             CredentialPlacement::Bearer => ("authorization", format!("Bearer {credential}")),

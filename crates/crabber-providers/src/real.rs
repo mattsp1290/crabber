@@ -35,6 +35,8 @@ use errors::{
 };
 
 const CRABBER_USER_AGENT: &str = "crabber/0.1";
+/// Sent on every Messages request and on the Anthropic model catalog.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 fn user_agent_product_is_valid(product: &str) -> bool {
     fn part_is_valid(part: &str) -> bool {
@@ -139,6 +141,15 @@ enum AdapterKind {
     OpenCode,
     #[cfg(feature = "custom-http")]
     Custom,
+}
+
+/// A built-in adapter's model catalog request; custom adapters have none.
+struct CatalogRequest {
+    request: reqwest::RequestBuilder,
+    /// Credential forms redacted from a failed response.
+    credentials: Vec<String>,
+    /// Entry field reporting the input context limit, if the catalog has one.
+    limit_field: Option<&'static str>,
 }
 
 #[derive(Clone)]
@@ -349,16 +360,66 @@ impl HttpAdapter {
         false
     }
     #[cfg(feature = "opencode-go")]
-    fn uses_opencode_models(&self) -> bool {
+    fn uses_opencode_session(&self) -> bool {
         self.kind == AdapterKind::OpenCode
     }
     #[cfg(not(feature = "opencode-go"))]
-    fn uses_opencode_models(&self) -> bool {
+    fn uses_opencode_session(&self) -> bool {
         let _ = self.kind;
         false
     }
-    fn uses_opencode_session(&self) -> bool {
-        self.uses_opencode_models()
+    #[cfg_attr(
+        not(any(feature = "opencode-go", feature = "anthropic")),
+        allow(clippy::unnecessary_wraps)
+    )]
+    fn catalog_request(&self) -> Result<Option<CatalogRequest>, ProviderError> {
+        #[allow(unreachable_patterns)]
+        match self.kind {
+            #[cfg(feature = "opencode-go")]
+            AdapterKind::OpenCode => {
+                let key = self.api_key()?;
+                Ok(Some(CatalogRequest {
+                    request: self
+                        .client
+                        .get(join_url(&self.base_url, "/models")?)
+                        .bearer_auth(&key),
+                    credentials: vec![key.clone(), format!("Bearer {key}")],
+                    limit_field: None,
+                }))
+            }
+            #[cfg(feature = "anthropic")]
+            AdapterKind::Anthropic => {
+                let key = self.api_key()?;
+                let mut value = HeaderValue::from_str(&key).map_err(|_| invalid())?;
+                value.set_sensitive(true);
+                let mut url = join_url(&self.base_url, "/models")?;
+                url.set_query(Some("limit=1000"));
+                Ok(Some(CatalogRequest {
+                    request: self
+                        .client
+                        .get(url)
+                        .header("x-api-key", value)
+                        .header("anthropic-version", ANTHROPIC_VERSION),
+                    credentials: vec![key],
+                    limit_field: Some("max_input_tokens"),
+                }))
+            }
+            // A new built-in kind gets no catalog until it opts in with an arm here.
+            _ => Ok(None),
+        }
+    }
+    /// Classifier for non-success responses; `None` means status-only.
+    fn rejection_classifier(&self) -> Option<&dyn errors::ErrorClassifier> {
+        #[allow(unreachable_patterns)]
+        match self.kind {
+            #[cfg(feature = "custom-http")]
+            AdapterKind::Custom => self.error_classifier.as_deref(),
+            #[cfg(feature = "anthropic")]
+            AdapterKind::Anthropic => Some(&errors::AnthropicClassifier),
+            // A new built-in kind keeps status-only classification unless it
+            // opts in with an arm here.
+            _ => None,
+        }
     }
     fn api_key(&self) -> Result<String, ProviderError> {
         if let Some(key) = &self.key_override {
@@ -434,7 +495,10 @@ impl HttpAdapter {
             }
         }
         if self.protocol == Protocol::Messages {
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert(
+                "anthropic-version",
+                HeaderValue::from_static(ANTHROPIC_VERSION),
+            );
         }
         if self.uses_opencode_session() {
             let session = &request.identity.session_id.0;
@@ -539,14 +603,8 @@ impl HttpAdapter {
                 response = self.post(&url, retry_headers, &body, &span).await?;
             }
             if !response.status().is_success() {
-                #[cfg(feature = "custom-http")]
-                let classifier = (self.kind == AdapterKind::Custom)
-                    .then_some(self.error_classifier.as_deref())
-                    .flatten();
-                #[cfg(not(feature = "custom-http"))]
-                let classifier = None;
                 http_rejected = true;
-                return Err(rejected_response(response, classifier, false, &attempt_credentials).await);
+                return Err(rejected_response(response, self.rejection_classifier(), false, &attempt_credentials).await);
             }
             Ok(self.response_stream(response))
         }
@@ -591,6 +649,10 @@ fn is_protected_static_header(name: &HeaderName) -> bool {
     .contains(name)
 }
 fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, ProviderError> {
+    join_url(base_url, protocol.path())
+}
+/// Appends `path` to a validated http(s) base URL without query or fragment.
+fn join_url(base_url: &str, path: &str) -> Result<reqwest::Url, ProviderError> {
     fn validate(url: &str) -> Result<reqwest::Url, ProviderError> {
         let url = reqwest::Url::parse(url).map_err(|_| invalid())?;
         if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
@@ -603,11 +665,7 @@ fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, Prov
     if base.query().is_some() || base.fragment().is_some() {
         return Err(invalid());
     }
-    let assembled = format!(
-        "{}{path}",
-        base_url.trim_end_matches('/'),
-        path = protocol.path()
-    );
+    let assembled = format!("{}{path}", base_url.trim_end_matches('/'));
     validate(&assembled)
 }
 #[async_trait]
@@ -634,15 +692,15 @@ impl ProviderAdapter for HttpAdapter {
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
         let span = tracing::info_span!(target: crate::targets::PROVIDERS, "crabber.provider.models", provider.id = %self.id, outcome = tracing::field::Empty, error.kind = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
         let result = async {
-            if !self.uses_opencode_models() {
+            let Some(CatalogRequest {
+                request,
+                credentials,
+                limit_field,
+            }) = self.catalog_request()?
+            else {
                 return Ok(Vec::new());
-            }
-            let key = self.api_key()?;
-            let credentials = vec![key.clone(), format!("Bearer {key}")];
-            let response = self
-                .client
-                .get(format!("{}/models", self.base_url.trim_end_matches('/')))
-                .bearer_auth(key)
+            };
+            let response = request
                 .header("user-agent", self.user_agent.clone())
                 .send()
                 .await
@@ -659,11 +717,12 @@ impl ProviderAdapter for HttpAdapter {
                 .as_array()
                 .ok_or_else(invalid)?
                 .iter()
-                .filter_map(|m| m["id"].as_str())
-                .map(|id| ModelDescriptor {
+                .filter_map(|m| Some((m["id"].as_str()?, m)))
+                .map(|(id, m)| ModelDescriptor {
                     provider_id: self.id.clone(),
                     id: id.into(),
-                    context_limit: 0,
+                    // 0 means unknown, as when the catalog reports no limit.
+                    context_limit: limit_field.and_then(|field| m[field].as_u64()).unwrap_or(0),
                 })
                 .collect())
         }
@@ -782,7 +841,12 @@ impl Resolver for HttpResolver {
 
 #[cfg(all(
     test,
-    any(feature = "custom-http", feature = "codex", feature = "opencode-go")
+    any(
+        feature = "custom-http",
+        feature = "anthropic",
+        feature = "codex",
+        feature = "opencode-go"
+    )
 ))]
 mod tests;
 

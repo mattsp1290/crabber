@@ -1,18 +1,9 @@
 //! Actual protocol decoders classify before Runtime ever accumulates text.
-use super::{ModelRequest, RequestIdentity, Selection, fixture, messages, responses, sse};
+use super::{event, fixture, message, messages, request, responses};
 use crate::{ProviderErrorKind, StreamDelta};
-use crabber_core::{
-    ContentBlock, Message, MessageId, Part, PartId, PartKind, ReasoningProvenance, Role, RunId,
-    SessionId, TurnId,
-};
-use serde_json::{Value, json};
+use crabber_core::{ContentBlock, PartKind, ReasoningProvenance, Role};
+use serde_json::json;
 
-fn event(kind: &str, value: &Value) -> sse::Event {
-    sse::Event {
-        name: kind.into(),
-        data: value.to_string(),
-    }
-}
 #[test]
 fn responses_private_summary_and_encrypted_items_never_share_a_category() {
     let mut codec = responses::Codec::new(true);
@@ -134,46 +125,6 @@ fn messages_signatures_are_scoped_to_the_actual_thinking_index() {
     );
 }
 
-fn request(blocks: Vec<ContentBlock>) -> ModelRequest {
-    let id = MessageId::new();
-    ModelRequest {
-        context: vec![],
-        identity: RequestIdentity {
-            session_id: SessionId::new(),
-            run_id: RunId::new(),
-            turn_id: TurnId::new(),
-        },
-        selection: Selection {
-            provider_id: "anthropic".into(),
-            model_id: "model".into(),
-        },
-        system: None,
-        messages: vec![Message {
-            id: id.clone(),
-            session_id: SessionId::new(),
-            run_id: None,
-            role: Role::Assistant,
-            parent_id: None,
-            parts: blocks
-                .into_iter()
-                .enumerate()
-                .map(|(index, content)| Part {
-                    id: PartId::new(),
-                    message_id: id.clone(),
-                    ordinal: u32::try_from(index).unwrap(),
-                    kind: PartKind::Reasoning,
-                    content,
-                })
-                .collect(),
-            created_at: crabber_core::Clock::now(&crabber_core::SystemClock),
-        }],
-        tools: vec![],
-        temperature: None,
-        max_tokens: None,
-        reasoning_effort: None,
-        tool_choice: None,
-    }
-}
 #[test]
 fn messages_replays_each_thought_with_only_its_own_signature_and_redacted_item() {
     let mut blocks = Vec::new();
@@ -194,7 +145,11 @@ fn messages_replays_each_thought_with_only_its_own_signature_and_redacted_item()
             payload: json!({"type":"redacted_thinking","data":"OPAQUE"}),
         },
     );
-    let body = messages::body(&request(blocks));
+    let body = messages::body(&request(
+        vec![message(Role::Assistant, &PartKind::Reasoning, blocks)],
+        vec![],
+        None,
+    ));
     assert_eq!(
         body["messages"][0]["content"],
         json!([
