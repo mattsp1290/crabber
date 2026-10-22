@@ -122,24 +122,44 @@ async fn cleanup_state(h: &Harness, expired: bool, uncertain: bool) {
     assert_eq!(descriptor.join_id, request.claim.root_join_id);
     h.finish_cleanup_state(&descriptor, uncertain).await;
 }
-async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
+const ALL_FAULTS: &[(usize, usize)] = &[
+    (0, 0),
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (1, 5),
+    (2, 1),
+    (2, 2),
+    (2, 3),
+    (2, 4),
+    (3, 1),
+    (3, 2),
+    (3, 3),
+    (3, 4),
+];
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+async fn sql_contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
+    // Wrapper panics happen before the SQL call or after it has returned, not
+    // during a SQL transaction. Memory retains every Runtime unwind boundary;
+    // SQL retains each before/after-call error, actual replay, and both origins.
+    const SQL_FAULTS: &[(usize, usize)] = &[
+        (0, 0),
+        (1, 1),
+        (1, 2),
+        (1, 5),
+        (2, 1),
+        (2, 2),
+        (3, 1),
+        (3, 2),
+    ];
+    contract(store, clock, SQL_FAULTS).await;
+}
+
+async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>, faults: &[(usize, usize)]) {
     for expired in [false, true] {
-        for (stage, point) in [
-            (0, 0),
-            (1, 1),
-            (1, 2),
-            (1, 3),
-            (1, 4),
-            (1, 5),
-            (2, 1),
-            (2, 2),
-            (2, 3),
-            (2, 4),
-            (3, 1),
-            (3, 2),
-            (3, 3),
-            (3, 4),
-        ] {
+        for &(stage, point) in faults {
             let gate = Arc::new(SettlementGate::default());
             gate.release.notify_one();
             let wrapped = Arc::new(DelayedTerminalStore {
@@ -187,5 +207,10 @@ async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
 #[tokio::test]
 async fn memory_runtime_successor_native_faults() {
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    contract(Arc::new(MemoryStore::with_clock(clock.clone())), clock).await;
+    contract(
+        Arc::new(MemoryStore::with_clock(clock.clone())),
+        clock,
+        ALL_FAULTS,
+    )
+    .await;
 }

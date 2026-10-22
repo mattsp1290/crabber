@@ -36,7 +36,7 @@ macro_rules! cases {
 cases!(
     sqlite_runtime_successor_core,
     postgres_runtime_successor_core,
-    super::contract
+    super::sql_contract
 );
 cases!(
     sqlite_runtime_successor_retention,

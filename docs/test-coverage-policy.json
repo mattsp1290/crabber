@@ -36,6 +36,41 @@
       "validation": "All selected histories passed at one and four slots; Memory/SQLite20 selected cases each, managed PostgreSQL10fault+4pendingfixtures each; all4ownedcontainers and fixture registries drained. Full combined schedule and budget qualification remain pending."
     },
     {
+      "id": "runtime-successor-wrapper-faults",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A failed, panicking or replayed successor registration/activation/Join must not authorize extra dispatch, lose the original cleanup, or misstate native ownership.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/driver.rs",
+        "crates/crabber-runtime/src/orchestrator/driver/registration.rs",
+        "crates/crabber-runtime/src/orchestrator/driver/retirement.rs"
+      ],
+      "retained_tests": [
+        "memory_runtime_successor_native_faults",
+        "sqlite_runtime_successor_core",
+        "postgres_runtime_successor_core",
+        "sqlite_runtime_successor_retention",
+        "postgres_runtime_successor_retention",
+        "sqlite_runtime_successor_recovery",
+        "postgres_runtime_successor_recovery",
+        "sqlite_runtime_successor_pending",
+        "postgres_runtime_successor_pending",
+        "sqlite::session_owner::drivers::tests::successor_driver_contract",
+        "postgres::session_owner::drivers::tests::successor_driver_contract",
+        "sqlite::session_owner::drivers::tests::successor_process::physical_successor_commit_boundaries",
+        "postgres::session_owner::drivers::tests::successor_process::physical_successor_commit_boundaries"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Both admission-recovery and expired-run origins execute 14 rows on every backend: 28 Runtime successor histories per backend.",
+      "after": "Memory keeps all 28 histories. Each SQL backend retains both origins and rows (0,0),(1,1),(1,2),(1,5),(2,1),(2,2),(3,1),(3,2): 16 histories, with every assertion unchanged.",
+      "rationale": "Fault-store panic points 3/4 run before invoking the inner Store or after its awaited operation has completed, outside any live SQL transaction. Returned authority/receipt values contain metadata, not pooled connections. The shared Runtime unwind adapter remains covered by all Memory panic rows; SQL points 1/2 retain the same pre-call/completed-call uncertainty states, and registration point 5 retains actual native replay. Existing Runtime SQL retention families separately cover panic while real main/resource children remain held and require actual Active-to-Joined cleanup; native SQL transaction and physical process boundaries remain required. No origin, effect-count, cleanup, issuance, ownership-state or deadline assertion is removed.",
+      "validation": "All three retained core families passed once serially and once at four scheduler slots: 28 Memory and 16 histories per SQL backend. Native wall times were43.857s serial and21.536s parallel. Each run created and finished its one PostgreSQL history fixture, cleaned its owned run/server, and left its container absent. This is partial changed-family validation; complete and affected-rebuild qualification remain pending. Prior full-run timings are not a controlled critical-path comparison."
+    },
+    {
       "id": "pending-tool-malformed-ack",
       "disposition": "MOVE-CHEAPER",
       "state": "targeted-backend-qualified",
