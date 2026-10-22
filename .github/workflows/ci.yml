@@ -109,6 +109,24 @@ jobs:
         env:
           CHECK_STARTED: ${{ steps.budget.outputs.start }}
         run: python3 -I -S .github/scripts/compare-postgres-slots.py
+      - name: Capture source freshness for this partial bootstrap cache
+        if: always()
+        run: python3 -I -S .github/scripts/cache-source-times.py capture
+      - name: Save partial dependency/compiler bootstrap; no complete-check marker
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/wasm32-wasip2
+            target/local-probes
+            target/consumer-probes
+            target/test-tools
+            fixtures/wasm/target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Preserve partial comparison evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
