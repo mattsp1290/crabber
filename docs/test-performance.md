@@ -812,3 +812,9 @@ Tool/Frontend physical-death coverage. Assertions, capacity, durability settings
 and deadlines are unchanged. Complete-check benefits require measurement.
 
 Frontend conformance fixtures, races, and fault histories use borrowed `dyn Store` parameters in six internal helpers. Their complete bodies, factory callbacks, fault callbacks, test registrations, assertions, and deadlines remain unchanged. The frontend journey, process helpers, and large-result factory remain generic. These are test conformance helpers, including the source-embedded facade harness. This removes the Store type as one internal code-generation dimension; callback-specific copies remain, and compilation savings and full qualification are unverified.
+
+The main workspace also compiles `crabber-core` at development optimization level 1, inherited by its test profile. Debug assertions and overflow checks remain enabled. Standalone consumer workspaces retain their own profile settings. No test body, registration, real size limit, durability setting, or deadline changes with this override.
+
+An isolated, serial four-CPU diagnostic using incremental builds and debug level 2 observed the Memory queue-bound case at 115.040s before the override and 79.126s with it. The compile-inclusive trial failed its 600s diagnostic ceiling after an 8m18s rebuild and interrupted SQLite. A separate SQLite runtime-only probe using the already-built trial binary passed in 78.779s, compared with the 106.303s baseline. All 31 existing Core cases also passed with the trial binaries. These fixed-order observations have cache and profile limitations; they establish no compilation advantage, complete-check budget pass, or formal qualification. The failed diagnostic remains failed.
+
+CI archives the canonical native binaries metadata alongside its selected test inventory so every complete-discovery cache-pruner input can be independently checked against the report.

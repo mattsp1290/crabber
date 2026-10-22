@@ -175,6 +175,7 @@ jobs:
             target/test-performance/ci-*/**/*.json
             target/test-performance/complete-*/fixtures.jsonl
             target/test-performance/complete-*/tests.json
+            target/test-performance/complete-*/binaries.json
             target/test-performance/complete-*/cargo-metadata.json
             target/test-performance/complete-*/native-artifacts.jsonl
             target/test-performance/complete-*/boundary-features.json
