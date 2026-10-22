@@ -23,8 +23,9 @@ pub fn body(request: &ModelRequest) -> Value {
                         json!({"type":"thinking","thinking":text,"signature":state["signature"]}),
                     );
                 }
+                // The API rejects empty text blocks.
                 ContentBlock::Text { text }
-                    if matches!(message.role, Role::User | Role::Assistant) =>
+                    if matches!(message.role, Role::User | Role::Assistant) && !text.is_empty() =>
                 {
                     content.push(json!({"type":"text","text":text}))
                 }
@@ -91,6 +92,7 @@ pub fn body(request: &ModelRequest) -> Value {
     {
         body["tool_choice"] = match tool_choice.as_str() {
             "auto" | "any" | "none" => json!({"type":tool_choice}),
+            "required" => json!({"type":"any"}),
             name => json!({"type":"tool","name":name}),
         };
     }
@@ -137,9 +139,13 @@ pub struct Codec {
     seen_thinking: HashSet<u64>,
     saw_tool_use: bool,
     saw_text: bool,
-    /// Set by any content or `message_stop`; a later stream error is never
-    /// retryable because a retry would duplicate observable output.
-    content_emitted: bool,
+    /// Thinking blocks started without a signature yet; replaying one later
+    /// fails outbound validation, so truncation inside one is an error.
+    unsigned_thinking: HashSet<u64>,
+    /// Set by text or tool output (which observers see as it streams) or by
+    /// `message_stop`; a later stream error is never retryable because a retry
+    /// would duplicate published output. Private thinking is never published.
+    observable_emitted: bool,
 }
 impl Codec {
     pub fn event(&mut self, event: &Event) -> Result<Vec<StreamDelta>, ProviderError> {
@@ -156,14 +162,16 @@ impl Codec {
             "content_block_delta" => self.delta_block(&value, &mut out)?,
             "content_block_stop" => self.stop_block(&value, &mut out),
             "message_delta" => {
-                self.usage.output_tokens = value["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                if let Some(output) = value["usage"]["output_tokens"].as_u64() {
+                    self.usage.output_tokens = output;
+                }
                 if let Some(error) = self.stop_reason_error(value["delta"]["stop_reason"].as_str())
                 {
                     out.push(StreamDelta::Error(error));
                 }
             }
             "message_stop" => {
-                self.content_emitted = true;
+                self.observable_emitted = true;
                 out.push(StreamDelta::Usage(self.usage.clone()));
                 out.push(StreamDelta::Completed);
             }
@@ -180,7 +188,7 @@ impl Codec {
                 let retryable = matches!(
                     kind,
                     ProviderErrorKind::Server | ProviderErrorKind::RateLimited
-                ) && !self.content_emitted;
+                ) && !self.observable_emitted;
                 out.push(StreamDelta::Error(ProviderError {
                     kind,
                     message: "Messages stream error".into(),
@@ -194,7 +202,9 @@ impl Codec {
     fn stop_reason_error(&self, stop_reason: Option<&str>) -> Option<ProviderError> {
         let (kind, message) = match stop_reason? {
             "refusal" => (ProviderErrorKind::Invalid, "Messages refusal"),
-            "max_tokens" if self.saw_tool_use || !self.saw_text => {
+            "max_tokens"
+                if self.saw_tool_use || !self.saw_text || !self.unsigned_thinking.is_empty() =>
+            {
                 (ProviderErrorKind::Invalid, "Messages output truncated")
             }
             "model_context_window_exceeded" => (
@@ -215,11 +225,8 @@ impl Codec {
         out: &mut Vec<StreamDelta>,
     ) -> Result<(), ProviderError> {
         let block = &value["content_block"];
-        if matches!(
-            block["type"].as_str(),
-            Some("text" | "thinking" | "redacted_thinking" | "tool_use")
-        ) {
-            self.content_emitted = true;
+        if matches!(block["type"].as_str(), Some("text" | "tool_use")) {
+            self.observable_emitted = true;
         }
         if block["type"] == "thinking" {
             let index = value["index"]
@@ -229,6 +236,7 @@ impl Codec {
                 return Err(invalid("duplicate thinking block"));
             }
             self.thinking.insert(index);
+            self.unsigned_thinking.insert(index);
             out.push(StreamDelta::Reasoning {
                 item_id: thinking_id(index),
                 provenance: crabber_core::ReasoningProvenance::Private,
@@ -262,11 +270,8 @@ impl Codec {
     ) -> Result<(), ProviderError> {
         let delta = &value["delta"];
         let kind = delta["type"].as_str().unwrap_or_default();
-        if matches!(
-            kind,
-            "text_delta" | "thinking_delta" | "input_json_delta" | "signature_delta"
-        ) {
-            self.content_emitted = true;
+        if matches!(kind, "text_delta" | "input_json_delta") {
+            self.observable_emitted = true;
         }
         match kind {
             "text_delta" => {
@@ -294,13 +299,19 @@ impl Codec {
                     text: delta["partial_json"].as_str().unwrap_or_default().into(),
                 });
             }
-            "signature_delta" => out.push(StreamDelta::ReasoningSignature {
-                item_id: thinking_id(self.thinking_index(value)?),
-                signature: delta["signature"]
+            "signature_delta" => {
+                let index = self.thinking_index(value)?;
+                let signature = delta["signature"]
                     .as_str()
-                    .ok_or_else(|| invalid("invalid thinking signature"))?
-                    .into(),
-            }),
+                    .ok_or_else(|| invalid("invalid thinking signature"))?;
+                if !signature.is_empty() {
+                    self.unsigned_thinking.remove(&index);
+                }
+                out.push(StreamDelta::ReasoningSignature {
+                    item_id: thinking_id(index),
+                    signature: signature.into(),
+                });
+            }
             _ => {}
         }
         Ok(())

@@ -49,7 +49,9 @@ and [Chat Completions schema](https://developers.openai.com/api/reference/resour
 Messages image blocks follow the [Anthropic vision guide](https://platform.claude.com/docs/en/build-with-claude/vision).
 A Messages tool result stays a joined string when it holds only text and
 becomes a `text`/`image` block array when it carries media, with empty text
-blocks dropped. Base64 images are verified against the live API. URL and file
+blocks dropped. Support is keyed by protocol, so OpenCode Go Messages and
+custom Messages adapters advertise the same sources; confirm that the backend
+accepts them, especially file IDs. Base64 images are verified against the live API. URL and file
 sources are verified only by loopback tests against the documented block shapes.
 
 Agent admission requires an explicit host `behavior_version` or
@@ -190,18 +192,22 @@ These rules apply to every `Protocol::Messages` adapter: built-in Anthropic,
 OpenCode Go Messages, and custom Messages adapters. `tools` and `tool_choice`
 are omitted only when a turn has no tools and no `tool_use`/`tool_result`
 history. The API rejects replayed tool blocks without `tools`, so a resumed
-session with tool history still sends `"tools": []`. `tool_choice` values `auto`,
-`any`, and `none` map to their own types; any other value names a tool.
+session with tool history still sends `"tools": []`; no live run has yet
+confirmed that the API accepts an empty array alongside tool history.
+`tool_choice` values `auto`, `any`, and `none` map to their own types,
+`required` maps to `any`, and any other value names a tool. Current Claude
+models reject forced `any` and named-tool choices with HTTP 400. Empty text
+blocks are never sent, because the API rejects them.
 
 | `stop_reason` | Outcome |
 | --- | --- |
 | `refusal` | Terminal non-retryable `Invalid`, `Messages refusal` |
-| `max_tokens` with a `tool_use` block or no text | Terminal non-retryable `Invalid`, `Messages output truncated` |
+| `max_tokens` with a `tool_use` block, no text, or a thinking block still awaiting its signature | Terminal non-retryable `Invalid`, `Messages output truncated` |
 | `max_tokens` after text, no tool use | Completes with the partial text |
 | `model_context_window_exceeded` | Terminal non-retryable `ContextOverflow`, `Messages context window exceeded` |
 | `end_turn`, `tool_use`, `stop_sequence`, `pause_turn`, unknown | Completes |
 
-| Stream `error.type` | Kind | Retryable before content |
+| Stream `error.type` | Kind | Retryable before output |
 | --- | --- | --- |
 | `overloaded_error`, `api_error`, unknown | `Server` | Yes |
 | `rate_limit_error` | `RateLimited` | Yes |
@@ -211,27 +217,39 @@ session with tool history still sends `"tools": []`. `tool_choice` values `auto`
 
 Every stream error message is the fixed string `Messages stream error`. The
 provider's message is never copied. A stream error can be retryable only before
-the first content block or delta and before `message_stop`. A runtime retry
-therefore never duplicates deltas that observers have already received. A failed
-turn persists no assistant message, but live deltas already published are not
-rolled back. This intentionally differs from the Chat codec, which treats every
-`finish_reason` other than `tool_calls` as a completion.
+the first observable output (a text or tool-use block or delta) and before
+`message_stop`. Private thinking is never published to observers, so it does not
+block a retry. For every protocol, a transport failure (a broken body or a
+stream that ends early) is likewise non-retryable once observable output has
+been queued. A retry for these errors therefore never duplicates deltas that
+observers have already received.
+
+`ContextOverflow` is the exception. When it arrives after output (from
+`model_context_window_exceeded` or a `request_too_large` stream error), the
+runtime still compacts the session and re-runs the turn by default.
+Observers then see the failed attempt's partial deltas followed by the re-run's
+deltas. A failed attempt persists no assistant message and its token usage is
+not counted, but live deltas already published are not rolled back. This
+intentionally differs from the Chat codec, which treats every `finish_reason`
+other than `tool_calls` as a completion.
 
 For the built-in Anthropic adapter only, the following HTTP rejections are
 non-retryable `ContextOverflow`:
 
 - HTTP 413
-- HTTP 400 whose sanitized text contains `prompt is too long`, or both
-  `context` and `exceed` (best-effort, case-insensitive text match)
+- HTTP 400 whose sanitized text contains `prompt is too long`, `context limit`,
+  or `context window` (best-effort, case-insensitive text match)
 
-HTTP 402 is non-retryable `Invalid`. Everything else uses the status taxonomy.
+Everything else, including billing's HTTP 402 (non-retryable `Invalid`), uses
+the status taxonomy.
 
 ## Anthropic model catalog
 
 `HttpAdapter::anthropic().models()` sends one `GET /v1/models?limit=1000` with
 `x-api-key` and `anthropic-version`. It maps `max_input_tokens` to
 `context_limit`, where `0` means unknown, as for OpenCode Go. It reads a single
-page and ignores `has_more`. Failures are redacted and status-classified. Custom
+page and ignores `has_more`. A malformed base URL fails as an invalid setting
+before any request. Failures are redacted and status-classified. Custom
 adapters, including one named `anthropic`, return an empty catalog.
 
 ## Host product token in User-Agent

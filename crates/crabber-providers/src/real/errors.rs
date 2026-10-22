@@ -20,7 +20,8 @@ pub trait ErrorClassifier: Send + Sync {
 }
 
 /// Built-in Anthropic classification: overflow is reported as 413 or as a 400
-/// whose text names the context limit (best effort), and billing as 402.
+/// whose text names the prompt or context limit (best effort). Billing (402)
+/// already falls through to `Invalid` in the status taxonomy.
 #[cfg(feature = "anthropic")]
 pub(super) fn anthropic_classification(
     status: reqwest::StatusCode,
@@ -28,16 +29,11 @@ pub(super) fn anthropic_classification(
 ) -> (ProviderErrorKind, bool) {
     match status.as_u16() {
         413 => (ProviderErrorKind::ContextOverflow, false),
-        402 => (ProviderErrorKind::Invalid, false),
-        400 => {
-            let text = excerpt.to_lowercase();
-            if text.contains("prompt is too long")
-                || (text.contains("context") && text.contains("exceed"))
-            {
-                (ProviderErrorKind::ContextOverflow, false)
-            } else {
-                status_classification(status)
-            }
+        400 if ["prompt is too long", "context limit", "context window"]
+            .iter()
+            .any(|phrase| excerpt.to_lowercase().contains(phrase)) =>
+        {
+            (ProviderErrorKind::ContextOverflow, false)
         }
         _ => status_classification(status),
     }

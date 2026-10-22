@@ -353,3 +353,90 @@ fn anthropic_tool_history_keeps_tools_array_without_tool_list() {
     assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
     assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
 }
+
+fn thinking_start(index: u64) -> sse::Event {
+    event(
+        "content_block_start",
+        &json!({"index":index,"content_block":{"type":"thinking","thinking":""}}),
+    )
+}
+
+#[test]
+fn anthropic_private_thinking_before_overload_stays_retryable() {
+    let deltas = run(&[
+        message_start(),
+        thinking_start(0),
+        event(
+            "content_block_delta",
+            &json!({"index":0,"delta":{"type":"thinking_delta","thinking":"PRIVATE"}}),
+        ),
+        stream_error("overloaded_error"),
+    ]);
+    let error = last_error(&deltas);
+    assert_eq!(error.kind, ProviderErrorKind::Server);
+    assert!(error.retryable, "private thinking is never published");
+}
+
+#[test]
+fn anthropic_truncated_unsigned_thinking_after_text_is_an_error() {
+    let [start, delta] = text_block("partial");
+    let deltas = run(&[
+        message_start(),
+        start,
+        delta,
+        thinking_start(1),
+        event(
+            "content_block_delta",
+            &json!({"index":1,"delta":{"type":"thinking_delta","thinking":"cut"}}),
+        ),
+        event(
+            "message_delta",
+            &json!({"delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}),
+        ),
+    ]);
+    assert_eq!(last_error(&deltas).message, "Messages output truncated");
+}
+
+#[test]
+fn anthropic_message_delta_without_usage_keeps_output_tokens() {
+    let [start, delta] = text_block("hi");
+    let deltas = run(&[
+        message_start(),
+        start,
+        delta,
+        event(
+            "message_delta",
+            &json!({"delta":{"stop_reason":null},"usage":{"output_tokens":4}}),
+        ),
+        event(
+            "message_delta",
+            &json!({"delta":{"stop_reason":"end_turn"}}),
+        ),
+        event("message_stop", &json!({"type":"message_stop"})),
+    ]);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| matches!(d, StreamDelta::Usage(u) if u.output_tokens == 4))
+    );
+}
+
+#[test]
+fn anthropic_required_tool_choice_maps_to_any_and_empty_text_is_dropped() {
+    let body = messages::body(&request(vec![user_hi()], vec![echo_tool()], "required"));
+    assert_eq!(body["tool_choice"], json!({"type":"any"}));
+    let empty = message(
+        Role::User,
+        vec![
+            ContentBlock::Text {
+                text: String::new(),
+            },
+            ContentBlock::Text { text: "hi".into() },
+        ],
+    );
+    let body = messages::body(&request(vec![empty], vec![], "auto"));
+    assert_eq!(
+        body["messages"][0]["content"],
+        json!([{"type":"text","text":"hi"}])
+    );
+}

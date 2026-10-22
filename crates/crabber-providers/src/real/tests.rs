@@ -954,6 +954,11 @@ async fn anthropic_overflow_and_billing_statuses_classify() {
         ),
         ("400 Bad Request", "other", ProviderErrorKind::Invalid),
         (
+            "400 Bad Request",
+            "the context field exceeds 10 items",
+            ProviderErrorKind::Invalid,
+        ),
+        (
             "402 Payment Required",
             "billing",
             ProviderErrorKind::Invalid,
@@ -1213,4 +1218,14 @@ async fn anthropic_catalog_is_builtin_only() {
         HttpAdapter::anthropic().catalog_route(),
         CatalogRoute::Anthropic
     ));
+}
+
+// Media support is keyed by protocol, so every Messages backend advertises
+// the documented Anthropic image sources; hosts confirm backend support.
+#[cfg(feature = "opencode-go")]
+#[test]
+fn opencode_messages_input_support_matches_the_messages_protocol() {
+    let support = HttpAdapter::opencode_go(Protocol::Messages).input_support();
+    assert_eq!(support.media, outbound::media_support(Protocol::Messages));
+    assert_eq!(support.media.len(), 3);
 }

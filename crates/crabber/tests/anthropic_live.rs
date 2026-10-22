@@ -251,8 +251,9 @@ async fn live_model_catalog_contains_selected_model() {
         .collect();
     println!("catalog ids: {ids:?}");
     assert!(
+        // An alias may resolve to a dated id such as `<model>-20251101`.
         ids.iter()
-            .any(|id| *id == model || id.starts_with(&model) || model.starts_with(id)),
+            .any(|id| *id == model || id.starts_with(&format!("{model}-"))),
         "selected model {model} not found in catalog; set {MODEL_ENV} to one of the printed ids"
     );
     assert!(!format!("{models:?}").contains(&key));
@@ -318,7 +319,12 @@ async fn live_user_image_base64_streams_text() {
         tool_choice: None,
     };
     let deltas: Vec<StreamDelta> = tokio::time::timeout(LIMIT, async {
-        streamer.stream(request).await.unwrap().collect().await
+        streamer
+            .stream(request)
+            .await
+            .unwrap_or_else(|error| panic!("stream failed: {:?}", error.kind))
+            .collect()
+            .await
     })
     .await
     .expect("live image request timed out");

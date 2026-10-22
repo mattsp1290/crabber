@@ -81,7 +81,7 @@ pub use real::{
 pub use real::{
     HttpAdapter, HttpInputSupport, HttpMediaSupport, HttpResolver, MediaInputSource, Protocol,
 };
-#[cfg(all(test, feature = "all-providers"))]
+#[cfg(all(test, any(feature = "all-providers", feature = "anthropic")))]
 mod codec_tests;
 
 /// Retained for the workspace scaffold's smoke test.

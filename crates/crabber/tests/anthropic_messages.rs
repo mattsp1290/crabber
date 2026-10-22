@@ -35,6 +35,7 @@ async fn read_request(socket: &mut TcpStream) -> Captured {
         }
         assert!(raw.len() < 65536);
     };
+    assert!(raw.starts_with(b"POST /messages HTTP/1.1\r\n"));
     let headers: BTreeMap<_, _> = std::str::from_utf8(&raw[..end])
         .unwrap()
         .lines()
@@ -157,6 +158,27 @@ fn overloaded_early() -> String {
 }
 fn overloaded_after_text() -> String {
     start() + &text_block(0, "partial") + &overloaded()
+}
+fn thinking_then_overload() -> String {
+    start()
+        + &block_start(0, &json!({"type":"thinking","thinking":""}))
+        + &block_delta(
+            0,
+            &json!({"type":"thinking_delta","thinking":"PRIVATE_THOUGHT"}),
+        )
+        + &overloaded()
+}
+fn text_then_eof() -> String {
+    start() + &text_block(0, "partial")
+}
+fn overflow_after_text() -> String {
+    start()
+        + &text_block(0, "partial")
+        + &frame(
+            "message_delta",
+            &json!({"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"}}),
+        )
+        + &frame("message_stop", &json!({"type":"message_stop"}))
 }
 const TRUNCATED_TOOL: &str =
     include_str!("../../crabber-providers/testdata/anthropic/truncated_tool.sse");
@@ -438,4 +460,57 @@ async fn facade_overload_after_content_is_not_retried() {
     assert_eq!(error.message, "Messages stream error");
     assert_eq!(task.await.unwrap().len(), 1);
     assert_eq!(assistant_messages(&store, &session).await.len(), 0);
+}
+
+#[tokio::test]
+async fn facade_private_thinking_before_overload_is_retried() {
+    let (url, task) = server(vec![thinking_then_overload(), text()]).await;
+    let events = Arc::new(Events::default());
+    let agent = builder(&url, Arc::new(MemoryStore::new()))
+        .observer(events.clone())
+        .build()
+        .unwrap();
+    let (_, result) = run(&agent).await;
+    assert_eq!(result.unwrap().status, RunStatus::Completed);
+    assert_eq!(task.await.unwrap().len(), 2);
+    assert!(!events.serialized().contains("PRIVATE_THOUGHT"));
+}
+
+#[tokio::test]
+async fn facade_transport_failure_after_text_is_not_retried() {
+    let (url, task) = server(vec![text_then_eof()]).await;
+    let store = Arc::new(MemoryStore::new());
+    let agent = builder(&url, store.clone()).build().unwrap();
+    let (session, result) = run(&agent).await;
+    let error = provider_error(result);
+    assert_eq!(error.kind, ProviderErrorKind::Transport);
+    assert!(!error.retryable);
+    assert_eq!(task.await.unwrap().len(), 1);
+    assert_eq!(assistant_messages(&store, &session).await.len(), 0);
+}
+
+#[tokio::test]
+async fn facade_overflow_after_text_compacts_and_reruns() {
+    // Context overflow is the documented exception to "no duplicate deltas":
+    // the runtime compacts and re-runs, so the failed attempt's text stays
+    // visible to observers ahead of the re-run's text.
+    // Requests: the overflowing attempt, the compaction summary, the re-run.
+    let (url, task) = server(vec![overflow_after_text(), text(), text()]).await;
+    let events = Arc::new(Events::default());
+    let store = Arc::new(MemoryStore::new());
+    let agent = builder(&url, store.clone())
+        .observer(events.clone())
+        .build()
+        .unwrap();
+    let (session, result) = run(&agent).await;
+    assert_eq!(result.unwrap().status, RunStatus::Completed);
+    assert_eq!(task.await.unwrap().len(), 3);
+    assert_eq!(events.of_kind(&EventKind::ContextEpochStarted).len(), 1);
+    let streamed: Vec<_> = events
+        .of_kind(&EventKind::TextDelta)
+        .iter()
+        .map(|event| event.payload["text"].clone())
+        .collect();
+    assert_eq!(streamed, [json!("partial"), json!("OK")]);
+    assert_eq!(assistant_messages(&store, &session).await.len(), 1);
 }

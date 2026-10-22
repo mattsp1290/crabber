@@ -401,20 +401,70 @@ fn check_anthropic(workspace: &Path) {
     check_live_tests_are_ignored(workspace);
 }
 
+// Every test in a `crates/*/tests/*_live.rs` file needs credentials, so each
+// one's own attribute block must carry `#[ignore`.
 fn check_live_tests_are_ignored(workspace: &Path) {
-    for relative in [
-        "crates/crabber/tests/anthropic_live.rs",
-        "crates/crabber/tests/opencode_go_live.rs",
-    ] {
-        let source = fs::read_to_string(workspace.join(relative))
-            .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
-        let tests = source.matches("#[tokio::test").count();
-        let ignored = source.matches("#[ignore").count();
-        assert!(
-            tests > 0 && tests == ignored,
-            "{relative}: every live test must be #[ignore] ({tests} tests, {ignored} ignored)"
-        );
+    let mut files = Vec::new();
+    for krate in fs::read_dir(workspace.join("crates")).expect("failed to read crates") {
+        let tests = krate
+            .expect("failed to read crate entry")
+            .path()
+            .join("tests");
+        let Ok(entries) = fs::read_dir(&tests) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.expect("failed to read test entry").path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_live.rs"))
+            {
+                files.push(path);
+            }
+        }
     }
+    files.sort();
+    assert!(
+        files.len() >= 2,
+        "expected the Anthropic and OpenCode Go live test files"
+    );
+    for file in files {
+        let source = fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", file.display()));
+        if let Err(problem) = live_tests_are_ignored(&source) {
+            panic!("{}: {problem}", file.display());
+        }
+    }
+}
+
+/// Checks that each test's own attribute block carries `#[ignore`.
+fn live_tests_are_ignored(source: &str) -> Result<(), String> {
+    let mut attributes: Vec<&str> = Vec::new();
+    let mut tests = 0;
+    for line in source.lines().map(str::trim) {
+        if line.starts_with("#[") {
+            attributes.push(line);
+            continue;
+        }
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let is_test = attributes
+            .iter()
+            .any(|attr| attr.starts_with("#[test]") || attr.starts_with("#[tokio::test"));
+        if is_test {
+            tests += 1;
+            if !attributes.iter().any(|attr| attr.starts_with("#[ignore")) {
+                return Err(format!("live test without #[ignore] before `{line}`"));
+            }
+        }
+        attributes.clear();
+    }
+    if tests == 0 {
+        return Err("no live tests found".into());
+    }
+    Ok(())
 }
 
 fn check_journeys(workspace: &Path) {
@@ -743,4 +793,23 @@ fn check_observability(workspace: &Path) {
         ],
     );
     check_datadog_offline(workspace);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::live_tests_are_ignored;
+
+    #[test]
+    fn live_test_guard_requires_ignore_on_each_test() {
+        let ignored = "#[tokio::test]\n#[ignore = \"live\"]\nasync fn a() {}\n#[ignore]\n#[test]\nfn b() {}\n";
+        assert!(live_tests_are_ignored(ignored).is_ok());
+        for source in [
+            "#[tokio::test]\n#[ignore]\nasync fn a() {}\n#[tokio::test]\nasync fn b() {}\n",
+            "#[tokio::test]\n// #[ignore]\nasync fn a() {}\n",
+            "#[test]\nfn a() {}\n#[ignore]\nfn helper() {}\n",
+            "fn helper() {}\n",
+        ] {
+            assert!(live_tests_are_ignored(source).is_err(), "{source}");
+        }
+    }
 }

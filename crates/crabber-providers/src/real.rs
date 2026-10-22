@@ -35,6 +35,8 @@ use errors::{
 };
 
 const CRABBER_USER_AGENT: &str = "crabber/0.1";
+/// Sent on every Messages request and on the Anthropic model catalog.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 fn user_agent_product_is_valid(product: &str) -> bool {
     fn part_is_valid(part: &str) -> bool {
@@ -356,6 +358,7 @@ impl HttpAdapter {
         self.uses_opencode_models()
     }
     fn catalog_route(&self) -> CatalogRoute {
+        // A new built-in kind gets no catalog until it opts in with an arm here.
         #[allow(unreachable_patterns)]
         match self.kind {
             #[cfg(feature = "opencode-go")]
@@ -430,7 +433,10 @@ impl HttpAdapter {
             }
         }
         if self.protocol == Protocol::Messages {
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert(
+                "anthropic-version",
+                HeaderValue::from_static(ANTHROPIC_VERSION),
+            );
         }
         if self.uses_opencode_session() {
             let session = &request.identity.session_id.0;
@@ -535,6 +541,8 @@ impl HttpAdapter {
                 response = self.post(&url, retry_headers, &body, &span).await?;
             }
             if !response.status().is_success() {
+                // A new built-in kind keeps status-only classification unless it
+                // opts in with an arm here.
                 #[allow(unreachable_patterns)]
                 let classifier: Option<&dyn errors::ErrorClassifier> = match self.kind {
                     #[cfg(feature = "custom-http")]
@@ -589,6 +597,10 @@ fn is_protected_static_header(name: &HeaderName) -> bool {
     .contains(name)
 }
 fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, ProviderError> {
+    join_url(base_url, protocol.path())
+}
+/// Appends `path` to a validated http(s) base URL without query or fragment.
+fn join_url(base_url: &str, path: &str) -> Result<reqwest::Url, ProviderError> {
     fn validate(url: &str) -> Result<reqwest::Url, ProviderError> {
         let url = reqwest::Url::parse(url).map_err(|_| invalid())?;
         if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
@@ -601,11 +613,7 @@ fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, Prov
     if base.query().is_some() || base.fragment().is_some() {
         return Err(invalid());
     }
-    let assembled = format!(
-        "{}{path}",
-        base_url.trim_end_matches('/'),
-        path = protocol.path()
-    );
+    let assembled = format!("{}{path}", base_url.trim_end_matches('/'));
     validate(&assembled)
 }
 #[async_trait]
@@ -641,7 +649,7 @@ impl ProviderAdapter for HttpAdapter {
                         let key = self.api_key()?;
                         Some((
                             self.client
-                                .get(format!("{}/models", self.base_url.trim_end_matches('/')))
+                                .get(join_url(&self.base_url, "/models")?)
                                 .bearer_auth(&key),
                             vec![key.clone(), format!("Bearer {key}")],
                             false,
@@ -652,14 +660,13 @@ impl ProviderAdapter for HttpAdapter {
                         let key = self.api_key()?;
                         let mut value = HeaderValue::from_str(&key).map_err(|_| invalid())?;
                         value.set_sensitive(true);
+                        let mut url = join_url(&self.base_url, "/models")?;
+                        url.set_query(Some("limit=1000"));
                         Some((
                             self.client
-                                .get(format!(
-                                    "{}/models?limit=1000",
-                                    self.base_url.trim_end_matches('/')
-                                ))
+                                .get(url)
                                 .header("x-api-key", value)
-                                .header("anthropic-version", "2023-06-01"),
+                                .header("anthropic-version", ANTHROPIC_VERSION),
                             vec![key],
                             true,
                         ))
