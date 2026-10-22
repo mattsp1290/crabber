@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(feature = "sqlite")]
+#[path = "transaction_diagnostics.rs"]
+mod transaction_diagnostics;
+
 async fn contract(store: Arc<dyn Store>, inverted: bool) {
     for mode in 0..4 {
         case(store.clone(), inverted, mode).await;
@@ -127,18 +131,20 @@ async fn memory_mixed_products_both_scope_orders() {
     }
 }
 #[cfg(feature = "sqlite")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sqlite_mixed_products_both_scope_orders() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("mixed.sqlite");
-    crabber_session::SqliteStore::migrate(&path).await.unwrap();
-    for inverted in [false, true] {
-        contract(
-            Arc::new(crabber_session::SqliteStore::connect(&path).await.unwrap()),
-            inverted,
-        )
-        .await;
-    }
+#[test]
+fn sqlite_mixed_products_both_scope_orders() {
+    transaction_diagnostics::run(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.sqlite");
+        crabber_session::SqliteStore::migrate(&path).await.unwrap();
+        for inverted in [false, true] {
+            contract(
+                Arc::new(crabber_session::SqliteStore::connect(&path).await.unwrap()),
+                inverted,
+            )
+            .await;
+        }
+    });
 }
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
