@@ -212,6 +212,18 @@ fn responses_body_reasoning_effort_per_value() {
                 }
             );
             assert_eq!(body.get("include").is_some(), codex);
+            if effort.is_none() {
+                let mut expected = json!({"model":"model","input":[],"tools":[],"tool_choice":"auto",
+                    "parallel_tool_calls":false,"store":false,"stream":true});
+                if codex {
+                    expected["reasoning"] = serde_json::Value::Null;
+                    expected["include"] = json!(["reasoning.encrypted_content"]);
+                }
+                assert_eq!(
+                    serde_json::to_vec(&body).unwrap(),
+                    serde_json::to_vec(&expected).unwrap()
+                );
+            }
         }
     }
 }

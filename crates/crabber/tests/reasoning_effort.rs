@@ -83,6 +83,14 @@ async fn contexts_select_effort_and_changed_keyed_retry_conflicts() {
     };
     handle.done().await.unwrap();
     assert!(matches!(
+        agent
+            .prompt_keyed_in(&context, "hello", options(), None)
+            .await
+            .unwrap(),
+        Admission::Replayed(_)
+    ));
+    assert_eq!(provider.requests().len(), 1);
+    assert!(matches!(
         agent.prompt_keyed_in(&high, "hello", options(), None).await,
         Err(RuntimeError::Store(StoreError::AdmissionConflict))
     ));
@@ -110,7 +118,7 @@ async fn contexts_select_effort_and_changed_keyed_retry_conflicts() {
     );
 }
 #[tokio::test]
-async fn stored_selection_defaults_keep_host_controls() {
+async fn stored_selection_defaults_keep_context_controls() {
     use crabber::{
         core::{ControlId, SessionRevision},
         session::{ManageSession, SessionChange, SessionDefaults, Store},
@@ -134,21 +142,42 @@ async fn stored_selection_defaults_keep_host_controls() {
         })
         .await
         .unwrap();
-    let provider = provider(1);
+    let provider = provider(2);
     let agent = Agent::builder()
         .behavior_fingerprint(options().behavior_fingerprint)
         .store(store)
         .provider(provider.clone())
-        .config(AgentConfig::new(selection()).model_controls(controls(ReasoningEffort::Medium)))
+        .config(AgentConfig::new(selection()).model_controls(controls(ReasoningEffort::High)))
         .build()
         .unwrap();
-    agent
-        .prompt_session_in(&SessionContext::new(session, "default", "."), "hello", None)
+    let context = ExecutionContext::new(SessionContext::new(session, "default", "."), selection())
+        .with_model_controls(controls(ReasoningEffort::Medium))
+        .with_session_defaults();
+    let Admission::Started { handle, .. } = agent
+        .prompt_keyed_in(&context, "hello", options(), None)
         .await
         .unwrap()
-        .done()
-        .await
-        .unwrap();
+    else {
+        panic!("new")
+    };
+    handle.done().await.unwrap();
+    assert!(matches!(
+        agent
+            .prompt_keyed_in(&context, "hello", options(), None)
+            .await
+            .unwrap(),
+        Admission::Replayed(_)
+    ));
+    let changed = context
+        .clone()
+        .with_model_controls(controls(ReasoningEffort::Low));
+    assert!(matches!(
+        agent
+            .prompt_keyed_in(&changed, "hello", options(), None)
+            .await,
+        Err(RuntimeError::Store(StoreError::AdmissionConflict))
+    ));
+    assert_eq!(provider.requests().len(), 1);
     assert_eq!(provider.requests()[0].selection.model_id, "stored");
     assert_eq!(
         provider.requests()[0].reasoning_effort,

@@ -727,14 +727,16 @@ impl Agent {
     }
 
     pub(crate) fn context_request(&self, context: &ExecutionContext, text: String) -> Request {
-        self.request_at(
+        let mut request = self.request_at(
             Some(context.session().session_id().clone()),
             text,
             context.session().workspace_id(),
             context.session().directory(),
             context.selection(),
             context.model_controls(),
-        )
+        );
+        request.selection_policy = context.selection_policy().clone();
+        request
     }
 
     fn request(&self, session_id: Option<SessionId>, text: String) -> Request {

@@ -790,3 +790,8 @@ For process telemetry, install [`Telemetry::layer()`](observability.md) once, th
 provider/model selection. Stored session defaults (`SelectionFallback`) carry
 provider/model IDs only and never supply effort; admissions using defaults keep
 the configured host controls.
+
+`ExecutionContext::with_session_defaults()` resolves stored provider/model IDs
+atomically at admission, using `selection()` as fallback. The context's own
+`ModelControls` apply to the resolved model, allowing one Agent to select effort
+per admission even when the model comes from stored defaults.

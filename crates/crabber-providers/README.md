@@ -214,4 +214,3 @@ to OpenAI and Codex Responses; other protocols ignore it. The default preserves
 Codex `"reasoning": null` and omits `reasoning` for OpenAI. No summary is requested.
 Controls occupy index 15 of admission semantics, so changing effort conflicts
 with a retained keyed admission. Older 15-element admissions cannot replay.
-
