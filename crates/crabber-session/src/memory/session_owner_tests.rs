@@ -141,11 +141,13 @@ async fn session_owner_shared_parent_contract() {
     crate::session_owner_contract::parent::run(&store, &clock).await;
 }
 
-#[tokio::test]
-async fn session_owner_shared_capacity() {
-    let store = super::MemoryStore::new();
-    let (request, authority) = crate::session_owner_contract::capacity::fill(&store).await;
-    crate::session_owner_contract::capacity::joined_slot(&store, request, authority).await;
+native_store_unit_tests! {
+    #[tokio::test]
+    async fn session_owner_shared_capacity() {
+        let store = super::MemoryStore::new();
+        let (request, authority) = crate::session_owner_contract::capacity::fill(&store).await;
+        crate::session_owner_contract::capacity::joined_slot(&store, request, authority).await;
+    }
 }
 
 #[tokio::test]
