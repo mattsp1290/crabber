@@ -28,15 +28,3 @@ opt-level = 1
 
 [profile.dev.package.jsonschema]
 opt-level = 1
-
-# A bounded test-only candidate for native and source-embedded owner ledgers.
-# Other workspace packages and all normal CLI/dev units retain opt-level 0.
-[profile.test.package.crabber-session]
-opt-level = 1
-debug-assertions = true
-overflow-checks = true
-
-[profile.test.package.crabber]
-opt-level = 1
-debug-assertions = true
-overflow-checks = true
