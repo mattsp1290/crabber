@@ -68,6 +68,18 @@ test-threads = 16
 retries = 0
 fail-fast = false
 
+# These exact consumer fixtures construct only fresh MemoryStore values.
+# They use ordinary worker slots, including their isolated literal child.
+[[profile.complete.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::caller_timeout_and_drop_keep_the_same_supervisor_resource_join_and_capacity) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::every_native_call_remains_in_the_same_original_task) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_child) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_consumer_poll_and_drop_children_are_contained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::native_deadline_after_successful_literal_drop_can_reconcile_paired_close) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement::committed_seal_lost_ack_replays_same_original_and_retains_outputs) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement_witness_keeps_actual_disposition_and_pre_io_activation))'
+test-group = '@global'
+
+# Both killed-worker journeys contain an unchanged real lease-expiry wait.
+# The unprefixed trace case uses PostgreSQL and keeps its backend group.
+[[profile.complete.overrides]]
+filter = 'package(crabber) & binary(=trace_context) & (test(=durable_process::killed_started_worker_refuses_replay_and_preserves_closed_anchor) | test(=durable_process::sqlite_killed_started_worker_refuses_replay_and_preserves_closed_anchor))'
+priority = 30
+
 # Start long independent native histories before shorter cases in their group.
 # Priority alone changes; backend slots, worker weights and deadlines remain.
 [[profile.complete.overrides]]
@@ -125,6 +137,18 @@ threads-required = 1
 test-threads = 4
 retries = 0
 fail-fast = false
+
+# These exact consumer fixtures construct only fresh MemoryStore values.
+# They use ordinary worker slots, including their isolated literal child.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::caller_timeout_and_drop_keep_the_same_supervisor_resource_join_and_capacity) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::every_native_call_remains_in_the_same_original_task) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_child) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_consumer_poll_and_drop_children_are_contained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::native_deadline_after_successful_literal_drop_can_reconcile_paired_close) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement::committed_seal_lost_ack_replays_same_original_and_retains_outputs) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement_witness_keeps_actual_disposition_and_pre_io_activation))'
+test-group = '@global'
+
+# Both killed-worker journeys contain an unchanged real lease-expiry wait.
+# The unprefixed trace case uses PostgreSQL and keeps its backend group.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber) & binary(=trace_context) & (test(=durable_process::killed_started_worker_refuses_replay_and_preserves_closed_anchor) | test(=durable_process::sqlite_killed_started_worker_refuses_replay_and_preserves_closed_anchor))'
+priority = 30
 
 # Start long independent native histories before shorter cases in their group.
 # Priority alone changes; backend slots, worker weights and deadlines remain.
