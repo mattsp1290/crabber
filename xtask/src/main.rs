@@ -830,6 +830,29 @@ fn check_tool_prerequisites() {
         "standard tools tests need ripgrep >= 14 on PATH"
     );
     println!("{}", version.lines().next().unwrap_or_default());
+    let python = Command::new("python3")
+        .arg("--version")
+        .output()
+        .expect("extensions tests need python3 3.11-3.14 on PATH");
+    let version = String::from_utf8_lossy(&python.stdout);
+    let mut components = version
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .split('.');
+    let major = components
+        .next()
+        .and_then(|number| number.parse::<u32>().ok());
+    let minor = components
+        .next()
+        .and_then(|number| number.parse::<u32>().ok());
+    assert!(
+        python.status.success()
+            && major == Some(3)
+            && minor.is_some_and(|number| (11..=14).contains(&number)),
+        "extensions tests need python3 3.11-3.14 on PATH"
+    );
+    println!("{}", version.lines().next().unwrap_or_default());
 }
 
 fn check_workspace_tests(workspace: &Path) {
@@ -839,6 +862,9 @@ fn check_workspace_tests(workspace: &Path) {
     if cfg!(target_os = "linux") {
         command.env("CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE", "1");
     }
+    command
+        .env("BACKGROUND_JOBS_REQUIRE_SHELL", "1")
+        .env("PYTHON_REPL_REQUIRE_PYTHON", "1");
     let status = command.status().expect("launch workspace tests");
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
