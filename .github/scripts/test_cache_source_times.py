@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -37,7 +38,7 @@ class SourceTimesTests(unittest.TestCase):
         self.git('add', 'lib.rs')
         changed = self.source.stat().st_mtime_ns
         self.assertEqual(cache.restore(self.root, self.report), 0)
-        self.assertEqual(self.source.stat().st_mtime_ns, changed)
+        self.assertGreater(self.source.stat().st_mtime_ns, changed)
 
     def test_dirty_input_is_refused(self):
         cache.capture(self.root, self.report)
@@ -54,6 +55,28 @@ class SourceTimesTests(unittest.TestCase):
         self.source.symlink_to('missing-target')
         self.git('add', 'lib.rs')
         self.assertEqual(cache.restore(self.root, self.report), 0)
+
+    def newer_restored_artifact(self):
+        invoked = self.root / 'target/debug/.fingerprint/crate-test/invoked.timestamp'
+        invoked.parent.mkdir(parents=True)
+        invoked.write_text('')
+        future = time.time_ns() + 20 * 10**9
+        os.utime(invoked, ns=(future, future))
+        return future
+
+    def test_overlapping_snapshot_cannot_hide_a_changed_input(self):
+        cache.capture(self.root, self.report)
+        self.source.write_text('pub fn value() -> u8 { 2 }\n')
+        self.git('add', 'lib.rs')
+        # Another job can build/cache the prior blob after our checkout.
+        artifact_time = self.newer_restored_artifact()
+        self.assertEqual(cache.restore(self.root, self.report), 0)
+        self.assertGreater(self.source.stat().st_mtime_ns, artifact_time)
+
+    def test_unknown_snapshot_invalidates_workspace_inputs(self):
+        artifact_time = self.newer_restored_artifact()
+        self.assertEqual(cache.restore(self.root, self.report), 0)
+        self.assertGreater(self.source.stat().st_mtime_ns, artifact_time)
 
 
 if __name__ == '__main__':

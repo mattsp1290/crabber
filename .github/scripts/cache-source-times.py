@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import time
 
 
 def tracked(root):
@@ -32,27 +33,33 @@ def tracked(root):
 
 
 def capture(root, destination):
-    value = {'version': 1, 'workspace': str(root), 'files': tracked(root)}
+    value = {'version': 2, 'workspace': str(root), 'files': tracked(root)}
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(value) + '\n')
     return len(value['files'])
 
 
 def restore(root, source):
-    if not source.exists():
-        return 0
-    saved = json.loads(source.read_text())
-    if saved.get('version') != 1 or saved.get('workspace') != str(root):
-        return 0
+    saved = json.loads(source.read_text()) if source.exists() else {}
+    files = saved.get('files', {}) if saved.get('version') == 2 and saved.get('workspace') == str(root) else {}
+    # A compatible fallback can have been built after this job's checkout.
+    # Unknown/changed inputs must be newer than every restored invocation,
+    # including scoped probes and WASM targets, regardless of clock skew.
+    changed_time = time.time_ns()
+    for target in [root / 'target', root / 'fixtures/wasm/target']:
+        for invoked in target.glob('**/.fingerprint/*/invoked.timestamp'):
+            changed_time = max(changed_time, invoked.stat().st_mtime_ns + 1)
     restored = 0
     for name, current in tracked(root).items():
-        previous = saved['files'].get(name)
-        if not previous or any(previous.get(k) != current[k] for k in ['blob', 'mode']):
-            continue
+        previous = files.get(name)
         path = root / name
         info = path.lstat()
-        os.utime(path, ns=(info.st_atime_ns, previous['mtime_ns']), follow_symlinks=False)
-        restored += 1
+        if previous and all(previous.get(k) == current[k] for k in ['blob', 'mode']):
+            timestamp = previous['mtime_ns']
+            restored += 1
+        else:
+            timestamp = changed_time
+        os.utime(path, ns=(info.st_atime_ns, timestamp), follow_symlinks=False)
     return restored
 
 
