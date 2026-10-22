@@ -25,7 +25,11 @@ pub(in crate::postgres) async fn claim_with_proof(
     crate::native_enrollment::caller::recovery::measure_request(&request, proof)
         .map_err(|_| Error::UnknownStoreFailure)?;
     let (mut tx, run) = store
-        .run_transaction_with_proof(&request.expected_fence.run_id, proof)
+        .run_transaction_with_proof_scoped(
+            crate::transaction::StoreScope::Admission,
+            &request.expected_fence.run_id,
+            proof,
+        )
         .await
         .map_err(unknown)?;
     // These original guards materialize only three server-side boolean results.

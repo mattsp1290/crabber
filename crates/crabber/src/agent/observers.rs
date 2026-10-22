@@ -66,7 +66,6 @@ impl Observer for AgentObservers {
         #[cfg(feature = "datadog")]
         if let Some(datadog) = &self.datadog {
             isolated(|| datadog.emit_with_context(event, context));
-            isolated(|| crabber_obs::tracing_bridge::emit_with_context(event, context));
         }
     }
     fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
@@ -90,7 +89,6 @@ impl Observer for AgentObservers {
         #[cfg(feature = "datadog")]
         if let Some(datadog) = &self.datadog {
             isolated(|| datadog.emit_in_attempt(event, context, attempt));
-            isolated(|| crabber_obs::tracing_bridge::emit_with_context(event, context));
         }
     }
     fn model_completed_in_attempt(

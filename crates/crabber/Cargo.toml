@@ -19,6 +19,10 @@ async-trait = "0.1"
 serde_json = "1"
 
 [dev-dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "trace"] }
+prost = "0.14"
 jsonschema = { version = "0.58", default-features = false }
 futures = "0.3"
 crabber-agui = { path = "../crabber-agui" }
@@ -47,4 +51,5 @@ opencode-go = ["crabber-providers/opencode-go"]
 all-providers = ["crabber-providers/all-providers"]
 
 datadog = ["dep:crabber-obs"]
+otlp = ["datadog", "crabber-obs/otlp"]
 wasm = ["dep:crabber-wasm"]

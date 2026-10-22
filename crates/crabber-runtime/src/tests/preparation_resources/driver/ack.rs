@@ -2,6 +2,9 @@
 use super::*;
 
 async fn contract(store: Arc<dyn Store>) {
+    // These waits bound test progress, not the malformed-ACK contract below.
+    // Parallel PostgreSQL suites can spend seconds queueing fenced operations.
+    let progress_bound = Duration::from_secs(15);
     for unkeyed in [false, true] {
         for bad in 1..=9 {
             let gate = Arc::new(SettlementGate::default());
@@ -14,7 +17,7 @@ async fn contract(store: Arc<dyn Store>) {
             let h = Harness::on_store(wrapped, store.clone(), gate);
             let handle = start_initial(&h, unkeyed).await;
             let run = handle.run_id().clone();
-            tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::time::timeout(progress_bound, async {
                 while driver_state(&h, &run).await.is_none()
                     || current_driver_state(&h, &run).await != SessionOwnerState::Joined
                 {
@@ -41,7 +44,7 @@ async fn contract(store: Arc<dyn Store>) {
             assert!(keys.len() >= 2);
             assert!(keys.iter().all(|key| key == &keys[0]));
             h.gate.driver_join_bad.store(0, Ordering::SeqCst);
-            tokio::time::timeout(Duration::from_secs(3), done)
+            tokio::time::timeout(progress_bound, done)
                 .await
                 .unwrap()
                 .unwrap();

@@ -10,6 +10,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
+use tracing::Instrument;
 
 mod binding;
 #[cfg(feature = "custom-http")]
@@ -28,7 +29,10 @@ pub use custom::{
 };
 #[cfg(feature = "custom-http")]
 pub use errors::ErrorClassifier;
-use errors::{auth, credentials_from_headers, invalid, response_error, transport_from_reqwest};
+use errors::{
+    auth, credentials_from_headers, invalid, rejected_response, response_error,
+    transport_from_reqwest,
+};
 
 const CRABBER_USER_AGENT: &str = "crabber/0.1";
 
@@ -55,6 +59,13 @@ pub enum Protocol {
     ChatCompletions,
 }
 impl Protocol {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::Messages => "messages",
+            Self::ChatCompletions => "chat_completions",
+        }
+    }
     fn path(self) -> &'static str {
         match self {
             Self::Responses => "/responses",
@@ -415,89 +426,127 @@ impl HttpAdapter {
         url: &reqwest::Url,
         headers: HeaderMap,
         body: &Value,
+        span: &tracing::Span,
     ) -> Result<Response, ProviderError> {
-        self.client
+        let response = self
+            .client
             .post(url.clone())
             .headers(headers)
             .json(body)
             .send()
             .await
-            .map_err(|error| transport_from_reqwest(&error))
+            .map_err(|error| transport_from_reqwest(&error))?;
+        span.record("http.response.status_code", response.status().as_u16());
+        Ok(response)
     }
 
     async fn send(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
-        let body = outbound::prepare(self, &request)?;
-        let url = endpoint_url(&self.base_url, self.protocol)?;
-        #[cfg(feature = "custom-http")]
-        let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
-            let (headers, credential) = self.custom_headers(&request).await?;
-            (headers, Some(credential))
-        } else {
-            (self.headers(&request).await?, None)
-        };
-        #[cfg(not(feature = "custom-http"))]
-        let headers = self.headers(&request).await?;
-        #[allow(unused_mut)]
-        let mut attempt_credentials = credentials_from_headers(&headers);
-        #[cfg(feature = "custom-http")]
-        if let Some(credential) = &custom_credential {
-            attempt_credentials.push(credential.clone());
-        }
-        #[allow(unused_mut)]
-        let mut response = self.post(&url, headers.clone(), &body).await?;
-        #[cfg(feature = "custom-http")]
-        if self.kind == AdapterKind::Custom {
-            if let Some(observer) = &self.response_observer {
-                observer.observe(response.status(), response.headers());
+        let span = tracing::info_span!(target: crate::targets::PROVIDERS, "crabber.provider.request",
+            provider.id = %self.id, protocol = self.protocol.as_str(),
+            http.response.status_code = tracing::field::Empty, retry.attempt = 0u32,
+            outcome = tracing::field::Empty, error.kind = tracing::field::Empty,
+            otel.kind = "client", otel.status_code = tracing::field::Empty);
+        let mut http_rejected = false;
+        let result = async {
+            let body = outbound::prepare(self, &request)?;
+            let url = endpoint_url(&self.base_url, self.protocol)?;
+            #[cfg(feature = "custom-http")]
+            let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
+                let (headers, credential) = self.custom_headers(&request).await?;
+                (headers, Some(credential))
+            } else {
+                (self.headers(&request).await?, None)
+            };
+            #[cfg(not(feature = "custom-http"))]
+            let headers = self.headers(&request).await?;
+            #[allow(unused_mut)]
+            let mut attempt_credentials = credentials_from_headers(&headers);
+            #[cfg(feature = "custom-http")]
+            if let Some(credential) = &custom_credential {
+                attempt_credentials.push(credential.clone());
             }
-            if response.status() == reqwest::StatusCode::UNAUTHORIZED
-                && self.credential_source.is_some()
-            {
-                let stale = custom_credential.as_deref().ok_or_else(auth)?;
-                let source = self.credential_source.as_ref().ok_or_else(auth)?;
-                drop(response);
-                source.invalidate(stale).await;
-                let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
-                attempt_credentials.extend(credentials_from_headers(&retry_headers));
-                attempt_credentials.push(retry_credential);
-                response = self.post(&url, retry_headers, &body).await?;
+            #[allow(unused_mut)]
+            let mut response = self.post(&url, headers.clone(), &body, &span).await?;
+            #[cfg(feature = "custom-http")]
+            if self.kind == AdapterKind::Custom {
                 if let Some(observer) = &self.response_observer {
                     observer.observe(response.status(), response.headers());
                 }
-                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                    return Err(response_error(response, None, true, &attempt_credentials).await);
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                    && self.credential_source.is_some()
+                {
+                    let stale = custom_credential.as_deref().ok_or_else(auth)?;
+                    let source = self.credential_source.as_ref().ok_or_else(auth)?;
+                    drop(response);
+                    source.invalidate(stale).await;
+                    let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
+                    attempt_credentials.extend(credentials_from_headers(&retry_headers));
+                    attempt_credentials.push(retry_credential);
+                    span.record("retry.attempt", 1u32);
+                    tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
+                    response = self.post(&url, retry_headers, &body, &span).await?;
+                    if let Some(observer) = &self.response_observer {
+                        observer.observe(response.status(), response.headers());
+                    }
+                    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                        http_rejected = true;
+                        return Err(rejected_response(response, None, true, &attempt_credentials).await);
+                    }
+                }
+            }
+            #[cfg(feature = "codex")]
+            if self.uses_codex_responses_mode()
+                && response.status() == reqwest::StatusCode::UNAUTHORIZED
+            {
+                let previous = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .ok_or_else(auth)?;
+                self.tokens
+                    .as_ref()
+                    .ok_or_else(auth)?
+                    .force_refresh(previous)
+                    .await
+                    .map_err(|_| auth())?;
+                let retry_headers = self.headers(&request).await?;
+                attempt_credentials.extend(credentials_from_headers(&retry_headers));
+                span.record("retry.attempt", 1u32);
+                tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
+                response = self.post(&url, retry_headers, &body, &span).await?;
+            }
+            if !response.status().is_success() {
+                #[cfg(feature = "custom-http")]
+                let classifier = (self.kind == AdapterKind::Custom)
+                    .then_some(self.error_classifier.as_deref())
+                    .flatten();
+                #[cfg(not(feature = "custom-http"))]
+                let classifier = None;
+                http_rejected = true;
+                return Err(rejected_response(response, classifier, false, &attempt_credentials).await);
+            }
+            Ok(self.response_stream(response))
+        }
+        .instrument(span.clone())
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "response_started");
+                span.record("otel.status_code", "OK");
+            }
+            Err(error) => {
+                span.record("error.kind", error.error_kind());
+                span.record("otel.status_code", "ERROR");
+                // A host classifier may call an HTTP rejection a transport failure.
+                // Keep the observed request outcome independent of that category.
+                if !http_rejected && error.kind == crate::ProviderErrorKind::Transport {
+                    span.record("outcome", "transport_error");
+                } else {
+                    span.record("outcome", "rejected");
                 }
             }
         }
-        #[cfg(feature = "codex")]
-        if self.uses_codex_responses_mode()
-            && response.status() == reqwest::StatusCode::UNAUTHORIZED
-        {
-            let previous = headers
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .ok_or_else(auth)?;
-            self.tokens
-                .as_ref()
-                .ok_or_else(auth)?
-                .force_refresh(previous)
-                .await
-                .map_err(|_| auth())?;
-            let retry_headers = self.headers(&request).await?;
-            attempt_credentials.extend(credentials_from_headers(&retry_headers));
-            response = self.post(&url, retry_headers, &body).await?;
-        }
-        if !response.status().is_success() {
-            #[cfg(feature = "custom-http")]
-            let classifier = (self.kind == AdapterKind::Custom)
-                .then_some(self.error_classifier.as_deref())
-                .flatten();
-            #[cfg(not(feature = "custom-http"))]
-            let classifier = None;
-            return Err(response_error(response, classifier, false, &attempt_credentials).await);
-        }
-        Ok(self.response_stream(response))
+        result
     }
 }
 fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), ProviderError> {
@@ -560,38 +609,55 @@ impl ProviderAdapter for HttpAdapter {
         }
     }
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
-        if !self.uses_opencode_models() {
-            return Ok(Vec::new());
+        let span = tracing::info_span!(target: crate::targets::PROVIDERS, "crabber.provider.models", provider.id = %self.id, outcome = tracing::field::Empty, error.kind = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
+        let result = async {
+            if !self.uses_opencode_models() {
+                return Ok(Vec::new());
+            }
+            let key = self.api_key()?;
+            let credentials = vec![key.clone(), format!("Bearer {key}")];
+            let response = self
+                .client
+                .get(format!("{}/models", self.base_url.trim_end_matches('/')))
+                .bearer_auth(key)
+                .header("user-agent", self.user_agent.clone())
+                .send()
+                .await
+                .map_err(|error| transport_from_reqwest(&error))?;
+            if !response.status().is_success() {
+                return Err(response_error(response, None, false, &credentials).await);
+            }
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| transport_from_reqwest(&error))?;
+            let envelope: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+            Ok(envelope["data"]
+                .as_array()
+                .ok_or_else(invalid)?
+                .iter()
+                .filter_map(|m| m["id"].as_str())
+                .map(|id| ModelDescriptor {
+                    provider_id: self.id.clone(),
+                    id: id.into(),
+                    context_limit: 0,
+                })
+                .collect())
         }
-        let key = self.api_key()?;
-        let credentials = vec![key.clone(), format!("Bearer {key}")];
-        let response = self
-            .client
-            .get(format!("{}/models", self.base_url.trim_end_matches('/')))
-            .bearer_auth(key)
-            .header("user-agent", self.user_agent.clone())
-            .send()
-            .await
-            .map_err(|error| transport_from_reqwest(&error))?;
-        if !response.status().is_success() {
-            return Err(response_error(response, None, false, &credentials).await);
+        .instrument(span.clone())
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "ok");
+                span.record("otel.status_code", "OK");
+            }
+            Err(error) => {
+                span.record("outcome", "failed");
+                span.record("error.kind", error.error_kind());
+                span.record("otel.status_code", "ERROR");
+            }
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| transport_from_reqwest(&error))?;
-        let envelope: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-        Ok(envelope["data"]
-            .as_array()
-            .ok_or_else(invalid)?
-            .iter()
-            .filter_map(|m| m["id"].as_str())
-            .map(|id| ModelDescriptor {
-                provider_id: self.id.clone(),
-                id: id.into(),
-                context_limit: 0,
-            })
-            .collect())
+        result
     }
     async fn build(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         if selection.provider_id != self.id {

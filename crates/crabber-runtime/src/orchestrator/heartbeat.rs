@@ -1,5 +1,6 @@
 //! Retain the original renewal/read future through cooperative shutdown.
 use super::{ObservationLifetime, RuntimeError};
+use crate::telemetry_targets::targets;
 use crabber_core::{Clock, RunFence};
 use crabber_session::{ExecutionStore, Store};
 use std::{
@@ -10,6 +11,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::watch;
+use tracing::Instrument;
 
 pub(super) struct HeartbeatGuard {
     owner: crabber_extension::ToolResourceOwner,
@@ -40,6 +42,7 @@ impl HeartbeatGuard {
         let lost_in_task = Arc::clone(&lost);
         let (sender, signal) = watch::channel(false);
         let task_sender = sender.clone();
+        let parent = tracing::Span::current();
         owner
             .resources()
             .spawn(async move {
@@ -55,11 +58,11 @@ impl HeartbeatGuard {
                     if futures::poll!(&mut closing).is_ready() || !observation_lifetime.active() {
                         break;
                     }
-                    if execution
+                    if let Err(error) = execution
                         .renew_lease(clock.now() + time::Duration::seconds(30))
                         .await
-                        .is_err()
                     {
+                        tracing::warn!(target: targets::HEARTBEAT, { "error.kind" = error.error_kind() }, "lease renew failed");
                         // A native pause can commit before its ACK returns. Recheck
                         // after the Store await before treating our own revocation as loss.
                         if futures::poll!(&mut closing).is_ready() || !observation_lifetime.active()
@@ -81,12 +84,13 @@ impl HeartbeatGuard {
                             break;
                         }
                         lost_in_task.store(true, Ordering::SeqCst);
+                        tracing::error!(target: targets::HEARTBEAT, { "error.kind" = "lease_lost", source = "heartbeat" }, "lease ownership lost");
                         let _ = task_sender.send(true);
                         break;
                     }
                 }
                 Ok(())
-            })
+            }.instrument(parent))
             .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
         Ok(Self {
             owner,

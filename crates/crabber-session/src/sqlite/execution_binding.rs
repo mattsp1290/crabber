@@ -197,7 +197,9 @@ impl SqliteStore {
         if let Some(binding) = &binding {
             binding.validate(&request)?;
         }
-        let mut tx = self.begin_write().await?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::Admission)
+            .await?;
         let result = async {
             if binding.is_none() {
                 return self
@@ -268,7 +270,9 @@ impl SqliteStore {
         request.request.session_id.as_ref().ok_or_else(|| {
             StoreError::Validation("keyed admission requires a stable session ID".into())
         })?;
-        let mut tx = self.begin_write().await?;
+        let mut tx = self
+            .begin_write_scoped(crate::transaction::StoreScope::Admission)
+            .await?;
         let result = async {
             match self
                 .admit_keyed_captured(

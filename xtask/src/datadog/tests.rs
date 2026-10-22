@@ -6,6 +6,7 @@ fn query() -> Query {
     Query {
         marker: "fresh".into(),
         service: "crabber".into(),
+        env: None,
         ml_app: "demo".into(),
         window: Window::new(1_760_000_000, 1_760_000_660),
     }
@@ -162,15 +163,15 @@ fn poll_retains_success_and_fails_if_one_signal_never_arrives() {
     let calls = Cell::new(0);
     let evidence = poll(&mut clock, |signal, _| {
         calls.set(calls.get() + 1);
-        if matches!(signal, Signal::Logs) && calls.get() == 6 {
+        if matches!(signal, Signal::Logs) && calls.get() == METRICS.len() + 2 {
             Ok(None)
         } else {
             Ok(Some(Evidence::Logs(1)))
         }
     })
     .unwrap();
-    assert_eq!(evidence.len(), 6);
-    assert_eq!(calls.get(), 7);
+    assert_eq!(evidence.len(), METRICS.len() + 4);
+    assert_eq!(calls.get(), METRICS.len() + 5);
     assert_eq!(clock.elapsed(), Duration::from_secs(10));
     clock.0.set(Duration::ZERO);
     assert!(matches!(

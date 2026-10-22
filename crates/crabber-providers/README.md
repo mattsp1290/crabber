@@ -205,3 +205,5 @@ retain and verify the original descriptor, configuration and input before fresh
 execution; missing or changed evidence fails closed. This binding does not prove
 resource ownership or arbitrary provider effects. See the current
 [server-host binding contract](../../docs/server-host.md).
+
+Provider HTTP boundaries emit `crabber.provider.request` and `crabber.provider.models` spans under `crabber::providers`. Request spans end when response headers arrive and record finite status/error categories; URLs, headers and response bodies are excluded. See the [observability guide](../../docs/observability.md).

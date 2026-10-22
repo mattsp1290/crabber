@@ -11,7 +11,10 @@ pub(in crate::sqlite) async fn inspect(
     request: ClaimUnstartedAdmissionRequest,
 ) -> Result<AdmissionRecoveryPreparation, Error> {
     AdmissionRecoveryPreparation::validate_request(&request)?;
-    let mut tx = store.begin_write().await.map_err(super::unknown)?;
+    let mut tx = store
+        .begin_write_scoped(crate::transaction::StoreScope::Admission)
+        .await
+        .map_err(super::unknown)?;
     let result = context(&mut tx, &request, store.clock.now()).await;
     tx.rollback()
         .await

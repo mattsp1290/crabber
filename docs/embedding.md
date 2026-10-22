@@ -8,6 +8,7 @@ Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for cu
 
 | Capability | Code/guide | Runnable command / feature |
 | --- | --- | --- |
+| APM traces + logs | [`observability`](observability.md) | `cargo run -p datadog-export`; facade `otlp` |
 | Output token cap | `AgentConfig::max_output_tokens` | Every model turn, keyed admission identity, pause/resume, and hook precedence; see [Output token cap](#output-token-cap). |
 | Memory + fake provider | [minimal embedding](../examples/minimal-embed/src/main.rs) | `cargo run -p minimal-embed` |
 | PostgreSQL persistence | [session store](../crates/crabber-session/README.md) | `cargo run -p minimal-embed -- --store postgres`; set `CRABBER_POSTGRES_URL`, dedicated PostgreSQL 14+; facade `postgres` |

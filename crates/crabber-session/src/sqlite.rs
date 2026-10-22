@@ -2,6 +2,7 @@
 //! connecting only verifies a current-version Crabber database already using WAL.
 
 use crate::transaction::Transaction;
+use tracing::Instrument;
 #[path = "sqlite/admission_reads.rs"]
 mod admission_reads;
 #[path = "sqlite/credential_access.rs"]
@@ -184,10 +185,19 @@ impl SqliteStore {
     }
 
     async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        self.begin_write_scoped(crate::transaction::StoreScope::Unscoped)
+            .await
+    }
+
+    async fn begin_write_scoped(
+        &self,
+        scope: crate::transaction::StoreScope,
+    ) -> Result<Transaction<'static, Sqlite>, StoreError> {
         #[cfg(test)]
         self.write_waiters
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let result = crate::transaction::begin_with(&self.writer, "BEGIN IMMEDIATE").await;
+        let result =
+            crate::transaction::begin_with_scoped(&self.writer, "BEGIN IMMEDIATE", scope).await;
         #[cfg(test)]
         self.write_waiters
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -210,13 +220,34 @@ async fn connect_with(
     path: &Path,
     options: SqliteConnectOptions,
 ) -> Result<SqliteStore, StoreError> {
+    let span = tracing::info_span!(target: crate::targets::SESSION, "crabber.store.connect", db.system = "sqlite", outcome = tracing::field::Empty, error.kind = tracing::field::Empty, schema.version = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
+    async {
+        let result = connect_with_inner(path, options, &span).await;
+        if result.is_ok() {
+            span.record("outcome", "ok");
+            span.record("otel.status_code", "OK");
+        } else {
+            span.record("outcome", "failed");
+            span.record("otel.status_code", "ERROR");
+        }
+        result
+    }
+    .instrument(span.clone())
+    .await
+}
+
+async fn connect_with_inner(
+    path: &Path,
+    options: SqliteConnectOptions,
+    telemetry: &tracing::Span,
+) -> Result<SqliteStore, StoreError> {
     let options = options.filename(path).create_if_missing(false);
     let writer = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options.clone())
         .await
-        .map_err(classification_error)?;
-    let result = verify_connection(&writer).await;
+        .map_err(|error| classification_error(error, telemetry))?;
+    let result = verify_connection(&writer, telemetry).await;
     if let Err(error) = result {
         writer.close().await;
         return Err(error);
@@ -260,18 +291,24 @@ async fn connect_with(
     })
 }
 
-async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
+async fn verify_connection(
+    writer: &SqlitePool,
+    telemetry: &tracing::Span,
+) -> Result<(), StoreError> {
     // Own the pooled connection before BEGIN, including its unacknowledged
     // interval. A cancelled verifier must not return that connection for reuse.
-    let mut transaction = crate::transaction::begin(writer).await.map_err(db)?;
+    let mut transaction =
+        crate::transaction::begin_scoped(writer, crate::transaction::StoreScope::Verify)
+            .await
+            .map_err(|error| connection_error(error, telemetry))?;
     let result = async {
-        if classify(&mut transaction).await? != DatabaseState::Current {
+        if classify(&mut transaction, telemetry).await? != DatabaseState::Current {
             return Err(foreign_database());
         }
         let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
             .fetch_one(&mut *transaction)
             .await
-            .map_err(classification_error)?;
+            .map_err(|error| classification_error(error, telemetry))?;
         if mode != "wal" {
             return Err(StoreError::Validation(
                 "SQLite database is not in WAL mode; run migrate".into(),
@@ -280,7 +317,10 @@ async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
         Ok(())
     }
     .await;
-    transaction.rollback().await.map_err(db)?;
+    transaction
+        .rollback()
+        .await
+        .map_err(|error| connection_error(error, telemetry))?;
     result
 }
 
@@ -292,24 +332,37 @@ enum DatabaseState {
 
 // Metadata must come from one snapshot when another process initializes the
 // file concurrently. End this read transaction before attempting a WAL change.
-async fn classify_snapshot(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
-    let mut transaction = crate::transaction::begin_on::<Sqlite>(connection, None)
+async fn classify_snapshot(
+    connection: &mut SqliteConnection,
+    telemetry: &tracing::Span,
+) -> Result<DatabaseState, StoreError> {
+    let mut transaction = crate::transaction::begin_on_scoped::<Sqlite>(
+        connection,
+        None,
+        crate::transaction::StoreScope::Verify,
+    )
+    .await
+    .map_err(|error| classification_error(error, telemetry))?;
+    let state = classify(&mut transaction, telemetry).await;
+    transaction
+        .rollback()
         .await
-        .map_err(classification_error)?;
-    let state = classify(&mut transaction).await;
-    transaction.rollback().await.map_err(db)?;
+        .map_err(|error| connection_error(error, telemetry))?;
     state
 }
 
-async fn classify(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
+async fn classify(
+    connection: &mut SqliteConnection,
+    telemetry: &tracing::Span,
+) -> Result<DatabaseState, StoreError> {
     let application: i32 = sqlx::query_scalar("PRAGMA application_id")
         .fetch_one(&mut *connection)
         .await
-        .map_err(classification_error)?;
+        .map_err(|error| classification_error(error, telemetry))?;
     let objects: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_schema")
         .fetch_one(&mut *connection)
         .await
-        .map_err(classification_error)?;
+        .map_err(|error| classification_error(error, telemetry))?;
     if application == APPLICATION_ID {
         let versions: Vec<i64> =
             sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version")
@@ -328,23 +381,48 @@ async fn classify(connection: &mut SqliteConnection) -> Result<DatabaseState, St
 }
 
 async fn migrate_with(path: &Path, schema: &str) -> Result<(), StoreError> {
+    let span = tracing::info_span!(target: crate::targets::SESSION, "crabber.store.migrate", db.system = "sqlite", outcome = tracing::field::Empty, error.kind = tracing::field::Empty, schema.version = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
+    async {
+            let result = migrate_with_inner(path, schema, &span).await;
+                if result.is_ok() {
+                span.record("outcome", "ok");
+                span.record("otel.status_code", "OK");
+                span.record("schema.version", crate::SQLITE_SCHEMA_VERSION);
+                tracing::info!(target: crate::targets::SESSION, { db.system = "sqlite", schema.version = crate::SQLITE_SCHEMA_VERSION }, "schema migrated");
+            } else {
+                span.record("outcome", "failed");
+                span.record("otel.status_code", "ERROR");
+            }
+            result
+        }.instrument(span.clone()).await
+}
+
+async fn migrate_with_inner(
+    path: &Path,
+    schema: &str,
+    telemetry: &tracing::Span,
+) -> Result<(), StoreError> {
     let mut connection = SqliteConnection::connect_with(&options(path).create_if_missing(true))
         .await
-        .map_err(classification_error)?;
-    let result = migrate_connection(&mut connection, schema).await;
-    let closed = connection.close().await.map_err(db);
+        .map_err(|error| classification_error(error, telemetry))?;
+    let result = migrate_connection(&mut connection, schema, telemetry).await;
+    let closed = connection
+        .close()
+        .await
+        .map_err(|error| connection_error(error, telemetry));
     result.and(closed)
 }
 
 async fn migrate_connection(
     connection: &mut SqliteConnection,
     schema: &str,
+    telemetry: &tracing::Span,
 ) -> Result<(), StoreError> {
     let started = std::time::Instant::now();
     let state = loop {
         // Reclassify on every retry: another process may have initialized the
         // file or installed a different schema while we waited for the lock.
-        let state = classify_snapshot(connection).await?;
+        let state = classify_snapshot(connection, telemetry).await?;
         let result = sqlx::query_scalar::<_, String>("PRAGMA journal_mode=WAL")
             .fetch_one(&mut *connection)
             .await;
@@ -367,16 +445,27 @@ async fn migrate_connection(
     let mut transaction =
         crate::transaction::begin_on::<Sqlite>(connection, Some("BEGIN IMMEDIATE"))
             .await
-            .map_err(db)?;
-    let result = match classify(&mut transaction).await {
-        Ok(DatabaseState::Fresh) => initialize(&mut transaction, schema).await,
-        Ok(DatabaseState::Current) => return transaction.rollback().await.map_err(db),
+            .map_err(|error| connection_error(error, telemetry))?;
+    let result = match classify(&mut transaction, telemetry).await {
+        Ok(DatabaseState::Fresh) => initialize(&mut transaction, schema, telemetry).await,
+        Ok(DatabaseState::Current) => {
+            return transaction
+                .rollback()
+                .await
+                .map_err(|error| connection_error(error, telemetry));
+        }
         Err(error) => Err(error),
     };
     match result {
-        Ok(()) => transaction.commit().await.map_err(db),
+        Ok(()) => transaction
+            .commit()
+            .await
+            .map_err(|error| connection_error(error, telemetry)),
         Err(error) => {
-            transaction.rollback().await.map_err(db)?;
+            transaction
+                .rollback()
+                .await
+                .map_err(|error| connection_error(error, telemetry))?;
             Err(error)
         }
     }
@@ -385,26 +474,27 @@ async fn migrate_connection(
 async fn initialize(
     transaction: &mut Transaction<'_, Sqlite>,
     schema: &str,
+    telemetry: &tracing::Span,
 ) -> Result<(), StoreError> {
     sqlx::query(&format!("PRAGMA application_id={APPLICATION_ID}"))
         .execute(&mut **transaction)
         .await
-        .map_err(db)?;
+        .map_err(|error| connection_error(error, telemetry))?;
     // Executor::execute exposes SQLx's Send boxed future directly; RawSql's
     // async convenience method cannot prove Send for a spawned migration.
     sqlx::Executor::execute(&mut **transaction, sqlx::raw_sql(schema))
         .await
-        .map_err(db)?;
+        .map_err(|error| connection_error(error, telemetry))?;
     sqlx::query("INSERT INTO snapshot_auth(singleton,secret) VALUES(1,?1)")
         .bind(uuid::Uuid::new_v4().to_string())
         .execute(&mut **transaction)
         .await
-        .map_err(db)?;
+        .map_err(|error| connection_error(error, telemetry))?;
     sqlx::query("INSERT INTO schema_version(version) VALUES(?1)")
         .bind(SQLITE_SCHEMA_VERSION)
         .execute(&mut **transaction)
         .await
-        .map_err(db)?;
+        .map_err(|error| connection_error(error, telemetry))?;
     Ok(())
 }
 
@@ -432,7 +522,8 @@ fn primary_code(error: &sqlx::Error) -> Option<i32> {
         .map(|code| code & 0xff)
 }
 
-fn classification_error(error: sqlx::Error) -> StoreError {
+fn classification_error(error: sqlx::Error, telemetry: &tracing::Span) -> StoreError {
+    telemetry.record("error.kind", crate::transaction::sqlx_error_kind(&error));
     if primary_code(&error) == Some(26) {
         foreign_database()
     } else {
@@ -485,3 +576,8 @@ mod process_tests;
 mod snapshot_tests;
 #[cfg(test)]
 mod test_support;
+
+fn connection_error(error: sqlx::Error, telemetry: &tracing::Span) -> StoreError {
+    telemetry.record("error.kind", crate::transaction::sqlx_error_kind(&error));
+    db(error)
+}

@@ -23,7 +23,9 @@ impl PostgresStore {
         request: QueueMutation,
     ) -> Result<QueueOutcome, StoreError> {
         let digest = request.fingerprint()?;
-        let mut tx = self.session_transaction(&request.session_id).await?;
+        let mut tx = self
+            .session_transaction_scoped(crate::transaction::StoreScope::Queue, &request.session_id)
+            .await?;
         if let Some(saved) = reads::receipt(&mut tx, &request.session_id, &request.id).await? {
             if saved.semantic_digest != digest {
                 return Err(StoreError::AdmissionConflict);

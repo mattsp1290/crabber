@@ -9,9 +9,10 @@ impl PostgresStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Admission)
+                .await
+                .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         let receipt = lookup_receipt(&mut tx, session, key)
             .await
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
@@ -31,9 +32,10 @@ impl PostgresStore {
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Admission)
+                .await
+                .map_err(db)?;
         let state = admission_execution::load_record(&mut tx, run)
             .await?
             .map(|record| record.state);

@@ -476,7 +476,15 @@ impl PostgresStore {
         &self,
         session: &SessionId,
     ) -> Result<Transaction<'_, Postgres>, StoreError> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
+        self.session_transaction_scoped(crate::transaction::StoreScope::Session, session)
+            .await
+    }
+    async fn session_transaction_scoped(
+        &self,
+        scope: crate::transaction::StoreScope,
+        session: &SessionId,
+    ) -> Result<Transaction<'_, Postgres>, StoreError> {
+        let mut tx = crate::transaction::begin_scoped(&self.pool, scope)
             .await
             .map_err(db)?;
         lock_session(&mut tx, session).await?;
@@ -489,7 +497,15 @@ impl PostgresStore {
         &self,
         id: &RunId,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
+        self.run_transaction_scoped(crate::transaction::StoreScope::Run, id)
+            .await
+    }
+    async fn run_transaction_scoped(
+        &self,
+        scope: crate::transaction::StoreScope,
+        id: &RunId,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = crate::transaction::begin_scoped(&self.pool, scope)
             .await
             .map_err(db)?;
         let session: String = sqlx::query_scalar("SELECT session_id FROM runs WHERE id=$1")
@@ -512,7 +528,16 @@ impl PostgresStore {
         id: &RunId,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
+        self.run_transaction_with_proof_scoped(crate::transaction::StoreScope::Run, id, proof)
+            .await
+    }
+    async fn run_transaction_with_proof_scoped(
+        &self,
+        scope: crate::transaction::StoreScope,
+        id: &RunId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = crate::transaction::begin_scoped(&self.pool, scope)
             .await
             .map_err(db)?;
         read_proof::charge(
@@ -780,16 +805,17 @@ impl PostgresStore {
             },
         )
     }
-    async fn ownership_fenced(
+    async fn ownership_fenced_scoped(
         &self,
         fence: &RunFence,
+        scope: crate::transaction::StoreScope,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
         let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
         proof
             .measure(fence)
             .map_err(crate::native_enrollment::access::failure)?;
         let (mut tx, run) = self
-            .run_transaction_with_proof(&fence.run_id, &mut proof)
+            .run_transaction_with_proof_scoped(scope, &fence.run_id, &mut proof)
             .await?;
         if run.claim_token != fence.claim_token
             || run.status.is_terminal()
@@ -804,7 +830,15 @@ impl PostgresStore {
         &self,
         fence: &RunFence,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let (mut tx, run) = self.ownership_fenced(fence).await?;
+        self.fenced_scoped(fence, crate::transaction::StoreScope::Run)
+            .await
+    }
+    async fn fenced_scoped(
+        &self,
+        fence: &RunFence,
+        scope: crate::transaction::StoreScope,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let (mut tx, run) = self.ownership_fenced_scoped(fence, scope).await?;
         // Full decoding deliberately fails closed on malformed retained evidence.
         // Compact state reads can be optimized separately with equivalent validation.
         if admission_execution::load_record(&mut tx, &run.id)

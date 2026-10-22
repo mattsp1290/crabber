@@ -108,7 +108,10 @@ impl ExecutionStore for PostgresExecution {
         admission_execution::begin(self).await
     }
     async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
-        let (mut tx, mut run) = self.store.ownership_fenced(&self.fence).await?;
+        let (mut tx, mut run) = self
+            .store
+            .ownership_fenced_scoped(&self.fence, crate::transaction::StoreScope::Lease)
+            .await?;
         let now = self.store.clock.now();
         if until <= now {
             return Err(StoreError::Validation(
@@ -163,7 +166,10 @@ impl ExecutionStore for PostgresExecution {
         tx.commit().await.map_err(db)
     }
     async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
+        let (mut tx, run) = self
+            .store
+            .fenced_scoped(&self.fence, crate::transaction::StoreScope::Events)
+            .await?;
         insert_event(&mut tx, &run, &event).await?;
         tx.commit().await.map_err(db)
     }

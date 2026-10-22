@@ -31,6 +31,7 @@ impl Orchestrator {
         &self,
         acquired: AcquiredResume,
         cancellation: CancellationToken,
+        measurement_lost: Arc<AtomicBool>,
     ) -> Result<RunResult, RuntimeError> {
         let AcquiredResume {
             run,
@@ -52,7 +53,6 @@ impl Orchestrator {
             tool_phases,
             frontend_phases,
         } = acquisition;
-        let measurement_lost = Arc::new(AtomicBool::new(false));
         let measurement_cancellation = CancellationToken::new();
         let mut measurement = Measurement::new(
             self.observer.as_ref(),
@@ -430,6 +430,7 @@ impl Orchestrator {
             biased;
             update = signal.changed() => match update {
                 Ok(()) if *signal.borrow_and_update() => {
+                    tracing::warn!(target: crate::telemetry_targets::targets::RUNTIME, { "error.kind" = "lease_lost", source = "run" }, "run attempt lost its lease");
                     cancellation.cancel();
                     Err(RuntimeError::LeaseLost)
                 }
@@ -437,7 +438,7 @@ impl Orchestrator {
             },
             control = self_.wait_durable_cancel(failure_execution.as_ref(), &fence) => {
                 match control {
-                    Ok(()) => { cancellation.cancel(); resumed_work.as_mut().await }
+                    Ok(()) => { tracing::info!(target: crate::telemetry_targets::targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); resumed_work.as_mut().await }
                     Err(error) => {
                         if matches!(error, RuntimeError::LeaseLost) { failure_lost.store(true, Ordering::SeqCst); }
                         Err(error)

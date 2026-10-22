@@ -12,7 +12,10 @@ pub(in crate::postgres) async fn inspect(
 ) -> Result<AdmissionRecoveryPreparation, Error> {
     AdmissionRecoveryPreparation::validate_request(&request)?;
     let mut tx = store
-        .session_transaction(&request.session_id)
+        .session_transaction_scoped(
+            crate::transaction::StoreScope::Admission,
+            &request.session_id,
+        )
         .await
         .map_err(super::unknown)?;
     let result = context(&mut tx, &request, store.clock.now()).await;

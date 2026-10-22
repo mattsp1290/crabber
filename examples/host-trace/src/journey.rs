@@ -54,8 +54,6 @@ impl Observer for Capture {
         for exporter in self.exporter.iter().chain(self.live_exporter.iter()) {
             exporter.emit_in_attempt(event, context, attempt);
         }
-        #[cfg(feature = "datadog")]
-        crabber::obs::tracing_bridge::emit_with_context(event, context);
         #[cfg(not(feature = "datadog"))]
         let _ = attempt;
         self.events

@@ -33,6 +33,7 @@ fn utc(seconds: i64) -> String {
 pub(super) struct Query {
     pub marker: String,
     pub service: String,
+    pub env: Option<String>,
     pub ml_app: String,
     pub window: Window,
 }
@@ -49,6 +50,14 @@ pub(super) enum Evidence {
         points: usize,
     },
     Logs(usize),
+    Apm {
+        trace: String,
+        run: String,
+    },
+    LayerLog {
+        trace: Option<String>,
+        dd_trace: Option<String>,
+    },
 }
 impl Evidence {
     pub fn print(&self) {
@@ -63,6 +72,8 @@ impl Evidence {
             ),
             Self::Metric { name, points } => println!("metric={name} finite_points={points}"),
             Self::Logs(count) => println!("logs=visible count={count}"),
+            Self::Apm { trace, run } => println!("apm=visible trace_id={trace} run_span_id={run}"),
+            Self::LayerLog { .. } => println!("layer_log=visible"),
         }
     }
 }

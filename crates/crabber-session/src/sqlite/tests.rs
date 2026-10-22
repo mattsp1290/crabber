@@ -344,3 +344,29 @@ mod begin_cancellation;
 
 #[path = "tests/commit_worker.rs"]
 mod commit_worker;
+
+#[tokio::test(flavor = "current_thread")]
+async fn sqlite_transaction_spans_record_scope_and_outcome() {
+    let (captured, _guard) = crate::tracing_capture_tests::capture();
+    let (store, _, _directory) = temp_store().await;
+    store.admit_run(request(&SessionId::new())).await.unwrap();
+    let records = captured.0.lock().unwrap();
+    assert!(
+        records.iter().any(|r| r.name == "crabber.store.connect"
+            && r.fields.get("outcome").is_some_and(|v| v == "ok"))
+    );
+    assert!(records.iter().any(|r| {
+        r.name == "crabber.store.transaction"
+            && r.fields
+                .get("crabber.store.scope")
+                .is_some_and(|v| v == "admission")
+            && r.fields.get("outcome").is_some_and(|v| v == "committed")
+    }));
+    assert!(records.iter().any(|r| {
+        r.name == "crabber.store.transaction"
+            && r.fields
+                .get("crabber.store.scope")
+                .is_some_and(|v| v == "verify")
+            && r.fields.get("outcome").is_some_and(|v| v == "rolled_back")
+    }));
+}

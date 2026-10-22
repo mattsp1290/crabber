@@ -109,6 +109,8 @@ pub struct AgentBuilder {
     policy: Option<Arc<dyn PermissionPolicy>>,
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogConfig>,
+    #[cfg(feature = "datadog")]
+    datadog_observer: Option<crabber_obs::DatadogObserver>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
     factories: Vec<Arc<dyn ExtensionFactory>>,
     initialization_timeout: Duration,
@@ -172,6 +174,14 @@ impl AgentBuilder {
     #[must_use]
     pub fn datadog(mut self, config: crabber_obs::DatadogConfig) -> Self {
         self.datadog = Some(config);
+        self
+    }
+    /// Shares a host-owned exporter with this agent.
+    /// Hosts using `Telemetry` should shut down through `Telemetry::shutdown`.
+    #[cfg(feature = "datadog")]
+    #[must_use]
+    pub fn datadog_observer(mut self, observer: crabber_obs::DatadogObserver) -> Self {
+        self.datadog_observer = Some(observer);
         self
     }
     /// Registers the real providers compiled into this binary, using their
@@ -334,7 +344,9 @@ impl AgentBuilder {
             ));
         }
         #[cfg(feature = "datadog")]
-        let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
+        let datadog = self
+            .datadog_observer
+            .or_else(|| self.datadog.as_ref().map(crabber_obs::DatadogObserver::new));
         let configured_observer = !self.observers.is_empty();
         #[cfg(feature = "datadog")]
         let configured_observer = configured_observer || datadog.is_some();
@@ -545,6 +557,8 @@ impl Agent {
         }
     }
     /// Stops the Datadog export worker after flushing, if enabled.
+    /// For a shared telemetry exporter, prefer `Telemetry::shutdown`; this
+    /// method preserves the raw `WorkerStopped` error after an earlier shutdown.
     #[cfg(feature = "datadog")]
     /// # Errors
     /// Returns an intake or worker error.
@@ -570,6 +584,8 @@ impl Agent {
             policy: None,
             #[cfg(feature = "datadog")]
             datadog: None,
+            #[cfg(feature = "datadog")]
+            datadog_observer: None,
             extensions: Vec::new(),
             factories: Vec::new(),
             initialization_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
@@ -1334,6 +1350,17 @@ mod tests {
     #[cfg(feature = "datadog")]
     #[tokio::test]
     async fn configured_export_health_stays_local_during_provider_failure() {
+        check_configured_export_health(false).await;
+    }
+
+    #[cfg(feature = "datadog")]
+    #[tokio::test]
+    async fn datadog_observer_takes_precedence_and_shares_health() {
+        check_configured_export_health(true).await;
+    }
+
+    #[cfg(feature = "datadog")]
+    async fn check_configured_export_health(shared: bool) {
         struct Capture(std::sync::atomic::AtomicU64);
         impl Observer for Capture {
             fn emit(&self, _: &crabber_core::EventRecord) {}
@@ -1355,8 +1382,9 @@ mod tests {
         config.api_origin = Some(origin.clone());
         config.logs_origin = Some(origin);
         config.timeout = Duration::from_millis(40);
+        let observer = crabber_obs::DatadogObserver::new(&config);
         let capture = Arc::new(Capture(std::sync::atomic::AtomicU64::new(0)));
-        let agent = Agent::builder()
+        let builder = Agent::builder()
             .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
@@ -1367,7 +1395,13 @@ mod tests {
                 }),
             ]])))
             .observer(capture.clone())
-            .datadog(config)
+            .datadog(config);
+        let builder = if shared {
+            builder.datadog_observer(observer.clone())
+        } else {
+            builder
+        };
+        let agent = builder
             .config(AgentConfig::new(Selection {
                 provider_id: "fake".into(),
                 model_id: "scripted".into(),
@@ -1379,6 +1413,12 @@ mod tests {
         assert!(run.done().await.is_err());
         assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert!(agent.export_health().unwrap().accepted >= 2);
+        if shared {
+            assert_eq!(agent.export_health(), Some(observer.health()));
+        } else {
+            assert_eq!(observer.health().accepted, 0);
+            observer.stop_now();
+        }
         assert_eq!(
             agent.export_health().unwrap().last_success_unix_seconds,
             None

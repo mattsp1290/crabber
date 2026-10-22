@@ -88,3 +88,17 @@ cardinality; fixture runtime identity bounds remain unchanged. These loopback
 wire assertions prove tag transport, not live visibility. The explicit
 `cargo xtask verify-datadog` gate searches spans and finite non-percentile
 operational distribution points; percentile setup remains separate.
+
+The final fixture installs a real global `Telemetry::layer()` and decodes default
+OTLP/HTTP protobuf exports on a loopback receiver. It verifies the host request's
+admission and run children, three model attempts (including a retry), one native
+tool, the builtin extension mount, the exported attribute allowlist and content
+redaction. It also checks finite admission/extension distributions and a safe
+layer diagnostic without duplicate observer lifecycle logs. MemoryStore produces
+no store transaction spans; a separate public facade SQLite test covers those.
+
+The span budget comes from the catalog: `1 admission + 1 run + model calls + tool
+calls + extension mounts + 4` as a fixed margin. The fixture asserts the exported
+Crabber span count stays within that bound. These additional assertions leave the
+existing exact manual-clock distributions intact. All new evidence is
+**offline-proven**, with no live Datadog visibility claim.

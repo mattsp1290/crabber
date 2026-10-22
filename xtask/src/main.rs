@@ -6,6 +6,7 @@ use std::{env, fmt::Write, fs, path::Path, process::Command};
 mod agui;
 mod datadog;
 mod probes;
+mod telemetry_messages;
 
 const GLUE_START: &str = "crabber:glue-start";
 const GLUE_END: &str = "crabber:glue-end";
@@ -34,6 +35,7 @@ fn check() {
         .parent()
         .expect("xtask belongs directly under the workspace root");
 
+    telemetry_messages::check(workspace);
     agui::check(workspace);
     probes::check(workspace);
     check_wit(workspace);
@@ -79,23 +81,12 @@ fn check() {
             "-p",
             "crabber",
             "--features",
-            "datadog",
-            "--test",
-            "trace_context",
-        ],
-    );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
             "opencode-go",
             "--test",
             "opencode_go_chat",
         ],
     );
+    check_observability(workspace);
     check_journeys(workspace);
     run(
         workspace,
@@ -566,4 +557,95 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
             files.push(path);
         }
     }
+}
+
+// Exercise both the unconfigured export path and the host stderr recipe.
+fn check_datadog_offline(workspace: &Path) {
+    let output = Command::new("cargo")
+        .args(["run", "--quiet", "-p", "datadog-export"])
+        .current_dir(workspace)
+        .env_remove("DD_API_KEY")
+        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .env("CRABBER_LOG_STDERR", "1")
+        .env("RUST_LOG", "info")
+        .output()
+        .expect("run offline Datadog fixture");
+    assert!(output.status.success(), "offline Datadog fixture failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("status=Completed"));
+    assert!(
+        stderr.contains("model request failed, retry scheduled"),
+        "host stderr layer did not observe the retry diagnostic"
+    );
+    for sentinel in [
+        "SECRET response credential header",
+        "PROMPT_SECRET",
+        "TOOL_SECRET",
+    ] {
+        assert!(
+            !stdout.contains(sentinel) && !stderr.contains(sentinel),
+            "offline telemetry exposed fixture content"
+        );
+    }
+    println!("offline Datadog fixture completed with redacted stderr");
+}
+
+fn check_observability(workspace: &Path) {
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "datadog",
+            "--test",
+            "trace_context",
+        ],
+    );
+    run(
+        workspace,
+        &["test", "-p", "crabber-obs", "--features", "otlp"],
+    );
+    run(
+        workspace,
+        &[
+            "clippy",
+            "-p",
+            "crabber-obs",
+            "--features",
+            "otlp",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "otlp",
+            "--test",
+            "trace_context",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "otlp,sqlite",
+            "--test",
+            "telemetry",
+        ],
+    );
+    check_datadog_offline(workspace);
 }

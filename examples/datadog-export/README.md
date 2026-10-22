@@ -1,33 +1,40 @@
-# Datadog LLM export
+# Datadog traces, metrics and logs
 
-For the credential-free path, remove inherited opt-in configuration:
+Run the complete fixture without credentials or an Agent:
 
 ```sh
-env -u DD_API_KEY cargo run -p datadog-export
+env -u DD_API_KEY -u OTEL_EXPORTER_OTLP_ENDPOINT -u OTEL_EXPORTER_OTLP_TRACES_ENDPOINT cargo run -p datadog-export
 ```
 
-A FakeProvider emits `hello`. The example waits for completion, calls
-`agent.flush()`, prints the run ID/status and calls `agent.shutdown()`.
-Its Datadog feature exports only when `DD_API_KEY` is nonempty; `DD_SITE` selects
-the site and defaults to `datadoghq.com`. Optional `CRABBER_OBS_VERIFY_MARKER`
-adds a verification tag. The exporter does not read `DD_APP_KEY`.
+The fixture migrates its own temporary SQLite database, retries one scripted
+provider failure, executes a native `echo` tool and completes a text response.
+It prints `run_id=… status=Completed`. No configured application database is used.
+The provider's failure contains a secret sentinel that must never appear in
+stderr or exported signals; offline loopback assertions live in
+[operational-telemetry](../operational-telemetry/README.md).
 
-Providing an API key enables external writes and is a manual live-service step.
-Do not inherit it into CI or an offline walkthrough. No live ingestion or
-percentile verification is claimed here; that remains `crabber-jeyl`.
+To send APM spans, enable the Agent's HTTP OTLP receiver with
+`DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT=0.0.0.0:4318`, then set
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` in the application.
+`DD_API_KEY` enables agentless LLM Observability, metrics and logs; `DD_SITE`
+selects the account site. `DD_SERVICE`, `DD_ENV` and `DD_VERSION` identify the
+service. Credential values stay in the environment.
 
-This example demonstrates LLM spans/metrics/logs. For run/model/tool/first-token
-operational distributions, bounded safe queues and offline payload assertions,
-use [operational-telemetry](../operational-telemetry/README.md). See
-[exporter adoption](../../crates/crabber-obs/README.md) and [source](src/main.rs).
+The host installs `Telemetry::layer()` once in a global subscriber. Inside
+`host.request`, it passes `Telemetry::current_trace_context()` to
+`prompt_with_context` so APM, LLM Observability and logs share the host identity.
+Optional `CRABBER_LOG_STDERR=1` adds JSON stderr formatting, filtered separately
+with `RUST_LOG`; this filter never suppresses telemetry. Optional
+`CRABBER_OBS_VERIFY_MARKER` adds the same verification tag to both intake and
+OTLP resource attributes.
 
-For searchable visibility, use `cargo xtask verify-datadog` with environment-only
-`DD_SITE`, `DD_API_KEY` and `DD_APP_KEY` in the same account. The application key
-needs LLM span, metric and log read permissions. The gate generates a unique
-`verify` marker and requires linked agent/workflow/LLM spans, finite marker-filtered
-run/model elapsed and model first-token distributions, run count and safe logs.
-This fake fixture emits no tool timing sample. Intake acceptance alone does not
-pass. Fixed padded UTC bounds and one 120-second polling deadline apply; absent
-signals or read-access failures exit nonzero. Evidence prints only safe status,
-counts and identities. Run against a clean committed checkout so the source SHA
-identifies the tested code. Local tests cannot satisfy the live acceptance gate.
+After completion the host calls `telemetry.flush()` and `telemetry.shutdown()`.
+The telemetry bundle owns exporter shutdown; the example shares its observer
+with the agent and does not shut that observer down independently.
+
+`cargo xtask verify-datadog` runs this fixture and checks APM spans, LLM spans,
+metrics and linked layer logs. The manual gate also needs `DD_APP_KEY` with the
+appropriate read scopes. Run it from a clean committed checkout. Offline
+fixtures prove the wire contract; live ingestion, linkage and percentiles remain
+unverified until the corresponding live gate is recorded. See the
+[host observability guide](../../docs/observability.md).

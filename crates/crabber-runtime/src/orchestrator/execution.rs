@@ -7,6 +7,8 @@ use super::{
     StoreError, TurnId, TurnPrepare, TurnSnapshot, Usage, Value, WorkspaceContext, driver,
     ensure_lease, frontend, json, result_reason, terminal, tool_batch, worker,
 };
+use crate::telemetry_targets::targets;
+use tracing::Instrument;
 
 impl Orchestrator {
     /// Every admitted run is bound to the workspace identity of the persisted
@@ -124,6 +126,7 @@ impl Orchestrator {
         plan: RunPlan,
         cancellation: CancellationToken,
     ) -> Result<RunResult, RuntimeError> {
+        let span = self.attempt_span(false, &session.id, &fence.run_id);
         let lost = AtomicBool::new(false);
         let mut measurement = Measurement::new(
             self.observer.as_ref(),
@@ -134,20 +137,32 @@ impl Orchestrator {
             &cancellation,
             &lost,
         );
-        let result = Box::pin(self.run_inner(
-            fence.clone(),
-            session.clone(),
-            initial,
-            plan,
-            cancellation.clone(),
-            &lost,
-        ))
-        .await;
-        if result.is_err() && self.verified_lease_loss(&fence).await {
-            lost.store(true, Ordering::SeqCst);
+        async {
+            self.lifecycle(&session.id, &fence.run_id, None);
+            let result = Box::pin(self.run_inner(
+                fence.clone(),
+                session.clone(),
+                initial,
+                plan,
+                cancellation.clone(),
+                &lost,
+            ))
+            .await;
+            if result.is_err() && self.verified_lease_loss(&fence).await {
+                lost.store(true, Ordering::SeqCst);
+            }
+            measurement.observation.reason = if lost.load(Ordering::SeqCst) {
+                crate::TerminalReason::LeaseLost
+            } else {
+                result_reason(&result)
+            };
+            let outcome =
+                super::telemetry::record_result(&span, &result, measurement.observation.reason);
+            self.lifecycle(&session.id, &fence.run_id, Some(outcome));
+            result
         }
-        measurement.observation.reason = result_reason(&result);
-        result
+        .instrument(span.clone())
+        .await
     }
 
     #[allow(clippy::too_many_lines)]
@@ -248,13 +263,13 @@ impl Orchestrator {
                 tokio::select! {
                     biased;
                     update = signal.changed() => match update {
-                        Ok(()) if *signal.borrow_and_update() => break Err(RuntimeError::LeaseLost),
+                        Ok(()) if *signal.borrow_and_update() => { tracing::warn!(target: targets::RUNTIME, { "error.kind" = "lease_lost", source = "run" }, "run attempt lost its lease"); break Err(RuntimeError::LeaseLost); },
                         Ok(()) => (),
                         Err(_) => break run_future.as_mut().await,
                     },
                     control = self_.wait_durable_cancel(execution.as_ref(), &fence) => {
                         match control {
-                            Ok(()) => { cancellation.cancel(); break run_future.as_mut().await; }
+                            Ok(()) => { tracing::info!(target: targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); break run_future.as_mut().await; }
                             Err(error) => {
                                 if matches!(error, RuntimeError::LeaseLost) { lost.store(true, Ordering::SeqCst); }
                                 break Err(error);

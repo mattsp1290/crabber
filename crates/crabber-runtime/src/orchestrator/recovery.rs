@@ -8,6 +8,8 @@ use super::{
     TraceContext, TurnId, Usage, Value, admission_config_hash, continuation, ensure_lease,
     event_payload, json, preparation, result_reason, terminal, tool_batch,
 };
+use crate::telemetry_targets::targets;
+use tracing::Instrument;
 
 mod acquired;
 use acquired::AcquiredResume;
@@ -293,6 +295,40 @@ impl Orchestrator {
         cancellation: CancellationToken,
         entry: ResumeEntry,
     ) -> Result<RunResult, RuntimeError> {
+        let span = self.attempt_span(true, &session.id, &run.id);
+        let session_id = session.id.clone();
+        let trace_run = run.id.clone();
+        let measurement_lost = Arc::new(AtomicBool::new(false));
+        let result = async {
+            self.lifecycle(&session_id, &trace_run, None);
+            self.resume_entry_inner(
+                run,
+                (session, saved),
+                cancellation,
+                entry,
+                measurement_lost.clone(),
+            )
+            .await
+        }
+        .instrument(span.clone())
+        .await;
+        let reason = if measurement_lost.load(Ordering::SeqCst) {
+            crate::TerminalReason::LeaseLost
+        } else {
+            result_reason(&result)
+        };
+        let outcome = super::telemetry::record_result(&span, &result, reason);
+        span.in_scope(|| self.lifecycle(&session_id, &trace_run, Some(outcome)));
+        result
+    }
+    async fn resume_entry_inner(
+        &self,
+        run: crabber_core::Run,
+        (session, saved): (RunSession, Option<Request>),
+        cancellation: CancellationToken,
+        entry: ResumeEntry,
+        measurement_lost: Arc<AtomicBool>,
+    ) -> Result<RunResult, RuntimeError> {
         let run_id = &run.id.clone();
         if self.store.admission_execution_state(run_id).await?
             == Some(crabber_session::AdmissionExecutionState::Unstarted)
@@ -383,6 +419,7 @@ impl Orchestrator {
                 authority: acquisition,
             },
             cancellation,
+            measurement_lost,
         ))
         .await
     }
@@ -470,7 +507,7 @@ impl Orchestrator {
                     | StoreError::Conflict
                     | StoreError::AdmissionRecoveryRequired),
                 )) => {
-                    report.skipped.push(SkippedRun {
+                    report.record_skipped(SkippedRun {
                         session_id,
                         run_id,
                         reason: RecoverySkipReason::Store(reason),
@@ -483,7 +520,7 @@ impl Orchestrator {
                     | crabber_session::AttemptError::InvalidTransition
                     | crabber_session::AttemptError::Unsupported
                     | crabber_session::AttemptError::StaleOwner),
-                )) => report.skipped.push(SkippedRun {
+                )) => report.record_skipped(SkippedRun {
                     session_id,
                     run_id,
                     reason: RecoverySkipReason::Attempt(reason),
@@ -498,7 +535,7 @@ impl Orchestrator {
                         | AdmissionExecutionError::Unsupported,
                     ),
                 ) => {
-                    report.skipped.push(SkippedRun {
+                    report.record_skipped(SkippedRun {
                         session_id,
                         run_id,
                         reason: RecoverySkipReason::Store(StoreError::HostUnsupported),
@@ -598,5 +635,16 @@ impl Orchestrator {
         self.observer.emit(&event);
         self.notify_interrupted_settlement(plan, &event, false)?;
         Ok(())
+    }
+}
+
+impl RecoverReport {
+    fn record_skipped(&mut self, run: SkippedRun) {
+        let reason = match run.reason {
+            RecoverySkipReason::Store(_) => "store",
+            RecoverySkipReason::Attempt(_) => "attempt",
+        };
+        tracing::info!(target: targets::RUNTIME, { outcome = "skipped", "skip.reason" = reason }, "recovery skipped run");
+        self.skipped.push(run);
     }
 }

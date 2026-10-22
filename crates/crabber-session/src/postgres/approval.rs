@@ -46,10 +46,11 @@ impl PostgresStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ApprovalSnapshot>, Error> {
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)
-            .map_err(sql::unknown)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Approval)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -66,10 +67,11 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<ApprovalReceipt>, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(approval::attempt_error)?;
-        let mut tx = crate::postgres::transaction::begin(&self.pool)
-            .await
-            .map_err(db)
-            .map_err(sql::unknown)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Approval)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?;
         let result = receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }
@@ -93,7 +95,7 @@ impl PostgresStore {
             return Err(Error::NotFound);
         }
         let mut tx = self
-            .session_transaction(session)
+            .session_transaction_scoped(crate::transaction::StoreScope::Approval, session)
             .await
             .map_err(sql::unknown)?;
         let saved = super::load_run_with_proof(&mut tx, run, proof)
@@ -121,7 +123,10 @@ impl PostgresStore {
         if !exists {
             return Err(Error::NotFound);
         }
-        let (tx, saved) = self.run_transaction(run).await.map_err(sql::unknown)?;
+        let (tx, saved) = self
+            .run_transaction_scoped(crate::transaction::StoreScope::Approval, run)
+            .await
+            .map_err(sql::unknown)?;
         if saved.session_id != *session || saved.id != *run {
             return Err(Error::UnknownStoreOutcome);
         }

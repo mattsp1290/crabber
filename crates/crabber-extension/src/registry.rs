@@ -37,6 +37,7 @@ use std::{
 };
 use tokio::sync::Notify;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tracing::Instrument;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Filtering for explicitly shared registrations. This does not isolate state.
@@ -50,6 +51,13 @@ pub enum Scope {
     },
 }
 impl Scope {
+    fn telemetry_scope(&self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Workspace(_) => "workspace",
+            Self::Session(_) | Self::SessionIn { .. } => "session",
+        }
+    }
     pub(crate) fn declaration_value(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
@@ -682,46 +690,77 @@ impl Registry {
         sealed: bool,
         before_failure: impl FnOnce() + Send,
     ) -> Result<MountHandle, ExtensionError> {
-        if self.inner.lock().unwrap().closed {
-            return Err(ExtensionError::RegistryClosed);
-        }
-        let mut registrar = Registrar::new();
-        let installation = AssertUnwindSafe(extension.install(&mut registrar))
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|payload| {
-                crate::dispatch::discard_panic_payload(payload);
-                Err(ExtensionError::Plan(
-                    "extension initialization panicked".into(),
-                ))
-            });
-        let result = installation.and_then(|()| {
-            let captured = if sealed {
-                CapturedRegistration::capture(extension.as_ref(), &registrar).map(Some)
-            } else {
-                Ok(None)
-            };
-            captured.and_then(|captured| {
-                self.publish_mount(extension.clone(), scope, &mut registrar, sealed, captured)
-            })
-        });
-        match result {
-            Ok(handle) => Ok(handle),
-            Err(error) if sealed => {
-                before_failure();
-                if owned::rollback_install(registrar).await {
-                    Err(error)
+        let id = extension.id().to_owned();
+        let span = tracing::info_span!(target: crate::targets::EXTENSION, "crabber.extension.mount",
+            extension.id = %id, scope = scope.telemetry_scope(), outcome = tracing::field::Empty, otel.status_code = tracing::field::Empty);
+        async {
+            if self.inner.lock().unwrap().closed {
+                record_mount_failure(
+                    &span,
+                    &id,
+                    "registry_closed",
+                    &ExtensionError::RegistryClosed,
+                );
+                return Err(ExtensionError::RegistryClosed);
+            }
+            let mut registrar = Registrar::new();
+            let mut panicked = false;
+            let installation = AssertUnwindSafe(extension.install(&mut registrar))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|payload| {
+                    panicked = true;
+                    crate::dispatch::discard_panic_payload(payload);
+                    Err(ExtensionError::Plan(
+                        "extension initialization panicked".into(),
+                    ))
+                });
+            let result = installation.and_then(|()| {
+                let captured = if sealed {
+                    CapturedRegistration::capture(extension.as_ref(), &registrar).map(Some)
                 } else {
-                    Err(ExtensionError::MountCleanupIncomplete {
-                        extension: extension.id().into(),
-                    })
+                    Ok(None)
+                };
+                captured.and_then(|captured| {
+                    self.publish_mount(extension.clone(), scope, &mut registrar, sealed, captured)
+                })
+            });
+            match &result {
+                Ok(_) => {
+                    span.record("outcome", "mounted");
+                    span.record("otel.status_code", "OK");
+                }
+                Err(error) => {
+                    let outcome = if panicked {
+                        "install_panicked"
+                    } else if matches!(error, ExtensionError::RegistryClosed) {
+                        "registry_closed"
+                    } else {
+                        "install_failed"
+                    };
+                    record_mount_failure(&span, &id, outcome, error);
                 }
             }
-            Err(error) => {
-                registrar.rollback();
-                Err(error)
+            match result {
+                Ok(handle) => Ok(handle),
+                Err(error) if sealed => {
+                    before_failure();
+                    if owned::rollback_install(registrar).await {
+                        Err(error)
+                    } else {
+                        Err(ExtensionError::MountCleanupIncomplete {
+                            extension: extension.id().into(),
+                        })
+                    }
+                }
+                Err(error) => {
+                    registrar.rollback();
+                    Err(error)
+                }
             }
         }
+        .instrument(span.clone())
+        .await
     }
     fn bind_original_products(mount: &Arc<Mount>) -> Result<(), ExtensionError> {
         for node in mount.registrar.lock().unwrap().product_prompts.values() {
@@ -1458,8 +1497,37 @@ impl MountHandle {
     /// `shutdown` run unbounded, and a panic in either is contained: the mount
     /// still ends closed and `close` returns `Ok`.
     pub async fn close(&self) -> Result<(), ExtensionError> {
+        self.trace_close(|span| async move { self.close_inner(&span).await })
+            .await
+    }
+    async fn trace_close<T, F>(
+        &self,
+        work: impl FnOnce(tracing::Span) -> F,
+    ) -> Result<T, ExtensionError>
+    where
+        F: std::future::Future<Output = Result<T, ExtensionError>>,
+    {
+        let span = tracing::info_span!(target: crate::targets::EXTENSION, "crabber.extension.close",
+            extension.id = %self.mount.extension.id(), scope = self.mount.scope.telemetry_scope(),
+            outcome = tracing::field::Empty, leases = tracing::field::Empty,
+            pending_tasks = tracing::field::Empty, otel.status_code = tracing::field::Empty);
+        let result = work(span.clone()).instrument(span.clone()).await;
+        let outcome = match &result {
+            Ok(_) => "closed",
+            Err(ExtensionError::SelfClose) => "self_close",
+            Err(ExtensionError::MountCloseTimeout { .. }) => "timed_out",
+            Err(_) => "failed",
+        };
+        span.record("outcome", outcome);
+        span.record(
+            "otel.status_code",
+            if result.is_err() { "ERROR" } else { "OK" },
+        );
+        result
+    }
+    async fn close_inner(&self, span: &tracing::Span) -> Result<(), ExtensionError> {
         if self.mount.owned.is_some() {
-            return owned::close(&self.mount, self.mount.close_timeout)
+            return owned::close(&self.mount, self.mount.close_timeout, span)
                 .await
                 .map(|_| ());
         }
@@ -1501,6 +1569,12 @@ impl MountHandle {
             // Drained in the instant after expiry: not a timeout.
             && !*mount.drained.lock().unwrap()
         {
+            record_close_timeout(
+                span,
+                mount.extension.id(),
+                mount.leases.load(Ordering::SeqCst),
+                mount.cleanup.tracker().pending(),
+            );
             if let Some(observer) = &mount.close_observer {
                 let timeout = MountCloseTimeout {
                     extension: mount.extension.id().to_owned(),
@@ -1581,6 +1655,64 @@ mod tests {
             cleanup,
         })
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn mount_and_close_spans() {
+        let (captured, _guard) = crate::tracing_capture_tests::capture();
+        let registry = Registry::new();
+        let handle = registry
+            .mount(
+                ext("telemetry", false, false, Arc::default()),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        handle.close().await.unwrap();
+        let records = captured.0.lock().unwrap();
+        for (name, outcome) in [
+            ("crabber.extension.mount", "mounted"),
+            ("crabber.extension.close", "closed"),
+        ] {
+            let record = records.iter().find(|r| r.name == name).unwrap();
+            assert_eq!(record.target, "crabber::extension");
+            assert_eq!(record.level, "INFO");
+            assert_eq!(record.fields["extension.id"], "telemetry");
+            assert_eq!(record.fields["scope"], "global");
+            assert_eq!(record.fields["outcome"], outcome);
+        }
+    }
+    #[tokio::test]
+    async fn owned_close_spans_cover_timeout_and_resumed_actual_join() {
+        let (captured, _guard) = crate::tracing_capture_tests::capture();
+        let registry = Registry::new();
+        let handle = registry
+            .mount_owned(
+                ext("owned-telemetry", false, false, Arc::default()),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        let plan = registry.acquire(&SessionId::new());
+        assert!(matches!(
+            handle.close(Duration::ZERO).await,
+            Err(ExtensionError::MountCloseTimeout { .. })
+        ));
+        plan.release();
+        let joined = handle.close(Duration::from_secs(5)).await.unwrap();
+        assert_eq!(joined.close_task().joined, 1);
+        let records = captured.0.lock().unwrap();
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|record| record.name == "crabber.extension.close")
+            .collect();
+        assert_eq!(closes.len(), 2);
+        assert_eq!(closes[0].fields["outcome"], "timed_out");
+        assert_eq!(closes[0].fields["leases"], "1");
+        assert_eq!(closes[0].fields["pending_tasks"], "0");
+        assert_eq!(closes[0].fields["otel.status_code"], "ERROR");
+        assert_eq!(closes[1].fields["outcome"], "closed");
+        assert_eq!(closes[1].fields["otel.status_code"], "OK");
+    }
+
     #[tokio::test]
     async fn rollback_and_collision() {
         let registry = Registry::new();
@@ -2676,6 +2808,7 @@ mod tests {
 
         #[tokio::test(start_paused = true)]
         async fn tracker_task_past_the_bound_times_out_and_the_reaper_finishes_the_close() {
+            let (captured, _guard) = crate::tracing_capture_tests::capture();
             let log = new_log();
             let (observer, seen) = observed();
             let registry = Registry::new().with_close_observer(observer);
@@ -2714,6 +2847,25 @@ mod tests {
             assert_eq!(handle.close().await, Ok(()));
             assert_eq!(entries(&log), ["task", "cleanup:one", "shutdown:one"]);
             assert_eq!(seen.lock().unwrap().len(), 2, "no observation on success");
+            captured
+                .wait_for_closed("crabber.extension.close", "timed_out")
+                .await;
+            let records = captured.0.lock().unwrap();
+            let timeout = records
+                .iter()
+                .find(|r| {
+                    r.name == "crabber.extension.close"
+                        && r.fields.get("outcome").is_some_and(|v| v == "timed_out")
+                })
+                .unwrap_or_else(|| panic!("missing timeout span: {records:#?}"));
+            assert_eq!(timeout.fields["leases"], "0");
+            assert_eq!(timeout.fields["pending_tasks"], "1");
+            assert!(records.iter().any(|r| {
+                r.level == "WARN"
+                    && r.fields
+                        .get("message")
+                        .is_some_and(|v| v == "extension close timed out")
+            }));
         }
 
         #[tokio::test(start_paused = true)]
@@ -3445,4 +3597,21 @@ fn projected_reader(
         .as_ref()
         .map(|node| node.project(InvocationSource::new(mount)))
         .transpose()
+}
+
+fn record_mount_failure(
+    span: &tracing::Span,
+    id: &str,
+    outcome: &'static str,
+    error: &ExtensionError,
+) {
+    span.record("outcome", outcome);
+    span.record("otel.status_code", "ERROR");
+    tracing::warn!(target: crate::targets::EXTENSION, { extension.id = %id, "error.kind" = %error.error_kind() }, "extension install failed");
+}
+
+fn record_close_timeout(span: &tracing::Span, id: &str, leases: usize, pending: usize) {
+    span.record("leases", leases);
+    span.record("pending_tasks", pending);
+    tracing::warn!(target: crate::targets::EXTENSION, { extension.id = %id, leases = leases, pending_tasks = pending }, "extension close timed out");
 }

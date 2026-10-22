@@ -107,7 +107,7 @@ pub(super) async fn begin_with_proof(
         .map_err(|_| Error::UnknownStoreFailure)?;
     let store = &execution.store;
     let mut tx = store
-        .begin_write()
+        .begin_write_scoped(crate::transaction::StoreScope::Admission)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
     let result = async {

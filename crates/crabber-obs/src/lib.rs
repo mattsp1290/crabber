@@ -20,6 +20,16 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+pub mod layers;
+
+#[cfg(feature = "otlp")]
+pub mod telemetry;
+#[cfg(feature = "otlp")]
+pub use telemetry::{
+    ALLOWED_ATTRIBUTES, LogsPolicy, OtlpConfig, OtlpProtocol, Signals, Telemetry, TelemetryConfig,
+    TelemetryError, TelemetryHealth,
+};
+
 /// Explicit opt-in for bounded summaries. Defaults never capture content.
 #[derive(Debug, Clone)]
 pub struct RedactionPolicy {
@@ -55,6 +65,7 @@ pub struct MetricDimensions {
     pub providers: Vec<String>,
     pub models: Vec<String>,
     pub tools: Vec<String>,
+    pub extensions: Vec<String>,
 }
 fn dimension(value: &str, allowed: &[String]) -> String {
     fn sanitize(value: &str) -> String {
@@ -246,6 +257,8 @@ pub struct DatadogObserver {
 enum Command {
     Event(Box<SafeEvent>),
     Measurement(Measurement),
+    Log(Box<layers::SafeLog>),
+    Series(Vec<Value>),
     Flush(oneshot::Sender<Result<(), ExportError>>),
     Shutdown(oneshot::Sender<Result<(), ExportError>>),
 }
@@ -489,6 +502,15 @@ impl DatadogObserver {
             redaction: config.redaction.clone(),
         }
     }
+    pub(crate) fn enqueue_log(&self, log: layers::SafeLog) -> Result<(), ()> {
+        self.enqueue(Command::Log(Box::new(log)))
+    }
+    pub(crate) fn enqueue_series(&self, series: Vec<Value>) -> Result<(), ()> {
+        self.enqueue(Command::Series(series))
+    }
+    pub(crate) fn enqueue_measurement(&self, samples: Vec<Value>) -> Result<(), ()> {
+        self.enqueue(Command::Measurement(Measurement { samples }))
+    }
     fn enqueue(&self, command: Command) -> Result<(), ()> {
         if self.health.stopped.load(Ordering::SeqCst) != 0 {
             self.health.rejected.fetch_add(1, Ordering::SeqCst);
@@ -550,6 +572,11 @@ impl DatadogObserver {
             },
         }
     }
+    /// Immediately stops the worker, counting outstanding records as dropped.
+    pub fn stop_now(&self) {
+        self.health.stopped.store(1, Ordering::SeqCst);
+        self.abort.abort();
+    }
     /// Waits for queued records to be exported.
     /// # Errors
     /// Returns a worker or intake error, or times out.
@@ -595,6 +622,8 @@ enum ExportStage {
 struct PendingBatch {
     events: Vec<SafeEvent>,
     measurements: Vec<Measurement>,
+    logs: Vec<layers::SafeLog>,
+    series: Vec<Value>,
     records: usize,
     stage: ExportStage,
     dropped_snapshot: Option<u64>,
@@ -605,6 +634,8 @@ impl Default for PendingBatch {
         Self {
             events: Vec::new(),
             measurements: Vec::new(),
+            logs: Vec::new(),
+            series: Vec::new(),
             records: 0,
             stage: ExportStage::Spans,
             dropped_snapshot: None,
@@ -628,28 +659,23 @@ async fn worker(mut rx: mpsc::Receiver<Command>, config: DatadogConfig, guard: W
     loop {
         tokio::select! {
             command=rx.recv() => match command {
-                Some(Command::Event(event)) => {
-                    health.queued.fetch_sub(1,Ordering::SeqCst);
-                    if retrying || pending.records>=batch_limit {
-                        health.shed.fetch_add(1,Ordering::SeqCst);
+                Some(command @ (Command::Event(_) | Command::Measurement(_) | Command::Log(_) | Command::Series(_))) => {
+                    health.queued.fetch_sub(1, Ordering::SeqCst);
+                    if retrying || pending.records >= batch_limit {
+                        health.shed.fetch_add(1, Ordering::SeqCst);
                     } else {
-                        pending.events.push(*event);
+                        match command {
+                            Command::Event(event) => pending.events.push(*event),
+                            Command::Measurement(measurement) => pending.measurements.push(measurement),
+                            Command::Log(log) => pending.logs.push(*log),
+                            Command::Series(series) => pending.series.extend(series),
+                            Command::Flush(_) | Command::Shutdown(_) => unreachable!("record command"),
+                        }
                         pending.records += 1;
                         health.pending.store(pending.records as u64, Ordering::SeqCst);
-                        if pending.records>=batch_limit {
-                            retrying=export(&client,&config,&mut pending,&health).await.is_err();
+                        if pending.records >= batch_limit {
+                            retrying = export(&client, &config, &mut pending, &health).await.is_err();
                         }
-                    }
-                }
-                Some(Command::Measurement(measurement)) => {
-                    health.queued.fetch_sub(1,Ordering::SeqCst);
-                    if retrying || pending.records >= batch_limit {
-                        health.shed.fetch_add(1,Ordering::SeqCst);
-                    } else {
-                        pending.measurements.push(measurement);
-                        pending.records += 1;
-                        health.pending.store(pending.records as u64,Ordering::SeqCst);
-                        if pending.records >= batch_limit { retrying=export(&client,&config,&mut pending,&health).await.is_err(); }
                     }
                 }
                 Some(Command::Flush(reply)) => {
@@ -1150,6 +1176,10 @@ async fn export(
                 .iter()
                 .flat_map(|e| series(config, e))
                 .collect();
+            metrics.extend(pending.series.iter().cloned().map(|mut sample| {
+                append_metric_tags(&mut sample, config);
+                sample
+            }));
             if pending.records > 0 {
                 metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
                     "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
@@ -1179,11 +1209,7 @@ async fn export(
                 .iter()
                 .flat_map(|m| m.samples.iter().cloned())
                 .map(|mut sample| {
-                    let tags = sample["tags"].as_array_mut().expect("measurement tags");
-                    tags.push(json!(format!("service:{}", config.service)));
-                    tags.push(json!(format!("env:{}", config.env)));
-                    tags.push(json!(format!("version:{}", config.version)));
-                    tags.extend(sanitized_host_tags(config).into_iter().map(Value::String));
+                    append_metric_tags(&mut sample, config);
                     sample
                 })
                 .collect();
@@ -1207,6 +1233,7 @@ async fn export(
                 .events
                 .iter()
                 .filter_map(|e| log(config, e))
+                .chain(pending.logs.iter().map(|log| log.to_value(config)))
                 .collect();
             if !logs.is_empty() {
                 pending.unsent_parts.push(json!(logs));
@@ -1232,10 +1259,19 @@ async fn export(
         pending.records = 0;
         pending.measurements.clear();
         pending.events.clear();
+        pending.logs.clear();
+        pending.series.clear();
         pending.stage = ExportStage::Spans;
         pending.dropped_snapshot = None;
     }
     Ok(())
+}
+fn append_metric_tags(sample: &mut Value, config: &DatadogConfig) {
+    let tags = sample["tags"].as_array_mut().expect("measurement tags");
+    tags.push(json!(format!("service:{}", config.service)));
+    tags.push(json!(format!("env:{}", config.env)));
+    tags.push(json!(format!("version:{}", config.version)));
+    tags.extend(sanitized_host_tags(config).into_iter().map(Value::String));
 }
 fn time_now() -> i64 {
     std::time::SystemTime::now()
@@ -1653,7 +1689,7 @@ mod tests {
         let mut c = config();
         c.api_origin = Some(origin.clone());
         c.logs_origin = Some(origin);
-        c.channel_capacity = 2;
+        c.channel_capacity = 3;
         c.batch_size = 100;
         let observer = DatadogObserver::new(&c);
         let session = SessionId::new();
@@ -1665,15 +1701,24 @@ mod tests {
             &run,
             json!({"status":"ok","duration_ms":100,"prompt":"PROMPT_SECRET"}),
         ));
+        {
+            use tracing_subscriber::prelude::*;
+            let policy = layers::LogsPolicy::default();
+            let layer = layers::LogsLayer::new(observer.clone(), policy.clone(), Arc::default())
+                .with_filter(layers::LogsLayer::filter(&policy));
+            tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+                tracing::warn!(target: "crabber::runtime", "lease renew failed");
+            });
+        }
         for _ in 0..200 {
             observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
         }
         assert!(observer.dropped() > 0);
         assert!(observer.flush().await.is_err());
         let outage = observer.health();
-        assert_eq!(outage.accepted, 2);
+        assert_eq!(outage.accepted, 3);
         assert_eq!(outage.dropped, 200);
-        assert_eq!(outage.pending_depth, 2);
+        assert_eq!(outage.pending_depth, 3);
         assert_eq!(outage.queue_depth, 0);
         assert_eq!(outage.last_success_unix_seconds, None);
         assert_eq!(outage.failures, 3);
@@ -1700,6 +1745,15 @@ mod tests {
                 .iter()
                 .any(|m| m["metric"] == "crabber.export.dropped"
                     && m["points"][0]["value"].as_u64().unwrap() > 0)
+        );
+        assert!(
+            accepted[2]
+                .1
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|log| log["message"] == "lease renew failed"
+                    && log["crabber.source"] == "layer")
         );
         assert!(
             accepted[2]
@@ -1785,7 +1839,9 @@ mod tests {
     }
 
     async fn stopped(observer: &DatadogObserver) {
-        tokio::time::timeout(Duration::from_secs(1), async {
+        // Abort is scheduled by Tokio. This teardown backstop includes CPU
+        // contention from parallel exporter tests, not the export latency budget.
+        tokio::time::timeout(Duration::from_secs(5), async {
             while observer.health().worker_status != WorkerStatus::Stopped {
                 tokio::task::yield_now().await;
             }
@@ -2266,6 +2322,18 @@ mod tests {
         stopped(&observer).await;
         assert_eq!(observer.health().accepted, 800);
         assert_eq!(observer.health().dropped, 800);
+        assert_eq!(observer.health().queue_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn stop_now_accounts_for_outstanding_and_later_records() {
+        let observer = DatadogObserver::new(&config());
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        observer.stop_now();
+        assert_eq!(observer.health().worker_status, WorkerStatus::Stopped);
+        assert_eq!(observer.health().dropped, 1);
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        assert_eq!(observer.health().dropped, 2);
         assert_eq!(observer.health().queue_depth, 0);
     }
 
