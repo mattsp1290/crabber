@@ -58,6 +58,17 @@ def stamps(paths):
             for directory in paths for p in directory.glob('*.json')}
 
 
+def dependent_stamps(target, package):
+    module = package.replace('-', '_')
+    result = {}
+    for directory in all_fingerprints(target):
+        for path in directory.glob('*.json'):
+            value = read(path)
+            if any(dependency[1] == module for dependency in value.get('deps', [])):
+                result[str(path)] = [path.stat().st_size, path.stat().st_mtime_ns]
+    return result
+
+
 def manifest_for(root, target, main):
     if target == main:
         return root / 'Cargo.toml'
@@ -94,10 +105,12 @@ def inventory(root, main, package):
         for name in ['tokio', 'serde', 'sqlx', 'wasmtime', 'reqwest']:
             dependencies += fingerprints(target, name)
         before = stamps(affected)
-        other = stamps([p for p in all_fingerprints(target) if not p.name.startswith(package + '-')])
+        dependents = dependent_stamps(target, package)
+        if not dependents:
+            raise ValueError(f'no declared dependent artifacts were found in {target}')
         rows.append({'target': str(target), 'manifest': str(manifest),
                      'affected_before': before, 'dependency_before': stamps(dependencies),
-                     'other_before': other})
+                     'dependents_before': dependents})
     if not rows:
         raise ValueError(f'no current-checkout {package} artifacts were found')
     return rows
@@ -131,16 +144,16 @@ def main():
             affected = stamps(current_package(target, args.package, source))
             if not affected:
                 raise ValueError(f'affected package was not rebuilt in {target}')
-            others = stamps([p for p in all_fingerprints(target) if not p.name.startswith(args.package + '-')])
-            changed = {p: value for p, value in others.items()
-                       if row['other_before'].get(p) != value}
+            dependents = dependent_stamps(target, args.package)
+            changed = {p: value for p, value in dependents.items()
+                       if row['dependents_before'].get(p) != value}
             if not changed:
                 raise ValueError(f'no dependent artifact rebuild was observed in {target}')
             for name, previous in row['dependency_before'].items():
                 path = Path(name)
                 if not path.exists() or [path.stat().st_size, path.stat().st_mtime_ns] != previous:
                     raise ValueError(f'third-party dependency was unnecessarily rebuilt: {path}')
-            row.update(affected_rebuilt=affected, changed_other_fingerprints=changed)
+            row.update(affected_rebuilt=affected, changed_dependent_fingerprints=changed)
         report.update(status='verified', completed_check=str(args.verify_check))
         save(args.report, report)
         print(f'Verified {args.package} and dependent rebuilding in {len(report["targets"])} owned targets')
@@ -149,7 +162,7 @@ def main():
         raise FileExistsError('use a new rebuild evidence path')
     main_target = Path(os.environ.get('CARGO_TARGET_DIR', str(root / 'target')))
     main_target = owned(root, main_target if main_target.is_absolute() else root / main_target)
-    report = {'version': 1, 'status': 'preparing', 'revision': revision,
+    report = {'version': 2, 'status': 'preparing', 'revision': revision,
               'package': args.package, 'started_unix_seconds': time.time(),
               'targets': inventory(root, main_target, args.package)}
     save(args.report, report)
