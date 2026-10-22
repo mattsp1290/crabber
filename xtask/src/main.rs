@@ -110,20 +110,22 @@ fn check() -> checks::Checks {
     let fixture_lease = schedule_fixtures(workspace, &mut gates);
     check_server_host(workspace, &mut gates, true);
     check_custom_http(workspace, &mut gates);
-    gates.cargo(
-        workspace,
-        &[
+    for (target, filter) in [
+        ("facade_contracts", Some("typed_input::")),
+        ("typed_output", None),
+    ] {
+        let mut args = vec![
             "test",
             "-p",
             "crabber",
             "--features",
             "wasm,sqlite,postgres,custom-http",
             "--test",
-            "typed_input",
-            "--test",
-            "typed_output",
-        ],
-    );
+            target,
+        ];
+        args.extend(filter);
+        gates.cargo(workspace, &args);
+    }
     check_sqlite(workspace, &mut gates);
     for features in ["wasm", "wasm,sqlite"] {
         gates.cargo(

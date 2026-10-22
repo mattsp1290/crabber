@@ -405,7 +405,7 @@
         },
         {
           "package": "crabber",
-          "target": "sqlite_builder",
+          "target": "facade_contracts",
           "baseline_features": [
             "default",
             "sqlite"
@@ -423,11 +423,13 @@
           ],
           "baseline_test_count": 1,
           "baseline_tests_sha256": "f65f4ae5ec19e8520a5b64a5eb1f00601a087ffb656324b5044839d799aeb6d9",
-          "missing_tests": []
+          "missing_tests": [],
+          "baseline_target": "sqlite_builder",
+          "current_test_prefix": "sqlite_builder::"
         },
         {
           "package": "crabber",
-          "target": "unknown_tool_depth",
+          "target": "facade_contracts",
           "baseline_features": [
             "default",
             "sqlite"
@@ -445,7 +447,9 @@
           ],
           "baseline_test_count": 1,
           "baseline_tests_sha256": "0822bc01d4d7472ff6dcda5344234bd6083976381ecc5c5076baed48bcc07cde",
-          "missing_tests": []
+          "missing_tests": [],
+          "baseline_target": "unknown_tool_depth",
+          "current_test_prefix": "unknown_tool_depth::"
         }
       ]
     },
@@ -716,5 +720,64 @@
         }
       ]
     }
-  ]
+  ],
+  "current_target_migrations": [
+    {
+      "baseline_target": "output_token_cap",
+      "target": "facade_contracts",
+      "test_prefix": "output_token_cap::",
+      "full_feature_test_count": 5,
+      "source": "crates/crabber/tests/facade_contracts/output_token_cap.rs"
+    },
+    {
+      "baseline_target": "operational_observation",
+      "target": "facade_contracts",
+      "test_prefix": "operational_observation::",
+      "full_feature_test_count": 1,
+      "source": "crates/crabber/tests/facade_contracts/operational_observation.rs"
+    },
+    {
+      "baseline_target": "prompt_contribution_facade",
+      "target": "facade_contracts",
+      "test_prefix": "prompt_contribution_facade::",
+      "full_feature_test_count": 1,
+      "source": "crates/crabber/tests/facade_contracts/prompt_contribution_facade.rs"
+    },
+    {
+      "baseline_target": "typed_input",
+      "target": "facade_contracts",
+      "test_prefix": "typed_input::",
+      "full_feature_test_count": 2,
+      "source": "crates/crabber/tests/facade_contracts/typed_input.rs"
+    },
+    {
+      "baseline_target": "session_owners",
+      "target": "facade_contracts",
+      "test_prefix": "session_owners::",
+      "full_feature_test_count": 3,
+      "source": "crates/crabber/tests/facade_contracts/session_owners.rs"
+    },
+    {
+      "baseline_target": "storable_records",
+      "target": "facade_contracts",
+      "test_prefix": "storable_records::",
+      "full_feature_test_count": 1,
+      "source": "crates/crabber/tests/facade_contracts/storable_records.rs"
+    },
+    {
+      "baseline_target": "sqlite_builder",
+      "target": "facade_contracts",
+      "test_prefix": "sqlite_builder::",
+      "full_feature_test_count": 1,
+      "source": "crates/crabber/tests/facade_contracts/sqlite_builder.rs"
+    },
+    {
+      "baseline_target": "unknown_tool_depth",
+      "target": "facade_contracts",
+      "test_prefix": "unknown_tool_depth::",
+      "full_feature_test_count": 2,
+      "source": "crates/crabber/tests/facade_contracts/unknown_tool_depth.rs"
+    }
+  ],
+  "current_target_migration_status": "Source moves only; exact selected identity, feature and resource mapping require execution validation. Baseline argv, counts and hashes below remain historical."
 }
