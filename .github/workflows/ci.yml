@@ -1,14 +1,9 @@
-name: CI
+name: Partial PostgreSQL slot comparison
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      qualify:
-        description: Run the three cached-source qualification cases once
-        type: boolean
-        default: false
+    branches:
+      - experiment/ten-minute-pg-slots
 
 permissions:
   contents: read
@@ -26,15 +21,15 @@ env:
   CRABBER_POSTGRES_IMAGE: postgres:14@sha256:c2427de38f998489d36de7ca3553db2134872c400f2b08be4b824e5c50e4d619
 
 jobs:
-  check:
+  slot-comparison:
     runs-on: ubuntu-latest
-    # Qualification runs three separately enforced 600s cases; provisioning and
-    # post-result cache maintenance also need room within the job lifetime.
+    # A resource comparison only; it never reports complete-check qualification.
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Provision pinned Rust
         run: |
           rust_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["rust"]["version"])')"
@@ -43,7 +38,7 @@ jobs:
       - name: Record compiler cache identity
         id: compiler
         run: echo "hash=$(rustc -Vv | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - name: Start complete-check clock before cache restoration
+      - name: Start partial-comparison clock before cache restoration
         id: budget
         run: echo "start=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -110,59 +105,17 @@ jobs:
         run: |
           python3 -I -S .github/scripts/cache-source-times.py restore
           cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
-      - name: Complete required check including compilation and cleanup
-        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha) }}
+      - name: Compare the same 43 Runtime PostgreSQL histories at two and four slots
         env:
           CHECK_STARTED: ${{ steps.budget.outputs.start }}
-          CACHE_STATE: ${{ steps.conditions.outputs.state }}
-        run: python3 -I -S .github/scripts/check.py --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check.json"
-      - name: Qualify no-op and affected workspace rebuilds
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha }}
-        env:
-          CHECK_STARTED: ${{ steps.budget.outputs.start }}
-        run: python3 -I -S .github/scripts/qualify-check.py --warm-report target/test-performance/cache-restore.json --ci-start-time "$CHECK_STARTED" --output "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/qualification"
-      - name: Mark complete cache snapshot
-        if: success()
-        run: |
-          python3 -I -S - <<'PY'
-          import json, os, pathlib
-          directory = pathlib.Path('target/test-performance') / ('ci-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
-          report = directory / 'check.json'
-          if not report.exists():
-              report = directory / 'qualification/session-rebuild.json'
-          result = json.loads(report.read_text())
-          pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True, 'check': result}) + '\n')
-          PY
-      - name: Preserve unchanged source freshness as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
-        run: python3 -I -S .github/scripts/cache-source-times.py capture
-      - name: Save dependency and compiler snapshot as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/debug
-            target/release
-            target/wasm32-wasip2
-            target/local-probes
-            target/consumer-probes
-            target/test-tools
-            fixtures/wasm/target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: Preserve sanitized check, coverage and fixture reports
+        run: python3 -I -S .github/scripts/compare-postgres-slots.py
+      - name: Preserve partial comparison evidence
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: complete-check-${{ github.run_id }}-${{ github.run_attempt }}
+          name: partial-pg-slots-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            target/test-performance/pg-slot-comparison/
             target/test-performance/cache-restore.json
-            target/test-performance/ci-*/**/*.json
-            target/test-performance/complete-*/fixtures.jsonl
-            target/test-performance/complete-*/tests.json
-            target/test-performance/complete-*/boundary-features.json
-            target/test-performance/complete-*/resource-groups.json
-            target/test-performance/complete-*/*-version.txt
-          if-no-files-found: ignore
           retention-days: 7
+          if-no-files-found: error
