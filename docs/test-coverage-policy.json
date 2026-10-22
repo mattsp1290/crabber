@@ -71,6 +71,39 @@
       "validation": "All three retained core families passed once serially and once at four scheduler slots: 28 Memory and 16 histories per SQL backend. Native wall times were43.857s serial and21.536s parallel. Each run created and finished its one PostgreSQL history fixture, cleaned its owned run/server, and left its container absent. This is partial changed-family validation; complete and affected-rebuild qualification remain pending. Prior full-run timings are not a controlled critical-path comparison."
     },
     {
+      "id": "runtime-initial-driver-join-ack",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A malformed Join acknowledgement must not release the original physical proof, change retry identity, or repeat business dispatch even though native Join committed.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/driver/retirement.rs"
+      ],
+      "retained_tests": [
+        "memory_initial_driver_malformed_join_ack_retains_original_proof",
+        "sqlite_initial_driver_malformed_join_ack_retains_original_proof",
+        "postgres_initial_driver_malformed_join_ack_retains_original_proof",
+        "sqlite::session_owner::drivers::tests::sql_initial_driver_contract",
+        "postgres::session_owner::drivers::tests::sql_initial_driver_contract",
+        "sqlite::session_owner::drivers::tests::sql_unkeyed_driver_contract",
+        "postgres::session_owner::drivers::tests::sql_unkeyed_driver_contract",
+        "sqlite::session_owner::tests::owned_scope_sources_and_join_hash_are_independent",
+        "postgres::session_owner::tests::owned_scope_sources_and_join_hash_are_independent",
+        "sqlite::session_owner::drivers::tests::publications::driver_original_publication_refuses_valid_projection_rewrites",
+        "postgres::session_owner::drivers::tests::publications::driver_original_publication_refuses_valid_projection_rewrites",
+        "sqlite::session_owner::tests::session_owner_contract",
+        "postgres::session_owner::tests::session_owner_contract"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Each backend repeats nine returned-receipt field mutations for both keyed and unkeyed initial admission: 18 histories.",
+      "after": "Memory keeps all 18 histories. Each SQL backend retains both origins with wrong termination (1) and wrong owner target (8): four histories. All original assertions and deadlines remain.",
+      "rationale": "The test wrapper changes only an in-memory returned SessionOwnerReceipt after genuine native Join has completed. No mutation changes persisted SQL data, backend authentication or an in-flight transaction. All nine negative field comparisons belong to the shared Runtime retirement predicate and remain covered on Memory. Each retained SQL case proves persisted Joined state, a still-pending original proof after150ms, identical repeated Join keys, exactly one business/provider effect, and eventual completion only after clearing the corruption. That genuine SQL Replay must pass all nine positive comparisons. Native SQL driver fault/cold-replay/protection and real persisted owned-scope source/Join-hash corruption and process histories remain required.",
+      "validation": "All three retained ACK families passed once serially and once at four scheduler slots: 18 Memory and four histories per SQL backend. Each run created and finished one owned PostgreSQL fixture, cleaned its run/server and left its container absent. Every real Replay still passed the complete retirement predicate. This is partial changed-family validation; complete-budget and affected-rebuild qualification remain pending."
+    },
+    {
       "id": "pending-tool-malformed-ack",
       "disposition": "MOVE-CHEAPER",
       "state": "targeted-backend-qualified",

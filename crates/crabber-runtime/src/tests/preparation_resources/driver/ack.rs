@@ -1,12 +1,19 @@
 //! A committed native Join with a malformed ACK retains its original proof.
 use super::*;
 
-async fn contract(store: Arc<dyn Store>) {
+const ALL_BAD_ACKS: &[usize] = &[1, 2, 3, 4, 5, 6, 7, 8, 9];
+// These mutate only the returned receipt after native Join has completed.
+// Memory owns every negative predicate; SQL retains termination and owner
+// identity rejection, then genuine Replay through the full predicate.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+const SQL_BAD_ACKS: &[usize] = &[1, 8];
+
+async fn contract(store: Arc<dyn Store>, malformed_acks: &[usize]) {
     // These waits bound test progress, not the malformed-ACK contract below.
     // Parallel PostgreSQL suites can spend seconds queueing fenced operations.
     let progress_bound = Duration::from_secs(15);
     for unkeyed in [false, true] {
-        for bad in 1..=9 {
+        for &bad in malformed_acks {
             let gate = Arc::new(SettlementGate::default());
             gate.release.notify_one();
             gate.driver_join_bad.store(bad, Ordering::SeqCst);
@@ -58,7 +65,7 @@ async fn contract(store: Arc<dyn Store>) {
 }
 #[tokio::test]
 async fn memory_initial_driver_malformed_join_ack_retains_original_proof() {
-    contract(Arc::new(MemoryStore::new())).await;
+    contract(Arc::new(MemoryStore::new()), ALL_BAD_ACKS).await;
 }
 
 #[cfg(feature = "sqlite")]
@@ -68,7 +75,7 @@ async fn sqlite_initial_driver_malformed_join_ack_retains_original_proof() {
     let path = directory.path().join("initial-driver-ack.sqlite");
     crabber_session::SqliteStore::migrate(&path).await.unwrap();
     let store = crabber_session::SqliteStore::connect(&path).await.unwrap();
-    contract(Arc::new(store)).await;
+    contract(Arc::new(store), SQL_BAD_ACKS).await;
 }
 #[cfg(feature = "postgres")]
 #[tokio::test]
@@ -78,7 +85,7 @@ async fn postgres_initial_driver_malformed_join_ack_retains_original_proof() {
     TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
         crabber_session::PostgresStore::migrate(&url).await.unwrap();
         let store = crabber_session::PostgresStore::connect(&url).await.unwrap();
-        contract(Arc::new(store)).await;
+        contract(Arc::new(store), SQL_BAD_ACKS).await;
     })
     .await
     .unwrap();
