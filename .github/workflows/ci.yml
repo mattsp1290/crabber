@@ -28,7 +28,9 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Qualification runs three separately enforced 600s cases; provisioning and
+    # post-result cache maintenance also need room within the job lifetime.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
