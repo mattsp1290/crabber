@@ -129,6 +129,21 @@ pub struct QueuePage {
     pub entries: Vec<QueueSummary>,
     pub next_after: Option<u64>,
 }
+/// Workspace discovery convenience, not authorization on Memory or SQLite.
+/// A claimed head may be reclaimed only through the existing expiry-checked claim.
+#[derive(Debug, Clone)]
+pub struct QueueHeadsRequest {
+    pub workspace_id: String,
+    /// Page size, from 1 through 256.
+    pub limit: u16,
+    /// Exclusive session-id cursor, using bytewise ordering.
+    pub cursor: Option<SessionId>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueHeadsPage {
+    pub heads: Vec<QueueSummary>,
+    pub next: Option<SessionId>,
+}
 macro_rules! redacted { ($($ty:ty),*) => {$(impl std::fmt::Debug for $ty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(concat!(stringify!($ty), "([redacted])")) }
 })*}; }

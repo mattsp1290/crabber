@@ -88,8 +88,9 @@ pub mod queue;
 #[cfg(test)]
 mod queue_contract;
 pub use queue::{
-    QueueAction, QueueAuthority, QueueInput, QueueMutation, QueueOutcome, QueuePage,
-    QueuePageRequest, QueueReceipt, QueueState, QueueSummary, RetainedQueue,
+    QueueAction, QueueAuthority, QueueHeadsPage, QueueHeadsRequest, QueueInput, QueueMutation,
+    QueueOutcome, QueuePage, QueuePageRequest, QueueReceipt, QueueState, QueueSummary,
+    RetainedQueue,
 };
 pub mod control_contract;
 pub mod run_control;
@@ -158,7 +159,7 @@ pub use sqlite::SqliteStore;
 pub use storable::{ensure_storable, ensure_storable_text};
 pub use store::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
-    Store, StoreError,
+    Store, StoreError, WorkspaceRunsRequest,
 };
 
 #[cfg(test)]
@@ -235,6 +236,14 @@ mod tests {
     #[tokio::test]
     async fn memory_contract() {
         crate::storetest::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+    }
+
+    #[tokio::test]
+    async fn memory_workspace_discovery_contract() {
+        crate::storetest::run_workspace_discovery_contract(|clock| {
+            crate::MemoryStore::with_clock(clock)
+        })
+        .await;
     }
 
     #[tokio::test]

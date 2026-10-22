@@ -91,14 +91,31 @@ impl SqliteStore {
     }
 
     pub(super) async fn raw_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
+        self.unfinished_runs(None).await
+    }
+
+    pub(super) async fn raw_workspace_unfinished_runs(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<Run>, StoreError> {
+        self.unfinished_runs(Some(workspace)).await
+    }
+
+    async fn unfinished_runs(&self, workspace: Option<&str>) -> Result<Vec<Run>, StoreError> {
         let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             let mut proof = Proof::bounded(32 << 20);
-            super::read_proof::charge(&mut tx, sqlx::query_scalar(
-                "SELECT SUM(length(CAST(data AS BLOB))+length(CAST(id AS BLOB))+length(CAST(session_id AS BLOB))) FROM runs WHERE status IN ('pending','running','paused')"
-            ), &mut proof).await.map_err(failure)?;
-            let rows = sqlx::query("SELECT id,session_id,data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq")
-                .fetch_all(&mut *tx).await.map_err(db)?;
+            let (cost_sql, runs_sql) = if workspace.is_some() {
+                ("SELECT SUM(length(CAST(r.data AS BLOB))+length(CAST(r.id AS BLOB))+length(CAST(r.session_id AS BLOB))) FROM runs r JOIN sessions s ON s.id=r.session_id WHERE json_extract(s.data, '$.workspace_id')=$1 AND r.status IN ('pending','running','paused')", "SELECT r.id,r.session_id,r.data FROM runs r JOIN sessions s ON s.id=r.session_id WHERE json_extract(s.data, '$.workspace_id')=$1 AND r.status IN ('pending','running','paused') ORDER BY r.seq")
+            } else {
+                ("SELECT SUM(length(CAST(data AS BLOB))+length(CAST(id AS BLOB))+length(CAST(session_id AS BLOB))) FROM runs WHERE status IN ('pending','running','paused')", "SELECT id,session_id,data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq")
+            };
+            let cost = sqlx::query_scalar(cost_sql);
+            let cost = if let Some(workspace) = workspace { cost.bind(workspace) } else { cost };
+            super::read_proof::charge(&mut tx, cost, &mut proof).await.map_err(failure)?;
+            let query = sqlx::query(runs_sql);
+            let query = if let Some(workspace) = workspace { query.bind(workspace) } else { query };
+            let rows = query.fetch_all(&mut *tx).await.map_err(db)?;
             let mut runs = Vec::with_capacity(rows.len());
             for row in rows {
                 let run: Run = records::decode_row(&row, "data")?;

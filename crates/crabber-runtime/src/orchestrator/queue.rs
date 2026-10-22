@@ -61,6 +61,15 @@ impl Orchestrator {
     ) -> Result<Option<QueueReceipt>, StoreError> {
         self.store.lookup_queue(session, id).await
     }
+    /// Read one live queue head per session in a workspace.
+    /// # Errors
+    /// Returns unsupported, validation or corrupt storage errors.
+    pub async fn list_queue_heads(
+        &self,
+        request: crabber_session::QueueHeadsRequest,
+    ) -> Result<crabber_session::QueueHeadsPage, StoreError> {
+        self.store.list_queue_heads(request).await
+    }
     /// Read bounded coherent queue metadata.
     /// # Errors
     /// Mutations invalidate the captured continuation revision.

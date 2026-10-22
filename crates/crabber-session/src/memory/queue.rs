@@ -110,6 +110,35 @@ fn head(state: &State, session: &SessionId) -> Result<Option<QueueSummary>, Stor
     Ok(head.cloned())
 }
 impl MemoryStore {
+    pub(super) fn queue_heads(
+        &self,
+        request: &crate::QueueHeadsRequest,
+    ) -> Result<crate::QueueHeadsPage, StoreError> {
+        crate::queue::validate_heads(request)?;
+        let state = self.state.lock().unwrap();
+        let mut heads = Vec::new();
+        let mut bytes = 0usize;
+        for (id, session) in &state.sessions {
+            if session.workspace_id != request.workspace_id
+                || request.cursor.as_ref().is_some_and(|cursor| id <= cursor)
+            {
+                continue;
+            }
+            if let Some(summary) = head(&state, id)? {
+                let size = encode(&summary)?.len();
+                bytes = bytes.checked_add(size).ok_or_else(corrupt)?;
+                if size > 16384 || bytes > 256 << 10 {
+                    return Err(corrupt());
+                }
+                heads.push(summary);
+                if heads.len() > usize::from(request.limit) {
+                    break;
+                }
+            }
+        }
+        Ok(crate::queue::heads_page(request, heads))
+    }
+
     pub(super) fn queue_session_snapshot(
         &self,
         id: &SessionId,

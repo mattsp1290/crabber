@@ -889,7 +889,31 @@ impl Agent {
         self.runtime.recover_with_context(context_for).await
     }
 
+    /// Recover expired unfinished runs discovered in one workspace.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<crabber_runtime::RecoverReport, RuntimeError> {
+        self.runtime.recover_workspace(workspace_id).await
+    }
 
+    /// Select fresh correlation per run during workspace recovery.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_workspace_with_context<F>(
+        &self,
+        workspace_id: &str,
+        context_for: F,
+    ) -> Result<crabber_runtime::RecoverReport, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
+        self.runtime
+            .recover_workspace_with_context(workspace_id, context_for)
+            .await
+    }
 }
 
 /// Only the winner of keyed admission receives a live execution handle.

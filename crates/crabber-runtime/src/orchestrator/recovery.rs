@@ -466,12 +466,11 @@ impl Orchestrator {
     /// Returns the same store and execution errors as `recover`.
     pub async fn recover_with_context<F>(
         &self,
-        mut context_for: F,
+        context_for: F,
     ) -> Result<RecoverReport, RuntimeError>
     where
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {
-        let mut report = RecoverReport::default();
         if let Some(provider) = &self.contextual_provider {
             provider.check_ready_allowed()?;
         }
@@ -485,6 +484,60 @@ impl Orchestrator {
                     .map_err(RuntimeError::from)
             })
             .await?;
+        self.sweep(runs, context_for).await
+    }
+
+    /// Recover only unfinished runs discovered in the requested workspace.
+    /// PostgreSQL roles enforce row isolation; other stores only filter discovery.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<RecoverReport, RuntimeError> {
+        self.recover_workspace_with_context(workspace_id, |_| None)
+            .await
+    }
+
+    /// Choose fresh correlation for each run in one workspace recovery sweep.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_workspace_with_context<F>(
+        &self,
+        workspace_id: &str,
+        context_for: F,
+    ) -> Result<RecoverReport, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
+        if let Some(provider) = &self.contextual_provider {
+            provider.check_ready_allowed()?;
+        }
+        let request = crabber_session::WorkspaceRunsRequest {
+            workspace_id: workspace_id.into(),
+        };
+        let runs = self
+            .own_root(None, |runtime| async move {
+                runtime.initialize_owned().await?;
+                runtime
+                    .store
+                    .list_workspace_unfinished_runs(request)
+                    .await
+                    .map_err(RuntimeError::from)
+            })
+            .await?;
+        self.sweep(runs, context_for).await
+    }
+
+    async fn sweep<F>(
+        &self,
+        runs: Vec<crabber_core::Run>,
+        mut context_for: F,
+    ) -> Result<RecoverReport, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
+        let mut report = RecoverReport::default();
         for run in runs {
             if self.is_closed() {
                 return Err(RuntimeError::HostClosed);

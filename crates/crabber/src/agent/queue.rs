@@ -9,6 +9,16 @@ use crabber_session::{
     RetainedQueue,
 };
 impl Agent {
+    /// Read the lowest live queue sequence per session in one workspace.
+    /// # Errors
+    /// Returns unsupported, validation or store read errors.
+    pub async fn list_queue_heads(
+        &self,
+        request: crabber_session::QueueHeadsRequest,
+    ) -> Result<crabber_session::QueueHeadsPage, crabber_session::StoreError> {
+        self.runtime.list_queue_heads(request).await
+    }
+
     /// Enqueue typed future input; stored defaults resolve when this head is prepared.
     /// Configured fallback and reflected profile resolve at the first preparation.
     /// # Errors

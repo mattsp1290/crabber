@@ -70,6 +70,26 @@ pub(crate) fn scope(session: &SessionId, id: &ControlId) -> Result<(), StoreErro
 pub(crate) fn identifier(value: &str) -> Result<(), StoreError> {
     crate::attempt::validate_identifier(value).map_err(|_| invalid())
 }
+pub(crate) fn validate_heads(request: &crate::QueueHeadsRequest) -> Result<(), StoreError> {
+    if !(1..=256).contains(&request.limit) {
+        return Err(StoreError::Validation(
+            "invalid queue head page limit".into(),
+        ));
+    }
+    if let Some(cursor) = &request.cursor {
+        identifier(&cursor.0)?;
+    }
+    Ok(())
+}
+pub(crate) fn heads_page(
+    request: &crate::QueueHeadsRequest,
+    mut heads: Vec<QueueSummary>,
+) -> crate::QueueHeadsPage {
+    let more = heads.len() > usize::from(request.limit);
+    heads.truncate(usize::from(request.limit));
+    let next = more.then(|| heads.last().expect("nonempty page").session_id.clone());
+    crate::QueueHeadsPage { heads, next }
+}
 pub(crate) fn encode<T: Serialize>(value: &T) -> Result<String, StoreError> {
     let encoded = serde_json::to_string(value).map_err(|_| invalid())?;
     if encoded.len() > MAX_RECORD {

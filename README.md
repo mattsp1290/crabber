@@ -346,3 +346,6 @@ and follow the [AG-UI contract](docs/ag-ui.md). Run
 `cargo run -p agui-sse -- --check` for the [credential-free SSE example](examples/agui-sse/README.md),
 including pinned Rust-client ASCII interoperability and independently decoded
 fragmented Unicode. The default facade remains independent of AG-UI/HTTP.
+
+PostgreSQL workers can use database-enforced workspace roles and scoped discovery.
+See the [role matrix and provisioning SQL](docs/server-host.md#workspace-scoped-roles-and-row-level-security) for worker and host permissions.
