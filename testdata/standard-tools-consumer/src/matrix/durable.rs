@@ -19,7 +19,7 @@ type Error = Box<dyn std::error::Error>;
 fn authority() -> AuthorityRequirement {
     AuthorityRequirement::new("consumer-operator", "1").unwrap()
 }
-pub(super) fn turn(name: &str, args: Value) -> Vec<StreamDelta> {
+pub(crate) fn turn(name: &str, args: Value) -> Vec<StreamDelta> {
     let id = ToolCallId::new();
     vec![
         StreamDelta::ToolCallStart {
@@ -34,7 +34,7 @@ pub(super) fn turn(name: &str, args: Value) -> Vec<StreamDelta> {
         StreamDelta::Completed,
     ]
 }
-pub(super) fn done() -> Vec<StreamDelta> {
+pub(crate) fn done() -> Vec<StreamDelta> {
     vec![
         StreamDelta::TextDelta("done".into()),
         StreamDelta::Completed,
@@ -141,7 +141,7 @@ async fn finish(
     ));
     Ok(())
 }
-pub(super) async fn results(
+pub(crate) async fn results(
     store: &dyn Store,
     session: &crabber::core::SessionId,
 ) -> Result<Vec<crabber::core::ToolCallRecord>, Error> {
@@ -164,7 +164,7 @@ pub(super) async fn results(
     };
     Ok(page.tool_calls)
 }
-pub(super) fn value(record: &crabber::core::ToolCallRecord) -> Value {
+pub(crate) fn value(record: &crabber::core::ToolCallRecord) -> Value {
     match &record.result.as_ref().unwrap().content[0] {
         crabber::core::ContentBlock::Text { text } => serde_json::from_str(text).unwrap(),
         _ => panic!("JSON tool result"),

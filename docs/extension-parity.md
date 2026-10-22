@@ -7,10 +7,11 @@ the source snapshot before consolidation.
 Requests `crabber-r-m5pf`, `crabber-r-u7l3`, and `crabber-r-0f7c` are resolved
 with consumer acceptance recorded in Beans.
 
-The canonical execution plan is `crabber-extensions-plan-pygp`, with rollup
-`crabber-extensions-6ynl`. Use `bn plan show crabber-extensions-plan-pygp` and
-`bn ready` to inspect current execution state. Local editable planning files
-live under ignored `.agents/plans/extension-parity/`; Beans holds the shared copy.
+The original extension implementation plan is `crabber-extensions-plan-pygp`,
+with rollup `crabber-extensions-6ynl` in the satellite tracker. Historical issue
+IDs below preserve that provenance. Consolidation migrates remaining work with
+pointers after its CI acceptance; use `bn ready` from the Crabber checkout for
+current Crabber work. Local agent plans remain ignored.
 
 | Feature | Scope | Work |
 | --- | --- | --- |
@@ -31,7 +32,7 @@ Infrastructure is `crabber-extensions-iaa6`; shared process lifecycle work is
 
 ## Operating decisions
 
-One library crate starts the workspace. Feature modules have separate options,
+One native extension library crate lives in the workspace. Feature modules have separate options,
 configuration hashes and registration surfaces. Further crate splits should
 follow actual dependencies rather than anticipating abstractions. There are
 no active consumers requiring compatibility shims or feature flags.
@@ -49,7 +50,9 @@ frozen-plan fingerprint and strict resume semantics.
 
 ## Execution and acceptance
 
-1. Bootstrap the pinned workspace and Linux/macOS verification workflow.
+The original delivery sequence, before consolidation, was:
+
+1. Bootstrap the then-pinned workspace and Linux/macOS verification workflow.
 2. Deliver workspace instructions and final result redaction with public-facade
    tests, including protected durable messages/events/results and next model input.
 3. Port the three host callback bridges and command policy.
@@ -527,7 +530,7 @@ under crabber-extensions-2bed.
 | `close` | Bounded engine-owned closing token plus mount tracker joins. Invocation removal is bounded by kill_wait; a timed-out removal may finish in the background and is retried by close. Linux settlement can take timeout+2×kill_wait; macOS can add another kill_wait for group absence confirmation. Hosts size the registry mount-close timeout above cleanup (default five seconds). Directory failures quarantine and remain visible for retry; unproved reaping remains a survivor even after directory cleanup. Shared instances are single-use after any mount closes. |
 | `cleanup` | Descendants leaving the group and host SIGCHLD auto-reaping/waitpid(-1) are out of contract. Private trees are not a sandbox. |
 | `recovery` | Paused Pending calls execute once on resume with reduction; Running calls settle Interrupted without transform under Crabber D10. No retry_safe metadata because this is not a tool. Running-call sweep proofs remain open. |
-| `platform` | Unix execution only, non-Unix construction rejects first. Linux/macOS CI proves synthetic plumbing; local Windows check is compile-only. Real RTK behavior has been verified on Linux aarch64, not macOS. |
+| `platform` | Unix execution only, non-Unix construction rejects first. Linux CI proves synthetic plumbing; the historical Windows check was compile-only and macOS is no longer in CI. Real RTK behavior has been verified on Linux aarch64, not macOS. |
 | `scope` | Install one reducer per registry. Crabber permits repeated mounts and runs each handler; shared instances share capacity and close together. |
 | `proof` | Synthetic /bin/sh fixtures prove plumbing, lifecycle and acceptance arithmetic, not filters. Opt-in official v0.51.0 Linux aarch64 run preserved all sentinels and ambient RTK directories; encoded bytes: cargo 1426→535, go 17070→199, diff 201→161, log 14799→202. Hosted CI is tracked separately. |
 
@@ -540,16 +543,18 @@ tracked under `crabber-extensions-2bed`, and full nine-feature parity is not cla
 
 ## Verification and limits
 
-The live suite is compiled with the feature in Clippy on Linux/macOS CI and
+The live suite is compiled with the feature in Clippy on Linux CI and
 runs only its two-skip credential-free path on Linux CI. Hosted CI does not run
 live journeys or receive a provider secret. Local require-flag execution is
 recorded above; a skipped test is never counted as live acceptance.
 
-Local gates: formatting, Clippy, tests and documentation build. CI runs the
-same gates on Linux and macOS. CI fetches the pinned Crabber source over HTTPS
-without a repository access token, so the source must be publicly readable.
-Hosted CI results and macOS execution are not claimed merely because local
-Linux gates pass.
+The containing workspace runs formatting, Clippy, tests and documentation
+through `cargo xtask check` on Linux. Consumer qualification fetches the public
+Crabber repository at one revision over HTTPS while preserving its SSH Cargo
+source identity. macOS CI coverage from the satellite is dropped by owner
+decision; the timing defect tracked as `crabber-extensions-6tg5` remains open
+until its migration is recorded. Local Linux results do not claim hosted or
+macOS acceptance.
 
 Instruction tests cover exact typed frames, regular/missing/invalid/oversized
 files, longest boundary selection, symlink refusal, pinned root handles, reader
@@ -598,12 +603,13 @@ word fixtures abstain, and a two-call turn prepares twice before pause, zero
 times on resume. The depth-31 admitted substitution matches a deny rule; depth
 32 exhausts the depth budget. Full nine-feature composition remains open.
 
-## Historical pin 3ff793c dependency additions
+## Pin 3ff793c dependency additions
 
-Before consolidation, the durable host API migration adopted Crabber
+This historical durable host API migration adopted Crabber
 `3ff793c982aa1fc31e5d3a2bbe459f753d7bbf8e` (tree
-`7918c51e0ef65d9c2188bbea35341aa0cad7e6d0`). All six Crabber packages
-resolve to one immutable Git source. Rust remains 1.99.0.
+`7918c51e0ef65d9c2188bbea35341aa0cad7e6d0`) before repository consolidation.
+At that point six Crabber packages resolved to one immutable Git source and
+Rust was 1.99.0. Current dependencies use the containing workspace.
 
 | Added normal dependency | License | Purpose |
 | --- | --- | --- |
@@ -761,22 +767,23 @@ parity or downstream consumer acceptance.
 | Exact Crabber source URL in all three repositories | `ssh://git@github.com/mattsp1290/crabber.git` |
 
 The [external consumer](../testdata/extensions-consumer/README.md) creates a fresh
-Cargo workspace outside this repository, pins extensions to a pushed SHA,
-generates its lock once and uses `--locked` thereafter. It checks all six
-Crabber packages share exactly the expected source, each tuple package has one
-version/source identity, and no duplicate Crabber roots exist. HTTPS fetch
+Cargo workspace outside this repository and pins runtime and extensions to one
+pushed `CRABBER_REV`. It generates its lock once and uses `--locked` thereafter.
+It checks every resolved Crabber package shares that source, each package has
+one version/source identity, and no duplicate Crabber roots exist. HTTPS fetch
 rewrites preserve the SSH Cargo source identity. Qualification of later feature
 heads and their exact generated lock hashes is recorded in the PR; this table
-names the production baseline rather than a self-referential documentation SHA.
+names the pre-consolidation production baseline rather than a self-referential documentation SHA.
 
 The dedicated host composes all three Session factories with aggregate capacity,
 shared instructions/redaction/AST guard/AskUser and a custom extension, across
 three concurrent sessions in two workspaces. It asserts inline, detached and
 nested delegation, instruction roots, Python state, permission Ask followed by
 host denial, durable-answer replay, scoped close, actual process-group absence
-and unchanged process cwd. The full-tuple stage additionally enables a restricted
-standard-tools catalog. Six public-contract integration targets are exported
-from the same immutable extensions commit and compiled against Git dependencies:
+and unchanged process cwd. The separate [standard tools consumer](../testdata/standard-tools-consumer/README.md)
+qualifies tools, command guard and final redaction together at the same Crabber
+revision. Six public-contract integration targets are exported from that
+immutable revision and compiled against Git dependencies:
 These tests cover durable input edge cases, attribution, isolation and cleanup.
 These reuse the repository's public test journeys; they are not a second
 implementation of those contracts.
@@ -794,7 +801,7 @@ warnings denied, dependency identity and whitespace checks. Process fixtures are
 required. Tests use two harness threads on the qualification host; earlier
 unchanged RTK timing failures under default concurrency remain unexplained, so
 this record does not assert those failures were fixed. Credential-present live
-suites and macOS runs are not claimed here; the CI matrix defines macOS gates.
+suites and macOS runs are not claimed here; the consolidated CI matrix is Linux-only.
 
 The [attribution coverage matrix](#delegation-attribution-coverage) remains authoritative:
 inline calls have phase/call attribution, detached jobs have invocation identity,

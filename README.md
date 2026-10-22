@@ -174,9 +174,9 @@ their published revisions and have no SQLite variant.
 
 | Target | CI | Notes |
 | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | full `cargo xtask check`, PostgreSQL suite | reference platform |
-| `aarch64-unknown-linux-gnu` | workspace build and tests, PostgreSQL suite (matrix), embedding smoke | Raspberry Pi 4/5 and other arm64 Linux hosts |
-| `aarch64-unknown-linux-musl` | workspace build (excluding `agui-sse`), static-link check | static images; `agui-sse` needs OpenSSL via `native-tls` and is excluded; not executed in CI |
+| `x86_64-unknown-linux-gnu` | full `cargo xtask check`, PostgreSQL suite; standard tools and native extensions, rustdoc, Git consumers on every push | reference platform |
+| `aarch64-unknown-linux-gnu` | workspace build and tests including standard tools and native extensions, PostgreSQL suite (matrix), embedding smoke, `mount-standard --check` | Raspberry Pi 4/5 and other arm64 Linux hosts |
+| `aarch64-unknown-linux-musl` | workspace build (excluding `agui-sse`); catalog, fileops, glob, search tests and `mount-standard --check` executed as static binaries | static images; `agui-sse` needs OpenSSL via `native-tls` and is excluded |
 
 From `x86_64` Linux, cross-compile with
 `cross build --target aarch64-unknown-linux-musl --workspace --exclude agui-sse`
@@ -185,7 +185,21 @@ or `cargo zigbuild`. When using a local musl cross toolchain, set
 feature tests must run on the target architecture with access to the PostgreSQL
 service; cross-compilation alone does not run those tests. WASM fixtures use
 `wasm32-wasip2`, are architecture-independent, and are built on the host.
-macOS and Windows are untested.
+macOS and Windows are untested in this repository. The previous satellite macOS
+coverage is dropped by owner decision; the timing defect recorded as
+`crabber-extensions-6tg5` remains follow-up work.
+
+### Provisioning ripgrep for `search`
+
+`search` requires ripgrep >= 14 on the worker's PATH; `shell` also requires `sh`.
+Verify the installed version with `rg --version`. Ubuntu 24.04 workers can use
+`sudo apt-get update` followed by `sudo apt-get install -y ripgrep`; check that
+the resulting major version is at least 14. Other workers can install a suitable
+architecture's asset from the [ripgrep releases](https://github.com/BurntSushi/ripgrep/releases)
+or use `cargo install ripgrep --locked`, then verify its version. Both arm jobs
+provision ripgrep explicitly, and the workspace gate fails early if it is missing
+or too old. Native extensions additionally need Python 3.11 through 3.14.
+
 
 ## Bounded embedding history
 
