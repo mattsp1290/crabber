@@ -68,6 +68,12 @@ test-threads = 16
 retries = 0
 fail-fast = false
 
+# These MemoryStore-only blocked-drop histories include real native deadlines.
+# Start them early while retaining the conservative service group and weight.
+[[profile.complete.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_native_deadline_keeps_actual_blocked_drop_visible_and_retained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_ready_native_reply_stays_private_through_actual_blocked_drop))'
+priority = 20
+
 # Service limits take priority even inside a WASM binary. The later WASM
 # override independently retains its two general scheduler reservations.
 [[profile.complete.overrides]]
@@ -107,6 +113,12 @@ threads-required = 1
 test-threads = 4
 retries = 0
 fail-fast = false
+
+# These MemoryStore-only blocked-drop histories include real native deadlines.
+# Start them early while retaining the conservative service group and weight.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_native_deadline_keeps_actual_blocked_drop_visible_and_retained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_ready_native_reply_stays_private_through_actual_blocked_drop))'
+priority = 20
 
 # Service limits take priority even inside a WASM binary. The later WASM
 # override independently retains its two general scheduler reservations.
