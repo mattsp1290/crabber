@@ -76,6 +76,7 @@ impl Orchestrator {
             tools: snapshot.tools.clone(),
             temperature: None,
             max_tokens: snapshot.max_output_tokens,
+            reasoning_effort: snapshot.model_controls.reasoning_effort,
             tool_choice: None,
         };
         let calls_to_next = Arc::new(AtomicUsize::new(0));
@@ -165,7 +166,7 @@ impl Orchestrator {
         let dispatched = self.dispatch_model_callbacks(
             plan,
             cancellation,
-            json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"tool_choice":null}),
+            json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"reasoning_effort":snapshot.model_controls.reasoning_effort,"tool_choice":null}),
             terminal,
         ).await?;
         let provider_error = error_slot.lock().unwrap().take();

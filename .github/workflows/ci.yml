@@ -26,7 +26,11 @@ jobs:
         run: cargo xtask check
 
   postgres:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     services:
       postgres:
         image: postgres:14
@@ -43,6 +47,9 @@ jobs:
       CRABBER_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
       CRABBER_REQUIRE_POSTGRES: "1"
       CRABBER_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Install stable Rust
@@ -99,3 +106,70 @@ jobs:
         run: cargo test -p crabber --features postgres --test session_owners -- --nocapture
       - name: Offline customized server host and injected Store adoption
         run: cargo test -p server-host-probe --features postgres -- --nocapture
+
+      - name: Public workspace roles and cross-workspace denial
+        # Global host recovery must not consume paused runs left by earlier journeys.
+        run: |
+          psql "$CRABBER_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE crabber_workspace_roles'
+          CRABBER_TEST_POSTGRES_URL="${CRABBER_TEST_POSTGRES_URL%/*}/crabber_workspace_roles" \
+            cargo test -p crabber --features postgres --test workspace_roles -- --nocapture
+      - name: Provision CI worker role
+        run: psql "$CRABBER_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f .github/scripts/provision-ci-worker.sql
+      - name: Worker-role journeys
+        env:
+          CRABBER_TEST_POSTGRES_URL: postgres://crabber_ci_worker:crabber-ci-only@localhost:5432/postgres
+          CRABBER_REQUIRE_POSTGRES: "1"
+        run: cargo test -p crabber --features postgres --test future_queue --test session_owners --test durable_controls --test bounded_snapshots --test session_management --test durable_interactions --test server_host -- --nocapture
+
+  aarch64-gnu:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust with rustfmt and Clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Install WASM tooling
+        run: |
+          rustup target add wasm32-wasip2
+          cargo install wasm-tools --locked
+      - name: Verify native arm64 GNU toolchain
+        run: |
+          rustc -vV | grep 'host: aarch64-unknown-linux-gnu'
+      - name: Build architecture-independent WASM fixtures
+        run: cargo xtask build-fixtures
+      - name: Build workspace and all targets
+        run: cargo build --workspace --all-targets
+      - name: Test workspace
+        run: cargo test --workspace
+      - name: Run credential-free embedding smoke test
+        run: cargo run --quiet -p minimal-embed
+
+  aarch64-musl:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust and musl target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-unknown-linux-musl
+      - name: Install native musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Build musl workspace without native TLS example
+        run: cargo build --workspace --exclude agui-sse --target aarch64-unknown-linux-musl
+      - name: Verify static linking without executing the binary
+        run: file target/aarch64-unknown-linux-musl/debug/minimal-embed | grep -E 'statically linked|static-pie linked'

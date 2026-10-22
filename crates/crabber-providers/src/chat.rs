@@ -167,6 +167,7 @@ mod tests {
             tools: vec![],
             temperature: None,
             max_tokens: None,
+            reasoning_effort: None,
             tool_choice: Some("required".into()),
         }
     }

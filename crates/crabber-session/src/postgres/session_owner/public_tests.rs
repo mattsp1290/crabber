@@ -140,6 +140,14 @@ async fn aggregate_owner_private_transfer_is_preflighted() {
         .reserve_session_owner(request.clone(), None)
         .await
         .unwrap();
+    let original: String = sqlx::query_scalar(
+        "SELECT data_json FROM session_owner_current WHERE session_id=$1 AND owner_id=$2",
+    )
+    .bind(&request.binding.session_id.0)
+    .bind(&request.binding.id.0)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     sqlx::query(
         "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
     )
@@ -176,6 +184,17 @@ async fn aggregate_owner_private_transfer_is_preflighted() {
         read(&store, &request.binding.session_id, 1, 128).await.0,
         Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
     ));
+    // Restore the exact private carrier so later tests and repeated full runs
+    // never inherit this deliberately malformed JSON fixture.
+    sqlx::query(
+        "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+    )
+    .bind(&request.binding.session_id.0)
+    .bind(&request.binding.id.0)
+    .bind(&original)
+    .execute(&store.pool)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

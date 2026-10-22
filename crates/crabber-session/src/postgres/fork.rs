@@ -161,7 +161,7 @@ async fn publish(
     .bind(i64::try_from(revision.get()).map_err(unknown)?)
     .execute(&mut **tx)
     .await
-    .map_err(unknown)?;
+    .map_err(|error| if error.as_database_error().is_some_and(super::hidden_row_error) { Error::TargetExists } else { Error::UnknownStoreOutcome })?;
     sqlx::query("INSERT INTO session_management(session_id,workspace_id,archived,format_version,data_json) VALUES($1,$2,$3,1,$4)").bind(&session.id.0).bind(&session.workspace_id).bind(false).bind(serde_json::to_string(&metadata).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
     for message in &history.messages {
         insert_message(tx, message).await?;

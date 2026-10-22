@@ -73,6 +73,7 @@ fn request() -> Request {
         },
         system_prompt: Some("base".into()),
         max_output_tokens: None,
+        model_controls: crabber_core::ModelControls::default(),
     }
 }
 fn text_script(text: &str) -> Vec<StreamDelta> {

@@ -19,7 +19,7 @@ impl HttpAdapter {
             #[cfg(feature = "openai")]
             AdapterKind::OpenAi => Some("openai"),
             #[cfg(feature = "codex")]
-            AdapterKind::Codex => Some("codex"),
+            AdapterKind::Codex(_) => Some("codex"),
             #[cfg(feature = "opencode-go")]
             AdapterKind::OpenCode => Some("opencode-go"),
             #[cfg(feature = "custom-http")]
@@ -33,15 +33,30 @@ impl HttpAdapter {
         }
         // Built-in adapters have fixed client/header policies and token encoding.
         // Credential source contents and refreshed tokens are deliberately absent.
-        let config = serde_json::to_vec(&serde_json::json!([
+        let config = vec![
             "crabber.builtin-http.v1",
             backend,
             endpoint.as_str(),
             self.user_agent
                 .to_str()
                 .map_err(|_| ProviderBindingError::InvalidDescriptor)?,
-        ]))
-        .map_err(|_| ProviderBindingError::InvalidDescriptor)?;
+        ];
+        // Codex CLI has a distinct account-header and credential-profile policy,
+        // even when a host routes both stacks through the same proxy endpoint.
+        // Leave legacy SIWC and other provider declarations byte-for-byte stable.
+        #[cfg(feature = "codex")]
+        let config = {
+            let mut config = config;
+            if matches!(
+                self.kind,
+                AdapterKind::Codex(crabber_auth::CredentialProfile::CodexCli)
+            ) {
+                config.push("codex-cli");
+            }
+            config
+        };
+        let config =
+            serde_json::to_vec(&config).map_err(|_| ProviderBindingError::InvalidDescriptor)?;
         let config = InputFingerprint::new(format!("{:x}", Sha256::digest(config)))
             .map_err(|_| ProviderBindingError::InvalidDescriptor)?;
         ProviderBindingDescriptor::new(
@@ -110,5 +125,58 @@ mod tests {
             credential_url.binding_descriptor(&selection),
             Err(ProviderBindingError::InvalidDescriptor)
         );
+    }
+}
+
+#[cfg(all(test, feature = "codex"))]
+mod codex_tests {
+    use super::*;
+    #[test]
+    fn codex_profiles_have_distinct_route_fingerprints() {
+        let store = std::sync::Arc::new(crabber_auth::MemoryCredentialStore::default());
+        let selection = Selection {
+            provider_id: "codex".into(),
+            model_id: "model".into(),
+        };
+        let siwc = HttpAdapter::codex(store.clone())
+            .builtin_binding(&selection)
+            .unwrap();
+        let cli = HttpAdapter::codex_cli(store)
+            .builtin_binding(&selection)
+            .unwrap();
+        assert_eq!(siwc.backend_id(), "codex");
+        assert_eq!(cli.backend_id(), "codex");
+        assert_ne!(siwc.config_fingerprint(), cli.config_fingerprint());
+    }
+
+    #[test]
+    fn same_proxy_preserves_profile_identity_without_binding_tokens() {
+        use crabber_auth::{CredentialProfile, CredentialStore, OAuthCredentials};
+        let store = std::sync::Arc::new(crabber_auth::MemoryCredentialStore::default());
+        let selection = Selection {
+            provider_id: "codex".into(),
+            model_id: "model".into(),
+        };
+        let proxy = "http://127.0.0.1:1/codex-proxy";
+        let siwc = HttpAdapter::codex(store.clone()).with_base_url(proxy);
+        let cli = HttpAdapter::codex_cli(store.clone()).with_base_url(proxy);
+        let original = cli.builtin_binding(&selection).unwrap();
+        assert_ne!(siwc.builtin_binding(&selection).unwrap(), original);
+        for token in ["first-token", "rotated-token"] {
+            store
+                .save(&OAuthCredentials {
+                    profile: CredentialProfile::CodexCli,
+                    client_id: "client".into(),
+                    host_id: "host".into(),
+                    account_id: "account".into(),
+                    access_token: token.into(),
+                    refresh_token: None,
+                    id_token: String::new(),
+                    scopes: vec![],
+                    expires_unix_ms: u64::MAX,
+                })
+                .unwrap();
+            assert_eq!(cli.builtin_binding(&selection).unwrap(), original);
+        }
     }
 }

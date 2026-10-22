@@ -316,6 +316,7 @@ fn request(provider: &str) -> ModelRequest {
         tools: vec![],
         temperature: None,
         max_tokens: Some(8),
+        reasoning_effort: None,
         tool_choice: None,
     }
 }
@@ -502,3 +503,16 @@ async fn all_protocols_put_canonical_context_on_the_wire_as_user_data() {
 
 #[path = "custom_http/media.rs"]
 mod media;
+
+#[tokio::test]
+async fn responses_reasoning_effort_reaches_socket() {
+    let response = raw_response("200 OK", 14, b"data: [DONE]\n\n");
+    let server = RawServer::start(response).await;
+    let adapter =
+        HttpAdapter::custom("effort", &server.url, Protocol::Responses).with_api_key("fixture");
+    let mut request = request("effort");
+    request.reasoning_effort = Some(crabber_core::ReasoningEffort::Medium);
+    drop(adapter.stream(request).await.unwrap());
+    let body: serde_json::Value = serde_json::from_slice(&server.body().await).unwrap();
+    assert_eq!(body["reasoning"], serde_json::json!({"effort":"medium"}));
+}

@@ -9,6 +9,12 @@ use time::OffsetDateTime;
 
 pub type StoreError = crabber_core::CoreError;
 
+/// Discovery scope; PostgreSQL roles enforce isolation. Memory and SQLite do not.
+#[derive(Debug, Clone)]
+pub struct WorkspaceRunsRequest {
+    pub workspace_id: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdmitRequest {
     /// Optional guard for a host's previously validated coherent snapshot.
@@ -1332,6 +1338,24 @@ pub trait Store: Send + Sync {
     /// the whole list. Bundled stores share a 32MiB materialization/proof allowance
     /// across that set; this is not a bound on storage scanning.
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError>;
+
+    /// Select unfinished runs before authenticating their original credentials.
+    /// Workspace filtering aids discovery; PostgreSQL roles enforce isolation.
+    async fn list_workspace_unfinished_runs(
+        &self,
+        _request: WorkspaceRunsRequest,
+    ) -> Result<Vec<Run>, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+
+    /// Lowest live queue sequence per session, ordered by session identifier.
+    /// PostgreSQL roles enforce isolation; Memory and SQLite only filter discovery.
+    async fn list_queue_heads(
+        &self,
+        _request: crate::QueueHeadsRequest,
+    ) -> Result<crate::QueueHeadsPage, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
     async fn list_unfinished_tool_calls(
         &self,
         run: &RunId,

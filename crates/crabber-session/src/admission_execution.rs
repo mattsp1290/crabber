@@ -47,11 +47,13 @@ pub struct AdmissionRequestData {
     pub model_id: String,
     pub system_prompt: Option<String>,
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub model_controls: crabber_core::ModelControls,
 }
 
 /// Version 1 runtime semantics are the existing admission.v1 ordered array:
 /// domain, provider, model, system, output cap, execution mode, compaction ratio/tail,
-/// turn limit, tools, prompts, restrictions, components, guards, providers.
+/// turn limit, tools, prompts, restrictions, components, guards, providers, model controls (index 15).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdmissionExecutionCapsule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,12 +140,13 @@ impl AdmissionExecutionCapsule {
             || self.semantic_digest != keyed.semantic_digest()?
             || admission_config_hash(&self.runtime_semantics) != self.config_hash
             || !semantics.is_some_and(|s| {
-                s.len() == 15 + usize::from(resources.is_some())
+                s.len() == 16 + usize::from(resources.is_some())
                     && s[0] == "crabber.runtime.admission.v1"
                     && s[1] == data.provider_id
                     && s[2] == data.model_id
                     && s[3] == serde_json::json!(data.system_prompt)
                     && s[4] == serde_json::json!(data.max_output_tokens)
+                    && s[15] == serde_json::json!(data.model_controls)
             })
         {
             return Err(StoreError::AdmissionConflict);

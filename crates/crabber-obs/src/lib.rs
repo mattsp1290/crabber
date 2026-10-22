@@ -2431,6 +2431,7 @@ mod tests {
                 },
                 system_prompt: None,
                 max_output_tokens: None,
+                model_controls: crabber_core::ModelControls::default(),
             })
             .await
             .unwrap();
@@ -2537,6 +2538,7 @@ mod tests {
                     },
                     system_prompt: None,
                     max_output_tokens: None,
+                    model_controls: crabber_core::ModelControls::default(),
                 })
                 .await
                 .unwrap();

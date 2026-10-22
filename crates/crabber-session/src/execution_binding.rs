@@ -199,7 +199,7 @@ impl ExecutionBindingCapsule {
         if !matches!(
             (self.version, self.input_envelope.is_some()),
             (2, false) | (3, true)
-        ) || values.len() != 15 + usize::from(resources.is_some())
+        ) || values.len() != 16 + usize::from(resources.is_some())
             || values[0] != "crabber.runtime.admission.v1"
             || values[1] != self.provider.provider_id()
             || values[2] != self.provider.model_id()
@@ -207,6 +207,7 @@ impl ExecutionBindingCapsule {
             || values[2] != self.request.model_id
             || values[3] != serde_json::json!(self.request.system_prompt)
             || values[4] != serde_json::json!(self.request.max_output_tokens)
+            || values[15] != serde_json::json!(self.request.model_controls)
             || self.request.max_output_tokens == Some(0)
             || matches!((self.request.max_output_tokens, self.provider.limits().output_tokens), (Some(requested), Some(limit)) if requested > limit)
             || admission_config_hash(&self.runtime_semantics) != self.config_hash.as_str()

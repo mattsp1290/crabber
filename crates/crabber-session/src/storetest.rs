@@ -785,3 +785,6 @@ where
     assert!(accepted && rejected);
     assert!(crate::ensure_storable(&serde_json::json!("a\0b")).is_err());
 }
+
+mod workspace_discovery;
+pub use workspace_discovery::run_workspace_discovery_contract;

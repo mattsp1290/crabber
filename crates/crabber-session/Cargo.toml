@@ -28,6 +28,7 @@ postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hm
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 
 [dev-dependencies]
+url = "2"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 tempfile = "3"
 allocation-counter = "0.8.1"

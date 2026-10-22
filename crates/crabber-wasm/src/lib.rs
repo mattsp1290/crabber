@@ -1390,14 +1390,34 @@ mod tests {
         assert_eq!(settled.payload["is_error"], true);
     }
 
+    fn interrupt_request() -> crabber_runtime::Request {
+        use crabber_providers::Selection;
+        use crabber_runtime::Request;
+        Request {
+            selection_policy: crabber_runtime::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
+            input_envelope: None,
+            session_id: None,
+            workspace_id: "test".into(),
+            directory: ".".into(),
+            title: "test".into(),
+            text: "test".into(),
+            selection: Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            },
+            system_prompt: None,
+            max_output_tokens: None,
+            model_controls: crabber_core::ModelControls::default(),
+        }
+    }
+
     #[tokio::test]
     async fn orchestrator_interrupts_active_wasm_with_fixed_or_final_redacted_settlement() {
         use crabber_core::{RunStatus, ToolCallId};
         use crabber_extension::{Registry, Scope};
-        use crabber_providers::{FakeProvider, Selection, StreamDelta};
-        use crabber_runtime::{
-            INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, Orchestrator, Request,
-        };
+        use crabber_providers::{FakeProvider, StreamDelta};
+        use crabber_runtime::{INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, Orchestrator};
         use crabber_session::MemoryStore;
         for protected in [false, true] {
             let (loader, module, ready) = spinning_module().await;
@@ -1443,25 +1463,7 @@ mod tests {
                 .plan_provider(registry.clone())
                 .build()
                 .unwrap();
-            let handle = runtime
-                .start(Request {
-                    selection_policy: crabber_runtime::AdmissionSelectionPolicy::Explicit,
-                    captured_revision: None,
-                    input_envelope: None,
-                    session_id: None,
-                    workspace_id: "test".into(),
-                    directory: ".".into(),
-                    title: "test".into(),
-                    text: "test".into(),
-                    selection: Selection {
-                        provider_id: "fake".into(),
-                        model_id: "scripted".into(),
-                    },
-                    system_prompt: None,
-                    max_output_tokens: None,
-                })
-                .await
-                .unwrap();
+            let handle = runtime.start(interrupt_request()).await.unwrap();
             let session_id = handle.session_id().clone();
             let run_id = handle.run_id().clone();
             tokio::time::timeout(Duration::from_secs(10), ready.acquire())

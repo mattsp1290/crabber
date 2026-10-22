@@ -107,6 +107,8 @@ pub(crate) use limits::{
 mod journey;
 #[path = "queue_contract/limits.rs"]
 mod limits;
+#[path = "queue_contract/model_controls.rs"]
+mod model_controls;
 
 #[path = "queue_contract/corruption.rs"]
 pub(crate) mod corruption;

@@ -80,6 +80,7 @@ async fn unknown_tool_depth(store: Arc<dyn Store>) {
             },
             system_prompt: None,
             max_output_tokens: None,
+            model_controls: crabber_core::ModelControls::default(),
         })
         .await
         .unwrap();

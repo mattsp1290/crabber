@@ -32,6 +32,20 @@ pub(super) async fn run(store: &PostgresStore) {
             .mutate_session_owner(begin.clone(), authority)
             .await
             .unwrap();
+        let malformed_original: Option<String> = if corruption == 2 {
+            Some(
+                sqlx::query_scalar(
+                    "SELECT data_json FROM session_owner_current WHERE session_id=$1 AND owner_id=$2",
+                )
+                .bind(&request.binding.session_id.0)
+                .bind(&request.binding.id.0)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            )
+        } else {
+            None
+        };
         corrupt(store, &request, &begin, &original, corruption).await;
         assert_eq!(
             store
@@ -61,6 +75,23 @@ pub(super) async fn run(store: &PostgresStore) {
                 store.reserve_session_owner(fresh, None).await,
                 Err(Error::UnknownStoreOutcome)
             ));
+        }
+        if let Some(data) = malformed_original {
+            // Global alias checks parse every current row, including unrelated fixtures.
+            // Keep the malformed-body assertions above, then restore the exact begun record.
+            assert_eq!(
+                sqlx::query(
+                    "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+                )
+                .bind(&request.binding.session_id.0)
+                .bind(&request.binding.id.0)
+                .bind(data)
+                .execute(&store.pool)
+                .await
+                .unwrap()
+                .rows_affected(),
+                1
+            );
         }
     }
     unrelated_history(store).await;

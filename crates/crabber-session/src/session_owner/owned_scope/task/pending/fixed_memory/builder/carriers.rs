@@ -27,6 +27,7 @@ pub(super) fn request(
         model_id: &'a str,
         system_prompt: Option<&'a str>,
         max_output_tokens: Option<u32>,
+        model_controls: crabber_core::ModelControls,
     }
     measured(
         &Request {
@@ -39,6 +40,7 @@ pub(super) fn request(
             model_id: profile.provider.model_id(),
             system_prompt: None,
             max_output_tokens: None,
+            model_controls: crabber_core::ModelControls::default(),
         },
         proof,
     )

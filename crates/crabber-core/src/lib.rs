@@ -3,6 +3,9 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod model_controls;
+pub use model_controls::{ModelControls, ReasoningEffort};
+
 mod interaction;
 pub use interaction::{
     AuthorityRequirement, InteractionDescription, InteractionKind, InteractionState,
