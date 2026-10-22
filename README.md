@@ -170,6 +170,23 @@ checks persisted identity and rejects directory drift. `cargo xtask check` runs
 all these SQLite paths. The standalone pinned probes under `testdata/` retain
 their published revisions and have no SQLite variant.
 
+## Supported targets
+
+| Target | CI | Notes |
+| --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | full `cargo xtask check`, PostgreSQL suite | reference platform |
+| `aarch64-unknown-linux-gnu` | workspace build and tests, PostgreSQL suite (matrix), embedding smoke | Raspberry Pi 4/5 and other arm64 Linux hosts |
+| `aarch64-unknown-linux-musl` | workspace build (excluding `agui-sse`), static-link check | static images; `agui-sse` needs OpenSSL via `native-tls` and is excluded; not executed in CI |
+
+From `x86_64` Linux, cross-compile with
+`cross build --target aarch64-unknown-linux-musl --workspace --exclude agui-sse`
+or `cargo zigbuild`. When using a local musl cross toolchain, set
+`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` to its linker. PostgreSQL
+feature tests must run on the target architecture with access to the PostgreSQL
+service; cross-compilation alone does not run those tests. WASM fixtures use
+`wasm32-wasip2`, are architecture-independent, and are built on the host.
+macOS and Windows are untested.
+
 ## Bounded embedding history
 
 Use `Store::snapshot(SnapshotRequest)` to page a large session with explicit message,
