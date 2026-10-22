@@ -680,7 +680,7 @@ threads-required = 1
 
 # One required run: ordinary cases do not consume a PostgreSQL slot.
 [profile.complete-ci]
-test-threads = 4
+test-threads = 8
 retries = 0
 fail-fast = false
 
