@@ -779,3 +779,15 @@ share compiled code across adapters. The wrappers retain ownership of the Store
 and clock until each history finishes. These are normal-library conformance
 helpers; the facade harness also embeds the ownership and admission-execution
 bodies. Build-time and complete-check benefits require measurement.
+
+The SQL owner-capacity fixtures retain the real 1,024-owner bound. Their first
+and last reservations, overflow rejection, mutable Joined corruption refusal,
+actual Join and replacement use the public Store API. The 1,022 interior setup
+reservations use the existing native record and protected publication writers
+in one normally committed transaction. Fresh authenticated reads verify exact
+owner identities and source/revision continuity at 1,023 and 1,024 owners.
+Memory retains all 1,024 individual public reservations. This intentionally
+removes 1,022 repeated public preflights and separate commit/ACK boundaries per
+SQL fixture, including that repeated durability and fault exposure; it is not
+equivalent stress. SQL fault and process-recovery tests remain required. No
+capacity, synchronization setting or deadline changes. Savings are unmeasured.

@@ -155,7 +155,7 @@
         "concurrent_sessions_serialize_without_state_leak"
       ],
       "before": "212 full Agent turns merely increment one state key past1000; actual default entry/value/key overflow was not crossed.",
-      "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999\u21921000 counter transition and existing two-session concurrent state history remain.",
+      "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999→1000 counter transition and existing two-session concurrent state history remain.",
       "rationale": "The counter guest only updates count; another model turn repeats the same transport/state path. Direct guest calls exercise actual host imports and state snapshots at their owning WASM layer. Limits/defaults/instance mode and production implementations are unchanged.",
       "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
     },
@@ -431,6 +431,30 @@
       "after": "The same three processes each execute 40 iterations, including one populated-run rollover and final settlement.",
       "rationale": "Iterations 40 through 199 repeat the same SQL operations and predicates without another branch or capacity boundary. Forty retains two complete child-admitted runs, all three independent processes and their start barrier, message/event/lease writes, contested recovery and stale abandonment checks, exact history assertions, one abandonment commit and final stale-fence refusal. Full durability and all deadlines remain unchanged. This removes 80 percent of contention cycles and eight rollovers per writer, reducing stochastic interleaving and WAL pressure exposure; it does not claim equal stress coverage or fix the observed child timeout. Independent lock, crash and durability tests remain required.",
       "validation": "Both independent prospective reviews approved deterministic coverage only. Compilation, execution and final qualification remain pending."
+    },
+    {
+      "id": "sql-owner-capacity-fixture-batch",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "Mutable Joined projections must not free immutable live-owner capacity; the real SQL public API must admit owner1024, refuse1025, and reuse capacity only after an actual Join.",
+      "owner": [
+        "crates/crabber-session/src/postgres/session_owner/corruption/capacity_fixture.rs",
+        "crates/crabber-session/src/sqlite/session_owner/corruption/capacity_fixture.rs"
+      ],
+      "retained_tests": [
+        "memory::session_owner::tests::session_owner_shared_capacity",
+        "sqlite::session_owner::tests::session_owner_contract",
+        "postgres::session_owner::tests::session_owner_contract"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Each SQL capacity fixture performs1024 individually committed public reservations before overflow, mutable-current corruption and genuine Join/slot-reuse assertions.",
+      "after": "First and1024th SQL reservations use the public API. Exactly1022 interior fixture reservations use the existing Record/revision/protected-source writers in one normally durable owned transaction. Fresh authenticated readback verifies exact committed1023 and1024 identities, native sources and sequential publication provenance. Overflow, corruption, actual Join and replacement assertions remain. Memory retains all1024 public reservations.",
+      "rationale": "Repeated public preflight and independent transaction commits for known-valid root fixture interiors are removed. This explicitly loses1022 public preflight/commit/ACK/fault boundaries per SQL fixture, incremental near-capacity commit churn and repeated durability exposure; it is not equivalent stress. Limits, synchronization settings and actual public boundary checks are unchanged. Existing SQL owner faults and physical process histories remain required. No production API or schema is changed.",
+      "validation": "Both independent actual source reviews approved. Clippy with PostgreSQL and SQLite passed. Each SQL owner contract passed serially, and all12 selected owner-family tests passed with four threads on each backend, with unchanged source. PostgreSQL fixture identity pairs and owned container cleanup were independently verified. These focused checks are not full budget qualification; selected full inventory and all final local/CI qualification cases remain pending."
     }
   ],
   "required_behaviors": [
