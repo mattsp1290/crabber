@@ -16,8 +16,8 @@ no credentials. The opt-in `live-opencode-go` suite skips unless
 
 ```sh
 cargo test --workspace --locked
-DELEGATE_TASK_REQUIRE_OPENCODE_GO=1 cargo test -p crabber-extensions --locked --features live-opencode-go --test delegate_task_live -- --test-threads=1 --nocapture
-env -u OPENCODE_GO_API_KEY cargo test -p crabber-extensions --locked --features live-opencode-go --test delegate_task_live -- --nocapture
+DELEGATE_TASK_REQUIRE_OPENCODE_GO=1 cargo test -p crabber-extensions --locked --features live-opencode-go --test delegate_task_live -- --ignored --test-threads=1 --nocapture
+env -u OPENCODE_GO_API_KEY cargo test -p crabber-extensions --locked --features live-opencode-go --test delegate_task_live -- --ignored --nocapture
 cargo run -p crabber-extensions --example protected_workspace --locked
 ```
 

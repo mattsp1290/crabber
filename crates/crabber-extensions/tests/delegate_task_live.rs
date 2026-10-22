@@ -199,6 +199,7 @@ fn extension(host: &Host, grace: u64) -> Arc<DelegateTask> {
 }
 
 #[tokio::test]
+#[ignore = "opt-in live provider acceptance; run explicitly with --ignored"]
 async fn live_background_child_completes_and_wait_returns_reply() {
     let _serial = LIVE.lock().await;
     let Some(config) = live_config() else {
@@ -270,6 +271,7 @@ async fn live_background_child_completes_and_wait_returns_reply() {
 }
 
 #[tokio::test]
+#[ignore = "opt-in live provider acceptance; run explicitly with --ignored"]
 async fn live_close_interrupts_streaming_child_and_joins() {
     let _serial = LIVE.lock().await;
     let Some(config) = live_config() else {
