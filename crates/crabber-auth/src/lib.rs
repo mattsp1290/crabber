@@ -13,15 +13,28 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex},
+    sync::Mutex as StdMutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+mod token_manager;
+pub use token_manager::TokenManager;
 
+pub mod access_file;
 pub mod codex;
+pub use access_file::AccessFileCredentialStore;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AuthError {
+    #[error("device authorization denied")]
+    DeviceDenied,
+    #[error("device authorization expired")]
+    DeviceExpired,
+    #[error("sign-in cancelled")]
+    Cancelled,
+    #[error("credential is access-only; refresh is owned by the broker")]
+    AccessOnly,
+    #[error("credential profile does not match the configured provider")]
+    ProfileMismatch,
     #[error("no ChatGPT credentials; run codex-login")]
     NoCredentials,
     #[error("authentication failed: {0}")]
@@ -34,16 +47,67 @@ pub enum AuthError {
     Store,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialProfile {
+    #[default]
+    Siwc,
+    CodexCli,
+}
+impl CredentialProfile {
+    pub fn client_id(self) -> &'static str {
+        match self {
+            Self::Siwc => "dynamic_agent_client",
+            Self::CodexCli => codex::CODEX_CLI_CLIENT_ID,
+        }
+    }
+    pub fn token_url(self) -> &'static str {
+        match self {
+            Self::Siwc => codex::TOKEN_URL,
+            Self::CodexCli => codex::CODEX_CLI_TOKEN_URL,
+        }
+    }
+    pub fn inference_base_url(self) -> &'static str {
+        match self {
+            Self::Siwc => codex::RESOURCE,
+            Self::CodexCli => codex::CODEX_BACKEND_URL,
+        }
+    }
+    pub fn refresh_form(self, current: &OAuthCredentials) -> Vec<(&'static str, String)> {
+        let mut form = vec![
+            ("grant_type", "refresh_token".into()),
+            ("client_id", current.client_id.clone()),
+            (
+                "refresh_token",
+                current.refresh_token.clone().unwrap_or_default(),
+            ),
+        ];
+        form.push(match self {
+            Self::Siwc => ("resource", codex::RESOURCE.into()),
+            Self::CodexCli => ("scope", codex::CODEX_CLI_SCOPE.into()),
+        });
+        form
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuthCredentials {
+    #[serde(default)]
+    pub profile: CredentialProfile,
     pub client_id: String,
     pub host_id: String,
     pub account_id: String,
     pub access_token: String,
-    pub refresh_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     pub id_token: String,
     pub scopes: Vec<String>,
     pub expires_unix_ms: u64,
+}
+impl OAuthCredentials {
+    pub fn is_access_only(&self) -> bool {
+        self.refresh_token.is_none()
+    }
 }
 impl std::fmt::Debug for OAuthCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,92 +365,6 @@ pub fn now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-pub struct TokenManager {
-    store: Arc<dyn CredentialStore>,
-    client: reqwest::Client,
-    refresh: Mutex<()>,
-    token_url: String,
-}
-impl TokenManager {
-    pub fn new(store: Arc<dyn CredentialStore>) -> Self {
-        Self {
-            store,
-            client: reqwest::Client::new(),
-            refresh: Mutex::new(()),
-            token_url: codex::TOKEN_URL.into(),
-        }
-    }
-    #[must_use]
-    pub fn with_token_url(mut self, url: impl Into<String>) -> Self {
-        self.token_url = url.into();
-        self
-    }
-    pub async fn credentials(&self) -> Result<OAuthCredentials, AuthError> {
-        self.ensure(false, None).await
-    }
-    pub async fn force_refresh(
-        &self,
-        previous_access: &str,
-    ) -> Result<OAuthCredentials, AuthError> {
-        self.ensure(true, Some(previous_access)).await
-    }
-    async fn ensure(
-        &self,
-        force: bool,
-        previous_access: Option<&str>,
-    ) -> Result<OAuthCredentials, AuthError> {
-        let existing = self.store.load()?.ok_or(AuthError::NoCredentials)?;
-        if !force && existing.expires_unix_ms > now_ms() + 60_000 {
-            return Ok(existing);
-        }
-        let _guard = self.refresh.lock().await;
-        // Keep this OS advisory lock across reload, network exchange and CAS.
-        // Rotating refresh tokens must never be used concurrently by processes.
-        let _process_guard = acquire_refresh_lock(self.store.refresh_lock()).await?;
-        let current = self.store.load()?.ok_or(AuthError::NoCredentials)?;
-        if (!force && current.expires_unix_ms > now_ms() + 60_000)
-            || (force && previous_access.is_some_and(|previous| current.access_token != previous))
-        {
-            return Ok(current);
-        }
-        let response = self
-            .client
-            .post(&self.token_url)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("client_id", current.client_id.as_str()),
-                ("refresh_token", current.refresh_token.as_str()),
-                ("resource", codex::RESOURCE),
-            ])
-            .send()
-            .await
-            .map_err(|_| AuthError::Transport)?;
-        if !response.status().is_success() {
-            let body: serde_json::Value = response.json().await.unwrap_or_default();
-            if body["error"] == "invalid_grant" && !self.store.compare_exchange(&current, None)? {
-                return self.store.load()?.ok_or(AuthError::NoCredentials);
-            }
-            return Err(AuthError::Authentication("refresh rejected"));
-        }
-        let body: serde_json::Value = response.json().await.map_err(|_| AuthError::Transport)?;
-        let mut updated = current.clone();
-        updated.access_token = body["access_token"]
-            .as_str()
-            .ok_or(AuthError::Transport)?
-            .into();
-        updated.refresh_token = body["refresh_token"]
-            .as_str()
-            .unwrap_or(&updated.refresh_token)
-            .into();
-        updated.expires_unix_ms = now_ms() + body["expires_in"].as_u64().unwrap_or(3600) * 1000;
-        if self.store.compare_exchange(&current, Some(&updated))? {
-            Ok(updated)
-        } else {
-            self.store.load()?.ok_or(AuthError::NoCredentials)
-        }
-    }
-}
-
 pub fn device_poll_interval(value: &str) -> Result<Duration, AuthError> {
     let seconds: u64 = value
         .parse()
@@ -412,11 +390,12 @@ mod tests {
     fn file_mode() {
         let store = FileCredentialStore::new(tempfile::tempdir().unwrap().path().join("auth"));
         let value = OAuthCredentials {
+            profile: CredentialProfile::Siwc,
             client_id: "c".into(),
             host_id: "h".into(),
             account_id: "a".into(),
             access_token: "secret".into(),
-            refresh_token: "secret".into(),
+            refresh_token: Some("secret".into()),
             id_token: "secret".into(),
             scopes: vec![],
             expires_unix_ms: 1,
@@ -435,118 +414,5 @@ mod tests {
                 0o600
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod refresh_tests {
-    use super::*;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
-    fn expired() -> OAuthCredentials {
-        OAuthCredentials {
-            client_id: "client".into(),
-            host_id: "host".into(),
-            account_id: "account".into(),
-            access_token: "old".into(),
-            refresh_token: "refresh".into(),
-            id_token: "id".into(),
-            scopes: vec!["chatgpt.tokens.use.direct".into()],
-            expires_unix_ms: 1,
-        }
-    }
-    async fn server(body: &'static str, status: &'static str) -> String {
-        server_delayed(body, status, Duration::ZERO).await
-    }
-    async fn server_delayed(body: &'static str, status: &'static str, delay: Duration) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut input = [0; 4096];
-            let _ = socket.read(&mut input).await;
-            tokio::time::sleep(delay).await;
-            let reply = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket.write_all(reply.as_bytes()).await.unwrap();
-        });
-        format!("http://{addr}/token")
-    }
-    #[tokio::test]
-    async fn refresh_is_single_flight() {
-        let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
-        store.save(&expired()).unwrap();
-        let url = server(
-            r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
-            "200 OK",
-        )
-        .await;
-        let manager = Arc::new(TokenManager::new(store).with_token_url(url));
-        let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(manager.credentials(), manager.credentials())
-        })
-        .await
-        .unwrap();
-        assert_eq!(a.unwrap().access_token, "new");
-        assert_eq!(b.unwrap().refresh_token, "rotated");
-    }
-    #[tokio::test]
-    async fn independent_managers_share_file_refresh_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth");
-        let first_store: Arc<dyn CredentialStore> =
-            Arc::new(FileCredentialStore::new(path.clone()));
-        let second_store: Arc<dyn CredentialStore> = Arc::new(FileCredentialStore::new(path));
-        first_store.save(&expired()).unwrap();
-        // This server handles exactly one refresh. A second request cannot finish.
-        let url = server_delayed(
-            r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
-            "200 OK",
-            Duration::from_millis(100),
-        )
-        .await;
-        let first = TokenManager::new(Arc::clone(&first_store)).with_token_url(url.clone());
-        let second = TokenManager::new(Arc::clone(&second_store)).with_token_url(url);
-        let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(first.credentials(), second.credentials())
-        })
-        .await
-        .unwrap();
-        assert_eq!(a.unwrap().access_token, "new");
-        assert_eq!(b.unwrap().refresh_token, "rotated");
-        assert_eq!(
-            first_store.load().unwrap().unwrap().refresh_token,
-            "rotated"
-        );
-    }
-    #[tokio::test]
-    async fn invalid_grant_wipes_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn CredentialStore> =
-            Arc::new(FileCredentialStore::new(dir.path().join("auth")));
-        store.save(&expired()).unwrap();
-        let url = server(r#"{"error":"invalid_grant"}"#, "400 Bad Request").await;
-        let manager = TokenManager::new(Arc::clone(&store)).with_token_url(url);
-        assert!(manager.credentials().await.is_err());
-        assert!(store.load().unwrap().is_none());
-    }
-    #[test]
-    fn host_id_persists_and_lock_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileCredentialStore::new(dir.path().join("auth"))
-            .with_lock_timeout(Duration::from_millis(30));
-        assert_eq!(store.host_id().unwrap(), store.host_id().unwrap());
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(store.dir.join("auth.json.lock"))
-            .unwrap();
-        lock.lock_exclusive().unwrap();
-        assert!(store.load().is_err());
-        lock.unlock().unwrap();
     }
 }

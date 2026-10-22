@@ -460,11 +460,12 @@ async fn real_codex_401_refreshes_once_against_loopback() {
     let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
     store
         .save(&OAuthCredentials {
+            profile: crabber_auth::CredentialProfile::Siwc,
             client_id: "client".into(),
             host_id: "host".into(),
             account_id: "account".into(),
             access_token: "stale".into(),
-            refresh_token: "refresh".into(),
+            refresh_token: Some("refresh".into()),
             id_token: "id".into(),
             scopes: vec!["chatgpt.tokens.use.direct".into()],
             expires_unix_ms: now_ms() + 3_600_000,
@@ -659,11 +660,12 @@ async fn codex_headers_have_exact_session_and_originator() {
     let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
     store
         .save(&OAuthCredentials {
+            profile: crabber_auth::CredentialProfile::Siwc,
             client_id: "client".into(),
             host_id: "host".into(),
             account_id: "account".into(),
             access_token: "test-token".into(),
-            refresh_token: "refresh".into(),
+            refresh_token: Some("refresh".into()),
             id_token: "id".into(),
             scopes: vec!["chatgpt.tokens.use.direct".into()],
             expires_unix_ms: now_ms() + 3_600_000,

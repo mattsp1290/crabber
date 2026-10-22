@@ -22,3 +22,6 @@ files private and never copy their values into logs or documentation. See
 [command source](src/main.rs), and [Codex provider usage](../../crates/crabber-providers/README.md).
 Offline auth tests use temporary stores and fake OAuth responses; this guide's
 manual commands are not part of the workspace verification gate.
+
+The protected credential file serializes a `profile` (`siwc` or `codex-cli`).
+Its optional `refresh_token` is absent for broker-owned access-only credentials.
