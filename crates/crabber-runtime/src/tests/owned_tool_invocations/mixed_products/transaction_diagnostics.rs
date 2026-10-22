@@ -1,7 +1,7 @@
 //! Capture the existing Store outcome before its public error is sanitized.
 use std::{cell::RefCell, fmt::Write as _, future::Future, time::Instant};
 use tracing::{Metadata, Subscriber, dispatcher, field::Visit, span};
-use tracing_subscriber::{Layer, layer::Context, prelude::*};
+use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
 thread_local! {
     static WORKER_DISPATCH: RefCell<Option<dispatcher::DefaultGuard>> = const { RefCell::new(None) };
@@ -20,16 +20,29 @@ impl Visit for Fields {
         }
     }
 }
-impl<S: Subscriber> Layer<S> for Transactions {
+impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Layer<S> for Transactions {
     fn enabled(&self, metadata: &Metadata<'_>, _: Context<'_, S>) -> bool {
         // Unscoped owner transactions are DEBUG spans. Do not collect SQL,
         // requests, credentials, or unrelated runtime fields.
-        metadata.name() == "crabber.store.transaction"
+        matches!(
+            metadata.name(),
+            "crabber.store.transaction" | "crabber.test.durable_cancel"
+        )
     }
-    fn on_new_span(&self, attributes: &span::Attributes<'_>, id: &span::Id, _: Context<'_, S>) {
+    fn on_new_span(&self, attributes: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let mut fields = Fields::default();
         attributes.record(&mut fields);
-        eprintln!("transaction {:?} {id:?} new{}", self.0.elapsed(), fields.0);
+        let parent = ctx
+            .span(id)
+            .and_then(|span| span.parent())
+            .map(|parent| (parent.metadata().name(), parent.id()));
+        eprintln!(
+            "transaction {:?} {id:?} new name={} task={:?} parent={parent:?}{}",
+            self.0.elapsed(),
+            attributes.metadata().name(),
+            tokio::task::try_id(),
+            fields.0
+        );
     }
     fn on_record(&self, id: &span::Id, values: &span::Record<'_>, _: Context<'_, S>) {
         let mut fields = Fields::default();
@@ -38,8 +51,9 @@ impl<S: Subscriber> Layer<S> for Transactions {
         // span closes. IDs and elapsed time tie updates to their creation.
         if !fields.0.is_empty() {
             eprintln!(
-                "transaction {:?} {id:?} update{}",
+                "transaction {:?} {id:?} update task={:?}{}",
                 self.0.elapsed(),
+                tokio::task::try_id(),
                 fields.0
             );
         }

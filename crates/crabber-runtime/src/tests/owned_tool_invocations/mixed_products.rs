@@ -38,6 +38,10 @@ impl Gate {
         })
     }
     fn block(&self) {
+        // Capture before block_in_place: Tokio task context may be unavailable
+        // inside the synchronous closure. Match this opaque ID to Store spans.
+        let task = tokio::task::try_id();
+        eprintln!("mixed products gate entering task={task:?}");
         tokio::task::block_in_place(|| {
             self.entered.notify_one();
             let mut open = self.open.lock().unwrap();
@@ -45,6 +49,7 @@ impl Gate {
                 open = self.changed.wait(open).unwrap();
             }
         });
+        eprintln!("mixed products gate exited task={task:?}");
     }
 }
 struct Release(Arc<Gate>);

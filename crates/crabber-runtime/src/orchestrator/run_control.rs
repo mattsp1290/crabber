@@ -124,6 +124,10 @@ impl Orchestrator {
         }
         Err(RunControlError::RevisionConflict.into())
     }
+    #[cfg_attr(
+        test,
+        tracing::instrument(name = "crabber.test.durable_cancel", skip_all, level = "debug")
+    )]
     pub(super) async fn wait_durable_cancel(
         &self,
         execution: &dyn ExecutionStore,
