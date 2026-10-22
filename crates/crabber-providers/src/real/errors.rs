@@ -10,11 +10,46 @@ pub(super) const ERROR_MESSAGE_PREFIX_BYTES: usize = 19;
 /// sanitized, opaque, at-most-4096-byte excerpt.
 ///
 /// The terminal second 401 after a dynamic credential refresh bypasses this
-/// callback and is always a non-retryable authentication error. This callback
-/// is never applied to built-in provider adapters. Hosts should still redact
-/// the resulting error according to their own logging policy.
+/// callback and is always a non-retryable authentication error. Host-supplied
+/// classifiers apply only to custom adapters; built-in adapters use fixed
+/// status classification or a crate-private classifier (currently Anthropic).
+/// Hosts should still redact the resulting error according to their own
+/// logging policy.
 pub trait ErrorClassifier: Send + Sync {
     fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool);
+}
+
+/// Built-in Anthropic classification: overflow is reported as 413 or as a 400
+/// whose text names the context limit (best effort), and billing as 402.
+#[cfg(feature = "anthropic")]
+pub(super) fn anthropic_classification(
+    status: reqwest::StatusCode,
+    excerpt: &str,
+) -> (ProviderErrorKind, bool) {
+    match status.as_u16() {
+        413 => (ProviderErrorKind::ContextOverflow, false),
+        402 => (ProviderErrorKind::Invalid, false),
+        400 => {
+            let text = excerpt.to_lowercase();
+            if text.contains("prompt is too long")
+                || (text.contains("context") && text.contains("exceed"))
+            {
+                (ProviderErrorKind::ContextOverflow, false)
+            } else {
+                status_classification(status)
+            }
+        }
+        _ => status_classification(status),
+    }
+}
+
+#[cfg(feature = "anthropic")]
+pub(super) struct AnthropicClassifier;
+#[cfg(feature = "anthropic")]
+impl ErrorClassifier for AnthropicClassifier {
+    fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool) {
+        anthropic_classification(status, excerpt)
+    }
 }
 
 #[derive(Clone, Copy)]

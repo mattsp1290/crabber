@@ -516,12 +516,14 @@ impl HttpAdapter {
                 response = self.post(&url, retry_headers, &body, &span).await?;
             }
             if !response.status().is_success() {
-                #[cfg(feature = "custom-http")]
-                let classifier = (self.kind == AdapterKind::Custom)
-                    .then_some(self.error_classifier.as_deref())
-                    .flatten();
-                #[cfg(not(feature = "custom-http"))]
-                let classifier = None;
+                #[allow(unreachable_patterns)]
+                let classifier: Option<&dyn errors::ErrorClassifier> = match self.kind {
+                    #[cfg(feature = "custom-http")]
+                    AdapterKind::Custom => self.error_classifier.as_deref(),
+                    #[cfg(feature = "anthropic")]
+                    AdapterKind::Anthropic => Some(&errors::AnthropicClassifier),
+                    _ => None,
+                };
                 http_rejected = true;
                 return Err(rejected_response(response, classifier, false, &attempt_credentials).await);
             }
@@ -735,6 +737,11 @@ impl Resolver for HttpResolver {
 
 #[cfg(all(
     test,
-    any(feature = "custom-http", feature = "codex", feature = "opencode-go")
+    any(
+        feature = "custom-http",
+        feature = "anthropic",
+        feature = "codex",
+        feature = "opencode-go"
+    )
 ))]
 mod tests;

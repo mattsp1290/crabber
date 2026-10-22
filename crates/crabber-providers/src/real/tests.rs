@@ -101,24 +101,65 @@ async fn opencode_models_request_sends_user_agent() {
     }
 }
 
-#[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 use crate::RequestIdentity;
-#[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 use crabber_core::{RunId, SessionId, TurnId};
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 use std::time::Duration;
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::timeout,
 };
 
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
+    let (socket, headers, _) = accept_loopback_request_with_body(listener).await;
+    (socket, headers)
+}
+
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
+async fn accept_loopback_request_with_body(listener: &TcpListener) -> (TcpStream, String, Vec<u8>) {
     let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
         .await
         .expect("timed out waiting for provider request")
@@ -159,10 +200,16 @@ async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) 
         assert_ne!(n, 0, "request ended before its declared body");
         raw.extend_from_slice(&buffer[..n]);
     }
-    (socket, headers)
+    let body = raw[header_end..request_end].to_vec();
+    (socket, headers, body)
 }
 
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
     timeout(LOOPBACK_TIMEOUT, socket.write_all(response))
         .await
@@ -234,7 +281,12 @@ fn default_status_taxonomy_is_stable() {
     );
 }
 
-#[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
+#[cfg(any(
+    feature = "anthropic",
+    feature = "codex",
+    feature = "opencode-go",
+    feature = "custom-http"
+))]
 fn request(provider: &str) -> ModelRequest {
     ModelRequest {
         context: Vec::new(),
@@ -800,4 +852,216 @@ async fn request_spans_record_retry_and_rejection_without_secrets() {
                 && !value.contains(&url)
         );
     }
+}
+
+#[cfg(feature = "anthropic")]
+fn loopback_response(status: &str, content_type: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[cfg(feature = "anthropic")]
+const MESSAGES_TEXT_SSE: &str = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_headers_use_x_api_key_and_version() {
+    let adapter = HttpAdapter::anthropic().with_api_key("test-key");
+    let headers = adapter.headers(&request("anthropic")).await.unwrap();
+    assert_eq!(headers["x-api-key"], "test-key");
+    assert_eq!(headers["anthropic-version"], "2023-06-01");
+    assert_eq!(headers["user-agent"], "crabber/0.1");
+    assert!(!headers.contains_key("authorization"));
+    assert!(!headers.contains_key("x-opencode-session"));
+    let headers = adapter
+        .try_with_user_agent_product("crabber-channels/0.1.0")
+        .unwrap()
+        .headers(&request("anthropic"))
+        .await
+        .unwrap();
+    assert_eq!(headers["user-agent"], "crabber-channels/0.1.0 crabber/0.1");
+    assert_eq!(headers.get_all("user-agent").iter().count(), 1);
+}
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_missing_key_fails_before_network() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut adapter = HttpAdapter::anthropic()
+        .with_base_url(format!("http://{}", listener.local_addr().unwrap()));
+    // Never mutate the process environment; point at a variable that is unset.
+    adapter.key_env = Some("CRABBER_TEST_ABSENT_ANTHROPIC_KEY");
+    let Err(error) = adapter.stream(request("anthropic")).await else {
+        panic!("missing key should fail");
+    };
+    assert_eq!(error.kind, ProviderErrorKind::Auth);
+    assert_eq!(
+        listener.accept().err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::WouldBlock)
+    );
+}
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_rejection_redacts_x_api_key() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = accept_loopback_request(&listener).await;
+        let response = loopback_response(
+            "500 Server Error",
+            "text/plain",
+            "x-secret-key anthropic-error",
+        );
+        write_loopback_response(&mut socket, response.as_bytes()).await;
+    });
+    let Err(error) = HttpAdapter::anthropic()
+        .with_api_key("x-secret-key")
+        .with_base_url(&base_url)
+        .stream(request("anthropic"))
+        .await
+    else {
+        panic!("500 should fail");
+    };
+    assert_eq!(error.kind, ProviderErrorKind::Server);
+    assert!(error.retryable);
+    assert!(!error.message.contains("x-secret-key"));
+    assert!(error.message.ends_with("[REDACTED] anthropic-error"));
+    timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+}
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_overflow_and_billing_statuses_classify() {
+    let cases = [
+        (
+            "413 Payload Too Large",
+            "too large",
+            ProviderErrorKind::ContextOverflow,
+        ),
+        (
+            "400 Bad Request",
+            r#"{"error":{"message":"Prompt is too long: 300000 tokens"}}"#,
+            ProviderErrorKind::ContextOverflow,
+        ),
+        (
+            "400 Bad Request",
+            "input length and max_tokens exceed context limit",
+            ProviderErrorKind::ContextOverflow,
+        ),
+        ("400 Bad Request", "other", ProviderErrorKind::Invalid),
+        (
+            "402 Payment Required",
+            "billing",
+            ProviderErrorKind::Invalid,
+        ),
+    ];
+    for (status, body, expected) in cases {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = accept_loopback_request(&listener).await;
+            let response = loopback_response(status, "application/json", body);
+            write_loopback_response(&mut socket, response.as_bytes()).await;
+        });
+        let Err(error) = HttpAdapter::anthropic()
+            .with_api_key("k")
+            .with_base_url(&base_url)
+            .stream(request("anthropic"))
+            .await
+        else {
+            panic!("{status} should fail");
+        };
+        assert_eq!(error.kind, expected, "{status} {body}");
+        assert!(!error.retryable, "{status} {body}");
+        timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+    }
+}
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_tool_free_body_omits_tools_and_tool_choice() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, request, body) = accept_loopback_request_with_body(&listener).await;
+        assert!(request.starts_with("POST /messages HTTP/1.1"));
+        let response = loopback_response("200 OK", "text/event-stream", MESSAGES_TEXT_SSE);
+        write_loopback_response(&mut socket, response.as_bytes()).await;
+        serde_json::from_slice::<Value>(&body).unwrap()
+    });
+    let mut req = request("anthropic");
+    req.tool_choice = Some("auto".into());
+    let adapter = HttpAdapter::anthropic()
+        .with_api_key("k")
+        .with_base_url(&base_url);
+    drop(adapter.stream(req).await.unwrap());
+    let body = timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+    assert!(body.get("tools").is_none());
+    assert!(body.get("tool_choice").is_none());
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["model"], "model");
+}
+
+#[cfg(all(feature = "anthropic", feature = "opencode-go"))]
+#[tokio::test]
+async fn opencode_messages_route_shares_codec_but_not_anthropic_classifier() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _, body) = accept_loopback_request_with_body(&listener).await;
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert!(body.get("tools").is_none());
+        let response = loopback_response("413 Payload Too Large", "text/plain", "too large");
+        write_loopback_response(&mut socket, response.as_bytes()).await;
+    });
+    let Err(error) = HttpAdapter::opencode_go(Protocol::Messages)
+        .with_api_key("k")
+        .with_base_url(&base_url)
+        .stream(request("opencode-go"))
+        .await
+    else {
+        panic!("413 should fail");
+    };
+    assert_eq!(error.kind, ProviderErrorKind::Invalid);
+    timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+}
+
+#[cfg(all(feature = "anthropic", feature = "custom-http"))]
+#[tokio::test]
+async fn custom_messages_route_shares_codec_but_not_anthropic_classifier() {
+    use futures::StreamExt;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let refusal = include_str!("../../testdata/anthropic/refusal.sse");
+    let server = tokio::spawn(async move {
+        for (status, content_type, body) in [
+            ("413 Payload Too Large", "text/plain", "too large"),
+            ("200 OK", "text/event-stream", refusal),
+        ] {
+            let (mut socket, _) = accept_loopback_request(&listener).await;
+            let response = loopback_response(status, content_type, body);
+            write_loopback_response(&mut socket, response.as_bytes()).await;
+        }
+    });
+    let adapter = HttpAdapter::custom("anthropic", &base_url, Protocol::Messages).with_api_key("k");
+    let Err(error) = adapter.stream(request("anthropic")).await else {
+        panic!("413 should fail");
+    };
+    assert_eq!(error.kind, ProviderErrorKind::Invalid);
+    let deltas: Vec<_> = adapter
+        .stream(request("anthropic"))
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(matches!(
+        deltas.last(),
+        Some(crate::StreamDelta::Error(error)) if error.message == "Messages refusal"
+    ));
+    timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
 }

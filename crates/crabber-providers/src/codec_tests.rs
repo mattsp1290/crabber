@@ -4,6 +4,8 @@ use crabber_core::{
     ToolCallId, TurnId,
 };
 use serde_json::json;
+#[path = "codec_tests/anthropic.rs"]
+mod anthropic;
 #[path = "codec_tests/reasoning.rs"]
 mod reasoning;
 
