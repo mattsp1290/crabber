@@ -180,6 +180,16 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
     report["wall_seconds_including_fixture_lifecycle"] =
         serde_json::json!(started.elapsed().as_secs_f64());
     report["fixture_metrics"] = serde_json::json!(metrics);
+    let transport = std::fs::read_to_string(&metrics).ok().and_then(|events| {
+        events.lines().find_map(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).ok()?;
+            event["phase"]
+                .as_str()?
+                .strip_prefix("server_transport_")
+                .map(str::to_owned)
+        })
+    });
+    report["postgres_transport"] = serde_json::json!(transport);
     report["tool_versions"] = serde_json::json!({
         "rustc": std::fs::read_to_string(directory.join("rustc-version.txt")).ok(),
         "wasm-tools": std::fs::read_to_string(directory.join("wasm-tools-version.txt")).ok(),
@@ -235,6 +245,12 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
     let result = async {
         if let Some(metrics) = &metrics {
             metrics.record("server_setup", "runner", None, started.elapsed())?;
+            metrics.record(
+                &format!("server_transport_{}", endpoint.transport),
+                "runner",
+                None,
+                std::time::Duration::ZERO,
+            )?;
         }
         execute_owned_run(
             admin,
