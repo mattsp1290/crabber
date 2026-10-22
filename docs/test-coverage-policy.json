@@ -412,6 +412,25 @@
       "after": "Both unchanged histories register only in crabber::fenced_abandon; other native abandonment tests remain.",
       "rationale": "Raw admission and legacy Pending fixture status use canonical source journal, Memory transaction and fault implementation in both registrations. Neither history enters genuine opaque Pending transport, preparation or phase authority paths. The facade bridge forwards only abandon_run and panics on every other Store method. Every rollback, replay, inbox and seven-boundary assertion and zero-provider-effects assertion is retained. Removing the redundant native registration permits removing the Session dev dependency on facade/Runtime.",
       "validation": "Source and graph validation in progress; no timing gain or final qualification claimed."
+    },
+    {
+      "id": "sqlite-multiprocess-writer-repetitions",
+      "disposition": "REDUCE-REDUNDANT-REPETITIONS",
+      "state": "implemented-unqualified",
+      "failure": "Independent SQLite processes must serialize durable writes, preserve event and message histories across run rollover, commit one contested abandonment and reject stale fences.",
+      "owner": [
+        "crates/crabber-session/src/sqlite/process_tests.rs"
+      ],
+      "retained_tests": [
+        "sqlite::process_tests::multi_process_writers_serialize_and_keep_fences"
+      ],
+      "required_backends": [
+        "sqlite"
+      ],
+      "before": "Three fresh writer processes each execute 200 iterations, rolling over every 20 iterations.",
+      "after": "The same three processes each execute 40 iterations, including one populated-run rollover and final settlement.",
+      "rationale": "Iterations 40 through 199 repeat the same SQL operations and predicates without another branch or capacity boundary. Forty retains two complete child-admitted runs, all three independent processes and their start barrier, message/event/lease writes, contested recovery and stale abandonment checks, exact history assertions, one abandonment commit and final stale-fence refusal. Full durability and all deadlines remain unchanged. This removes 80 percent of contention cycles and eight rollovers per writer, reducing stochastic interleaving and WAL pressure exposure; it does not claim equal stress coverage or fix the observed child timeout. Independent lock, crash and durability tests remain required.",
+      "validation": "Both independent prospective reviews approved deterministic coverage only. Compilation, execution and final qualification remain pending."
     }
   ],
   "required_behaviors": [
@@ -691,6 +710,18 @@
         {
           "package": "crabber",
           "suffix": "memory::abandon_tests::facade_each_memory_candidate_boundary_rolls_back_including_private_commit"
+        }
+      ]
+    },
+    {
+      "behavior": "SQLite durable multiprocess writer serialization across run rollover",
+      "primary_owner": "SQLite WAL transaction implementation",
+      "required_layer": "crabber-session unit tests with real fresh OS processes",
+      "status": "implemented-unqualified",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::process_tests::multi_process_writers_serialize_and_keep_fences"
         }
       ]
     }

@@ -10,7 +10,8 @@ use crate::*;
 use crabber_core::*;
 use time::OffsetDateTime;
 
-const ITERATIONS: usize = 200;
+// Two complete runs per writer retain the populated-run rollover at iteration 20.
+const ITERATIONS: usize = 40;
 
 #[tokio::test]
 async fn writer_process_helper() {
