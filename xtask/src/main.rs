@@ -43,6 +43,7 @@ fn check() {
     run(workspace, &["fmt", "--all", "--", "--check"]);
     check_server_host(workspace);
     check_custom_http(workspace);
+    check_provider_features(workspace);
     run(
         workspace,
         &[
@@ -86,6 +87,7 @@ fn check() {
             "opencode_go_chat",
         ],
     );
+    check_anthropic(workspace);
     check_observability(workspace);
     check_journeys(workspace);
     run(
@@ -320,6 +322,99 @@ fn check_custom_http(workspace: &Path) {
             "all-providers,custom-http",
         ],
     );
+}
+
+// Each provider feature alone must compile cleanly, so cfg-gated items stay used.
+fn check_provider_features(workspace: &Path) {
+    for feature in ["anthropic", "openai", "codex", "opencode-go"] {
+        run(
+            workspace,
+            &[
+                "clippy",
+                "-p",
+                "crabber-providers",
+                "--all-targets",
+                "--no-default-features",
+                "--features",
+                feature,
+                "--",
+                "-D",
+                "warnings",
+            ],
+        );
+    }
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber-providers",
+            "--no-default-features",
+            "--features",
+            "anthropic",
+        ],
+    );
+}
+
+// The live suite is only compiled here; it runs solely on an operator's
+// explicit request, so this gate never needs network access or credentials.
+fn check_anthropic(workspace: &Path) {
+    run(
+        workspace,
+        &[
+            "clippy",
+            "-p",
+            "crabber",
+            "--all-targets",
+            "--features",
+            "anthropic",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "anthropic",
+            "--test",
+            "anthropic_messages",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "anthropic",
+            "--test",
+            "anthropic_live",
+            "--no-run",
+        ],
+    );
+    check_live_tests_are_ignored(workspace);
+}
+
+fn check_live_tests_are_ignored(workspace: &Path) {
+    for relative in [
+        "crates/crabber/tests/anthropic_live.rs",
+        "crates/crabber/tests/opencode_go_live.rs",
+    ] {
+        let source = fs::read_to_string(workspace.join(relative))
+            .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
+        let tests = source.matches("#[tokio::test").count();
+        let ignored = source.matches("#[ignore").count();
+        assert!(
+            tests > 0 && tests == ignored,
+            "{relative}: every live test must be #[ignore] ({tests} tests, {ignored} ignored)"
+        );
+    }
 }
 
 fn check_journeys(workspace: &Path) {
