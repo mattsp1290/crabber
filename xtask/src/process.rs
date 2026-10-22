@@ -11,6 +11,8 @@ use std::{
     time::Duration,
 };
 
+mod environment;
+
 #[cfg(target_os = "linux")]
 mod tree;
 #[cfg(target_os = "linux")]
@@ -51,6 +53,7 @@ fn interrupted() -> bool {
 
 fn spawn(command: &mut Command) -> io::Result<Child> {
     check_cancelled()?;
+    environment::remove_parent_package(command);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
