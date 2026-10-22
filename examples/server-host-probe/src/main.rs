@@ -53,7 +53,7 @@ async fn smoke(store: Arc<AuditedStore>) -> Result<(), Error> {
             model_id: "scripted".into(),
         }))
         .build()?;
-    let result = agent.prompt(None, "Check CLI wiring").await?;
+    let result = agent.prompt(None, "Check CLI wiring").await?.done().await?;
     assert_eq!(result.status, crabber::core::RunStatus::Completed);
     assert_eq!(provider.requests().len(), 1);
     agent.close_extensions().await?;
