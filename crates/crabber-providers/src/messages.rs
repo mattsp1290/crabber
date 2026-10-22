@@ -28,6 +28,9 @@ pub fn body(request: &ModelRequest) -> Value {
                 {
                     content.push(json!({"type":"text","text":text}))
                 }
+                block @ ContentBlock::MediaContent { .. } if message.role == Role::User => {
+                    content.extend(crate::real::outbound::messages_image(block));
+                }
                 ContentBlock::ToolCall {
                     call_id,
                     name,
@@ -39,15 +42,8 @@ pub fn body(request: &ModelRequest) -> Value {
                     content: blocks,
                     is_error,
                 } => {
-                    let text = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    content.push(json!({"type":"tool_result","tool_use_id":call_id.0,"content":text,"is_error":is_error}));
+                    let result = tool_result_content(blocks);
+                    content.push(json!({"type":"tool_result","tool_use_id":call_id.0,"content":result,"is_error":is_error}));
                 }
                 ContentBlock::ProviderState { codec_id, payload }
                     if message.role == Role::Assistant
@@ -102,6 +98,34 @@ pub fn body(request: &ModelRequest) -> Value {
         body["system"] = json!(system);
     }
     body
+}
+/// Text-only results keep the joined-string form; media needs a block array.
+fn tool_result_content(blocks: &[ContentBlock]) -> Value {
+    if !blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::MediaContent { .. }))
+    {
+        let text = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return json!(text);
+    }
+    // The API rejects empty text blocks inside content arrays.
+    let parts: Vec<_> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } if !text.is_empty() => {
+                Some(json!({"type":"text","text":text}))
+            }
+            block => crate::real::outbound::messages_image(block),
+        })
+        .collect();
+    json!(parts)
 }
 #[derive(Default)]
 pub struct Codec {

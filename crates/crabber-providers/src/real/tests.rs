@@ -1065,3 +1065,65 @@ async fn custom_messages_route_shares_codec_but_not_anthropic_classifier() {
     ));
     timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
 }
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn anthropic_user_image_reaches_wire_without_custom_http() {
+    use crabber_core::{
+        ContentBlock, MediaKind, MediaSource, Message, MessageId, Part, PartId, PartKind, Role,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _, body) = accept_loopback_request_with_body(&listener).await;
+        let response = loopback_response("200 OK", "text/event-stream", MESSAGES_TEXT_SSE);
+        write_loopback_response(&mut socket, response.as_bytes()).await;
+        serde_json::from_slice::<Value>(&body).unwrap()
+    });
+    let id = MessageId::new();
+    let mut req = request("anthropic");
+    req.messages = vec![Message {
+        id: id.clone(),
+        session_id: SessionId::from("session-1"),
+        run_id: None,
+        role: Role::User,
+        parent_id: None,
+        parts: [
+            ContentBlock::MediaContent {
+                kind: MediaKind::Image,
+                mime_type: "image/png".into(),
+                source: MediaSource::Data {
+                    base64: "AQ==".into(),
+                },
+            },
+            ContentBlock::Text {
+                text: "describe".into(),
+            },
+        ]
+        .into_iter()
+        .zip(0..)
+        .map(|(content, ordinal)| Part {
+            id: PartId::new(),
+            message_id: id.clone(),
+            ordinal,
+            kind: PartKind::Media,
+            content,
+        })
+        .collect(),
+        created_at: std::time::UNIX_EPOCH.into(),
+    }];
+    let adapter = HttpAdapter::anthropic()
+        .with_api_key("k")
+        .with_base_url(&base_url);
+    assert_eq!(adapter.input_support().media.len(), 3);
+    drop(adapter.stream(req).await.unwrap());
+    let body = timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+    let content = &body["messages"][0]["content"];
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["source"]["type"], "base64");
+    assert_eq!(content[0]["source"]["media_type"], "image/png");
+    assert_eq!(
+        content[1],
+        serde_json::json!({"type":"text","text":"describe"})
+    );
+}

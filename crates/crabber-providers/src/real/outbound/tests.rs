@@ -142,7 +142,7 @@ async fn unsupported_media_is_rejected_before_credentials_or_network() {
                         ..
                     }
                 ) && match protocol {
-                    Protocol::Responses => true,
+                    Protocol::Responses | Protocol::Messages => true,
                     Protocol::ChatCompletions => {
                         !nested
                             && !matches!(
@@ -153,7 +153,6 @@ async fn unsupported_media_is_rejected_before_credentials_or_network() {
                                 }
                             )
                     }
-                    Protocol::Messages => false,
                 };
                 if supported {
                     continue;
