@@ -791,3 +791,11 @@ removes 1,022 repeated public preflights and separate commit/ACK boundaries per
 SQL fixture, including that repeated durability and fault exposure; it is not
 equivalent stress. SQL fault and process-recovery tests remain required. No
 capacity, synchronization setting or deadline changes. Savings are unmeasured.
+
+Three shared Store contracts also delegate their histories to private borrowed
+functions: the common transaction lifecycle, workspace identity and storable
+records. The public generic signatures and `Fn` factory bounds remain unchanged.
+Each wrapper retains its original factory, Store and clock while awaiting the
+history, and the history bodies retain their assertions and operation order.
+This shares the compiled bodies across adapters; build and complete-check
+benefits require measurement.
