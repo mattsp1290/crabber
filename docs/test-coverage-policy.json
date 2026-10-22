@@ -276,6 +276,29 @@
       "after": "Five independently scheduled families per backend receive fresh Store and ManualClock state: same-task success, held claim, held recovery, malformed/replay and blocked main. Every original loop, fault variant, assertion and timeout is preserved.",
       "rationale": "Each prepared history already creates a distinct session and PendingDriverTasks owner. No assertion depends on unrelated earlier family rows or absolute clock time. Fresh family fixtures therefore remove cross-family accumulation and permit normal service-group scheduling. Current PostgreSQL fixtures are already migrated; the dedicated current-schema/migration detectors remain required.",
       "validation": "All fifteen approval families and five bounded-snapshot entrypoints passed at one and four complete-profile slots. Each run drained six PostgreSQL parent fixtures and its owned container. The slowest approval family took26.333s serial and16.328s parallel. Full combined budget qualification remains pending."
+    },
+    {
+      "id": "server-host-memory-cli",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-targeted-validation-pending",
+      "failure": "Public host workflows and report fields must remain correct; the actual CLI must construct its selected Store and adapter, execute a provider turn, close resources and serialize output.",
+      "owner": [
+        "examples/server-host-probe/src/main.rs",
+        "examples/server-host-probe/src/lib.rs",
+        "testdata/server-host-consumer/src/main.rs"
+      ],
+      "retained_tests": [],
+      "required_backends": [
+        "memory"
+      ],
+      "required_commands": [
+        "testdata/server-host-consumer/check.sh",
+        "target/debug/server-host-probe memory --smoke"
+      ],
+      "before": "The required locked consumer and the later normal Memory CLI each executed server_host_probe::run(AuditedStore(MemoryStore)), taking approximately20seconds apiece.",
+      "after": "The locked consumer still executes the full shared public host journey, asserts all12reportfields and adaptercalls, and serializes Report. The actual normal CLI executes one fake-provider turn through the selected Store/adapter and closes resources. Default CLI behavior remains the full journey.",
+      "rationale": "The shared library journey has no feature-conditional branches; the consumer has stronger assertions than the former CLI call. Full combined-feature CLI compilation and real main/argument/backend/facade/JSON execution remain. No normal PostgreSQL server-host CLI owner is claimed. Existing native SQL/WASM integration tests remain required.",
+      "validation": "Pending actual locked-consumer and normal CLI smoke execution, independent focused review and full local/CI timing qualification."
     }
   ],
   "required_behaviors": [

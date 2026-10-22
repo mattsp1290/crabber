@@ -295,7 +295,7 @@ fn cli_journeys(gates: &mut Checks) {
         ("admission-receipt", vec!["--sqlite"]),
         ("bounded-snapshot", vec!["--sqlite", "--check", "--smoke"]),
         ("fenced-abandon", vec!["--sqlite"]),
-        ("server-host-probe", vec!["memory"]),
+        ("server-host-probe", vec!["memory", "--smoke"]),
         ("agui-sse", vec!["--check"]),
     ] {
         let mut command = binary_command(name);

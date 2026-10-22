@@ -22,8 +22,40 @@ async fn main() -> Result<(), Error> {
         _ => return Err("backend unavailable; enable its Cargo feature".into()),
     };
     let store = Arc::new(AuditedStore::new(store));
+    if std::env::args().any(|argument| argument == "--smoke") {
+        smoke(store.clone()).await?;
+        assert!(store.calls() > 0);
+        println!(
+            "{}",
+            serde_json::json!({"backend": backend, "smoke": true, "provider_requests": 1})
+        );
+        return Ok(());
+    }
     let report = run(store.clone()).await?;
     assert!(store.calls() > 0);
     println!("{}", serde_json::to_string(&report)?);
+    Ok(())
+}
+
+// The locked public consumer owns the full host journey. This short path keeps
+// the actual CLI's backend construction, facade wiring and JSON output covered.
+async fn smoke(store: Arc<AuditedStore>) -> Result<(), Error> {
+    let provider = Arc::new(crabber::FakeProvider::scripted(vec![vec![
+        crabber::StreamDelta::TextDelta("CLI smoke".into()),
+        crabber::StreamDelta::Completed,
+    ]]));
+    let agent = crabber::Agent::builder()
+        .behavior_version("server-host-cli-smoke.v1")
+        .store(store)
+        .provider(provider.clone())
+        .config(crabber::AgentConfig::new(crabber::Selection {
+            provider_id: "fake".into(),
+            model_id: "scripted".into(),
+        }))
+        .build()?;
+    let result = agent.prompt(None, "Check CLI wiring").await?;
+    assert_eq!(result.status, crabber::core::RunStatus::Completed);
+    assert_eq!(provider.requests().len(), 1);
+    agent.close_extensions().await?;
     Ok(())
 }
