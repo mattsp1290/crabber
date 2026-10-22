@@ -219,7 +219,7 @@
     {
       "id": "bounded-snapshot-cli-smoke",
       "disposition": "DELETE-REDUNDANT",
-      "state": "implemented-pending-validation",
+      "state": "targeted-backend-qualified",
       "failure": "CLI argument/backend selection, output, continuation serialization and cold child database wiring must work; reads must remain bounded independently of total history.",
       "owner": [
         "examples/bounded-snapshot/src/main.rs",
@@ -238,12 +238,13 @@
       ],
       "before": "Each CLI backend repeats the canonical 1024-message, 147-page and 512KiB/32MiB allocation histories already required in facade tests.",
       "after": "Required native facade tests keep the full fixture and allocation proof unchanged; CLI --smoke uses eight fixture messages and the same continuation, settled relation, invalidation, event-tail and actual cold-child assertions.",
-      "rationale": "Facade tests source-include the exact journey.rs and still call journey with 1024 messages plus allocation_proof for every backend. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing; smoke keeps those actual executable child entrypoints and requires a multi-page continuation. No allocation or large-history detector is removed from the required native graph."
+      "rationale": "Facade tests source-include the exact journey.rs and still call journey with 1024 messages plus allocation_proof for every backend. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing; smoke keeps those actual executable child entrypoints and requires a multi-page continuation. No allocation or large-history detector is removed from the required native graph.",
+      "validation": "Actual Memory, SQLite and managed PostgreSQL --smoke modes passed; both durable modes verified their actual child entrypoints and 11-message/two-page output. The three full native history/allocation owners passed at one and four slots. Full combined budget qualification remains pending."
     },
     {
       "id": "native-pending-approval-family-scheduling",
       "disposition": "KEEP",
-      "state": "implemented-pending-validation",
+      "state": "targeted-backend-qualified",
       "failure": "Approval completion, inspection and the actual main must share the original task; dropped ACK waiters, malformed claims and committed replay must never dispatch; blocked cleanup must retain the owner.",
       "owner": [
         "crates/crabber-session/src/session_owner/owned_scope/task/pending/approval_tests.rs",
@@ -273,7 +274,8 @@
       ],
       "before": "One test per backend sequentially runs four keyed/unkeyed claim/recovery success histories, held complete/inspect/register/activate ACKs with both faults, all four malformed variants plus committed replay for each origin, and blocked-main cleanup; PostgreSQL took76.664s in the unoptimized full baseline.",
       "after": "Five independently scheduled families per backend receive fresh Store and ManualClock state: same-task success, held claim, held recovery, malformed/replay and blocked main. Every original loop, fault variant, assertion and timeout is preserved.",
-      "rationale": "Each prepared history already creates a distinct session and PendingDriverTasks owner. No assertion depends on unrelated earlier family rows or absolute clock time. Fresh family fixtures therefore remove cross-family accumulation and permit normal service-group scheduling. Current PostgreSQL fixtures are already migrated; the dedicated current-schema/migration detectors remain required."
+      "rationale": "Each prepared history already creates a distinct session and PendingDriverTasks owner. No assertion depends on unrelated earlier family rows or absolute clock time. Fresh family fixtures therefore remove cross-family accumulation and permit normal service-group scheduling. Current PostgreSQL fixtures are already migrated; the dedicated current-schema/migration detectors remain required.",
+      "validation": "All fifteen approval families and five bounded-snapshot entrypoints passed at one and four complete-profile slots. Each run drained six PostgreSQL parent fixtures and its owned container. The slowest approval family took26.333s serial and16.328s parallel. Full combined budget qualification remains pending."
     }
   ],
   "required_behaviors": [
