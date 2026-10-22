@@ -73,6 +73,7 @@ fail-fast = false
 [[profile.complete.overrides]]
 filter = 'test(/postgres/)'
 test-group = 'postgres'
+priority = 10
 
 [[profile.complete.overrides]]
 filter = 'test(/sqlite/)'
@@ -112,6 +113,7 @@ fail-fast = false
 [[profile.complete-ci.overrides]]
 filter = 'test(/postgres/)'
 test-group = 'postgres-ci'
+priority = 10
 
 [[profile.complete-ci.overrides]]
 filter = 'test(/sqlite/)'
