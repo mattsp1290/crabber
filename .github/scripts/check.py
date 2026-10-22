@@ -9,6 +9,7 @@ import resource
 import signal
 import subprocess
 import time
+import tomllib
 
 
 def identity(pid):
@@ -76,6 +77,18 @@ def persist(path, report):
     temporary.replace(path)
 
 
+def cargo_profiles(cwd):
+    manifest = Path(cwd) / 'Cargo.toml'
+    if not manifest.exists():
+        return {}
+    try:
+        return tomllib.loads(manifest.read_text()).get('profile', {})
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        # Preserve supervision/reporting when Cargo itself must reject a bad
+        # manifest; this field is evidence, not another manifest validator.
+        return {'unavailable': type(error).__name__}
+
+
 def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., env=None):
     started = time.monotonic()
     initial_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -98,8 +111,11 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
               'cgroup_limits': {name: path.read_text().strip()
                                 for name in ['cpu.max', 'memory.max', 'cpuset.cpus.effective']
                                 if (path := Path('/sys/fs/cgroup') / name).is_file()},
-              'profile': {k: child_env.get(k) for k in ['CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',
-                            'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG']}}
+              'profile': {k: child_env.get(k) for k in sorted(
+                  {'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',
+                   'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG'}
+                  | {name for name in child_env if name.startswith('CARGO_PROFILE_')})},
+              'cargo_profiles': cargo_profiles(cwd)}
     interrupted = None
     child = None
     owned = {}

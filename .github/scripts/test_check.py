@@ -17,6 +17,9 @@ MODULE = Path(__file__).with_name('check.py')
 spec = importlib.util.spec_from_file_location('complete_check', MODULE)
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
+spec = importlib.util.spec_from_file_location('qualify_check', MODULE.with_name('qualify-check.py'))
+qualify = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(qualify)
 ROOT = Path.cwd()
 
 
@@ -41,6 +44,38 @@ class DeadlineTests(unittest.TestCase):
         code, report = self.run_child('raise SystemExit(7)')
         self.assertEqual(code, 7)
         self.assertEqual(report['status'], 'failed')
+
+    def test_report_preserves_package_profiles_and_caller_overrides(self):
+        manifest = self.root / 'Cargo.toml'
+        manifest.write_text('[profile.test.package.example]\nopt-level=1\ndebug-assertions=true\noverflow-checks=true\n')
+        env = dict(os.environ, CARGO_PROFILE_TEST_CODEGEN_UNITS='8')
+        report_path = self.root / 'profiles.json'
+        code = check.supervise([sys.executable, '-I', '-S', '-B', '-c', 'pass'],
+                               self.root, report_path, budget=2, reserve=.4, env=env)
+        self.assertEqual(code, 0)
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report['profile']['CARGO_PROFILE_TEST_CODEGEN_UNITS'], '8')
+        self.assertEqual(report['cargo_profiles']['test']['package']['example'],
+                         {'opt-level': 1, 'debug-assertions': True, 'overflow-checks': True})
+        manifest.write_text('invalid = [')
+        self.assertEqual(check.cargo_profiles(self.root), {'unavailable': 'TOMLDecodeError'})
+
+    def test_qualification_rejects_new_changed_and_removed_profile_overrides(self):
+        previous = {'CARGO_BUILD_JOBS': '8', 'CARGO_INCREMENTAL': '1',
+                    'CARGO_PROFILE_DEV_DEBUG': '0', 'CARGO_PROFILE_TEST_DEBUG': '0'}
+        current = dict(previous, CARGO_PROFILE_TEST_OPT_LEVEL='1')
+        self.assertEqual(qualify.profile_differences(previous, current),
+                         ['CARGO_PROFILE_TEST_OPT_LEVEL'])
+        self.assertEqual(qualify.profile_differences(current, previous),
+                         ['CARGO_PROFILE_TEST_OPT_LEVEL'])
+        current = dict(previous, CARGO_BUILD_JOBS='4')
+        self.assertEqual(qualify.profile_differences(previous, current), ['CARGO_BUILD_JOBS'])
+
+    def test_qualification_keeps_launcher_debug_defaults(self):
+        previous = {'CARGO_BUILD_JOBS': '8', 'CARGO_INCREMENTAL': '1',
+                    'CARGO_PROFILE_DEV_DEBUG': '0', 'CARGO_PROFILE_TEST_DEBUG': '0'}
+        self.assertEqual(qualify.profile_differences(previous,
+                         {'CARGO_BUILD_JOBS': '8', 'CARGO_INCREMENTAL': '1'}), [])
 
     def test_deadline_before_xtask_reaps_escaped_compiler_helper(self):
         marker = self.root / 'compiler-helper.pid'

@@ -11,6 +11,21 @@ import sys
 import time
 
 
+def profile_differences(previous, current):
+    required = {'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',
+                'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG'}
+    names = set(previous) | required | {
+        name for name in current if name.startswith('CARGO_PROFILE_')}
+    different = []
+    for name in sorted(names):
+        value = current.get(name)
+        if value is None and name in {'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG'}:
+            value = '0'
+        if value != previous.get(name):
+            different.append(name)
+    return different
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--warm-report', required=True, type=Path)
@@ -31,12 +46,10 @@ def main():
             or not warm.get('source_clean') or not warm.get('end_clean')
             or warm.get('end_revision') != revision):
         parser.error('the no-op case needs a previous complete passing report for this clean revision')
-    for name, previous in warm.get('profile', {}).items():
-        current = os.environ.get(name)
-        if current is None and name in {'CARGO_PROFILE_DEV_DEBUG', 'CARGO_PROFILE_TEST_DEBUG'}:
-            current = '0'
-        if current != previous:
-            parser.error(f'qualification must preserve the previous {name} profile setting')
+    differences = profile_differences(warm.get('profile', {}), os.environ)
+    if differences:
+        parser.error('qualification must preserve the previous profile settings: '
+                     + ', '.join(differences))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     summary = {'version': 1, 'status': 'running', 'revision': revision,
