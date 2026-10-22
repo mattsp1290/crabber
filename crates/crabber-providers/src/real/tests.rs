@@ -115,10 +115,10 @@ use tokio::{
 };
 
 #[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
+pub(super) async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
     let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
         .await
         .expect("timed out waiting for provider request")
@@ -163,7 +163,7 @@ async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) 
 }
 
 #[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
+pub(super) async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
     timeout(LOOPBACK_TIMEOUT, socket.write_all(response))
         .await
         .expect("timed out writing provider response")
@@ -235,7 +235,7 @@ fn default_status_taxonomy_is_stable() {
 }
 
 #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
-fn request(provider: &str) -> ModelRequest {
+pub(super) fn request(provider: &str) -> ModelRequest {
     ModelRequest {
         context: Vec::new(),
         identity: RequestIdentity {

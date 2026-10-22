@@ -284,7 +284,8 @@ The [embedding capability matrix](docs/embedding.md) links runnable memory,
 PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
 [native extensions](examples/native-extension/README.md),
 [WASM extensions](examples/wasm-extension/README.md),
-[manual Codex login](examples/codex-login/README.md), and
+[manual Codex login](examples/codex-login/README.md),
+[provider stacks and credentials](crates/crabber-providers/README.md), and
 [Datadog export](examples/datadog-export/README.md) explain their actual commands
 and credential requirements.
 

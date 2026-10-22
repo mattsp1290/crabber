@@ -16,6 +16,7 @@ use tokio::{
 };
 use url::Url;
 
+pub mod catalog;
 pub mod device;
 pub const CODEX_CLI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const CODEX_CLI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";

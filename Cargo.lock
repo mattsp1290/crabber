@@ -396,6 +396,7 @@ name = "codex-login"
 version = "0.1.0"
 dependencies = [
  "crabber-auth",
+ "reqwest 0.12.28",
  "tokio",
 ]
 

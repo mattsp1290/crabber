@@ -109,6 +109,7 @@ pub struct AgentBuilder {
     monotonic_clock: Option<Arc<dyn crabber_runtime::MonotonicClock>>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
+    provider_env_error: bool,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     config: Option<AgentConfig>,
     tools: Vec<Arc<ToolDefinition>>,
@@ -200,8 +201,17 @@ impl AgentBuilder {
         feature = "opencode-go"
     ))]
     #[must_use]
-    pub fn providers_from_env(self) -> Self {
-        self.provider(Arc::new(crabber_providers::HttpResolver::from_env()))
+    pub fn providers_from_env(mut self) -> Self {
+        match crabber_providers::HttpResolver::try_from_env() {
+            Ok(resolver) => {
+                self.provider_env_error = false;
+                self.provider(Arc::new(resolver))
+            }
+            Err(_) => {
+                self.provider_env_error = true;
+                self
+            }
+        }
     }
     #[must_use]
     pub fn memory(mut self) -> Self {
@@ -343,6 +353,9 @@ impl AgentBuilder {
     ///
     /// Returns an error if the provider, config, or runtime dependencies are invalid.
     pub fn build(self) -> Result<Agent, BuildError> {
+        if self.provider_env_error {
+            return Err(BuildError::InvalidConfig("CRABBER_CODEX_PROFILE"));
+        }
         let resolver = self.resolver.ok_or(BuildError::NoProvider)?;
         let config = self.config.ok_or(BuildError::NoConfig)?;
         if config.max_output_tokens == Some(0) {
@@ -584,6 +597,7 @@ impl Agent {
             monotonic_clock: None,
             store: None,
             resolver: None,
+            provider_env_error: false,
             workspace_reader_resolver: None,
             config: None,
             tools: Vec::new(),
@@ -874,6 +888,8 @@ impl Agent {
     {
         self.runtime.recover_with_context(context_for).await
     }
+
+
 }
 
 /// Only the winner of keyed admission receives a live execution handle.
@@ -1028,6 +1044,33 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[cfg(feature = "codex")]
+    #[test]
+    fn providers_from_env_rejects_invalid_profile() {
+        const CHILD: &str = "CRABBER_TEST_INVALID_PROFILE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(matches!(
+                Agent::builder().providers_from_env().build(),
+                Err(BuildError::InvalidConfig("CRABBER_CODEX_PROFILE"))
+            ));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent::tests::providers_from_env_rejects_invalid_profile",
+            ])
+            .env(CHILD, "1")
+            .env("CRABBER_CODEX_PROFILE", "bogus")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     struct BuilderReader;
     #[async_trait]
