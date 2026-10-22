@@ -127,24 +127,17 @@ pub trait CredentialStore: Send + Sync {
     fn refresh_lock(&self) -> Option<RefreshLock> {
         None
     }
-    /// Replace or clear only the credential version used for the refresh grant.
+    /// Atomically replace or clear only the credential version used for the refresh grant.
+    ///
+    /// The comparison and mutation must share the same lock or storage transaction
+    /// as `save` and `clear`. Return `false` when another writer has rotated the
+    /// credential. Stores that do not support refresh writes must return an error.
+    /// Separate calls to `load` and `save`/`clear` cannot implement this contract.
     fn compare_exchange(
         &self,
         expected: &OAuthCredentials,
         next: Option<&OAuthCredentials>,
-    ) -> Result<bool, AuthError> {
-        let Some(current) = self.load()? else {
-            return Ok(false);
-        };
-        if !same_rotation(&current, expected) {
-            return Ok(false);
-        }
-        match next {
-            Some(value) => self.save(value)?,
-            None => self.clear()?,
-        }
-        Ok(true)
-    }
+    ) -> Result<bool, AuthError>;
 }
 
 #[derive(Clone)]
@@ -348,7 +341,25 @@ impl CredentialStore for MemoryCredentialStore {
         *self.0.lock().map_err(|_| AuthError::Store)? = None;
         Ok(())
     }
+    fn compare_exchange(
+        &self,
+        expected: &OAuthCredentials,
+        next: Option<&OAuthCredentials>,
+    ) -> Result<bool, AuthError> {
+        let mut current = self.0.lock().map_err(|_| AuthError::Store)?;
+        if !current
+            .as_ref()
+            .is_some_and(|value| same_rotation(value, expected))
+        {
+            return Ok(false);
+        }
+        *current = next.cloned();
+        Ok(true)
+    }
 }
+
+#[cfg(test)]
+mod memory_tests;
 
 pub fn random_urlsafe(bytes: usize) -> String {
     let mut out = vec![0; bytes];

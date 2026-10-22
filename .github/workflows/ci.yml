@@ -108,7 +108,11 @@ jobs:
         run: cargo test -p server-host-probe --features postgres -- --nocapture
 
       - name: Public workspace roles and cross-workspace denial
-        run: cargo test -p crabber --features postgres --test workspace_roles -- --nocapture
+        # Global host recovery must not consume paused runs left by earlier journeys.
+        run: |
+          psql "$CRABBER_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE crabber_workspace_roles'
+          CRABBER_TEST_POSTGRES_URL="${CRABBER_TEST_POSTGRES_URL%/*}/crabber_workspace_roles" \
+            cargo test -p crabber --features postgres --test workspace_roles -- --nocapture
       - name: Provision CI worker role
         run: psql "$CRABBER_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f .github/scripts/provision-ci-worker.sql
       - name: Worker-role journeys

@@ -19,7 +19,7 @@ impl HttpAdapter {
             #[cfg(feature = "openai")]
             AdapterKind::OpenAi => Some("openai"),
             #[cfg(feature = "codex")]
-            AdapterKind::Codex => Some("codex"),
+            AdapterKind::Codex(_) => Some("codex"),
             #[cfg(feature = "opencode-go")]
             AdapterKind::OpenCode => Some("opencode-go"),
             #[cfg(feature = "custom-http")]
@@ -33,23 +33,26 @@ impl HttpAdapter {
         }
         // Built-in adapters have fixed client/header policies and token encoding.
         // Credential source contents and refreshed tokens are deliberately absent.
-        let config = serde_json::json!([
+        let config = vec![
             "crabber.builtin-http.v1",
             backend,
             endpoint.as_str(),
             self.user_agent
                 .to_str()
                 .map_err(|_| ProviderBindingError::InvalidDescriptor)?,
-        ]);
+        ];
         // Codex CLI has a distinct account-header and credential-profile policy,
         // even when a host routes both stacks through the same proxy endpoint.
         // Leave legacy SIWC and other provider declarations byte-for-byte stable.
         #[cfg(feature = "codex")]
-        let config = if self.codex_profile == Some(crabber_auth::CredentialProfile::CodexCli) {
-            let mut values = config.as_array().expect("binding is an array").clone();
-            values.push(serde_json::json!("codex-cli"));
-            serde_json::Value::Array(values)
-        } else {
+        let config = {
+            let mut config = config;
+            if matches!(
+                self.kind,
+                AdapterKind::Codex(crabber_auth::CredentialProfile::CodexCli)
+            ) {
+                config.push("codex-cli");
+            }
             config
         };
         let config =

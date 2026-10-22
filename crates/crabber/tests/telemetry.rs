@@ -22,8 +22,15 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
         headers: vec![],
     });
     let telemetry = Telemetry::new(config).unwrap();
-    let _guard =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(telemetry.layer()));
+    // SQLx closes captured spans on SQLite worker threads. Their parent spans
+    // need this binary's subscriber to be available on those threads too.
+    let host_closed = Arc::new(tokio::sync::Notify::new());
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(telemetry.layer())
+            .with(HostSpanClosed(host_closed.clone())),
+    )
+    .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("trace.sqlite");
     SqliteStore::migrate(&path).await.unwrap();
@@ -56,6 +63,11 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
     .instrument(tracing::info_span!("host.request"))
     .await;
     assert_eq!(result.status, crabber::core::RunStatus::Completed);
+    // SQLx's SQLite worker can retain a command's tracing span after its ACK.
+    // Observe the host span closing before flushing spans that end on close.
+    tokio::time::timeout(Duration::from_secs(5), host_closed.notified())
+        .await
+        .expect("host span closes before telemetry shutdown");
     telemetry.flush().await.unwrap();
     telemetry.shutdown().await.unwrap();
     let spans = receiver.spans();
@@ -95,6 +107,21 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
                 attr.key
             );
             assert!(!format!("{:?}", attr.value).contains("PROMPT_SECRET"));
+        }
+    }
+}
+
+struct HostSpanClosed(Arc<tokio::sync::Notify>);
+impl<S> tracing_subscriber::Layer<S> for HostSpanClosed
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_close(&self, id: tracing::span::Id, context: tracing_subscriber::layer::Context<'_, S>) {
+        if context
+            .span(&id)
+            .is_some_and(|span| span.name() == "host.request")
+        {
+            self.0.notify_one();
         }
     }
 }

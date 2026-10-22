@@ -134,7 +134,7 @@ enum AdapterKind {
     #[cfg(feature = "openai")]
     OpenAi,
     #[cfg(feature = "codex")]
-    Codex,
+    Codex(crabber_auth::CredentialProfile),
     #[cfg(feature = "opencode-go")]
     OpenCode,
     #[cfg(feature = "custom-http")]
@@ -157,8 +157,6 @@ pub struct HttpAdapter {
     user_agent: HeaderValue,
     #[cfg(feature = "codex")]
     tokens: Option<Arc<crabber_auth::TokenManager>>,
-    #[cfg(feature = "codex")]
-    codex_profile: Option<crabber_auth::CredentialProfile>,
     #[cfg(feature = "custom-http")]
     credential_source: Option<Arc<dyn CredentialSource>>,
     #[cfg(feature = "custom-http")]
@@ -211,8 +209,6 @@ impl HttpAdapter {
                 .expect("default HTTP client configuration must be valid"),
             #[cfg(feature = "codex")]
             tokens: None,
-            #[cfg(feature = "codex")]
-            codex_profile: None,
             #[cfg(feature = "custom-http")]
             credential_source: None,
             #[cfg(feature = "custom-http")]
@@ -263,31 +259,29 @@ impl HttpAdapter {
     }
     #[cfg(feature = "codex")]
     pub fn codex(store: Arc<dyn crabber_auth::CredentialStore>) -> Self {
-        let mut adapter = Self::new(
-            "codex",
-            "https://api.openai.com/v1",
-            Protocol::Responses,
-            AdapterKind::Codex,
-            None,
-            CredentialPlacement::Bearer,
-        );
-        adapter.tokens = Some(Arc::new(
-            crabber_auth::TokenManager::new(store)
-                .with_profile(crabber_auth::CredentialProfile::Siwc),
-        ));
-        adapter.codex_profile = Some(crabber_auth::CredentialProfile::Siwc);
-        adapter
+        Self::codex_with_profile(store, crabber_auth::CredentialProfile::Siwc)
     }
     #[cfg(feature = "codex")]
     #[must_use]
     pub fn codex_cli(store: Arc<dyn crabber_auth::CredentialStore>) -> Self {
-        let mut adapter = Self::codex(store.clone());
+        Self::codex_with_profile(store, crabber_auth::CredentialProfile::CodexCli)
+    }
+    #[cfg(feature = "codex")]
+    fn codex_with_profile(
+        store: Arc<dyn crabber_auth::CredentialStore>,
+        profile: crabber_auth::CredentialProfile,
+    ) -> Self {
+        let mut adapter = Self::new(
+            "codex",
+            profile.inference_base_url(),
+            Protocol::Responses,
+            AdapterKind::Codex(profile),
+            None,
+            CredentialPlacement::Bearer,
+        );
         adapter.tokens = Some(Arc::new(
-            crabber_auth::TokenManager::new(store)
-                .with_profile(crabber_auth::CredentialProfile::CodexCli),
+            crabber_auth::TokenManager::new(store).with_profile(profile),
         ));
-        adapter.base_url = crabber_auth::codex::CODEX_BACKEND_URL.into();
-        adapter.codex_profile = Some(crabber_auth::CredentialProfile::CodexCli);
         adapter
     }
     #[cfg(feature = "custom-http")]
@@ -347,7 +341,7 @@ impl HttpAdapter {
     }
     #[cfg(feature = "codex")]
     fn uses_codex_responses_mode(&self) -> bool {
-        self.kind == AdapterKind::Codex
+        matches!(self.kind, AdapterKind::Codex(_))
     }
     #[cfg(not(feature = "codex"))]
     fn uses_codex_responses_mode(&self) -> bool {
@@ -398,7 +392,7 @@ impl HttpAdapter {
             {
                 let tokens = self.tokens.as_ref().ok_or_else(auth)?;
                 let creds = tokens.credentials().await.map_err(|_| auth())?;
-                if Some(creds.profile) != self.codex_profile {
+                if !matches!(self.kind, AdapterKind::Codex(profile) if profile == creds.profile) {
                     return Err(auth());
                 }
                 if creds.profile == crabber_auth::CredentialProfile::CodexCli {

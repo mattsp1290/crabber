@@ -12,6 +12,15 @@ use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 use sqlx::{Row, Sqlite};
 const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN length(CAST(data_json AS BLOB))<=33554432 AND length(CAST(data_json AS BLOB))<=$3 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
 pub(super) const SUMMARY: &str = "SELECT CASE WHEN length(CAST(q.queue_id AS BLOB))<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN length(CAST(q.summary_json AS BLOB))<=16384 THEN q.summary_json END AS summary, CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN length(CAST(a.operation_id AS BLOB))<=128 THEN a.operation_id END AS latest_operation,CASE WHEN length(CAST(CAST(ar.data AS TEXT) AS BLOB))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
+
+// Workspace discovery uses its own bounded SQL shape and the canonical summary decoder.
+const HEADS: &str = r"WITH entries AS (SELECT q.session_id,q.queue_id,q.sequence,q.state,q.prepared,q.summary_json,q.admission_key FROM future_queue q JOIN sessions s ON s.id=q.session_id WHERE json_extract(s.data, '$.workspace_id')=$1 AND q.state IN ('Queued','Claimed') AND q.sequence=(SELECT MIN(h.sequence) FROM future_queue h WHERE h.session_id=q.session_id AND h.state IN ('Queued','Claimed')) AND ($2 IS NULL OR q.session_id COLLATE BINARY>$2)
+ORDER BY q.session_id COLLATE BINARY LIMIT $3)
+SELECT CASE WHEN length(CAST(q.session_id AS BLOB))<=512 THEN q.session_id END AS session_id, CASE WHEN length(CAST(q.queue_id AS BLOB))<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN length(CAST(q.summary_json AS BLOB))<=16384 AND SUM(length(CAST(q.summary_json AS BLOB))+COALESCE(length(CAST(r.data_json AS BLOB)),0)) OVER ()<=262144 THEN q.summary_json END AS summary, CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN length(CAST(a.operation_id AS BLOB))<=128 THEN a.operation_id END AS latest_operation,CASE WHEN length(CAST(CAST(ar.data AS TEXT) AS BLOB))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM entries q
+LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id)
+LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL
+LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key
+ORDER BY q.session_id COLLATE BINARY";
 pub(super) async fn record_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
@@ -239,12 +248,7 @@ impl SqliteStore {
 
         // Restrict the candidate page before transferring or validating summaries.
         // Reuse the exact item decoder and its receipt/identity checks.
-        let projection = SUMMARY.replacen("SELECT ", "SELECT CASE WHEN length(CAST(q.session_id AS BLOB))<=512 THEN q.session_id END AS session_id, ", 1).replace("FROM future_queue q", "FROM entries q").replace(" WHERE q.session_id=$1 AND q.queue_id=$2", " ORDER BY q.session_id COLLATE BINARY");
-        let projection = projection.replace("length(CAST(q.summary_json AS BLOB))<=16384", "length(CAST(q.summary_json AS BLOB))<=16384 AND SUM(length(CAST(q.summary_json AS BLOB))+COALESCE(length(CAST(r.data_json AS BLOB)),0)) OVER ()<=262144");
-        let query = format!(
-            "WITH entries AS (SELECT q.session_id,q.queue_id,q.sequence,q.state,q.prepared,q.summary_json,q.admission_key FROM future_queue q JOIN sessions s ON s.id=q.session_id WHERE json_extract(s.data, '$.workspace_id')=$1 AND q.state IN ('Queued','Claimed') AND q.sequence=(SELECT MIN(h.sequence) FROM future_queue h WHERE h.session_id=q.session_id AND h.state IN ('Queued','Claimed')) AND ($2 IS NULL OR q.session_id COLLATE BINARY>$2) ORDER BY q.session_id COLLATE BINARY LIMIT $3) {projection}"
-        );
-        let rows = sqlx::query(&query)
+        let rows = sqlx::query(HEADS)
             .bind(&request.workspace_id)
             .bind(request.cursor.as_ref().map(|id| &id.0))
             .bind(i64::from(request.limit) + 1)
