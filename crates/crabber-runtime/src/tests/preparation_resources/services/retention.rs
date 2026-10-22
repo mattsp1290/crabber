@@ -74,17 +74,17 @@ async fn sqlite_store_panic_keeps_actual_service_scope() {
     .await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_store_panic_keeps_actual_service_scope() {
+#[test]
+fn postgres_store_panic_keeps_actual_service_scope() {
     use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+    let history_runtime = tokio::runtime::Builder::new_current_thread();
+    TestDatabase::run_with_runtime(DatabaseMode::Current, history_runtime, async move |url| {
         crabber_session::PostgresStore::migrate(&url).await.unwrap();
         contract(Arc::new(
             crabber_session::PostgresStore::connect(&url).await.unwrap(),
         ))
         .await;
     })
-    .await
     .unwrap();
 }
