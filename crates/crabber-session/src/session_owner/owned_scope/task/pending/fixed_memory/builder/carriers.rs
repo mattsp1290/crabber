@@ -40,7 +40,7 @@ pub(super) fn request(
             model_id: profile.provider.model_id(),
             system_prompt: None,
             max_output_tokens: None,
-            model_controls: Default::default(),
+            model_controls: crabber_core::ModelControls::default(),
         },
         proof,
     )

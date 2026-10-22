@@ -29,7 +29,7 @@ pub(crate) fn fixture(
         model_id: "model".into(),
         system_prompt: Some("private-system".into()),
         max_output_tokens: Some(32),
-        model_controls: Default::default(),
+        model_controls: crabber_core::ModelControls::default(),
     };
     let provider = ProviderBindingDescriptor::new(
         "provider",
