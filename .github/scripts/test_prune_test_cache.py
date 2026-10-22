@@ -4,10 +4,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('prune', Path(__file__).with_name('prune-test-cache.py'))
 prune = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prune)
