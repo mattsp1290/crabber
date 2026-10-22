@@ -68,6 +68,12 @@ test-threads = 16
 retries = 0
 fail-fast = false
 
+# Start long independent native histories before shorter cases in their group.
+# Priority alone changes; backend slots, worker weights and deadlines remain.
+[[profile.complete.overrides]]
+filter = 'package(crabber-session) & (test(=memory::queue::tests::queue_bounds) | test(=sqlite::queue::tests::queue_bounds) | test(=postgres::queue::tests::queue_bounds) | test(=sqlite::session_owner::tests::session_owner_contract) | test(=postgres::session_owner::tests::session_owner_contract) | test(=memory::session_owner::tests::session_owner_shared_capacity) | test(=postgres::session_owner::drivers::tests::approval_successor_driver_contract))'
+priority = 30
+
 # These MemoryStore-only blocked-drop histories include real native deadlines.
 # Start them early while retaining the conservative service group and weight.
 [[profile.complete.overrides]]
@@ -119,6 +125,12 @@ threads-required = 1
 test-threads = 4
 retries = 0
 fail-fast = false
+
+# Start long independent native histories before shorter cases in their group.
+# Priority alone changes; backend slots, worker weights and deadlines remain.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber-session) & (test(=memory::queue::tests::queue_bounds) | test(=sqlite::queue::tests::queue_bounds) | test(=postgres::queue::tests::queue_bounds) | test(=sqlite::session_owner::tests::session_owner_contract) | test(=postgres::session_owner::tests::session_owner_contract) | test(=memory::session_owner::tests::session_owner_shared_capacity) | test(=postgres::session_owner::drivers::tests::approval_successor_driver_contract))'
+priority = 30
 
 # These MemoryStore-only blocked-drop histories include real native deadlines.
 # Start them early while retaining the conservative service group and weight.
