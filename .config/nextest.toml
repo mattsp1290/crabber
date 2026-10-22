@@ -68,6 +68,16 @@ test-threads = 16
 retries = 0
 fail-fast = false
 
+# Service limits take priority even inside a WASM binary. The later WASM
+# override independently retains its two general scheduler reservations.
+[[profile.complete.overrides]]
+filter = 'test(/postgres/)'
+test-group = 'postgres'
+
+[[profile.complete.overrides]]
+filter = 'test(/sqlite/)'
+test-group = 'sqlite'
+
 [[profile.complete.overrides]]
 filter = 'binary(/wasm/) | test(/wasm/)'
 test-group = 'wasm'
@@ -96,6 +106,16 @@ threads-required = 1
 test-threads = 4
 retries = 0
 fail-fast = false
+
+# Service limits take priority even inside a WASM binary. The later WASM
+# override independently retains its two general scheduler reservations.
+[[profile.complete-ci.overrides]]
+filter = 'test(/postgres/)'
+test-group = 'postgres-ci'
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/sqlite/)'
+test-group = 'sqlite'
 
 [[profile.complete-ci.overrides]]
 filter = 'binary(/wasm/) | test(/wasm/)'

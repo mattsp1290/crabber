@@ -65,6 +65,60 @@ pub(crate) fn version_gate(workspace: &Path, gates: &mut Checks) {
     );
 }
 
+#[cfg(feature = "postgres-check")]
+pub(crate) fn complete_group_gate(
+    workspace: &Path,
+    gates: &mut Checks,
+    metadata: &Path,
+    binaries: &Path,
+    profile: &str,
+) {
+    let postgres = if profile == "complete-ci" {
+        "postgres-ci"
+    } else {
+        "postgres"
+    };
+    let filter = format!(
+        "(test(/postgres/) & not group({postgres})) | \
+         (test(/sqlite/) & not test(/postgres/) & not group(sqlite))"
+    );
+    let destination = metadata.with_file_name("resource-groups.json");
+    let mut command = Command::new("cargo");
+    command
+        .args(["nextest", "list", "--cargo-metadata"])
+        .arg(metadata)
+        .arg("--binaries-metadata")
+        .arg(binaries)
+        .args([
+            "--profile",
+            profile,
+            "-E",
+            &filter,
+            "--message-format",
+            "json",
+        ])
+        .current_dir(workspace);
+    gates.captured(
+        workspace,
+        command,
+        "real backend cases cannot bypass service limits through WASM classification",
+        move |output| {
+            let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(list["test-count"].as_u64().is_some_and(|count| count > 0));
+            for suite in list["rust-suites"].as_object().unwrap().values() {
+                for (name, case) in suite["testcases"].as_object().unwrap() {
+                    assert_ne!(
+                        case["filter-match"]["status"], "matches",
+                        "backend case {name} bypasses its service group"
+                    );
+                }
+            }
+            std::fs::write(&destination, serde_json::to_vec(&list).unwrap())
+                .expect("persist resolved resource group audit");
+        },
+    );
+}
+
 pub(crate) fn schedule(workspace: &Path, gates: &mut Checks, arguments: &[&str]) {
     let mut command = Command::new("cargo");
     command

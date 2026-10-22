@@ -158,6 +158,8 @@ jobs:
             target/test-performance/ci-*/**/*.json
             target/test-performance/complete-*/fixtures.jsonl
             target/test-performance/complete-*/tests.json
+            target/test-performance/complete-*/boundary-features.json
+            target/test-performance/complete-*/resource-groups.json
             target/test-performance/complete-*/*-version.txt
           if-no-files-found: ignore
           retention-days: 7

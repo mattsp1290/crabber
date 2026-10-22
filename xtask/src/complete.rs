@@ -254,6 +254,7 @@ fn behavior_graph(gates: &mut Checks, directory: &Path) {
     gates.internal("required-coverage-and-features", workspace, move |root| {
         validate_manifest(root, &inspect_metadata, &inspect_manifest);
     });
+    crate::nextest::complete_group_gate(workspace, gates, &cargo_metadata, &binaries, profile);
     let mut behavior = Command::new("cargo");
     behavior
         .args([
@@ -341,7 +342,7 @@ fn validate_manifest(workspace: &Path, metadata: &Path, manifest: &Path) {
     let mut selected = Vec::new();
     for suite in suites.values() {
         for (name, case) in suite["testcases"].as_object().unwrap() {
-            if case["filter-match"]["status"] == "matches" {
+            if case["filter-match"]["status"] == "matches" && case["ignored"] == false {
                 selected.push((suite["package-name"].as_str().unwrap(), name.as_str()));
             }
         }
