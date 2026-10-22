@@ -10,6 +10,24 @@ use crabber::{
 use std::{fmt::Write as _, sync::Arc, time::Duration};
 use tracing::Instrument as _;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
+
+struct HostClosed(Arc<tokio::sync::Notify>);
+
+impl<S> Layer<S> for HostClosed
+where
+    S: tracing::Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_close(&self, id: tracing::span::Id, context: Context<'_, S>) {
+        if context
+            .span(&id)
+            .is_some_and(|span| span.name() == "host.request")
+        {
+            self.0.notify_one();
+        }
+    }
+}
+
 #[tokio::test]
 async fn sqlite_run_exports_scoped_store_child_under_host_request() {
     let receiver = receiver::Receiver::new();
@@ -22,8 +40,14 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
         headers: vec![],
     });
     let telemetry = Telemetry::new(config).unwrap();
-    let _guard =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(telemetry.layer()));
+    let host_closed = Arc::new(tokio::sync::Notify::new());
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(telemetry.layer())
+            // Layer close callbacks run inside-out, so OTel has ended the span
+            // before this outer observer wakes the flushing task.
+            .with(HostClosed(host_closed.clone())),
+    );
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("trace.sqlite");
     SqliteStore::migrate(&path).await.unwrap();
@@ -56,6 +80,14 @@ async fn sqlite_run_exports_scoped_store_child_under_host_request() {
     .instrument(tracing::info_span!("host.request"))
     .await;
     assert_eq!(result.status, crabber::core::RunStatus::Completed);
+    agent.close_extensions().await.unwrap();
+    drop(agent);
+    // A SQLite worker can reply before releasing its captured tracing span.
+    // Flush exports ended spans, so observe actual closure rather than assume
+    // the run result also proves that the final worker reference was dropped.
+    tokio::time::timeout(Duration::from_secs(2), host_closed.notified())
+        .await
+        .expect("host span must close before flushing telemetry");
     telemetry.flush().await.unwrap();
     telemetry.shutdown().await.unwrap();
     let spans = receiver.spans();
