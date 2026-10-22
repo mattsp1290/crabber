@@ -44,7 +44,14 @@ async fn contract<S: Store + 'static>(
 ) {
     match family {
         Family::HeldAck => {
-            Box::pin(faults::held_contract(store, &clock, frontend, recovery)).await;
+            Box::pin(faults::held_contract(
+                store,
+                &clock,
+                frontend,
+                recovery,
+                exhaustive_validation,
+            ))
+            .await;
             return;
         }
         Family::MalformedReplay => {

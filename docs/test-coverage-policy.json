@@ -455,6 +455,61 @@
       "after": "First and1024th SQL reservations use the public API. Exactly1022 interior fixture reservations use the existing Record/revision/protected-source writers in one normally durable owned transaction. Fresh authenticated readback verifies exact committed1023 and1024 identities, native sources and sequential publication provenance. Overflow, corruption, actual Join and replacement assertions remain. Memory retains all1024 public reservations.",
       "rationale": "Repeated public preflight and independent transaction commits for known-valid root fixture interiors are removed. This explicitly loses1022 public preflight/commit/ACK/fault boundaries per SQL fixture, incremental near-capacity commit churn and repeated durability exposure; it is not equivalent stress. Limits, synchronization settings and actual public boundary checks are unchanged. Existing SQL owner faults and physical process histories remain required. No production API or schema is changed.",
       "validation": "Both independent actual source reviews approved. Clippy with PostgreSQL and SQLite passed. Each SQL owner contract passed serially, and all12 selected owner-family tests passed with four threads on each backend, with unchanged source. PostgreSQL fixture identity pairs and owned container cleanup were independently verified. These focused checks are not full budget qualification; selected full inventory and all final local/CI qualification cases remain pending."
+    },
+    {
+      "id": "pending-tool-held-ack-sql-product",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "Waiter Drop and post-return unknown ACKs must retain administrative task ownership, prevent main dispatch and return capacity only after real completion across genuine Tool/Frontend origins.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests.rs",
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests/faults.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "session_owner::owned_scope::task::pending::tool_tests::tool_claim::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_recovery::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_claim::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_recovery::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_claim::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_recovery::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_claim::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_recovery::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_claim::postgres_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_recovery::postgres_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_claim::postgres_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_recovery::postgres_pending_held_ack",
+        "sqlite::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins",
+        "postgres::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_before_commit",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_committed_ack",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_activation_ack",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_cancelled",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_expired",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_public_state",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_before_register",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_tool_recovery_before_commit",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_claim_committed_ack",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_recovery_activation_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_before_commit",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_committed_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_activation_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_cancelled",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_expired",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_public_state",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_before_register",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_tool_recovery_before_commit",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_claim_committed_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_recovery_activation_ack"
+      ],
+      "before": "Each backend runs four Tool/Frontend claim/recovery origins through Complete, Inspect, Register and Activate with both normal and unknown ACKs:32 held histories per backend.",
+      "after": "Memory retains all32 histories. Each SQL backend retains both Complete ACK outcomes for all four origins and all four stages for ToolClaim:14 histories per SQL backend. All existing native entrypoint names and held() assertions remain.",
+      "rationale": "Interposed pauses and substitutes UnknownStoreOutcome only after awaited native calls return; shared late-stage stop/no-main/drain branches do not vary by origin/backend. Distinct native source paths remain exercised by all four unchanged SQL success/exact-replay/malformed/cleanup families and explicit protected-source/native transaction fault detectors. This removes18 family-specific Inspect/Register/Activate by ACK combinations per SQL backend,36 total, losing their repeated native preparation/commit, payload-drop and interleaving exposure. It is not equal stress. No capacity, durability setting, deadline or production code changes. General successor/approval process cases do not provide an exact Tool/Frontend physical-death replacement.",
+      "validation": "Both independent actual source reviews approved the exact matrix and detector partition. Focused runs passed45 Memory/SQLite cases,33 managed Memory/PostgreSQL pending-family cases and12 native PostgreSQL source/fault cases with unchanged source. All34 explicit retained detectors actually passed. PostgreSQL fixture identities matched16/16 and12/12, and both owned containers were independently absent. These are partial behavior checks; full selected inventory and all final local/CI budget qualification cases remain pending."
     }
   ],
   "required_behaviors": [

@@ -8,13 +8,21 @@ pub(super) async fn held_contract<S: Store + 'static>(
     clock: &ManualClock,
     frontend: bool,
     recovery: bool,
+    exhaustive_validation: bool,
 ) {
-    for stage in [
-        Stage::Complete,
-        Stage::Inspect,
-        Stage::Register,
-        Stage::Activate,
-    ] {
+    // SQL keeps every typed completion ACK and one full late-stage history;
+    // Memory keeps the entire origin/stage/fault product.
+    let stages: &[Stage] = if exhaustive_validation || (!frontend && !recovery) {
+        &[
+            Stage::Complete,
+            Stage::Inspect,
+            Stage::Register,
+            Stage::Activate,
+        ]
+    } else {
+        &[Stage::Complete]
+    };
+    for &stage in stages {
         for fault in [false, true] {
             Box::pin(held(store.clone(), clock, frontend, recovery, stage, fault)).await;
         }

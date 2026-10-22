@@ -799,3 +799,14 @@ Each wrapper retains its original factory, Store and clock while awaiting the
 history, and the history bodies retain their assertions and operation order.
 This shares the compiled bodies across adapters; build and complete-check
 benefits require measurement.
+
+Held-ACK tests keep all 32 Tool/Frontend origin, stage and fault combinations
+on Memory. Each SQL backend keeps both completion ACK outcomes for all four
+origins, plus the full inspection/registration/activation matrix for ToolClaim:
+14 combinations per backend. This removes 18 later-stage combinations and their
+native preparation/commit/interleaving exposure per SQL backend; it is not equal
+stress. Those pauses occur after native calls return. All four SQL origins keep
+their success, exact replay, malformed ACK, cleanup, source-authentication and
+native fault detectors. General successor/approval process tests do not replace
+Tool/Frontend physical-death coverage. Assertions, capacity, durability settings
+and deadlines are unchanged. Complete-check benefits require measurement.
