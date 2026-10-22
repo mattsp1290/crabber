@@ -133,6 +133,11 @@ jobs:
           result = json.loads(report.read_text())
           pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True, 'check': result}) + '\n')
           PY
+      - name: Prune artifacts that must rebuild after every restore
+        if: always() && steps.cache.outcome == 'success'
+        # Keep the restore-side clean: old snapshots still contain these files.
+        # Their required provenance rebuilds remain inside the measured check.
+        run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
       - name: Preserve unchanged source freshness as CI maintenance
         if: always() && steps.cache.outcome == 'success'
         run: python3 -I -S .github/scripts/cache-source-times.py capture
