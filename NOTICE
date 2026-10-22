@@ -1,0 +1,11 @@
+Workspace-instruction discovery/rendering semantics and the tool-result
+redaction catalog are adapted from eino-agent-extensions, commit
+5389549b1f156013a0f82bc936ce4f10edb1ce9f.
+Copyright (c) 2026 Matt Spurlin. MIT License (see LICENSE).
+
+This project uses native Crabber public contracts rather than Eino interfaces.
+It does not claim complete nine-feature parity yet.
+
+URL validation uses the url crate, whose IDNA support bundles ICU4X data
+crates distributed under the Unicode-3.0 license; their license text travels
+with the Cargo registry sources.
