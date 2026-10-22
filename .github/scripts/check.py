@@ -175,7 +175,9 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
                         pass
             if code is not None and not live:
                 break
-            time.sleep(.02)
+            # A 100ms sample bounds cancellation latency well inside the 20s
+            # cleanup reserve without repeatedly scanning every Tokio thread.
+            time.sleep(.1)
         code = child.wait() if child is not None else None
     except BaseException:
         # A reporting/spawn failure cannot leave an owned compiler/test running.
