@@ -5,17 +5,26 @@ async fn contract(store: Arc<dyn Store>, inverted: bool) {
         case(store.clone(), inverted, mode).await;
     }
 }
+async fn start_session(
+    runtime: &Orchestrator,
+    inverted: bool,
+    mode: usize,
+    phase: &str,
+) -> crate::RunHandle {
+    let started = std::time::Instant::now();
+    runtime.start(request()).await.unwrap_or_else(|error| {
+        panic!(
+            "{phase} admission: inverted={inverted} mode={mode} elapsed={:?} error={error:?}",
+            started.elapsed()
+        )
+    })
+}
+
 async fn case(store: Arc<dyn Store>, inverted: bool, mode: usize) {
     let seen = Seen::new(mode);
     let release = Release(seen.gate.clone());
     let (runtime, plans, host) = build(store.clone(), inverted, &seen);
-    let started = std::time::Instant::now();
-    let a = runtime.start(request()).await.unwrap_or_else(|error| {
-        panic!(
-            "first admission: inverted={inverted} mode={mode} elapsed={:?} error={error:?}",
-            started.elapsed()
-        )
-    });
+    let a = start_session(&runtime, inverted, mode, "first").await;
     let first = a.session_id().clone();
     let arun = a.run_id().clone();
     tokio::time::timeout(BOUND, seen.gate.entered.notified())
@@ -37,13 +46,7 @@ async fn case(store: Arc<dyn Store>, inverted: bool, mode: usize) {
         assert_eq!(seen.effects.load(Ordering::SeqCst), 0);
         assert!(seen.dropped.iter().all(|d| d.load(Ordering::SeqCst) == 0));
     }
-    let started = std::time::Instant::now();
-    let b = runtime.start(request()).await.unwrap_or_else(|error| {
-        panic!(
-            "second admission while first is held: inverted={inverted} mode={mode} elapsed={:?} error={error:?}",
-            started.elapsed()
-        )
-    });
+    let b = start_session(&runtime, inverted, mode, "second (first held)").await;
     let second = b.session_id().clone();
     let brun = b.run_id().clone();
     assert_eq!(
