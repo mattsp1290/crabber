@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 build = "build.rs"
 
+# Normal builds retain this executable; required CLI checks stay enabled.
+# Keep unit tests in library or integration targets.
+[[bin]]
+name = "fenced-abandon"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 tempfile = { version = "3", optional = true }
 crabber = { path = "../../crates/crabber" }

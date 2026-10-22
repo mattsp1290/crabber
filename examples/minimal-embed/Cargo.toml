@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 build = "build.rs"
 
+# Normal builds retain this executable; required CLI checks stay enabled.
+# Keep unit tests in library or integration targets.
+[[bin]]
+name = "minimal-embed"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 async-trait = "0.1"
 crabber = { path = "../../crates/crabber", features = ["all-providers", "postgres", "sqlite", "wasm"] }
