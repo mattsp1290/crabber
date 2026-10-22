@@ -1,0 +1,28 @@
+{
+  "name": "file_move",
+  "description": "Move or rename one workspace-relative regular file to a new workspace-relative path that does not exist yet. Optional create_dirs=true creates the destination parent chain. The file keeps its mode and ownership. Fails with conflict if the destination exists.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "path",
+      "new_path"
+    ],
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Workspace-relative source file. Must be a regular file."
+      },
+      "new_path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Workspace-relative destination. Must not exist."
+      },
+      "create_dirs": {
+        "type": "boolean",
+        "description": "If true, mkdir -p the destination parent chain. Default false."
+      }
+    }
+  }
+}

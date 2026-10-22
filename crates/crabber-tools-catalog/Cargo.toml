@@ -1,0 +1,35 @@
+[package]
+name = "crabber-tools-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+crabber-tools-userinteract = { path = "../crabber-tools-userinteract" }
+crabber = { path = "../crabber" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = "0.7"
+crabber-tools-core = { path = "../crabber-tools-core" }
+async-trait = "0.1"
+crabber-tools-fileops = { path = "../crabber-tools-fileops" }
+crabber-tools-search = { path = "../crabber-tools-search" }
+crabber-tools-shell = { path = "../crabber-tools-shell" }
+crabber-tools-glob = { path = "../crabber-tools-glob" }
+crabber-tools-applypatch = { path = "../crabber-tools-applypatch" }
+crabber-tools-urlfetch = { path = "../crabber-tools-urlfetch" }
+crabber-tools-trackerwrite = { path = "../crabber-tools-trackerwrite" }
+
+[dev-dependencies]
+crabber-tools-testkit = { path = "../crabber-tools-testkit" }
+tempfile = "3"
+url = "2"

@@ -1,0 +1,62 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"github.com/cloudwego/eino/schema"
+	"github.com/mattsp1290/eino-tools/applypatch"
+	"github.com/mattsp1290/eino-tools/catalog"
+	"github.com/mattsp1290/eino-tools/fileops"
+	"github.com/mattsp1290/eino-tools/glob"
+	"github.com/mattsp1290/eino-tools/search"
+	"github.com/mattsp1290/eino-tools/shell"
+	"github.com/mattsp1290/eino-tools/trackerwrite"
+	"github.com/mattsp1290/eino-tools/urlfetch"
+	"github.com/mattsp1290/eino-tools/userinteract"
+	"os"
+	"path/filepath"
+)
+
+type stub struct{}
+
+func (stub) Close(context.Context, string, string) error { return nil }
+func main() {
+	defs, err := catalog.Standard(catalog.Options{TrackerWriter: stub{}})
+	if err != nil {
+		panic(err)
+	}
+	rows := make([]map[string]interface{}, 0, len(defs))
+	for _, d := range defs {
+		rows = append(rows, map[string]interface{}{"id": d.ID, "name": d.Name, "binding": d.Binding, "retry_safe": d.RetrySafe, "concurrent": d.Concurrent})
+	}
+	file, err := os.Create(filepath.Join(os.Args[1], "catalog.json"))
+	if err != nil {
+		panic(err)
+	}
+	enc := json.NewEncoder(file)
+	enc.SetIndent("", "  ")
+	if err = enc.Encode(rows); err != nil {
+		panic(err)
+	}
+	file.Close()
+	for _, f := range []func() (*schema.ToolInfo, error){fileops.ReadToolInfo, fileops.WriteToolInfo, fileops.EditToolInfo, fileops.ListToolInfo, search.ToolInfo, shell.ToolInfo, glob.ToolInfo, applypatch.ToolInfo, urlfetch.ToolInfo, trackerwrite.ToolInfo, userinteract.ToolInfo} {
+		i, e := f()
+		if e != nil {
+			panic(e)
+		}
+		s, e := i.ToJSONSchema()
+		if e != nil {
+			panic(e)
+		}
+		o, e := os.Create(filepath.Join(os.Args[1], i.Name+".json"))
+		if e != nil {
+			panic(e)
+		}
+		enc := json.NewEncoder(o)
+		enc.SetIndent("", "  ")
+		if e = enc.Encode(map[string]interface{}{"name": i.Name, "description": i.Desc, "parameters": s}); e != nil {
+			panic(e)
+		}
+		o.Close()
+	}
+}

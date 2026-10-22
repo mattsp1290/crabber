@@ -1,0 +1,29 @@
+{
+  "description": "Read a workspace-relative UTF-8 text file. Plain {path} calls return the leading content prefix capped at 256 KiB. Supplying offset and/or limit returns a line-window with raw and numbered content. Returns structured errors including path_escape, not_found, is_directory, binary, validation, and io.",
+  "name": "file_read",
+  "parameters": {
+    "properties": {
+      "path": {
+        "minLength": 1,
+        "description": "Workspace-relative path of the file to read.",
+        "type": "string"
+      },
+      "offset": {
+        "minimum": 1,
+        "description": "Optional 1-based starting line for a line-windowed read. When omitted, legacy prefix reads are preserved unless limit is present.",
+        "type": "integer"
+      },
+      "limit": {
+        "maximum": 5000,
+        "minimum": 1,
+        "description": "Optional number of lines for a line-windowed read. Default 2000 when offset or limit is present; cap is 5000.",
+        "type": "integer"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  }
+}

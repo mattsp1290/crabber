@@ -9,6 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install ripgrep for standard tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
+          test "$major" -ge 14
       - name: Install stable Rust with rustfmt and Clippy
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
@@ -130,6 +135,11 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: Install ripgrep for standard tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
+          test "$major" -ge 14
       - name: Install stable Rust with rustfmt and Clippy
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy

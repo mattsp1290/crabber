@@ -1,0 +1,29 @@
+{
+  "description": "Edit a workspace-relative file in place by anchored substring replacement. The anchor MUST appear exactly once in the file. Returns structured error envelopes on path_escape, not_found, is_directory, anchor_not_found, anchor_ambiguous, too_large, or io.",
+  "name": "file_edit",
+  "parameters": {
+    "properties": {
+      "path": {
+        "minLength": 1,
+        "description": "Workspace-relative file to edit. Must exist.",
+        "type": "string"
+      },
+      "anchor": {
+        "minLength": 1,
+        "description": "Literal substring to find. Must match exactly once. No regex.",
+        "type": "string"
+      },
+      "replacement": {
+        "description": "Substitute for the anchor. May be empty.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "path",
+      "anchor",
+      "replacement"
+    ],
+    "type": "object"
+  }
+}

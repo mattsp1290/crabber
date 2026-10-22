@@ -35,6 +35,7 @@ fn check() {
         .parent()
         .expect("xtask belongs directly under the workspace root");
 
+    check_tool_prerequisites();
     telemetry_messages::check(workspace);
     agui::check(workspace);
     probes::check(workspace);
@@ -70,7 +71,7 @@ fn check() {
             "warnings",
         ],
     );
-    run(workspace, &["test", "--workspace"]);
+    check_workspace_tests(workspace);
     run(
         workspace,
         &["run", "--quiet", "-p", "agui-sse", "--", "--check"],
@@ -808,5 +809,38 @@ mod tests {
         ] {
             assert!(live_tests_are_ignored(source).is_err(), "{source}");
         }
+    }
+}
+
+// Fail before the long workspace gate when subprocess-backed tools cannot run.
+fn check_tool_prerequisites() {
+    let output = Command::new("rg")
+        .arg("--version")
+        .output()
+        .expect("standard tools tests need ripgrep >= 14 on PATH");
+    let version = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success()
+            && version
+                .split_whitespace()
+                .nth(1)
+                .and_then(|number| number.split('.').next())
+                .and_then(|number| number.parse::<u32>().ok())
+                .is_some_and(|major| major >= 14),
+        "standard tools tests need ripgrep >= 14 on PATH"
+    );
+    println!("{}", version.lines().next().unwrap_or_default());
+}
+
+fn check_workspace_tests(workspace: &Path) {
+    println!("$ cargo test --workspace");
+    let mut command = Command::new("cargo");
+    command.args(["test", "--workspace"]).current_dir(workspace);
+    if cfg!(target_os = "linux") {
+        command.env("CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE", "1");
+    }
+    let status = command.status().expect("launch workspace tests");
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
     }
 }

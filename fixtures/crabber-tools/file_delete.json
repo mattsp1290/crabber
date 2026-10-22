@@ -1,0 +1,18 @@
+{
+  "name": "file_delete",
+  "description": "Delete one workspace-relative regular file. Directories, symlinks and missing files are rejected with structured errors (is_directory, validation, not_found). Not idempotent: deleting a missing file fails.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "path"
+    ],
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Workspace-relative file to delete."
+      }
+    }
+  }
+}
