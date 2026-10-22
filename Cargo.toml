@@ -18,7 +18,7 @@ pedantic = "warn"
 ag-ui-core = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "705303b26b6b900cdf9bdfa456fbd92a7003ca6b" }
 
 # Cached codecs and validators dominate several CPU-heavy debug contracts.
-# Keep workspace compilation unoptimized and retain debug/overflow checks.
+# Keep dev compilation unoptimized and retain debug/overflow checks.
 # The test profile inherits these dev-package overrides.
 [profile.dev.package.serde_json]
 opt-level = 1
@@ -28,3 +28,15 @@ opt-level = 1
 
 [profile.dev.package.jsonschema]
 opt-level = 1
+
+# A bounded test-only candidate for native and source-embedded owner ledgers.
+# Other workspace packages and all normal CLI/dev units retain opt-level 0.
+[profile.test.package.crabber-session]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.crabber]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
