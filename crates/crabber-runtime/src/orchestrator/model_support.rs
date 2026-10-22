@@ -293,6 +293,7 @@ impl Orchestrator {
                 tools: Vec::new(),
                 temperature: None,
                 max_tokens: Some(summary_output_limit),
+                reasoning_effort: None,
                 tool_choice: None,
             };
             let mut measurement = Measurement::new(

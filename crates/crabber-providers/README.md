@@ -7,7 +7,7 @@ The real adapters are Cargo features on `crabber-providers` (`anthropic`, `opena
 | `anthropic` | `ANTHROPIC_API_KEY` | Messages API |
 | `openai` | `OPENAI_API_KEY` | Responses API |
 | `opencode-go` | `OPENCODE_GO_API_KEY` | OpenCode Go API; Responses by default |
-| `codex` | `crabber` user config `auth.json` from `codex-login` | ChatGPT plan usage via public Responses API |
+| `codex` | `auth.json` or host-owned store; configured by `CRABBER_CODEX_PROFILE` | SIWC public Responses or Codex CLI backend |
 
 The Anthropic adapter's default credential stays `ANTHROPIC_API_KEY`. The opt-in
 live acceptance tests read `CRABBER_ANTHROPIC_API_KEY` instead and pass it
@@ -18,9 +18,42 @@ Every Messages request sends `anthropic-version: 2023-06-01` and no
 with HTTP 400. The runtime sends no `temperature` unless a `crabber/model/stream`
 hook sets one.
 
-Codex sign-in follows the current [Sign in with ChatGPT open-source agent flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in): dynamic client registration, a loopback browser callback, PKCE, ID-token signature and claim validation, and the `chatgpt.tokens.use.direct` grant. Inference uses the [documented public Responses endpoint](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) with `store:false` and `stream:true`. The earlier design note's private `chatgpt.com/backend-api/codex/responses` endpoint is superseded by the published flow. The device-code helper is isolated for compatibility testing; no device sign-in is offered for the current SIWC flow.
+Codex supports two configured credential stacks. Browser sign-in follows the
+[public SIWC flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+Codex CLI endpoints are reference-derived and not published by OpenAI.
+Device-code, access-only inference and catalog are **unverified live** until the
+pre-merge acceptance below is recorded.
 
-Credentials are written under `${XDG_CONFIG_HOME}/crabber/auth.json`, or `${HOME}/.config/crabber/auth.json`, with owner-only file permissions on Unix. The stable host identifier is stored in the same directory. The adapter never logs credential values or request bodies.
+| Mode | Stack | Credential source | Token audience / scopes | Inference endpoint | Catalog |
+| --- | --- | --- | --- | --- | --- |
+| Browser loopback PKCE | SIWC (`dynamic_agent_client` or issued `oaiapp_*`) | `codex-login login`; `auth.json` profile `siwc` | `resource=https://api.openai.com/v1`; scopes `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct` | `POST https://api.openai.com/v1/responses` via `HttpAdapter::codex` | unavailable |
+| Device code (unverified live) | Codex CLI (`app_EMoamEEZ73f0CkXaXp7hrann`) | `codex-login device`; `auth.json` profile `codex-cli` | scopes `openid profile email offline_access`; no `resource`; ID token audience validated against client id | `POST https://chatgpt.com/backend-api/codex/responses` with `ChatGPT-Account-Id` via `HttpAdapter::codex_cli` | `GET …/codex/models?client_version=` (unverified live) |
+| Broker refresh | either | host `CredentialStore` with `refresh_lock` and `compare_exchange` | per stack | per stack | per stack |
+| Brokered access-only (unverified live) | Codex CLI | `AccessFileCredentialStore` or host store with `refresh_token: None` | inherits broker token | `HttpAdapter::codex_cli`; one 401 retry re-reads the broker store without refreshing | current access token (unverified live) |
+
+`CRABBER_CODEX_PROFILE` configures which stack the stored credential uses:
+unset, empty or `siwc` selects SIWC; `codex-cli` selects Codex CLI. The adapters
+both register as `codex`, but their endpoint binding fingerprints differ.
+Profile mismatches and missing Codex CLI account IDs fail before inference I/O.
+Prefer `HttpResolver::try_from_env()`, which rejects invalid profile values.
+`AgentBuilder::providers_from_env()` reports these as
+`BuildError::InvalidConfig("CRABBER_CODEX_PROFILE")`. Compatibility
+`HttpResolver::from_env()` omits only Codex for a typo and keeps other compiled
+providers. The minimal embedding example uses this compatibility method, so a
+typo fails when selecting the missing provider.
+
+Credentials are written under `${XDG_CONFIG_HOME}/crabber/auth.json`, falling
+back to `${HOME}/.config/crabber/auth.json`, with owner-only permissions on Unix.
+Serialized fields are `profile`, `client_id`, `host_id`, `account_id`,
+`access_token`, optional `refresh_token`, `id_token`, `scopes`, and
+`expires_unix_ms`. Legacy files without `profile` parse as `siwc`.
+The broker-owned `access.json` schema 1 has `schema_version`, `state`, optional
+`access`, optional `account_id`, optional `expires_unix_ms`, optional
+`issued_unix_ms`, and required `generation`. `available` requires a nonempty
+access token and positive expiry; `unavailable` must omit access/account ID.
+Unknown fields and files larger than 65,536 bytes are rejected. This projection
+is read-only: refresh, file writes and rotation belong to the broker. The adapter
+never logs credential values or request bodies.
 
 ## Typed input support
 
@@ -302,3 +335,18 @@ resource ownership or arbitrary provider effects. See the current
 [server-host binding contract](../../docs/server-host.md).
 
 Provider HTTP boundaries emit `crabber.provider.request` and `crabber.provider.models` spans under `crabber::providers`. Request spans end when response headers arrive and record finite status/error categories; URLs, headers and response bodies are excluded. See the [observability guide](../../docs/observability.md).
+
+Reasoning effort is selected through `ModelControls` on `AgentConfig` or
+`ExecutionContext::with_model_controls`: `low`, `medium`, or `high`. It applies
+to OpenAI and Codex Responses; other protocols ignore it. The default preserves
+Codex `"reasoning": null` and omits `reasoning` for OpenAI. No summary is requested.
+Controls occupy index 15 of admission semantics, so changing effort conflicts
+with a retained keyed admission. Older 15-element admissions cannot replay.
+
+Device-code, access-only inference and catalog require Matt's live pre-merge
+acceptance on this branch: run `codex-login device`,
+`codex-login catalog --client-version <version>`, and a Responses stream with
+`CRABBER_CODEX_PROFILE=codex-cli`; record the actual result in the live table.
+Offline fake-IdP tests do not prove the live audience contract. Changing the
+ID-token audience validation requires explicit approval and a separate reviewed
+commit.

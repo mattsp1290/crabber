@@ -68,6 +68,7 @@ pub(super) fn request(content: ContentBlock, nested: bool) -> ModelRequest {
         tools: vec![],
         temperature: None,
         max_tokens: None,
+        reasoning_effort: None,
         tool_choice: None,
     }
 }

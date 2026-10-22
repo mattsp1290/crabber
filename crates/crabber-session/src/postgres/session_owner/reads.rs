@@ -310,7 +310,21 @@ pub(super) async fn publish_captured_with_proof(
         )
         .await
         .map_err(unknown)?;
-        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json,scope_protocol,native_run_protocol) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).bind(birth.protocol).bind(native_protocol).execute(&mut **tx).await.map_err(unknown)?;
+        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json,scope_protocol,native_run_protocol) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).bind(birth.protocol).bind(native_protocol).execute(&mut **tx).await.map_err(|error| {
+            if error.as_database_error().is_some_and(super::super::hidden_row_error) {
+                Error::IdentityMismatch
+            } else { unknown(error) }
+        })?;
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM session_owner_contexts WHERE session_id=$1)",
+        )
+        .bind(&binding.session_id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(unknown)?;
+        if !visible {
+            return Err(Error::SemanticConflict);
+        }
     }
     sqlx::query("INSERT INTO session_owner_audits(session_id,operation_id,owner_id,sequence,operation,state,data_json) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(&binding.session_id.0).bind(&audit.receipt.operation_id.0).bind(&binding.id.0).bind(i64::try_from(record.sequence).map_err(unknown)?).bind(operation(audit.receipt.operation)).bind(state(record.snapshot.state)).bind(&text).execute(&mut **tx).await.map_err(unknown)?;
     sqlx::query("INSERT INTO session_owner_current(session_id,owner_id,data_json,source_protocol) VALUES($1,$2,$3,CASE WHEN $4 THEN 1 ELSE COALESCE((SELECT source_protocol FROM session_owner_current WHERE session_id=$1 AND owner_id=$2),0) END) ON CONFLICT(session_id,owner_id) DO UPDATE SET data_json=excluded.data_json").bind(&binding.session_id.0).bind(&binding.id.0).bind(serde_json::to_string(record).map_err(unknown)?).bind(fresh).execute(&mut **tx).await.map_err(unknown)?;

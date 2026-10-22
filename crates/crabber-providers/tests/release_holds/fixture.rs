@@ -165,6 +165,7 @@ pub fn request() -> ModelRequest {
         tools: vec![],
         temperature: None,
         max_tokens: None,
+        reasoning_effort: None,
         tool_choice: None,
     }
 }

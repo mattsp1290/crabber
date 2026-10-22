@@ -1279,26 +1279,6 @@ fn time_now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// Emits safe lifecycle fields into the host's installed tracing subscriber.
-pub mod tracing_bridge {
-    use crabber_core::{EventKind, EventRecord, TraceContext};
-    pub fn emit(event: &EventRecord) {
-        emit_with_context(event, None);
-    }
-    /// Emits only approved identity; subscriber installation remains host-owned.
-    pub fn emit_with_context(event: &EventRecord, context: Option<&TraceContext>) {
-        let kind = match event.kind {
-            EventKind::RunStarted => "run.started",
-            EventKind::RunSettled => "run.settled",
-            EventKind::ToolCallSettled => "tool.settled",
-            _ => return,
-        };
-        tracing::info!(session.id=%event.session_id, run.id=%event.run_id,
-            host.trace_id=context.map(TraceContext::trace_id),
-            host.span_id=context.map(TraceContext::span_id), kind, "crabber event");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     mod event_filter;
@@ -2451,6 +2431,7 @@ mod tests {
                 },
                 system_prompt: None,
                 max_output_tokens: None,
+                model_controls: crabber_core::ModelControls::default(),
             })
             .await
             .unwrap();
@@ -2557,6 +2538,7 @@ mod tests {
                     },
                     system_prompt: None,
                     max_output_tokens: None,
+                    model_controls: crabber_core::ModelControls::default(),
                 })
                 .await
                 .unwrap();

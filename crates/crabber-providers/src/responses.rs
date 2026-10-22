@@ -62,9 +62,14 @@ pub fn body(request: &ModelRequest, codex: bool) -> Value {
         body["instructions"] = json!(system);
     }
     if codex {
-        body["reasoning"] = Value::Null;
+        body["reasoning"] = request
+            .reasoning_effort
+            .map_or(Value::Null, |effort| json!({"effort": effort.as_str()}));
         // Encrypted reasoning items are needed to preserve continuity across tool turns.
         body["include"] = json!(["reasoning.encrypted_content"]);
+    }
+    if !codex && let Some(effort) = request.reasoning_effort {
+        body["reasoning"] = json!({"effort": effort.as_str()});
     }
     body
 }

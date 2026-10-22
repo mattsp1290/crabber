@@ -18,6 +18,7 @@ impl Orchestrator {
         let retained = self.queued_intent(context, id).await?;
         let data = &retained.input.request;
         fallback.text.clone_from(&data.text);
+        fallback.model_controls.clone_from(&data.model_controls);
         if data.selection_policy.is_explicit() {
             fallback.selection_policy = data.selection_policy.clone();
             fallback.selection.provider_id.clone_from(&data.provider_id);

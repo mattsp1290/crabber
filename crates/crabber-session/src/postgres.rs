@@ -118,6 +118,22 @@ fn db(error: sqlx::Error) -> StoreError {
         if detail.message() == "crabber_session_deleted" {
             return StoreError::SessionDeleted;
         }
+        match detail.message() {
+            "crabber_roles_missing" => {
+                return StoreError::Validation(
+                    "migration requires crabber_worker and crabber_host roles".into(),
+                );
+            }
+            "crabber_schema_not_owned" => {
+                return StoreError::Validation(
+                    "migration requires ownership of the PostgreSQL schema".into(),
+                );
+            }
+            _ => {}
+        }
+        if hidden_row_error(detail.as_ref()) {
+            return StoreError::SessionIdentityMismatch;
+        }
         if detail.code().as_deref() == Some("23505") {
             return StoreError::Conflict;
         }
@@ -127,6 +143,12 @@ fn db(error: sqlx::Error) -> StoreError {
     }
     // Connection URLs and database details may contain credentials.
     StoreError::Validation("PostgreSQL operation failed".into())
+}
+/// Hidden rows must not become successful replacement writes or expose SQL details.
+fn hidden_row_error(detail: &dyn sqlx::error::DatabaseError) -> bool {
+    detail.code().as_deref() == Some("42501")
+        || (detail.code().as_deref() == Some("23505")
+            && detail.constraint() == Some("sessions_pkey"))
 }
 fn json<T: Serialize>(value: &T) -> Result<Json<serde_json::Value>, StoreError> {
     crate::storable::storable_value(value).map(Json)
@@ -876,3 +898,6 @@ pub(crate) async fn pending_initial_test_lock() -> tokio::sync::MutexGuard<'stat
 
 #[cfg(test)]
 mod pending_initial_fixture;
+
+#[cfg(test)]
+mod isolation_tests;

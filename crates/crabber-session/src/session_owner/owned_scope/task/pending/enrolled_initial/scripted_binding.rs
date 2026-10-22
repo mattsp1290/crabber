@@ -202,6 +202,7 @@ fn profile_kind(
         &components,
         empty,
         empty,
+        crabber_core::ModelControls::default(),
     );
     proof.measure(&wire).map_err(|error| budget(&error))?;
     let mut expected = serde_json::to_value(wire).map_err(|_| conflict())?;

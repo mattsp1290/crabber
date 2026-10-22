@@ -316,6 +316,7 @@ async fn live_user_image_base64_streams_text() {
         tools: vec![],
         temperature: None,
         max_tokens: Some(8192),
+        reasoning_effort: None,
         tool_choice: None,
     };
     let deltas: Vec<StreamDelta> = tokio::time::timeout(LIMIT, async {

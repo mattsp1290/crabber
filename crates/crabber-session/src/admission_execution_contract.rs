@@ -23,7 +23,8 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
         [],
         [],
         [],
-        []
+        [],
+        {"reasoning_effort": null}
     ]);
     let mut keyed = KeyedAdmitRequest {
         request: AdmitRequest {
@@ -77,6 +78,7 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
             model_id: "model".into(),
             system_prompt: Some("system-secret".into()),
             max_output_tokens: None,
+            model_controls: crabber_core::ModelControls::default(),
         },
         runtime_semantics: semantics,
         config_hash: keyed.request.config_hash.clone(),
@@ -273,7 +275,7 @@ async fn denied_writes(
 }
 
 async fn malformed_capsules(store: &impl Store, original: &KeyedAdmitRequest) {
-    for change in 0..10 {
+    for change in 0..11 {
         let mut request = original.clone();
         let capsule = request.execution.as_mut().unwrap();
         match change {
@@ -287,6 +289,7 @@ async fn malformed_capsules(store: &impl Store, original: &KeyedAdmitRequest) {
             7 => capsule.behavior_fingerprint = InputFingerprint::new("c".repeat(64)).unwrap(),
             8 => capsule.runtime_semantics = serde_json::Value::Null,
             9 => capsule.request.max_output_tokens = Some(4096),
+            10 => capsule.request.model_controls.reasoning_effort = Some(ReasoningEffort::High),
             _ => unreachable!(),
         }
         assert_eq!(

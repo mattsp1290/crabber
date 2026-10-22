@@ -890,6 +890,21 @@ impl Store for PostgresStore {
     ) -> Result<Vec<EventRecord>, StoreError> {
         self.read_events(id, after, limit).await
     }
+    async fn list_workspace_unfinished_runs(
+        &self,
+        request: crate::WorkspaceRunsRequest,
+    ) -> Result<Vec<Run>, StoreError> {
+        self.raw_workspace_unfinished_runs(&request.workspace_id)
+            .await
+    }
+
+    async fn list_queue_heads(
+        &self,
+        request: crate::QueueHeadsRequest,
+    ) -> Result<crate::QueueHeadsPage, StoreError> {
+        self.queue_heads(request).await
+    }
+
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
         self.raw_unfinished_runs().await
     }

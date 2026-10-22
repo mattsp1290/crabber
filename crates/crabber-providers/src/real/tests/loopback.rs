@@ -10,9 +10,11 @@ pub(super) use tokio::{
     time::timeout,
 };
 
-pub(super) const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
+pub(in crate::real) const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
+pub(in crate::real) async fn accept_loopback_request(
+    listener: &TcpListener,
+) -> (TcpStream, String) {
     let (socket, headers, _) = accept_loopback_request_with_body(listener).await;
     (socket, headers)
 }
@@ -64,14 +66,14 @@ pub(super) async fn accept_loopback_request_with_body(
     (socket, headers, body)
 }
 
-pub(super) async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
+pub(in crate::real) async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
     timeout(LOOPBACK_TIMEOUT, socket.write_all(response))
         .await
         .expect("timed out writing provider response")
         .expect("failed to write provider response");
 }
 
-pub(super) fn request(provider: &str) -> ModelRequest {
+pub(in crate::real) fn request(provider: &str) -> ModelRequest {
     ModelRequest {
         context: Vec::new(),
         identity: RequestIdentity {
@@ -88,6 +90,7 @@ pub(super) fn request(provider: &str) -> ModelRequest {
         tools: vec![],
         temperature: None,
         max_tokens: None,
+        reasoning_effort: None,
         tool_choice: None,
     }
 }

@@ -522,3 +522,6 @@ async fn owner_read_finishing_after_quiescent_pause_waits_for_original_ack() {
         assert_native_suspension(inner.as_ref(), &session, &run, Boundary::Generic).await;
     }
 }
+
+#[path = "suspension_observation/blocked_callback.rs"]
+mod blocked_callback;

@@ -8,6 +8,8 @@ use std::{future::Future, sync::Arc, time::Duration};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerResourceKind {
     LeaseHeartbeat,
+    /// Durable control I/O progresses independently of synchronous callbacks.
+    RunControlObservation,
     /// Original extension callback joins retained independently of waiter results.
     ExtensionCallbackInvocations,
     /// Model middleware joined before a native attempt can conclude.

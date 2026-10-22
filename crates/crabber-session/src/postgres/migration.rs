@@ -27,101 +27,53 @@ pub(super) async fn is_current(tx: &mut Transaction<'_, Postgres>) -> Result<boo
 /// Later immutable source protocols are applied only once; old runtime tables
 /// are not rebuilt when advancing the current roster.
 pub(super) async fn apply_sources(tx: &mut Transaction<'_, Postgres>) -> Result<(), StoreError> {
-    let execution_sources: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=17)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !execution_sources {
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0017_admission_execution_sources.sql"
-        ))
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
-    }
-    let owner_sources: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=18)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !owner_sources {
-        sqlx::raw_sql(include_str!("../../migrations/0018_owner_publications.sql"))
-            .execute(&mut **tx)
-            .await
-            .map_err(db)?;
-    }
-    let native_sources: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=19)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !native_sources {
-        sqlx::raw_sql(include_str!("../../migrations/0019_native_run_sources.sql"))
-            .execute(&mut **tx)
-            .await
-            .map_err(db)?;
-    }
-    let input_sources: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=20)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !input_sources {
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0020_continuation_input_sources.sql"
-        ))
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
-    }
-    let queue_sources: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=21)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !queue_sources {
-        sqlx::raw_sql(include_str!("../../migrations/0021_queue_publications.sql"))
-            .execute(&mut **tx)
-            .await
-            .map_err(db)?;
-    }
-    let enrollment_sources: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=22)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !enrollment_sources {
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0022_native_execution_enrollment.sql"
-        ))
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
-    }
-    let pending_initial: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=23)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !pending_initial {
-        sqlx::raw_sql(include_str!("../../migrations/0023_pending_initial.sql"))
-            .execute(&mut **tx)
-            .await
-            .map_err(db)?;
-    }
-    let initial_consumer: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=24)")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-    if !initial_consumer {
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0024_pending_initial_consumer.sql"
-        ))
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
+    for (version, source) in [
+        (
+            17,
+            include_str!("../../migrations/0017_admission_execution_sources.sql"),
+        ),
+        (
+            18,
+            include_str!("../../migrations/0018_owner_publications.sql"),
+        ),
+        (
+            19,
+            include_str!("../../migrations/0019_native_run_sources.sql"),
+        ),
+        (
+            20,
+            include_str!("../../migrations/0020_continuation_input_sources.sql"),
+        ),
+        (
+            21,
+            include_str!("../../migrations/0021_queue_publications.sql"),
+        ),
+        (
+            22,
+            include_str!("../../migrations/0022_native_execution_enrollment.sql"),
+        ),
+        (
+            23,
+            include_str!("../../migrations/0023_pending_initial.sql"),
+        ),
+        (
+            24,
+            include_str!("../../migrations/0024_pending_initial_consumer.sql"),
+        ),
+        (
+            25,
+            include_str!("../../migrations/0025_workspace_isolation.sql"),
+        ),
+    ] {
+        let applied: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=$1)")
+                .bind(version)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(db)?;
+        if !applied {
+            sqlx::raw_sql(source).execute(&mut **tx).await.map_err(db)?;
+        }
     }
     Ok(())
 }

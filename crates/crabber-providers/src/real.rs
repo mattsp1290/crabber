@@ -136,7 +136,7 @@ enum AdapterKind {
     #[cfg(feature = "openai")]
     OpenAi,
     #[cfg(feature = "codex")]
-    Codex,
+    Codex(crabber_auth::CredentialProfile),
     #[cfg(feature = "opencode-go")]
     OpenCode,
     #[cfg(feature = "custom-http")]
@@ -270,15 +270,29 @@ impl HttpAdapter {
     }
     #[cfg(feature = "codex")]
     pub fn codex(store: Arc<dyn crabber_auth::CredentialStore>) -> Self {
+        Self::codex_with_profile(store, crabber_auth::CredentialProfile::Siwc)
+    }
+    #[cfg(feature = "codex")]
+    #[must_use]
+    pub fn codex_cli(store: Arc<dyn crabber_auth::CredentialStore>) -> Self {
+        Self::codex_with_profile(store, crabber_auth::CredentialProfile::CodexCli)
+    }
+    #[cfg(feature = "codex")]
+    fn codex_with_profile(
+        store: Arc<dyn crabber_auth::CredentialStore>,
+        profile: crabber_auth::CredentialProfile,
+    ) -> Self {
         let mut adapter = Self::new(
             "codex",
-            "https://api.openai.com/v1",
+            profile.inference_base_url(),
             Protocol::Responses,
-            AdapterKind::Codex,
+            AdapterKind::Codex(profile),
             None,
             CredentialPlacement::Bearer,
         );
-        adapter.tokens = Some(Arc::new(crabber_auth::TokenManager::new(store)));
+        adapter.tokens = Some(Arc::new(
+            crabber_auth::TokenManager::new(store).with_profile(profile),
+        ));
         adapter
     }
     #[cfg(feature = "custom-http")]
@@ -338,7 +352,7 @@ impl HttpAdapter {
     }
     #[cfg(feature = "codex")]
     fn uses_codex_responses_mode(&self) -> bool {
-        self.kind == AdapterKind::Codex
+        matches!(self.kind, AdapterKind::Codex(_))
     }
     #[cfg(not(feature = "codex"))]
     fn uses_codex_responses_mode(&self) -> bool {
@@ -439,6 +453,15 @@ impl HttpAdapter {
             {
                 let tokens = self.tokens.as_ref().ok_or_else(auth)?;
                 let creds = tokens.credentials().await.map_err(|_| auth())?;
+                if !matches!(self.kind, AdapterKind::Codex(profile) if profile == creds.profile) {
+                    return Err(auth());
+                }
+                if creds.profile == crabber_auth::CredentialProfile::CodexCli {
+                    if creds.account_id.is_empty() {
+                        return Err(auth());
+                    }
+                    insert(&mut headers, "chatgpt-account-id", &creds.account_id)?;
+                }
                 insert(
                     &mut headers,
                     "authorization",
@@ -745,6 +768,25 @@ impl HttpResolver {
     }
     #[must_use]
     pub fn from_env() -> Self {
+        Self::from_env_profile(Self::configured_codex_profile().ok().flatten())
+    }
+    /// Registers compiled adapters, rejecting an invalid Codex profile.
+    ///
+    /// # Errors
+    /// Returns a sanitized invalid-request error when `CRABBER_CODEX_PROFILE`
+    /// is neither empty, `siwc`, nor `codex-cli`.
+    pub fn try_from_env() -> Result<Self, ProviderError> {
+        Ok(Self::from_env_profile(Self::configured_codex_profile()?))
+    }
+    fn configured_codex_profile() -> Result<Option<bool>, ProviderError> {
+        match std::env::var("CRABBER_CODEX_PROFILE") {
+            Err(std::env::VarError::NotPresent) => Ok(Some(false)),
+            Ok(value) if value.is_empty() || value == "siwc" => Ok(Some(false)),
+            Ok(value) if value == "codex-cli" => Ok(Some(true)),
+            _ => Err(invalid()),
+        }
+    }
+    fn from_env_profile(#[allow(unused_variables)] cli: Option<bool>) -> Self {
         #[allow(unused_mut)]
         let mut resolver = Self::new();
         #[cfg(feature = "anthropic")]
@@ -761,9 +803,14 @@ impl HttpResolver {
         }
         #[cfg(feature = "codex")]
         {
-            resolver = resolver.with_adapter(HttpAdapter::codex(Arc::new(
-                crabber_auth::FileCredentialStore::default_crabber(),
-            )));
+            if let Some(cli) = cli {
+                let store = Arc::new(crabber_auth::FileCredentialStore::default_crabber());
+                resolver = resolver.with_adapter(if cli {
+                    HttpAdapter::codex_cli(store)
+                } else {
+                    HttpAdapter::codex(store)
+                });
+            }
         }
         resolver
     }
@@ -802,3 +849,6 @@ impl Resolver for HttpResolver {
     )
 ))]
 mod tests;
+
+#[cfg(all(test, feature = "codex"))]
+mod codex_tests;

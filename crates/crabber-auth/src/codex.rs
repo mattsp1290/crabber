@@ -1,7 +1,10 @@
 //! Sign in with ChatGPT for open-source agents.
 //! Current protocol: <https://developers.openai.com/siwc/token-sharing-open-source/sign-in>
 #![allow(clippy::too_many_lines)]
-use crate::{AuthError, CredentialStore, OAuthCredentials, now_ms, pkce_challenge, random_urlsafe};
+use crate::{
+    AuthError, CredentialProfile, CredentialStore, OAuthCredentials, now_ms, pkce_challenge,
+    random_urlsafe,
+};
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header, errors::ErrorKind, jwk::JwkSet,
 };
@@ -13,6 +16,16 @@ use tokio::{
 };
 use url::Url;
 
+pub mod catalog;
+pub mod device;
+pub const CODEX_CLI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+pub const CODEX_CLI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+pub const CODEX_CLI_SCOPE: &str = "openid profile email offline_access";
+pub const DEVICE_USERCODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+pub const DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
+pub const DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
+pub const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
+pub const CODEX_BACKEND_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const ISSUER: &str = "https://auth.openai.com";
 pub const AUTHORIZE_URL: &str = "https://auth.openai.com/api/accounts/authorize";
 pub const TOKEN_URL: &str = "https://auth.openai.com/api/accounts/oauth/token";
@@ -39,33 +52,42 @@ pub fn logout(store: &dyn CredentialStore) -> Result<(), AuthError> {
     store.clear()
 }
 
+pub fn profile(store: &dyn CredentialStore) -> Result<Option<CredentialProfile>, AuthError> {
+    Ok(store.load()?.map(|c| c.profile))
+}
+
 #[derive(Debug, Deserialize)]
-struct Claims {
+pub struct IdTokenClaims {
     iss: String,
     sub: String,
     aud: serde_json::Value,
     exp: u64,
-    nonce: String,
+    nonce: Option<String>,
+    #[serde(default)]
+    pub chatgpt_account_id: Option<String>,
+    #[serde(rename = "https://api.openai.com/auth", default)]
+    pub openai_auth: Option<serde_json::Value>,
+    #[serde(default)]
+    pub organizations: Option<serde_json::Value>,
 }
-async fn validated_subject(
+pub async fn validated_claims(
     client: &reqwest::Client,
+    jwks_url: &str,
     id_token: &str,
     client_id: &str,
-    nonce: &str,
-) -> Result<String, AuthError> {
+    nonce: Option<&str>,
+) -> Result<IdTokenClaims, AuthError> {
     let header =
         decode_header(id_token).map_err(|_| AuthError::Authentication("invalid ID token"))?;
     let kid = header
         .kid
         .ok_or(AuthError::Authentication("missing ID token key"))?;
-    let keys: JwkSet = client
-        .get(JWKS_URL)
+    let response = client
+        .get(jwks_url)
         .send()
         .await
-        .map_err(|_| AuthError::Transport)?
-        .json()
-        .await
         .map_err(|_| AuthError::Transport)?;
+    let keys: JwkSet = crate::http_body::json(response).await?;
     let key = keys
         .find(&kid)
         .ok_or(AuthError::Authentication("untrusted ID token key"))?;
@@ -74,17 +96,47 @@ async fn validated_subject(
     let mut validation = Validation::new(Algorithm::RS256);
     validation.set_audience(&[client_id]);
     validation.set_issuer(&[ISSUER]);
-    let claims = decode::<Claims>(id_token, &decoding, &validation)
+    let claims = decode::<IdTokenClaims>(id_token, &decoding, &validation)
         .map_err(|error| AuthError::Authentication(jwt_error_class(error.kind())))?
         .claims;
     if claims.iss != ISSUER
         || !audience_matches(&claims.aud, client_id)
         || claims.exp.saturating_mul(1000) <= now_ms()
-        || claims.nonce != nonce
+        || nonce.is_some_and(|expected| claims.nonce.as_deref() != Some(expected))
     {
         return Err(AuthError::Authentication("ID token claims mismatch"));
     }
-    Ok(claims.sub)
+    Ok(claims)
+}
+pub fn account_id_from_claims(claims: &IdTokenClaims) -> Option<String> {
+    claims
+        .chatgpt_account_id
+        .clone()
+        .or_else(|| {
+            claims
+                .openai_auth
+                .as_ref()?
+                .get("chatgpt_account_id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            claims
+                .openai_auth
+                .as_ref()?
+                .get("organization_id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            claims
+                .organizations
+                .as_ref()?
+                .get(0)?
+                .get("id")?
+                .as_str()
+                .map(str::to_owned)
+        })
 }
 fn audience_matches(aud: &serde_json::Value, client_id: &str) -> bool {
     aud.as_str() == Some(client_id)
@@ -144,11 +196,17 @@ pub async fn login_browser(
     store: Arc<dyn CredentialStore>,
     on_auth_url: impl FnOnce(&str) + Send,
 ) -> Result<OAuthCredentials, AuthError> {
+    let existing = store.load()?;
+    if existing
+        .as_ref()
+        .is_some_and(|credentials| credentials.profile != CredentialProfile::Siwc)
+    {
+        return Err(AuthError::ProfileMismatch);
+    }
     let listener = TcpListener::bind("127.0.0.1:1455")
         .await
         .map_err(|_| AuthError::PortInUse)?;
     let redirect = "http://127.0.0.1:1455/auth/callback";
-    let existing = store.load()?;
     let client_id = existing
         .as_ref()
         .map_or("dynamic_agent_client", |c| &c.client_id);
@@ -228,11 +286,13 @@ pub async fn login_browser(
         if !response.status().is_success() {
             return Err(AuthError::Authentication("token exchange rejected"));
         }
-        let token: serde_json::Value = response.json().await.map_err(|_| AuthError::Transport)?;
+        let token: serde_json::Value = crate::http_body::json(response).await?;
         let id_token = token["id_token"]
             .as_str()
             .ok_or(AuthError::Authentication("missing ID token"))?;
-        let subject = validated_subject(&client, id_token, &issued_id, &nonce).await?;
+        let subject = validated_claims(&client, JWKS_URL, id_token, &issued_id, Some(&nonce))
+            .await?
+            .sub;
         if existing.as_ref().is_some_and(|c| c.account_id != subject) {
             return Err(AuthError::Authentication("account changed"));
         }
@@ -246,6 +306,7 @@ pub async fn login_browser(
             return Err(AuthError::Authentication("plan usage not granted"));
         }
         let creds = OAuthCredentials {
+            profile: CredentialProfile::Siwc,
             client_id: issued_id,
             host_id,
             account_id: subject,
@@ -253,10 +314,12 @@ pub async fn login_browser(
                 .as_str()
                 .ok_or(AuthError::Transport)?
                 .into(),
-            refresh_token: token["refresh_token"]
-                .as_str()
-                .ok_or(AuthError::Transport)?
-                .into(),
+            refresh_token: Some(
+                token["refresh_token"]
+                    .as_str()
+                    .ok_or(AuthError::Transport)?
+                    .into(),
+            ),
             id_token: id_token.into(),
             scopes,
             expires_unix_ms: now_ms() + token["expires_in"].as_u64().unwrap_or(3600) * 1000,

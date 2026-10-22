@@ -601,6 +601,12 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             let value = pre_enrollment_rows(&reopened.pool, table).await;
             assert_eq!(value, expected, "v{baseline} retained {table}");
         }
+        let workspace_columns_match: bool = sqlx::query_scalar("SELECT bool_and(workspace_id IS NOT DISTINCT FROM data->>'workspace_id') FROM sessions")
+            .fetch_one(&reopened.pool).await.unwrap();
+        assert!(
+            workspace_columns_match,
+            "migration derives workspace scope from retained session data"
+        );
         let enrollment: (i32, Option<String>) = sqlx::query_as("SELECT CAST(execution_enrollment_protocol AS INTEGER),execution_enrollment_origin_id FROM runs WHERE id=$1")
             .bind(&receipt.run_id.0).fetch_one(&reopened.pool).await.unwrap();
         assert_eq!(enrollment, (0, None), "migration never adopts an old Run");
@@ -635,11 +641,28 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
 }
 
 /// A downgraded version roster must not retain the newer immutable birth DDL.
-/// Removing it models a predecessor, rather than replaying migrations22/23/24 over
-/// their already-created columns and protected raw/Pending sources.
+/// Removing it models a predecessor, rather than replaying migrations22-25 over
+/// their existing sources, generated columns, workspace grants and policies.
 async fn strip_enrollment_fixture(pool: &sqlx::PgPool) {
     sqlx::raw_sql(
-        "DROP TABLE initial_consumer_origins,initial_consumer_cohorts,
+        "DO $$ DECLARE policy record; table_row record; BEGIN
+            FOR policy IN SELECT schemaname,tablename,policyname FROM pg_policies
+                WHERE schemaname=current_schema() AND policyname IN
+                ('crabber_worker_rw','crabber_worker_read','crabber_worker_insert','crabber_host_all') LOOP
+                EXECUTE format('DROP POLICY %I ON %I.%I',policy.policyname,policy.schemaname,policy.tablename);
+            END LOOP;
+            FOR table_row IN SELECT schemaname,tablename FROM pg_tables WHERE schemaname=current_schema() LOOP
+                EXECUTE format('ALTER TABLE %I.%I DISABLE ROW LEVEL SECURITY',table_row.schemaname,table_row.tablename);
+            END LOOP;
+        END $$;
+        DROP TRIGGER sessions_workspace_birth ON sessions;
+        DROP FUNCTION crabber_guard_session_birth();
+        DROP FUNCTION crabber_session_born(text);
+        DROP TABLE crabber_workspace_grants;
+        ALTER TABLE sessions DROP COLUMN workspace_id;
+        ALTER TABLE session_owner_contexts DROP COLUMN workspace_id;
+        ALTER TABLE tool_call_identities DROP COLUMN owner_role;
+        DROP TABLE initial_consumer_origins,initial_consumer_cohorts,
         initial_consumer_assignments,initial_consumer_calls,initial_consumer_results,
         initial_consumer_roster,initial_consumer_reverse,initial_consumer_publications,
         initial_consumer_heads,initial_consumer_closes CASCADE;
@@ -665,6 +688,10 @@ async fn strip_enrollment_fixture(pool: &sqlx::PgPool) {
 async fn pre_enrollment_rows(pool: &sqlx::PgPool, table: &str) -> serde_json::Value {
     let projection = if table == "runs" {
         "to_jsonb(t)-'execution_enrollment_protocol'-'execution_enrollment_origin_id'"
+    } else if table == "sessions" {
+        // Migration25 derives this column from the retained data JSON; it is
+        // absent in the predecessor schema and independently checked below.
+        "to_jsonb(t)-'workspace_id'"
     } else {
         "to_jsonb(t)"
     };

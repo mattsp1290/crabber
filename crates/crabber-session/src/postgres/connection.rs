@@ -7,7 +7,8 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 impl PostgresStore {
-    /// Opens an already migrated dedicated database. The URL is never included in errors.
+    /// Opens an already migrated dedicated database with a worker or host role.
+    /// The URL is never included in errors.
     /// # Errors
     /// Returns an error when connection or schema verification fails.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
@@ -27,6 +28,8 @@ impl PostgresStore {
         .await
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
+    /// Requires the owning role in a schema it owns, with CREATEROLE or
+    /// pre-created NOLOGIN `crabber_worker` and `crabber_host` group roles.
     /// # Errors
     /// Returns a sanitized error on connection or migration failure.
     pub async fn migrate(url: &str) -> Result<(), StoreError> {

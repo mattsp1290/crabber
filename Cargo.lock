@@ -396,6 +396,7 @@ name = "codex-login"
 version = "0.1.0"
 dependencies = [
  "crabber-auth",
+ "reqwest 0.12.28",
  "tokio",
 ]
 
@@ -506,6 +507,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -535,7 +537,9 @@ dependencies = [
  "fs4",
  "jsonwebtoken",
  "rand 0.9.5",
+ "rand_core 0.6.4",
  "reqwest 0.12.28",
+ "rsa",
  "serde",
  "serde_json",
  "sha2",
@@ -698,6 +702,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

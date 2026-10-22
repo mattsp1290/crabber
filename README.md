@@ -170,6 +170,23 @@ checks persisted identity and rejects directory drift. `cargo xtask check` runs
 all these SQLite paths. The standalone pinned probes under `testdata/` retain
 their published revisions and have no SQLite variant.
 
+## Supported targets
+
+| Target | CI | Notes |
+| --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | full `cargo xtask check`, PostgreSQL suite | reference platform |
+| `aarch64-unknown-linux-gnu` | workspace build and tests, PostgreSQL suite (matrix), embedding smoke | Raspberry Pi 4/5 and other arm64 Linux hosts |
+| `aarch64-unknown-linux-musl` | workspace build (excluding `agui-sse`), static-link check | static images; `agui-sse` needs OpenSSL via `native-tls` and is excluded; not executed in CI |
+
+From `x86_64` Linux, cross-compile with
+`cross build --target aarch64-unknown-linux-musl --workspace --exclude agui-sse`
+or `cargo zigbuild`. When using a local musl cross toolchain, set
+`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` to its linker. PostgreSQL
+feature tests must run on the target architecture with access to the PostgreSQL
+service; cross-compilation alone does not run those tests. WASM fixtures use
+`wasm32-wasip2`, are architecture-independent, and are built on the host.
+macOS and Windows are untested.
+
 ## Bounded embedding history
 
 Use `Store::snapshot(SnapshotRequest)` to page a large session with explicit message,
@@ -284,7 +301,8 @@ The [embedding capability matrix](docs/embedding.md) links runnable memory,
 PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
 [native extensions](examples/native-extension/README.md),
 [WASM extensions](examples/wasm-extension/README.md),
-[manual Codex login](examples/codex-login/README.md), and
+[manual Codex login](examples/codex-login/README.md),
+[provider stacks and credentials](crates/crabber-providers/README.md), and
 [Datadog export](examples/datadog-export/README.md) explain their actual commands
 and credential requirements.
 
@@ -331,7 +349,7 @@ envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
 Result-transform contract version 3 carries typed `ToolOutput`; WASM extensions
 use `crabber:extensions@0.2.0`. Old frozen plans fail with `PlanChanged`. Typed
 completion itself adds no storage migration. Current bundled storage requires
-PostgreSQL 24 / SQLite 20; see the constants in
+PostgreSQL 25 / SQLite 20; see the constants in
 [crabber-session](crates/crabber-session/src/lib.rs).
 Finish or settle unfinished runs before upgrading or rolling back; rollback
 pins the previous host revision and compatible guests. Await
@@ -345,3 +363,6 @@ and follow the [AG-UI contract](docs/ag-ui.md). Run
 `cargo run -p agui-sse -- --check` for the [credential-free SSE example](examples/agui-sse/README.md),
 including pinned Rust-client ASCII interoperability and independently decoded
 fragmented Unicode. The default facade remains independent of AG-UI/HTTP.
+
+PostgreSQL workers can use database-enforced workspace roles and scoped discovery.
+See the [role matrix and provisioning SQL](docs/server-host.md#workspace-scoped-roles-and-row-level-security) for worker and host permissions.
