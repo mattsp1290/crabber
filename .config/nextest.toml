@@ -72,6 +72,44 @@ fail-fast = false
 # Exact names leave future and SQL entrypoints under the conservative fallback.
 # Exact source-audited Session tests use private MemoryStore/Ledger fixtures
 # or no backend. SQL tracing fixtures and future unknown tests stay conservative.
+# Exact audited Memory and private HTTP fixtures need no PostgreSQL reservation.
+[[profile.complete.overrides]]
+filter = """
+(package(crabber) & binary(=server_host) & (
+    test(=tool_resources::interrupted_tool_seals_scope_and_joins_cooperative_resources)
+  | test(=tool_resources::resolution::closed_host_resolves_once_and_preserves_incomplete_cleanup)
+  | test(=tool_resources::resource_failure_blocks_worker_success_and_remains_visible_across_drains)
+  | test(=tool_resources::snapshot_drain_does_not_seal_an_active_tool_scope)
+  | test(=tool_resources::incomplete_worker_retains_noncooperative_resource_join_after_timeout)
+))
+| (package(crabber) & binary(=session_management) & (
+    test(=management::management_controls_work_without_factories_and_after_close)
+))
+| (package(crabber) & binary(=trace_context) & (
+    test(=legacy_observers_and_multiple_host_observers_receive_each_callback_once)
+  | test(=malformed_transport_context_is_rejected_before_admission)
+  | test(=predecessor_is_validated_bounded_and_requires_a_new_numeric_trace)
+  | test(=replay_ignores_replacement_context_without_receipt_or_execution_mutation)
+))
+| (package(crabber) & binary(=typed_output) & (
+    test(=http::public_responses_loop_sends_protected_mixed_tool_output)
+  | test(=public_mixed_output_remains_typed_and_error_escalation_is_monotonic)
+))
+| (package(workspace-context-probe) & binary(=memory) & (
+    test(=cancellation_is_available_to_a_running_tool)
+  | test(=drifted_identity_is_rejected_and_the_tool_is_not_invoked)
+  | test(=empty_identity_is_unavailable_not_a_host_default_or_model_argument)
+  | test(=one_empty_field_is_unavailable_while_the_other_is_exposed)
+  | test(=permission_denial_never_invokes_the_executor)
+  | test(=replacement_fence_never_authorizes_pending_approval)
+  | test(=two_sessions_observe_their_own_workspace_across_runs)
+))
+| (package(crabber) & binary(=result_transform_interrupt) & (
+    test(=close_timeout_retains_child_reaper_and_terminal_registry)
+))
+"""
+test-group = '@global'
+
 [[profile.complete.overrides]]
 filter = """
 package(crabber-session) & (
@@ -688,6 +726,44 @@ fail-fast = false
 # Exact names leave future and SQL entrypoints under the conservative fallback.
 # Exact source-audited Session tests use private MemoryStore/Ledger fixtures
 # or no backend. SQL tracing fixtures and future unknown tests stay conservative.
+# Exact audited Memory and private HTTP fixtures need no PostgreSQL reservation.
+[[profile.complete-ci.overrides]]
+filter = """
+(package(crabber) & binary(=server_host) & (
+    test(=tool_resources::interrupted_tool_seals_scope_and_joins_cooperative_resources)
+  | test(=tool_resources::resolution::closed_host_resolves_once_and_preserves_incomplete_cleanup)
+  | test(=tool_resources::resource_failure_blocks_worker_success_and_remains_visible_across_drains)
+  | test(=tool_resources::snapshot_drain_does_not_seal_an_active_tool_scope)
+  | test(=tool_resources::incomplete_worker_retains_noncooperative_resource_join_after_timeout)
+))
+| (package(crabber) & binary(=session_management) & (
+    test(=management::management_controls_work_without_factories_and_after_close)
+))
+| (package(crabber) & binary(=trace_context) & (
+    test(=legacy_observers_and_multiple_host_observers_receive_each_callback_once)
+  | test(=malformed_transport_context_is_rejected_before_admission)
+  | test(=predecessor_is_validated_bounded_and_requires_a_new_numeric_trace)
+  | test(=replay_ignores_replacement_context_without_receipt_or_execution_mutation)
+))
+| (package(crabber) & binary(=typed_output) & (
+    test(=http::public_responses_loop_sends_protected_mixed_tool_output)
+  | test(=public_mixed_output_remains_typed_and_error_escalation_is_monotonic)
+))
+| (package(workspace-context-probe) & binary(=memory) & (
+    test(=cancellation_is_available_to_a_running_tool)
+  | test(=drifted_identity_is_rejected_and_the_tool_is_not_invoked)
+  | test(=empty_identity_is_unavailable_not_a_host_default_or_model_argument)
+  | test(=one_empty_field_is_unavailable_while_the_other_is_exposed)
+  | test(=permission_denial_never_invokes_the_executor)
+  | test(=replacement_fence_never_authorizes_pending_approval)
+  | test(=two_sessions_observe_their_own_workspace_across_runs)
+))
+| (package(crabber) & binary(=result_transform_interrupt) & (
+    test(=close_timeout_retains_child_reaper_and_terminal_registry)
+))
+"""
+test-group = '@global'
+
 [[profile.complete-ci.overrides]]
 filter = """
 package(crabber-session) & (

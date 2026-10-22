@@ -749,3 +749,10 @@ types remain unchanged. All other Rust bytes in this change are preserved,
 including test bodies and process histories. This includes normal-library
 conformance helpers; successor-driver is test-only. Compilation and complete-check
 improvements require measurement.
+
+Twenty additional exact facade and workspace-context test entrypoints use ordinary
+worker slots after their MemoryStore, private HTTP and child-process fixtures were
+audited. Real SQL fixtures, environment-dispatched SQL children and four tracing
+fixtures with inherited export-capture paths retain their previous routing.
+Backend limits, worker weights, test bodies and deadlines remain unchanged.
+Complete-check timing improvements require measurement.
