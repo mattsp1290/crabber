@@ -34,7 +34,7 @@ time = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "process", "io-util", "test-util", "net"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "sqlite"] }
 tempfile = "3"
 
 [lints]
