@@ -8,7 +8,7 @@ use crate::session_owner::preparation::{
 use crate::session_owner::{MutateSessionOwner, SessionOwnerCommand, SessionOwnerOutcome};
 
 pub(super) async fn run(
-    store: &impl Store,
+    store: &dyn Store,
     source: preparation::AdmissionRecoveryPreparation,
     mut bound: BoundKeyedAdmitRequest,
     receipt: AdmissionReceipt,
@@ -124,7 +124,7 @@ pub(super) fn reservation(
     .unwrap()
 }
 pub(super) async fn reserve_and_begin(
-    store: &impl Store,
+    store: &dyn Store,
     source: &preparation::AdmissionRecoveryPreparation,
     request: &ReservePreparation,
     receipt: &AdmissionReceipt,
@@ -175,7 +175,7 @@ pub(super) async fn reserve_and_begin(
 }
 
 async fn replay(
-    store: &impl Store,
+    store: &dyn Store,
     joined: &JoinedPreparation,
     receipt: &AdmissionReceipt,
     revision: SessionRevision,
@@ -193,7 +193,7 @@ async fn replay(
 }
 
 async fn reject_replacement(
-    store: &impl Store,
+    store: &dyn Store,
     grant: &PreparationGrant,
     original: &PreparedAdmissionRecovery,
 ) {

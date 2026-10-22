@@ -769,3 +769,13 @@ libraries, fingerprints, dependency metadata and registry artifacts. Missing,
 invalid or ambiguous evidence preserves the affected cache. Partial maintenance
 does not qualify a check or create a complete-cache marker. Cache size, restore
 time and complete-check improvements remain unmeasured for this change.
+
+Five Store conformance entrypoints now delegate their histories to private
+borrowed functions: session ownership, execution binding, legacy admission,
+typed admission and admission execution. Their public generic signatures,
+factory calls, clocks, assertions and history order remain unchanged. Fourteen
+supporting private helper parameters use `&dyn Store` so those functions can
+share compiled code across adapters. The wrappers retain ownership of the Store
+and clock until each history finishes. These are normal-library conformance
+helpers; the facade harness also embeds the ownership and admission-execution
+bodies. Build-time and complete-check benefits require measurement.

@@ -272,7 +272,7 @@ async fn denied_writes(
     );
 }
 
-async fn malformed_capsules(store: &impl Store, original: &KeyedAdmitRequest) {
+async fn malformed_capsules(store: &dyn Store, original: &KeyedAdmitRequest) {
     for change in 0..10 {
         let mut request = original.clone();
         let capsule = request.execution.as_mut().unwrap();
@@ -304,9 +304,14 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(clock.clone());
+    run_borrowed(&store, &clock, now).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>, now: OffsetDateTime) {
     let session = SessionId::new();
     let original = keyed(&session, now);
-    malformed_capsules(&store, &original).await;
+    malformed_capsules(store, &original).await;
     assert!(store.get_session(&session).await.unwrap().is_none());
     let KeyedAdmitOutcome::Started { receipt, admitted } =
         store.admit_keyed_run(original.clone()).await.unwrap()
@@ -477,7 +482,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .unwrap(),
         Some(AdmissionExecutionState::Started)
     );
-    malformed_capsules(&store, &original).await;
+    malformed_capsules(store, &original).await;
     let mut legacy = keyed(&SessionId::new(), now);
     legacy.execution = None;
     let legacy_session = legacy.request.session_id.clone().unwrap();
@@ -508,5 +513,5 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .unwrap()
             .is_none()
     );
-    Box::pin(inspection::run(&store, &clock)).await;
+    Box::pin(inspection::run(store, clock)).await;
 }

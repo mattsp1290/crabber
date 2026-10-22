@@ -26,7 +26,12 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(clock.clone());
-    reject_uncorroborated_selection(&store, now).await;
+    run_borrowed(&store, &clock, now).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>, now: OffsetDateTime) {
+    reject_uncorroborated_selection(store, now).await;
     let session = SessionId::new();
     let original = fixture(&session, now, "backend-original", 'b');
     let (left, right) = futures::join!(
@@ -207,7 +212,7 @@ pub(crate) mod faults;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 pub(crate) mod process;
 
-async fn reject_uncorroborated_selection(store: &impl Store, now: OffsetDateTime) {
+async fn reject_uncorroborated_selection(store: &dyn Store, now: OffsetDateTime) {
     let session = SessionId::new();
     let mut invalid = fixture(&session, now, "backend-original", 'b');
     let policy = crate::AdmissionSelectionPolicy::session_defaults("host-provider", "host-model");

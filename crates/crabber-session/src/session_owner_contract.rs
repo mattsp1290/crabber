@@ -58,12 +58,16 @@ fn resolver() -> SessionOwnerResolver {
 pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S) {
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
+    run_borrowed(&store, &clock).await;
+}
+
+async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>) {
     assert!(store.supports_session_owners());
     let mut request = reservation(SessionId::new());
     request.binding.resource_contract = Some(InputFingerprint::new("c".repeat(64)).unwrap());
     let session = &request.binding.session_id;
-    let (reserved, authority, created_revision) = reserve_and_create(&store, &request).await;
-    immutable_resource_contract(&store, &request, created_revision).await;
+    let (reserved, authority, created_revision) = reserve_and_create(store, &request).await;
+    immutable_resource_contract(store, &request, created_revision).await;
     let begin = mutation(&reserved.owner, SessionOwnerCommand::Begin);
     let (active, grant) = applied(
         store
@@ -149,8 +153,8 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
         store.mutate_session_owner(late, Some(authority)).await,
         Err(SessionOwnerError::InvalidTransition)
     ));
-    unstarted(&store, &clock, session).await;
-    races::run(&store).await;
+    unstarted(store, clock, session).await;
+    races::run(store).await;
 }
 async fn immutable_resource_contract(
     store: &dyn Store,
