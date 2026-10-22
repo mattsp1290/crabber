@@ -124,6 +124,7 @@ pub struct ModelRequest {
     pub tools: Vec<ToolInfo>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
+    pub reasoning_effort: Option<crabber_core::ReasoningEffort>,
     pub tool_choice: Option<String>,
 }
 

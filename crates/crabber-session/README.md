@@ -79,8 +79,8 @@ is truthful: the library independently computes a separate semantic digest.
 The runtime hashes structured JSON with domain `crabber.runtime.admission.v1`:
 provider and model selection, system prompt, output token cap, execution mode/concurrency,
 compaction ratio/tail count, turn limit, acquired tool schemas/metadata, ordered
-prompt sections, restrictions, component identities, guard IDs and provider IDs/names.
-The runtime admission semantics array has 15 ordered elements. Local capsules
+prompt sections, restrictions, component identities, guard IDs, provider IDs/names and model controls.
+The runtime admission semantics array has 16 ordered elements, with model controls at index 15. Local capsules
 and pause checkpoints created before the output-cap field was introduced are
 invalid under that legacy contract. The v1 domain and capsule remain legacy
 formats; their original introduction is not the current deployment version.

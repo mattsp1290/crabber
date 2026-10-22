@@ -68,6 +68,7 @@ fn request() -> crate::Request {
         },
         system_prompt: None,
         max_output_tokens: None,
+        model_controls: Default::default(),
     }
 }
 

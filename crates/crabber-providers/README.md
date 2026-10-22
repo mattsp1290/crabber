@@ -207,3 +207,11 @@ resource ownership or arbitrary provider effects. See the current
 [server-host binding contract](../../docs/server-host.md).
 
 Provider HTTP boundaries emit `crabber.provider.request` and `crabber.provider.models` spans under `crabber::providers`. Request spans end when response headers arrive and record finite status/error categories; URLs, headers and response bodies are excluded. See the [observability guide](../../docs/observability.md).
+
+Reasoning effort is selected through `ModelControls` on `AgentConfig` or
+`ExecutionContext::with_model_controls`: `low`, `medium`, or `high`. It applies
+to OpenAI and Codex Responses; other protocols ignore it. The default preserves
+Codex `"reasoning": null` and omits `reasoning` for OpenAI. No summary is requested.
+Controls occupy index 15 of admission semantics, so changing effort conflicts
+with a retained keyed admission. Older 15-element admissions cannot replay.
+

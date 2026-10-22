@@ -621,6 +621,7 @@ impl Orchestrator {
             messages,
             system: (!system.is_empty()).then_some(system),
             max_output_tokens: request.max_output_tokens,
+            model_controls: request.model_controls.clone(),
             tools: frontend::model_tools(plan)?,
         })
     }

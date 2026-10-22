@@ -29,6 +29,7 @@ pub(crate) fn fixture(
         model_id: "model".into(),
         system_prompt: Some("private-system".into()),
         max_output_tokens: Some(32),
+        model_controls: Default::default(),
     };
     let provider = ProviderBindingDescriptor::new(
         "provider",
@@ -46,7 +47,7 @@ pub(crate) fn fixture(
     let semantics = json!(["crabber.runtime.admission.v1", "provider", "model", data.system_prompt, data.max_output_tokens, "Sequential", 0.85, 8, 64, [], [], [], [
         {"id": PROVIDER_BINDING_COMPONENT, "version": serde_json::to_string(&provider).unwrap()},
         {"id": HOST_BEHAVIOR_COMPONENT, "version": behavior_fingerprint.as_str()},
-    ], [], []]);
+    ], [], [], {"reasoning_effort": null}]);
     let config_hash = InputFingerprint::new(admission_config_hash(&semantics)).unwrap();
     let binding = ExecutionBindingCapsule {
         input_fingerprint: None,

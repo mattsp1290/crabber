@@ -38,12 +38,26 @@ impl Extension for SharedServices {
 pub struct ExecutionContext {
     session: SessionContext,
     selection: Selection,
+    model_controls: crabber_core::ModelControls,
 }
 
 impl ExecutionContext {
     #[must_use]
     pub fn new(session: SessionContext, selection: Selection) -> Self {
-        Self { session, selection }
+        Self {
+            session,
+            selection,
+            model_controls: Default::default(),
+        }
+    }
+    #[must_use]
+    pub fn with_model_controls(mut self, controls: crabber_core::ModelControls) -> Self {
+        self.model_controls = controls;
+        self
+    }
+    #[must_use]
+    pub fn model_controls(&self) -> &crabber_core::ModelControls {
+        &self.model_controls
     }
     #[must_use]
     pub fn session(&self) -> &SessionContext {

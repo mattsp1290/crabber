@@ -2,6 +2,7 @@
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
+pub use crabber_core::{ModelControls, ReasoningEffort};
 pub use crabber_runtime::QueueControl;
 mod agent;
 mod host;

@@ -17,6 +17,7 @@ impl Agent {
             context.workspace_id(),
             context.directory(),
             &self.config.selection,
+            &self.config.model_controls,
         ))
     }
     fn default_policy(&self, mut request: crabber_runtime::Request) -> crabber_runtime::Request {

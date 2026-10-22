@@ -121,6 +121,7 @@ fn codex_fixture_and_echo_golden() {
         tools: vec![],
         temperature: None,
         max_tokens: None,
+        reasoning_effort: None,
         tool_choice: None,
     };
     let body = responses::body(&request, true);
@@ -175,4 +176,42 @@ fn opencode_chat_fixture() {
         |d| matches!(d, StreamDelta::Usage(u) if u.input_tokens == 18 && u.output_tokens == 6)
     ));
     assert!(matches!(deltas.last(), Some(StreamDelta::Completed)));
+}
+
+#[test]
+fn responses_body_reasoning_effort_per_value() {
+    use crabber_core::ReasoningEffort::{High, Low, Medium};
+    for codex in [false, true] {
+        for effort in [None, Some(Low), Some(Medium), Some(High)] {
+            let request = ModelRequest {
+                context: vec![],
+                identity: RequestIdentity {
+                    session_id: "s".into(),
+                    run_id: "r".into(),
+                    turn_id: "t".into(),
+                },
+                selection: Selection {
+                    provider_id: "provider".into(),
+                    model_id: "model".into(),
+                },
+                system: None,
+                messages: vec![],
+                tools: vec![],
+                temperature: None,
+                max_tokens: None,
+                reasoning_effort: effort,
+                tool_choice: None,
+            };
+            let body = responses::body(&request, codex);
+            assert_eq!(
+                body.get("reasoning").cloned(),
+                match effort {
+                    Some(effort) => Some(json!({"effort":effort.as_str()})),
+                    None if codex => Some(serde_json::Value::Null),
+                    None => None,
+                }
+            );
+            assert_eq!(body.get("include").is_some(), codex);
+        }
+    }
 }

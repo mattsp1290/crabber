@@ -92,6 +92,7 @@ pub(super) fn build(
         model_id: profile.provider.model_id().into(),
         system_prompt: None,
         max_output_tokens: None,
+        model_controls: Default::default(),
     };
     proof
         .measure(&input.input)

@@ -62,6 +62,7 @@ pub struct AgentConfig {
     pub title: String,
     pub system_prompt: Option<String>,
     pub max_output_tokens: Option<u32>,
+    pub model_controls: crabber_core::ModelControls,
 }
 
 impl AgentConfig {
@@ -74,7 +75,13 @@ impl AgentConfig {
             title: "Crabber session".into(),
             system_prompt: None,
             max_output_tokens: None,
+            model_controls: Default::default(),
         }
+    }
+    #[must_use]
+    pub fn model_controls(mut self, controls: crabber_core::ModelControls) -> Self {
+        self.model_controls = controls;
+        self
     }
     /// Caps output tokens for every model turn; model-stream around hooks may override it.
     #[must_use]
@@ -726,6 +733,7 @@ impl Agent {
             context.session().workspace_id(),
             context.session().directory(),
             context.selection(),
+            context.model_controls(),
         )
     }
 
@@ -736,6 +744,7 @@ impl Agent {
             &self.config.workspace_id,
             &self.config.directory,
             &self.config.selection,
+            &self.config.model_controls,
         )
     }
 
@@ -746,6 +755,7 @@ impl Agent {
         workspace_id: &str,
         directory: &str,
         selection: &Selection,
+        controls: &crabber_core::ModelControls,
     ) -> Request {
         Request {
             selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
@@ -759,6 +769,7 @@ impl Agent {
             selection: selection.clone(),
             system_prompt: self.config.system_prompt.clone(),
             max_output_tokens: self.config.max_output_tokens,
+            model_controls: controls.clone(),
         }
     }
 

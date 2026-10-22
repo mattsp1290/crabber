@@ -626,7 +626,8 @@ impl Orchestrator {
                     let info = provider.info();
                     (info.id, info.name)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            request.model_controls
         ]);
         let config = self.freeze_preparation_semantics(config)?;
         let config_hash = admission_config_hash(&config);

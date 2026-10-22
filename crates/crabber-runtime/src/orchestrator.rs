@@ -171,6 +171,7 @@ pub struct Request {
     pub selection: Selection,
     pub system_prompt: Option<String>,
     pub max_output_tokens: Option<u32>,
+    pub model_controls: crabber_core::ModelControls,
 }
 
 #[derive(Clone)]
@@ -198,6 +199,7 @@ impl Request {
             model_id: self.selection.model_id.clone(),
             system_prompt: self.system_prompt.clone(),
             max_output_tokens: self.max_output_tokens,
+            model_controls: self.model_controls.clone(),
         })
     }
     fn from_admission(data: AdmissionRequestData) -> Self {
@@ -216,6 +218,7 @@ impl Request {
             },
             system_prompt: data.system_prompt,
             max_output_tokens: data.max_output_tokens,
+            model_controls: data.model_controls,
         }
     }
 }
@@ -486,6 +489,7 @@ pub struct TurnSnapshot {
     pub system: Option<String>,
     pub tools: Vec<ToolInfo>,
     pub max_output_tokens: Option<u32>,
+    pub model_controls: crabber_core::ModelControls,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -734,6 +738,8 @@ struct CheckpointRequest {
     model_id: String,
     system_prompt: Option<String>,
     max_output_tokens: Option<u32>,
+    #[serde(default)]
+    model_controls: crabber_core::ModelControls,
 }
 impl CheckpointRequest {
     fn new(request: &Request) -> Self {
@@ -752,6 +758,7 @@ impl CheckpointRequest {
             model_id: request.selection.model_id.clone(),
             system_prompt: request.system_prompt.clone(),
             max_output_tokens: request.max_output_tokens,
+            model_controls: request.model_controls.clone(),
         }
     }
     /// `None` when the checkpoint saved no request; a request that does not
@@ -789,6 +796,7 @@ impl CheckpointRequest {
             },
             system_prompt: self.system_prompt,
             max_output_tokens: self.max_output_tokens,
+            model_controls: self.model_controls,
         }
     }
 }
@@ -1181,8 +1189,10 @@ mod recovery_contract_tests {
             if cap == 0 {
                 assert!(matches!(saved, Err(StoreError::Validation(_))));
             } else {
+                let saved = saved.unwrap().unwrap();
+                assert_eq!(saved.model_controls, crabber_core::ModelControls::default());
                 assert_eq!(
-                    saved.unwrap().unwrap().max_output_tokens,
+                    saved.max_output_tokens,
                     cap.as_u64().map(|v| u32::try_from(v).unwrap())
                 );
             }

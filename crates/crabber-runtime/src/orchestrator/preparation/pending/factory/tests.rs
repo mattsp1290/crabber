@@ -51,6 +51,7 @@ fn request(session: SessionId) -> crate::Request {
         },
         system_prompt: None,
         max_output_tokens: None,
+        model_controls: Default::default(),
     }
 }
 async fn contract(store: Arc<dyn Store>) {

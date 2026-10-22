@@ -599,6 +599,7 @@ async fn lease() -> Vec<OperationalObservation> {
             selection: selection(),
             system_prompt: None,
             max_output_tokens: None,
+            model_controls: Default::default(),
         })
         .await
         .unwrap();

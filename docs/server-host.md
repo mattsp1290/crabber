@@ -785,3 +785,8 @@ actual workload measurements; the finite Memory transaction-cost fixture is a
 regression check, not a production memory cap or an O(1) performance guarantee.
 
 For process telemetry, install [`Telemetry::layer()`](observability.md) once, then open a host request span per HTTP request and call `Telemetry::current_trace_context()` inside it. Hosts that propagate incoming W3C context set the request span parent with `OpenTelemetrySpanExt::set_parent` before entering it.
+
+`ExecutionContext::with_model_controls` selects reasoning effort beside each
+provider/model selection. Stored session defaults (`SelectionFallback`) carry
+provider/model IDs only and never supply effort; admissions using defaults keep
+the configured host controls.
