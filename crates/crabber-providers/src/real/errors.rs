@@ -23,28 +23,19 @@ pub trait ErrorClassifier: Send + Sync {
 /// whose text names the prompt or context limit (best effort). Billing (402)
 /// already falls through to `Invalid` in the status taxonomy.
 #[cfg(feature = "anthropic")]
-pub(super) fn anthropic_classification(
-    status: reqwest::StatusCode,
-    excerpt: &str,
-) -> (ProviderErrorKind, bool) {
-    match status.as_u16() {
-        413 => (ProviderErrorKind::ContextOverflow, false),
-        400 if ["prompt is too long", "context limit", "context window"]
-            .iter()
-            .any(|phrase| excerpt.to_lowercase().contains(phrase)) =>
-        {
-            (ProviderErrorKind::ContextOverflow, false)
-        }
-        _ => status_classification(status),
-    }
-}
-
-#[cfg(feature = "anthropic")]
 pub(super) struct AnthropicClassifier;
 #[cfg(feature = "anthropic")]
 impl ErrorClassifier for AnthropicClassifier {
     fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool) {
-        anthropic_classification(status, excerpt)
+        const OVERFLOW: [&str; 3] = ["prompt is too long", "context limit", "context window"];
+        let text = excerpt.to_lowercase();
+        if status.as_u16() == 413
+            || (status.as_u16() == 400 && OVERFLOW.iter().any(|phrase| text.contains(phrase)))
+        {
+            (ProviderErrorKind::ContextOverflow, false)
+        } else {
+            status_classification(status)
+        }
     }
 }
 

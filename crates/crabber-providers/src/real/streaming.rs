@@ -11,7 +11,7 @@ impl HttpAdapter {
             Protocol::Responses => Codec::Responses(crate::responses::Codec::new(
                 self.uses_codex_responses_mode(),
             )),
-            Protocol::Messages => Codec::Messages(Box::default()),
+            Protocol::Messages => Codec::Messages(crate::messages::Codec::default()),
             Protocol::ChatCompletions => Codec::Chat(crate::chat::Codec::default()),
         };
         struct State {
@@ -20,7 +20,7 @@ impl HttpAdapter {
             codec: Codec,
             queue: VecDeque<StreamDelta>,
             protocol_complete: bool,
-            /// Observers have seen output, so a transport retry would repeat it.
+            /// Observers have seen output, so any retry would repeat it.
             observed: bool,
             ended: bool,
         }
@@ -131,7 +131,7 @@ fn decode_events(
     }
     Ok(out)
 }
-/// A transport failure after published output must not be retried.
+/// An error after published output must not be retried.
 fn after_output(mut error: ProviderError, observed: bool) -> ProviderError {
     if observed {
         error.retryable = false;
@@ -163,9 +163,12 @@ fn queue_items(
             *protocol_complete = true;
             continue;
         }
-        if matches!(item, StreamDelta::Error(_)) {
+        if let StreamDelta::Error(error) = item {
+            // A retry after published output or a completed message would
+            // repeat what observers already saw.
+            let error = after_output(error, *observed || *protocol_complete);
             *protocol_complete = false;
-            queue.push_back(item);
+            queue.push_back(StreamDelta::Error(error));
             return true;
         }
         if !*protocol_complete {
@@ -176,7 +179,7 @@ fn queue_items(
 }
 enum Codec {
     Responses(crate::responses::Codec),
-    Messages(Box<crate::messages::Codec>),
+    Messages(crate::messages::Codec),
     Chat(crate::chat::Codec),
 }
 impl Codec {

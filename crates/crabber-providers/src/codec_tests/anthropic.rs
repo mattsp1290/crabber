@@ -1,18 +1,11 @@
 //! Messages stop reasons, stream error classification, and tool-free bodies.
-use super::{ModelRequest, RequestIdentity, Selection, fixture, messages, sse};
+use super::{event, fixture, message, messages, request, sse};
 use crate::{ProviderError, ProviderErrorKind, StreamDelta};
 use crabber_core::{
-    ContentBlock, Message, MessageId, Part, PartId, PartKind, ReasoningProvenance, Role, RunId,
-    SessionId, ToolCallId, ToolInfo, TurnId,
+    ContentBlock, Message, PartKind, ReasoningProvenance, Role, ToolCallId, ToolInfo,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
-fn event(kind: &str, value: &Value) -> sse::Event {
-    sse::Event {
-        name: kind.into(),
-        data: value.to_string(),
-    }
-}
 fn decode(text: &str) -> Vec<StreamDelta> {
     let mut codec = messages::Codec::default();
     fixture(text, |e| codec.event(e).unwrap())
@@ -188,47 +181,6 @@ fn anthropic_overloaded_fixture_before_content_is_retryable() {
 }
 
 #[test]
-fn anthropic_stream_error_after_content_is_not_retryable() {
-    let deltas = decode(include_str!(
-        "../../testdata/anthropic/text_then_overloaded.sse"
-    ));
-    let error = last_error(&deltas);
-    assert_eq!(error.kind, ProviderErrorKind::Server);
-    assert!(!error.retryable);
-
-    let deltas = run(&[
-        message_start(),
-        event(
-            "content_block_start",
-            &json!({"index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"echo"}}),
-        ),
-        stream_error("rate_limit_error"),
-    ]);
-    let error = last_error(&deltas);
-    assert_eq!(error.kind, ProviderErrorKind::RateLimited);
-    assert!(!error.retryable);
-}
-
-#[test]
-fn anthropic_error_after_message_stop_is_not_retryable() {
-    let [start, delta] = text_block("done");
-    let deltas = run(&[
-        message_start(),
-        start,
-        delta,
-        event(
-            "message_delta",
-            &json!({"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
-        ),
-        event("message_stop", &json!({"type":"message_stop"})),
-        stream_error("api_error"),
-    ]);
-    let error = last_error(&deltas);
-    assert_eq!(error.kind, ProviderErrorKind::Server);
-    assert!(!error.retryable);
-}
-
-#[test]
 fn anthropic_context_window_exceeded_and_unknown_stop_reasons() {
     let deltas = run(&[
         message_start(),
@@ -260,48 +212,6 @@ fn anthropic_context_window_exceeded_and_unknown_stop_reasons() {
     ));
 }
 
-fn message(role: Role, blocks: Vec<ContentBlock>) -> Message {
-    let id = MessageId::new();
-    Message {
-        id: id.clone(),
-        session_id: SessionId::new(),
-        run_id: None,
-        role,
-        parent_id: None,
-        parts: blocks
-            .into_iter()
-            .enumerate()
-            .map(|(index, content)| Part {
-                id: PartId::new(),
-                message_id: id.clone(),
-                ordinal: u32::try_from(index).unwrap(),
-                kind: PartKind::InputText,
-                content,
-            })
-            .collect(),
-        created_at: crabber_core::Clock::now(&crabber_core::SystemClock),
-    }
-}
-fn request(messages: Vec<Message>, tools: Vec<ToolInfo>, tool_choice: &str) -> ModelRequest {
-    ModelRequest {
-        context: vec![],
-        identity: RequestIdentity {
-            session_id: SessionId::new(),
-            run_id: RunId::new(),
-            turn_id: TurnId::new(),
-        },
-        selection: Selection {
-            provider_id: "anthropic".into(),
-            model_id: "model".into(),
-        },
-        system: None,
-        messages,
-        tools,
-        temperature: None,
-        max_tokens: None,
-        tool_choice: Some(tool_choice.into()),
-    }
-}
 fn echo_tool() -> ToolInfo {
     ToolInfo {
         name: "echo".into(),
@@ -312,17 +222,21 @@ fn echo_tool() -> ToolInfo {
     }
 }
 fn user_hi() -> Message {
-    message(Role::User, vec![ContentBlock::Text { text: "hi".into() }])
+    message(
+        Role::User,
+        &PartKind::InputText,
+        vec![ContentBlock::Text { text: "hi".into() }],
+    )
 }
 
 #[test]
 fn anthropic_tool_choice_none_and_named_tool_map_exactly() {
-    let body = messages::body(&request(vec![user_hi()], vec![echo_tool()], "none"));
+    let body = messages::body(&request(vec![user_hi()], vec![echo_tool()], Some("none")));
     assert_eq!(body["tool_choice"], json!({"type":"none"}));
     assert_eq!(body["tools"][0]["name"], "echo");
-    let body = messages::body(&request(vec![user_hi()], vec![echo_tool()], "echo"));
+    let body = messages::body(&request(vec![user_hi()], vec![echo_tool()], Some("echo")));
     assert_eq!(body["tool_choice"], json!({"type":"tool","name":"echo"}));
-    let body = messages::body(&request(vec![user_hi()], vec![], "any"));
+    let body = messages::body(&request(vec![user_hi()], vec![], Some("any")));
     assert!(body.get("tools").is_none());
     assert!(body.get("tool_choice").is_none());
     assert_eq!(body["max_tokens"], 4096);
@@ -333,6 +247,7 @@ fn anthropic_tool_choice_none_and_named_tool_map_exactly() {
 fn anthropic_tool_history_keeps_tools_array_without_tool_list() {
     let call = message(
         Role::Assistant,
+        &PartKind::InputText,
         vec![ContentBlock::ToolCall {
             call_id: ToolCallId::from("toolu_1"),
             name: "echo".into(),
@@ -341,13 +256,18 @@ fn anthropic_tool_history_keeps_tools_array_without_tool_list() {
     );
     let result = message(
         Role::Tool,
+        &PartKind::InputText,
         vec![ContentBlock::ToolResult {
             call_id: ToolCallId::from("toolu_1"),
             content: vec![ContentBlock::Text { text: "ok".into() }],
             is_error: false,
         }],
     );
-    let body = messages::body(&request(vec![user_hi(), call, result], vec![], "auto"));
+    let body = messages::body(&request(
+        vec![user_hi(), call, result],
+        vec![],
+        Some("auto"),
+    ));
     assert_eq!(body["tools"], json!([]));
     assert!(body.get("tool_choice").is_none());
     assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
@@ -423,10 +343,15 @@ fn anthropic_message_delta_without_usage_keeps_output_tokens() {
 
 #[test]
 fn anthropic_required_tool_choice_maps_to_any_and_empty_text_is_dropped() {
-    let body = messages::body(&request(vec![user_hi()], vec![echo_tool()], "required"));
+    let body = messages::body(&request(
+        vec![user_hi()],
+        vec![echo_tool()],
+        Some("required"),
+    ));
     assert_eq!(body["tool_choice"], json!({"type":"any"}));
     let empty = message(
         Role::User,
+        &PartKind::InputText,
         vec![
             ContentBlock::Text {
                 text: String::new(),
@@ -434,7 +359,7 @@ fn anthropic_required_tool_choice_maps_to_any_and_empty_text_is_dropped() {
             ContentBlock::Text { text: "hi".into() },
         ],
     );
-    let body = messages::body(&request(vec![empty], vec![], "auto"));
+    let body = messages::body(&request(vec![empty], vec![], Some("auto")));
     assert_eq!(
         body["messages"][0]["content"],
         json!([{"type":"text","text":"hi"}])

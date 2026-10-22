@@ -143,13 +143,13 @@ enum AdapterKind {
     Custom,
 }
 
-/// Model catalog endpoint owned by a built-in adapter; custom adapters have none.
-enum CatalogRoute {
-    None,
-    #[cfg(feature = "opencode-go")]
-    OpenCode,
-    #[cfg(feature = "anthropic")]
-    Anthropic,
+/// A built-in adapter's model catalog request; custom adapters have none.
+struct CatalogRequest {
+    request: reqwest::RequestBuilder,
+    /// Credential forms redacted from a failed response.
+    credentials: Vec<String>,
+    /// Entry field reporting the input context limit, if the catalog has one.
+    limit_field: Option<&'static str>,
 }
 
 #[derive(Clone)]
@@ -346,26 +346,65 @@ impl HttpAdapter {
         false
     }
     #[cfg(feature = "opencode-go")]
-    fn uses_opencode_models(&self) -> bool {
+    fn uses_opencode_session(&self) -> bool {
         self.kind == AdapterKind::OpenCode
     }
     #[cfg(not(feature = "opencode-go"))]
-    fn uses_opencode_models(&self) -> bool {
+    fn uses_opencode_session(&self) -> bool {
         let _ = self.kind;
         false
     }
-    fn uses_opencode_session(&self) -> bool {
-        self.uses_opencode_models()
-    }
-    fn catalog_route(&self) -> CatalogRoute {
-        // A new built-in kind gets no catalog until it opts in with an arm here.
+    #[cfg_attr(
+        not(any(feature = "opencode-go", feature = "anthropic")),
+        allow(clippy::unnecessary_wraps)
+    )]
+    fn catalog_request(&self) -> Result<Option<CatalogRequest>, ProviderError> {
         #[allow(unreachable_patterns)]
         match self.kind {
             #[cfg(feature = "opencode-go")]
-            AdapterKind::OpenCode => CatalogRoute::OpenCode,
+            AdapterKind::OpenCode => {
+                let key = self.api_key()?;
+                Ok(Some(CatalogRequest {
+                    request: self
+                        .client
+                        .get(join_url(&self.base_url, "/models")?)
+                        .bearer_auth(&key),
+                    credentials: vec![key.clone(), format!("Bearer {key}")],
+                    limit_field: None,
+                }))
+            }
             #[cfg(feature = "anthropic")]
-            AdapterKind::Anthropic => CatalogRoute::Anthropic,
-            _ => CatalogRoute::None,
+            AdapterKind::Anthropic => {
+                let key = self.api_key()?;
+                let mut value = HeaderValue::from_str(&key).map_err(|_| invalid())?;
+                value.set_sensitive(true);
+                let mut url = join_url(&self.base_url, "/models")?;
+                url.set_query(Some("limit=1000"));
+                Ok(Some(CatalogRequest {
+                    request: self
+                        .client
+                        .get(url)
+                        .header("x-api-key", value)
+                        .header("anthropic-version", ANTHROPIC_VERSION),
+                    credentials: vec![key],
+                    limit_field: Some("max_input_tokens"),
+                }))
+            }
+            // A new built-in kind gets no catalog until it opts in with an arm here.
+            _ => Ok(None),
+        }
+    }
+    /// Classifier for non-success responses; `None` means status-only.
+    fn rejection_classifier(&self) -> Option<&dyn errors::ErrorClassifier> {
+        #[allow(unreachable_patterns)]
+        match self.kind {
+            #[cfg(feature = "custom-http")]
+            AdapterKind::Custom => self.error_classifier.as_deref(),
+            #[cfg(feature = "anthropic")]
+            AdapterKind::Anthropic => Some(&errors::AnthropicClassifier),
+            // A new built-in kind keeps status-only classification unless it
+            // opts in with an arm here.
+            _ => None,
         }
     }
     fn api_key(&self) -> Result<String, ProviderError> {
@@ -541,18 +580,8 @@ impl HttpAdapter {
                 response = self.post(&url, retry_headers, &body, &span).await?;
             }
             if !response.status().is_success() {
-                // A new built-in kind keeps status-only classification unless it
-                // opts in with an arm here.
-                #[allow(unreachable_patterns)]
-                let classifier: Option<&dyn errors::ErrorClassifier> = match self.kind {
-                    #[cfg(feature = "custom-http")]
-                    AdapterKind::Custom => self.error_classifier.as_deref(),
-                    #[cfg(feature = "anthropic")]
-                    AdapterKind::Anthropic => Some(&errors::AnthropicClassifier),
-                    _ => None,
-                };
                 http_rejected = true;
-                return Err(rejected_response(response, classifier, false, &attempt_credentials).await);
+                return Err(rejected_response(response, self.rejection_classifier(), false, &attempt_credentials).await);
             }
             Ok(self.response_stream(response))
         }
@@ -640,39 +669,12 @@ impl ProviderAdapter for HttpAdapter {
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
         let span = tracing::info_span!(target: crate::targets::PROVIDERS, "crabber.provider.models", provider.id = %self.id, outcome = tracing::field::Empty, error.kind = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
         let result = async {
-            // Request, redaction credentials, and whether entries carry limits.
-            let catalog: Option<(reqwest::RequestBuilder, Vec<String>, bool)> =
-                match self.catalog_route() {
-                    CatalogRoute::None => None,
-                    #[cfg(feature = "opencode-go")]
-                    CatalogRoute::OpenCode => {
-                        let key = self.api_key()?;
-                        Some((
-                            self.client
-                                .get(join_url(&self.base_url, "/models")?)
-                                .bearer_auth(&key),
-                            vec![key.clone(), format!("Bearer {key}")],
-                            false,
-                        ))
-                    }
-                    #[cfg(feature = "anthropic")]
-                    CatalogRoute::Anthropic => {
-                        let key = self.api_key()?;
-                        let mut value = HeaderValue::from_str(&key).map_err(|_| invalid())?;
-                        value.set_sensitive(true);
-                        let mut url = join_url(&self.base_url, "/models")?;
-                        url.set_query(Some("limit=1000"));
-                        Some((
-                            self.client
-                                .get(url)
-                                .header("x-api-key", value)
-                                .header("anthropic-version", ANTHROPIC_VERSION),
-                            vec![key],
-                            true,
-                        ))
-                    }
-                };
-            let Some((request, credentials, reads_limits)) = catalog else {
+            let Some(CatalogRequest {
+                request,
+                credentials,
+                limit_field,
+            }) = self.catalog_request()?
+            else {
                 return Ok(Vec::new());
             };
             let response = request
@@ -696,12 +698,8 @@ impl ProviderAdapter for HttpAdapter {
                 .map(|(id, m)| ModelDescriptor {
                     provider_id: self.id.clone(),
                     id: id.into(),
-                    // 0 means unknown; only the Anthropic catalog reports limits.
-                    context_limit: if reads_limits {
-                        m["max_input_tokens"].as_u64().unwrap_or(0)
-                    } else {
-                        0
-                    },
+                    // 0 means unknown, as when the catalog reports no limit.
+                    context_limit: limit_field.and_then(|field| m[field].as_u64()).unwrap_or(0),
                 })
                 .collect())
         }

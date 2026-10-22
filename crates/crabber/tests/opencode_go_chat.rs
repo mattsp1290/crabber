@@ -7,63 +7,12 @@ use crabber::{
     providers::{HttpAdapter, HttpResolver, Protocol},
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-    time::timeout,
-};
+use std::sync::Arc;
+use tokio::time::timeout;
 
-const LIMIT: Duration = Duration::from_secs(10);
-type Captured = (BTreeMap<String, String>, Value);
-async fn read_request(socket: &mut TcpStream) -> Captured {
-    let mut raw = Vec::new();
-    let mut buffer = [0u8; 4096];
-    let end = loop {
-        let n = socket.read(&mut buffer).await.unwrap();
-        assert_ne!(n, 0, "request ended before headers");
-        raw.extend_from_slice(&buffer[..n]);
-        if let Some(end) = raw.windows(4).position(|b| b == b"\r\n\r\n") {
-            break end + 4;
-        }
-        assert!(raw.len() < 65536);
-    };
-    let headers: BTreeMap<_, _> = std::str::from_utf8(&raw[..end])
-        .unwrap()
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.split_once(':'))
-        .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_owned()))
-        .collect();
-    let length: usize = headers["content-length"].parse().unwrap();
-    assert!(length < 65536);
-    while raw.len() < end + length {
-        let n = socket.read(&mut buffer).await.unwrap();
-        assert_ne!(n, 0, "request ended before body");
-        raw.extend_from_slice(&buffer[..n]);
-    }
-    (
-        headers,
-        serde_json::from_slice(&raw[end..end + length]).unwrap(),
-    )
-}
-async fn server(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<Captured>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let task = tokio::spawn(async move {
-        timeout(LIMIT, async move {
-            let mut captured = Vec::new();
-            for body in responses {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                captured.push(read_request(&mut socket).await);
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                socket.write_all(response.as_bytes()).await.unwrap();
-            }
-            captured
-        }).await.expect("loopback server timed out")
-    });
-    (url, task)
-}
+#[path = "http_loopback/support.rs"]
+mod loopback;
+use loopback::{LIMIT, server};
 fn text() -> String {
     "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n".into()
 }
@@ -87,7 +36,7 @@ fn builder(url: &str) -> crabber::AgentBuilder {
 }
 #[tokio::test]
 async fn facade_cap_and_product_token_reach_opencode_chat_wire() {
-    let (url, task) = server(vec![text()]).await;
+    let (url, task) = server(vec![text()], "/chat/completions").await;
     let agent = builder(&url).build().unwrap();
     let result = timeout(LIMIT, async {
         agent
@@ -123,7 +72,7 @@ impl JsonToolExecutor for Echo {
 #[tokio::test]
 async fn facade_cap_persists_on_tool_call_turn() {
     let call = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
-    let (url, task) = server(vec![call.into(), text()]).await;
+    let (url, task) = server(vec![call.into(), text()], "/chat/completions").await;
     let tool = Arc::new(ToolDefinition {
         info: ToolInfo {
             name: "echo".into(),

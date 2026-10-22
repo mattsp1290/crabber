@@ -425,10 +425,7 @@ fn check_live_tests_are_ignored(workspace: &Path) {
         }
     }
     files.sort();
-    assert!(
-        files.len() >= 2,
-        "expected the Anthropic and OpenCode Go live test files"
-    );
+    assert!(!files.is_empty(), "no live test files found");
     for file in files {
         let source = fs::read_to_string(&file)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", file.display()));

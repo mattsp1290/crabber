@@ -9,6 +9,58 @@ mod anthropic;
 #[path = "codec_tests/reasoning.rs"]
 mod reasoning;
 
+fn event(kind: &str, value: &serde_json::Value) -> sse::Event {
+    sse::Event {
+        name: kind.into(),
+        data: value.to_string(),
+    }
+}
+fn message(role: Role, kind: &PartKind, blocks: Vec<ContentBlock>) -> Message {
+    let id = MessageId::new();
+    Message {
+        id: id.clone(),
+        session_id: SessionId::new(),
+        run_id: None,
+        role,
+        parent_id: None,
+        parts: blocks
+            .into_iter()
+            .enumerate()
+            .map(|(index, content)| Part {
+                id: PartId::new(),
+                message_id: id.clone(),
+                ordinal: u32::try_from(index).unwrap(),
+                kind: kind.clone(),
+                content,
+            })
+            .collect(),
+        created_at: crabber_core::SystemClock.now(),
+    }
+}
+fn request(
+    messages: Vec<Message>,
+    tools: Vec<crabber_core::ToolInfo>,
+    tool_choice: Option<&str>,
+) -> ModelRequest {
+    ModelRequest {
+        context: vec![],
+        identity: RequestIdentity {
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            turn_id: TurnId::new(),
+        },
+        selection: Selection {
+            provider_id: "anthropic".into(),
+            model_id: "model".into(),
+        },
+        system: None,
+        messages,
+        tools,
+        temperature: None,
+        max_tokens: None,
+        tool_choice: tool_choice.map(Into::into),
+    }
+}
 fn fixture(text: &str, decode: impl FnMut(&sse::Event) -> Vec<StreamDelta>) -> Vec<StreamDelta> {
     let mut parser = sse::Parser::default();
     parser

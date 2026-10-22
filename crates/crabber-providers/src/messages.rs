@@ -135,17 +135,15 @@ pub struct Codec {
     initial_input: HashMap<u64, Value>,
     streamed_input: HashSet<u64>,
     usage: Usage,
-    thinking: HashSet<u64>,
-    seen_thinking: HashSet<u64>,
+    thinking: HashMap<u64, Thinking>,
     saw_tool_use: bool,
     saw_text: bool,
-    /// Thinking blocks started without a signature yet; replaying one later
-    /// fails outbound validation, so truncation inside one is an error.
-    unsigned_thinking: HashSet<u64>,
-    /// Set by text or tool output (which observers see as it streams) or by
-    /// `message_stop`; a later stream error is never retryable because a retry
-    /// would duplicate published output. Private thinking is never published.
-    observable_emitted: bool,
+}
+/// One thinking block, kept for the whole message so a repeated index is
+/// rejected. An unsigned block fails outbound replay validation later.
+struct Thinking {
+    open: bool,
+    signed: bool,
 }
 impl Codec {
     pub fn event(&mut self, event: &Event) -> Result<Vec<StreamDelta>, ProviderError> {
@@ -171,7 +169,6 @@ impl Codec {
                 }
             }
             "message_stop" => {
-                self.observable_emitted = true;
                 out.push(StreamDelta::Usage(self.usage.clone()));
                 out.push(StreamDelta::Completed);
             }
@@ -185,10 +182,12 @@ impl Codec {
                     Some("request_too_large") => ProviderErrorKind::ContextOverflow,
                     _ => ProviderErrorKind::Server,
                 };
+                // The adapter stream withdraws retryability once observers
+                // have seen output or the message completed.
                 let retryable = matches!(
                     kind,
                     ProviderErrorKind::Server | ProviderErrorKind::RateLimited
-                ) && !self.observable_emitted;
+                );
                 out.push(StreamDelta::Error(ProviderError {
                     kind,
                     message: "Messages stream error".into(),
@@ -203,7 +202,9 @@ impl Codec {
         let (kind, message) = match stop_reason? {
             "refusal" => (ProviderErrorKind::Invalid, "Messages refusal"),
             "max_tokens"
-                if self.saw_tool_use || !self.saw_text || !self.unsigned_thinking.is_empty() =>
+                if self.saw_tool_use
+                    || !self.saw_text
+                    || self.thinking.values().any(|thinking| !thinking.signed) =>
             {
                 (ProviderErrorKind::Invalid, "Messages output truncated")
             }
@@ -225,18 +226,17 @@ impl Codec {
         out: &mut Vec<StreamDelta>,
     ) -> Result<(), ProviderError> {
         let block = &value["content_block"];
-        if matches!(block["type"].as_str(), Some("text" | "tool_use")) {
-            self.observable_emitted = true;
-        }
         if block["type"] == "thinking" {
             let index = value["index"]
                 .as_u64()
                 .ok_or_else(|| invalid("missing thinking index"))?;
-            if !self.seen_thinking.insert(index) {
+            let started = Thinking {
+                open: true,
+                signed: false,
+            };
+            if self.thinking.insert(index, started).is_some() {
                 return Err(invalid("duplicate thinking block"));
             }
-            self.thinking.insert(index);
-            self.unsigned_thinking.insert(index);
             out.push(StreamDelta::Reasoning {
                 item_id: thinking_id(index),
                 provenance: crabber_core::ReasoningProvenance::Private,
@@ -269,11 +269,7 @@ impl Codec {
         out: &mut Vec<StreamDelta>,
     ) -> Result<(), ProviderError> {
         let delta = &value["delta"];
-        let kind = delta["type"].as_str().unwrap_or_default();
-        if matches!(kind, "text_delta" | "input_json_delta") {
-            self.observable_emitted = true;
-        }
-        match kind {
+        match delta["type"].as_str().unwrap_or_default() {
             "text_delta" => {
                 let text = delta["text"].as_str().unwrap_or_default();
                 self.saw_text |= !text.is_empty();
@@ -304,8 +300,8 @@ impl Codec {
                 let signature = delta["signature"]
                     .as_str()
                     .ok_or_else(|| invalid("invalid thinking signature"))?;
-                if !signature.is_empty() {
-                    self.unsigned_thinking.remove(&index);
+                if let Some(thinking) = self.thinking.get_mut(&index) {
+                    thinking.signed |= !signature.is_empty();
                 }
                 out.push(StreamDelta::ReasoningSignature {
                     item_id: thinking_id(index),
@@ -318,7 +314,9 @@ impl Codec {
     }
     fn stop_block(&mut self, value: &Value, out: &mut Vec<StreamDelta>) {
         let index = value["index"].as_u64().unwrap_or(0);
-        self.thinking.remove(&index);
+        if let Some(thinking) = self.thinking.get_mut(&index) {
+            thinking.open = false;
+        }
         if let Some(id) = self.calls.remove(&index) {
             let initial = self
                 .initial_input
@@ -342,7 +340,8 @@ impl Codec {
             .as_u64()
             .ok_or_else(|| invalid("missing thinking index"))?;
         self.thinking
-            .contains(&index)
+            .get(&index)
+            .is_some_and(|thinking| thinking.open)
             .then_some(index)
             .ok_or_else(|| invalid("thinking delta without start"))
     }

@@ -10,71 +10,14 @@ use crabber::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-    time::timeout,
-};
+use tokio::time::timeout;
 
-const LIMIT: Duration = Duration::from_secs(10);
-type Captured = (BTreeMap<String, String>, Value);
-
-async fn read_request(socket: &mut TcpStream) -> Captured {
-    let mut raw = Vec::new();
-    let mut buffer = [0u8; 4096];
-    let end = loop {
-        let n = socket.read(&mut buffer).await.unwrap();
-        assert_ne!(n, 0, "request ended before headers");
-        raw.extend_from_slice(&buffer[..n]);
-        if let Some(end) = raw.windows(4).position(|b| b == b"\r\n\r\n") {
-            break end + 4;
-        }
-        assert!(raw.len() < 65536);
-    };
-    assert!(raw.starts_with(b"POST /messages HTTP/1.1\r\n"));
-    let headers: BTreeMap<_, _> = std::str::from_utf8(&raw[..end])
-        .unwrap()
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.split_once(':'))
-        .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_owned()))
-        .collect();
-    let length: usize = headers["content-length"].parse().unwrap();
-    assert!(length < 65536);
-    while raw.len() < end + length {
-        let n = socket.read(&mut buffer).await.unwrap();
-        assert_ne!(n, 0, "request ended before body");
-        raw.extend_from_slice(&buffer[..n]);
-    }
-    (
-        headers,
-        serde_json::from_slice(&raw[end..end + length]).unwrap(),
-    )
-}
-
-async fn server(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<Captured>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let task = tokio::spawn(async move {
-        timeout(LIMIT, async move {
-            let mut captured = Vec::new();
-            for body in responses {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                captured.push(read_request(&mut socket).await);
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                socket.write_all(response.as_bytes()).await.unwrap();
-            }
-            captured
-        })
-        .await
-        .expect("loopback server timed out")
-    });
-    (url, task)
-}
+#[path = "http_loopback/support.rs"]
+mod loopback;
+use loopback::{LIMIT, server};
 
 fn frame(name: &str, data: &Value) -> String {
     format!("event: {name}\ndata: {data}\n\n")
@@ -285,7 +228,7 @@ fn provider_error(
 
 #[tokio::test]
 async fn facade_sends_messages_headers_and_tool_free_body() {
-    let (url, task) = server(vec![text()]).await;
+    let (url, task) = server(vec![text()], "/messages").await;
     let agent = builder(&url, Arc::new(MemoryStore::new())).build().unwrap();
     let (_, result) = run(&agent).await;
     assert_eq!(result.unwrap().status, RunStatus::Completed);
@@ -310,7 +253,7 @@ async fn facade_sends_messages_headers_and_tool_free_body() {
 
 #[tokio::test]
 async fn facade_round_trips_tool_use_and_tool_result() {
-    let (url, task) = server(vec![tool_call(), text()]).await;
+    let (url, task) = server(vec![tool_call(), text()], "/messages").await;
     let events = Arc::new(Events::default());
     let agent = builder(&url, Arc::new(MemoryStore::new()))
         .shared_tool(echo_tool())
@@ -354,7 +297,7 @@ async fn facade_round_trips_tool_use_and_tool_result() {
 
 #[tokio::test]
 async fn facade_replays_signed_thinking_before_tool_use() {
-    let (url, task) = server(vec![thinking_then_tool(), text()]).await;
+    let (url, task) = server(vec![thinking_then_tool(), text()], "/messages").await;
     let events = Arc::new(Events::default());
     let agent = builder(&url, Arc::new(MemoryStore::new()))
         .shared_tool(echo_tool())
@@ -378,7 +321,7 @@ async fn facade_replays_signed_thinking_before_tool_use() {
 
 #[tokio::test]
 async fn facade_refusal_fails_run_and_persists_no_assistant_message() {
-    let (url, task) = server(vec![refusal_after_text()]).await;
+    let (url, task) = server(vec![refusal_after_text()], "/messages").await;
     let events = Arc::new(Events::default());
     let store = Arc::new(MemoryStore::new());
     let agent = builder(&url, store.clone())
@@ -406,7 +349,7 @@ async fn facade_refusal_fails_run_and_persists_no_assistant_message() {
 
 #[tokio::test]
 async fn facade_truncated_tool_input_fails_run() {
-    let (url, task) = server(vec![TRUNCATED_TOOL.to_owned()]).await;
+    let (url, task) = server(vec![TRUNCATED_TOOL.to_owned()], "/messages").await;
     let events = Arc::new(Events::default());
     let store = Arc::new(MemoryStore::new());
     let agent = builder(&url, store.clone())
@@ -424,7 +367,11 @@ async fn facade_truncated_tool_input_fails_run() {
 
 #[tokio::test]
 async fn facade_early_overload_is_retried_without_duplicate_text() {
-    let (url, task) = server(vec![overloaded_early(), overloaded_early(), text()]).await;
+    let (url, task) = server(
+        vec![overloaded_early(), overloaded_early(), text()],
+        "/messages",
+    )
+    .await;
     let events = Arc::new(Events::default());
     let store = Arc::new(MemoryStore::new());
     let agent = builder(&url, store.clone())
@@ -450,7 +397,7 @@ async fn facade_early_overload_is_retried_without_duplicate_text() {
 
 #[tokio::test]
 async fn facade_overload_after_content_is_not_retried() {
-    let (url, task) = server(vec![overloaded_after_text()]).await;
+    let (url, task) = server(vec![overloaded_after_text()], "/messages").await;
     let store = Arc::new(MemoryStore::new());
     let agent = builder(&url, store.clone()).build().unwrap();
     let (session, result) = run(&agent).await;
@@ -464,7 +411,7 @@ async fn facade_overload_after_content_is_not_retried() {
 
 #[tokio::test]
 async fn facade_private_thinking_before_overload_is_retried() {
-    let (url, task) = server(vec![thinking_then_overload(), text()]).await;
+    let (url, task) = server(vec![thinking_then_overload(), text()], "/messages").await;
     let events = Arc::new(Events::default());
     let agent = builder(&url, Arc::new(MemoryStore::new()))
         .observer(events.clone())
@@ -478,7 +425,7 @@ async fn facade_private_thinking_before_overload_is_retried() {
 
 #[tokio::test]
 async fn facade_transport_failure_after_text_is_not_retried() {
-    let (url, task) = server(vec![text_then_eof()]).await;
+    let (url, task) = server(vec![text_then_eof()], "/messages").await;
     let store = Arc::new(MemoryStore::new());
     let agent = builder(&url, store.clone()).build().unwrap();
     let (session, result) = run(&agent).await;
@@ -495,7 +442,7 @@ async fn facade_overflow_after_text_compacts_and_reruns() {
     // the runtime compacts and re-runs, so the failed attempt's text stays
     // visible to observers ahead of the re-run's text.
     // Requests: the overflowing attempt, the compaction summary, the re-run.
-    let (url, task) = server(vec![overflow_after_text(), text(), text()]).await;
+    let (url, task) = server(vec![overflow_after_text(), text(), text()], "/messages").await;
     let events = Arc::new(Events::default());
     let store = Arc::new(MemoryStore::new());
     let agent = builder(&url, store.clone())

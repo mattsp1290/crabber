@@ -217,8 +217,8 @@ blocks are never sent, because the API rejects them.
 
 Every stream error message is the fixed string `Messages stream error`. The
 provider's message is never copied. A stream error can be retryable only before
-the first observable output (a text or tool-use block or delta) and before
-`message_stop`. Private thinking is never published to observers, so it does not
+the first observable output (streamed text or a started tool call) and before
+`message_stop`. The adapter stream enforces this for every protocol. Private thinking is never published to observers, so it does not
 block a retry. For every protocol, a transport failure (a broken body or a
 stream that ends early) is likewise non-retryable once observable output has
 been queued. A retry for these errors therefore never duplicates deltas that
