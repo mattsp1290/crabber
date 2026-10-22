@@ -25,7 +25,7 @@ fn cleanup(f: &Fixture) -> crate::PhaseCleanup {
     }
 }
 pub(super) async fn write(
-    store: &impl Store,
+    store: &dyn Store,
     f: &Fixture,
 ) -> Result<PhaseControlOutcome, PhaseError> {
     if matches!(f.mode, Mode::Uncertainty) {
@@ -43,7 +43,7 @@ pub(super) fn outcome(value: PhaseControlOutcome) -> PhaseMutationOutcome {
         PhaseControlOutcome::Replayed(receipt) => PhaseMutationOutcome::Replayed(receipt),
     }
 }
-pub(super) async fn verify(store: &impl Store, f: &Fixture) {
+pub(super) async fn verify(store: &dyn Store, f: &Fixture) {
     let receipt = store
         .lookup_phase_mutation(&f.session, &f.request.id)
         .await
@@ -105,7 +105,7 @@ pub(super) async fn verify(store: &impl Store, f: &Fixture) {
         PhaseControlOutcome::Replayed(receipt)
     );
 }
-pub(super) async fn recover(store: &impl Store, f: &Fixture) {
+pub(super) async fn recover(store: &dyn Store, f: &Fixture) {
     assert!(matches!(
         write(store, f).await.unwrap(),
         PhaseControlOutcome::Applied(_)

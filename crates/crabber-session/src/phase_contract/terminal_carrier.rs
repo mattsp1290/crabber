@@ -3,7 +3,7 @@ use super::{applied, fixture_for_admission_named, mutation};
 use crate::{PhaseCommand, PhaseSettlement, PhaseWriteAuthority, Store};
 use crabber_core::{EventKind, MessageId, PartId, ToolResultStatus};
 
-pub(crate) async fn run(store: &impl Store) {
+pub(crate) async fn run(store: &dyn Store) {
     let admitted =
         crate::public_state_contract::admit(store, time::OffsetDateTime::UNIX_EPOCH).await;
     let (admitted, execution, owner, claim) =

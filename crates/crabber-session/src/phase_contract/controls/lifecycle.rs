@@ -9,7 +9,7 @@ use crate::{
 use crabber_core::{ControlId, ManualClock};
 use time::OffsetDateTime;
 pub(super) async fn run(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     started: bool,
     resolve_first: bool,
@@ -111,7 +111,7 @@ pub(super) async fn run(
     reconcile(store, request, receipt, invalid_cleanup, resolve_first).await;
 }
 async fn reconcile(
-    store: &impl Store,
+    store: &dyn Store,
     mut request: PhaseUncertainty,
     mut receipt: PhaseReceipt,
     mut invalid_cleanup: PhaseCleanup,

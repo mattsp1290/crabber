@@ -12,7 +12,7 @@ struct Before {
     messages: Vec<Message>,
     events: Vec<EventRecord>,
 }
-async fn capture(store: &impl Store, request: &PhaseResolution) -> Before {
+async fn capture(store: &dyn Store, request: &PhaseResolution) -> Before {
     let run = store.get_run(&request.run_id).await.unwrap().unwrap();
     let calls = crate::phase_contract::settlement::read_calls(store, &request.session_id)
         .await
@@ -35,7 +35,7 @@ async fn capture(store: &impl Store, request: &PhaseResolution) -> Before {
     }
 }
 pub(super) async fn run(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     choice: UncertainPhaseChoice,
     quiet: PhaseQuiescence,
@@ -65,7 +65,7 @@ pub(super) async fn run(
     }
 }
 async fn records(
-    store: &impl Store,
+    store: &dyn Store,
     request: &PhaseResolution,
     receipt: &PhaseReceipt,
     before: Before,
@@ -107,7 +107,7 @@ async fn records(
         assert_eq!(events.len(), before.events.len() + 1);
     }
 }
-async fn replay(store: &impl Store, request: &PhaseResolution, receipt: &PhaseReceipt) {
+async fn replay(store: &dyn Store, request: &PhaseResolution, receipt: &PhaseReceipt) {
     let before = evidence(store, request).await;
     let mut retry = request.clone();
     retry.message_id = MessageId::new();
@@ -119,7 +119,7 @@ async fn replay(store: &impl Store, request: &PhaseResolution, receipt: &PhaseRe
     );
     assert_eq!(evidence(store, request).await, before);
 }
-async fn later_success(store: &impl Store, request: &PhaseResolution, receipt: &PhaseReceipt) {
+async fn later_success(store: &dyn Store, request: &PhaseResolution, receipt: &PhaseReceipt) {
     let mut later = request.clone();
     later.resolution.id = crabber_core::ControlId::new();
     later.resolution.expected_revision = receipt.revision;

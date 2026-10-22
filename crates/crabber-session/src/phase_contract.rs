@@ -67,7 +67,7 @@ pub(crate) fn applied(outcome: Outcome) -> (PhaseReceipt, Option<PhaseAuthority>
     (receipt, authority)
 }
 pub(crate) async fn fixture(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (
     crate::AdmitOutcome,
     Box<dyn crate::ExecutionStore>,
@@ -78,7 +78,7 @@ pub(crate) async fn fixture(
     fixture_for_admission(store, admitted).await
 }
 pub(crate) async fn fixture_for_admission(
-    store: &impl Store,
+    store: &dyn Store,
     admitted: crate::AdmitOutcome,
 ) -> (
     crate::AdmitOutcome,
@@ -89,7 +89,7 @@ pub(crate) async fn fixture_for_admission(
     fixture_for_admission_named(store, admitted, "phase-owned").await
 }
 async fn fixture_for_admission_named(
-    store: &impl Store,
+    store: &dyn Store,
     admitted: crate::AdmitOutcome,
     name: &str,
 ) -> (
@@ -168,7 +168,7 @@ async fn fixture_for_admission_named(
     );
     (admitted, execution, authority, request)
 }
-async fn lifecycle(store: &impl Store) {
+async fn lifecycle(store: &dyn Store) {
     let (admitted, execution, owner, claim) = fixture(store).await;
     assert_eq!(
         execution

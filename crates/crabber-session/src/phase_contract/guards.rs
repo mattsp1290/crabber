@@ -5,12 +5,12 @@ use crate::{
 };
 use crabber_core::{ControlId, EventKind};
 
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     legacy_and_namespace(store).await;
     unresolved_cleanup(store).await;
     ended_worker_quiescence(store).await;
 }
-async fn legacy_and_namespace(store: &impl Store) {
+async fn legacy_and_namespace(store: &dyn Store) {
     let (admitted, execution, owner, claim) = fixture(store).await;
     let (claimed, _) = applied(
         execution
@@ -100,7 +100,7 @@ async fn legacy_and_namespace(store: &impl Store) {
         PhaseError::SemanticConflict
     );
 }
-async fn unresolved_cleanup(store: &impl Store) {
+async fn unresolved_cleanup(store: &dyn Store) {
     let (admitted, execution, owner, claim) = fixture(store).await;
     let (claimed, _) = applied(
         execution
@@ -174,7 +174,7 @@ async fn unresolved_cleanup(store: &impl Store) {
         receipt.revision
     );
 }
-async fn ended_worker_quiescence(store: &impl Store) {
+async fn ended_worker_quiescence(store: &dyn Store) {
     let (admitted, execution, owner, claim) = fixture(store).await;
     let (claimed, worker) = applied(
         execution

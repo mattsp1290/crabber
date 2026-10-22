@@ -7,7 +7,7 @@ use crate::{
 use crabber_core::{EventKind, ToolCallStatus, TurnId};
 
 async fn prepared(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (
     crate::AdmitOutcome,
     Box<dyn crate::ExecutionStore>,
@@ -33,7 +33,7 @@ async fn prepared(
     };
     (admitted, execution, worker.unwrap(), start)
 }
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     let (admitted, execution, owner, start) = prepared(store).await;
     let call = store
         .list_unfinished_tool_calls(&admitted.run.id)
@@ -120,7 +120,7 @@ pub(super) async fn run(store: &impl Store) {
     );
     reverse_domain(store).await;
 }
-async fn reverse_domain(store: &impl Store) {
+async fn reverse_domain(store: &dyn Store) {
     let (admitted, execution, owner, start) = prepared(store).await;
     execution
         .mutate_phase(
@@ -145,7 +145,7 @@ async fn reverse_domain(store: &impl Store) {
             .any(|event| event.kind == EventKind::ToolCallRunning)
     );
 }
-pub(super) async fn faults(store: &impl Store, inject: &impl Fn(FaultPoint)) {
+pub(super) async fn faults(store: &dyn Store, inject: &impl Fn(FaultPoint)) {
     for point in [FaultPoint::BeforeCommit, FaultPoint::AfterCommit] {
         let (admitted, execution, owner, start) = prepared(store).await;
         let before = store

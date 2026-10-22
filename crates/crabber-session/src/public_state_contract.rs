@@ -22,7 +22,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     fresh_activity_refusal(&store, &clock).await;
     object_activity_with_arbitrary_state(&store, &clock).await;
 }
-pub(crate) async fn admit(store: &impl Store, now: OffsetDateTime) -> AdmitOutcome {
+pub(crate) async fn admit(store: &dyn Store, now: OffsetDateTime) -> AdmitOutcome {
     let session = SessionId::new();
     let id = MessageId::new();
     store

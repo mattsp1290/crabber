@@ -4,7 +4,7 @@ use crate::phase_contract::applied;
 use crate::{PhaseError, PhaseMutationOutcome, PhaseQuiescence, PhaseState, Store};
 use crabber_core::ToolCallStatus;
 
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     let (admitted, execution, owner, mut settlement) = started(store, true).await;
     settlement.result_status = crabber_core::ToolResultStatus::Interrupted;
     let (receipt, _) = applied(

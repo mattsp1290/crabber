@@ -12,7 +12,7 @@ use crabber_core::{
 };
 
 async fn started(
-    store: &impl Store,
+    store: &dyn Store,
     failed: bool,
 ) -> (
     crate::AdmitOutcome,
@@ -82,7 +82,7 @@ async fn started(
     };
     (admitted, execution, worker, settlement)
 }
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     for failed in [false, true] {
         lifecycle(store, failed).await;
     }
@@ -91,7 +91,7 @@ pub(super) async fn run(store: &impl Store) {
     uncertain_cannot_be_completed(store).await;
     interruption::run(store).await;
 }
-async fn lifecycle(store: &impl Store, failed: bool) {
+async fn lifecycle(store: &dyn Store, failed: bool) {
     let (admitted, execution, owner, settlement) = started(store, failed).await;
     let messages = store
         .list_messages(&admitted.session.id, None)
@@ -161,7 +161,7 @@ async fn lifecycle(store: &impl Store, failed: bool) {
     );
 }
 async fn committed_records(
-    store: &impl Store,
+    store: &dyn Store,
     admitted: &crate::AdmitOutcome,
     settlement: &PhaseSettlement,
     failed: bool,
@@ -215,7 +215,7 @@ async fn committed_records(
     (after, events)
 }
 
-async fn late_collision(store: &impl Store) {
+async fn late_collision(store: &dyn Store) {
     let (admitted, execution, owner, mut settlement) = started(store, false).await;
     let messages = store
         .list_messages(&admitted.session.id, None)
@@ -276,7 +276,7 @@ async fn late_collision(store: &impl Store) {
             .is_none()
     );
 }
-async fn operation_domains_are_distinct(store: &impl Store) {
+async fn operation_domains_are_distinct(store: &dyn Store) {
     let (admitted, execution, owner, settlement) = started(store, false).await;
     execution
         .mutate_phase(
@@ -298,7 +298,7 @@ async fn operation_domains_are_distinct(store: &impl Store) {
             .is_none()
     );
 }
-pub(super) async fn faults(store: &impl Store, set_fault: &impl Fn(super::FaultPoint)) {
+pub(super) async fn faults(store: &dyn Store, set_fault: &impl Fn(super::FaultPoint)) {
     for point in [
         super::FaultPoint::BeforeCommit,
         super::FaultPoint::AfterCommit,
@@ -400,7 +400,7 @@ pub(super) async fn faults(store: &impl Store, set_fault: &impl Fn(super::FaultP
 }
 
 pub(super) async fn read_calls(
-    store: &impl Store,
+    store: &dyn Store,
     session: &crabber_core::SessionId,
 ) -> Result<Vec<crabber_core::ToolCallRecord>, crate::StoreError> {
     let outcome = store
@@ -423,7 +423,7 @@ pub(super) async fn read_calls(
     Ok(page.tool_calls)
 }
 
-async fn uncertain_cannot_be_completed(store: &impl Store) {
+async fn uncertain_cannot_be_completed(store: &dyn Store) {
     let (admitted, execution, owner, mut settlement) = started(store, false).await;
     let (uncertain, _) = applied(
         execution

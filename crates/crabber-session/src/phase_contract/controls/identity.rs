@@ -2,7 +2,7 @@
 use crate::{AdmitRequest, PhaseError, PhasePageRequest, Store};
 use crabber_core::{MessageId, PartId, SessionId};
 use time::OffsetDateTime;
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     let original = crate::public_state_contract::admit(store, OffsetDateTime::UNIX_EPOCH).await;
     let mut message = store
         .list_all_messages(&original.session.id)
