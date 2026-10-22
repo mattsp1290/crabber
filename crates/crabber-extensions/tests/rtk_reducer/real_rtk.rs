@@ -102,10 +102,13 @@ fn snapshot() -> BTreeMap<PathBuf, String> {
                 entries.insert(path.into(), "absent".into());
                 return;
             }
-            Err(_) => panic!("cannot snapshot ambient RTK directory"),
+            Err(error) => panic!("cannot snapshot ambient RTK directory: {error}"),
         };
         let identity = if metadata.is_symlink() {
-            format!("link:{:?}", fs::read_link(path).unwrap())
+            format!(
+                "link:{:?}",
+                fs::read_link(path).unwrap().as_os_str().as_encoded_bytes()
+            )
         } else if metadata.is_dir() {
             "directory".into()
         } else {

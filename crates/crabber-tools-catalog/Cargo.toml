@@ -5,12 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_docs = "warn"
 
-[lints.clippy]
-all = "warn"
 
 [dependencies]
 crabber-tools-userinteract = { path = "../crabber-tools-userinteract" }
@@ -33,3 +28,6 @@ crabber-tools-trackerwrite = { path = "../crabber-tools-trackerwrite" }
 crabber-tools-testkit = { path = "../crabber-tools-testkit" }
 tempfile = "3"
 url = "2"
+
+[lints]
+workspace = true

@@ -185,10 +185,10 @@ fn group_members(pgid: i32) -> Vec<u32> {
         .lines()
         .filter_map(|line| {
             let mut f = line.split_whitespace();
-            let pid = f.next()?.parse().ok()?;
+            let process_id = f.next()?.parse().ok()?;
             let group: i32 = f.next()?.parse().ok()?;
             let state = f.next()?;
-            (group == pgid && !state.starts_with('Z')).then_some(pid)
+            (group == pgid && !state.starts_with('Z')).then_some(process_id)
         })
         .collect()
 }
@@ -205,7 +205,7 @@ fn pgids(dir: &Path) -> Vec<i32> {
                 .ok()
         })
         .collect();
-    ids.sort();
+    ids.sort_unstable();
     ids
 }
 async fn groups_gone(dir: &Path) {

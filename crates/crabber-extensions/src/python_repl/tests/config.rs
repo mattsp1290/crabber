@@ -79,7 +79,7 @@ fn every_limit_bound_and_identity_is_validated() {
     let mut o = base.clone();
     o.limits.shutdown_grace = Duration::from_secs(3);
     error(o, "shutdown-grace-below-termination");
-    for identity in ["".into(), "\n".into(), "x".repeat(257)] {
+    for identity in [String::new(), "\n".into(), "x".repeat(257)] {
         let mut o = base.clone();
         o.python_identity = identity.clone();
         error(o, "python-identity");

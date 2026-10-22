@@ -1,12 +1,14 @@
-//! The multi_edit tool definition.
+//! The `multi_edit` tool definition.
 use crate::{FileTool, Kind, Options};
 use crabber::{ToolDefinition, core::ToolInfo};
 use std::sync::Arc;
 /// Deterministic model-facing schema and advisory safety metadata.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo { name: "multi_edit".into(), description: "Apply several anchored substring replacements to one workspace-relative file in a single atomic write. Edits apply in order against the running result; each anchor must occur exactly once at its turn. If any edit fails, nothing is written and the failing edit index is reported.".into(), parameters: serde_json::json!({"type": "object", "additionalProperties": false, "required": ["path", "edits"], "properties": {"path": {"type": "string", "minLength": 1, "description": "Workspace-relative file to edit. Must exist."}, "edits": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["anchor", "replacement"], "properties": {"anchor": {"type": "string", "minLength": 1, "description": "Literal substring to find. Must match exactly once when this edit runs. No regex."}, "replacement": {"type": "string", "description": "Substitute for the anchor. May be empty."}}}, "description": "Ordered edits. Later edits see earlier replacements."}}}), retry_safe: false, required_permissions: vec![crabber_tools_core::permission::FS_WRITE.into()] }
 }
 /// Build a context-required executor sharing the mount's capacity.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),

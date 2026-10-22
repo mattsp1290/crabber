@@ -56,7 +56,7 @@ pub struct Limits {
     pub max_environment_entries: usize,
     /// Frozen key + equals + value bytes; 1–256 KiB.
     pub max_environment_bytes: usize,
-    /// Positive whole seconds, at most max_timeout. Measured from request write;
+    /// Positive whole seconds, at most `max_timeout`. Measured from request write;
     /// queue wait and runner startup are additional.
     pub default_timeout: Duration,
     /// Maximum whole seconds; 1 second–24 hours. Measured from request write;
@@ -68,7 +68,7 @@ pub struct Limits {
     pub terminate_grace: Duration,
     /// Positive reaping bound, at most 60 seconds.
     pub kill_wait: Duration,
-    /// Positive close/join bound, at most 120 seconds; at least grace + kill_wait.
+    /// Positive close/join bound, at most 120 seconds; at least grace + `kill_wait`.
     /// Applies separately to close and cleanup join, so shutdown can take twice
     /// this bound.
     pub shutdown_grace: Duration,
@@ -77,6 +77,7 @@ impl Limits {
     /// Conservative bound for the inline tool-result JSON text, including escaping.
     /// Embedding this text again as a JSON string in events or snapshots requires
     /// additional space for that outer escaping.
+    #[must_use]
     pub fn worst_case_execute_bytes(&self) -> usize {
         1024usize.saturating_add(
             6usize.saturating_mul(
@@ -87,6 +88,7 @@ impl Limits {
         )
     }
     /// Conservative inline clear-result JSON bound.
+    #[must_use]
     pub fn worst_case_clear_bytes() -> usize {
         64
     }
@@ -113,7 +115,7 @@ impl fmt::Debug for Options {
             .field("python_identity", &self.python_identity)
             .field("environment", &self.environment)
             .field("limits", &self.limits)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -157,6 +159,10 @@ fn normalized(path: &Path) -> bool {
         && !path.components().any(|c| c == Component::ParentDir)
 }
 #[cfg(unix)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep option normalization and validation together to preserve failure ordering."
+)]
 fn validate_unix(options: Options) -> Result<(Configuration, String), ExtensionError> {
     use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
     let l = &options.limits;
@@ -178,7 +184,7 @@ fn validate_unix(options: Options) -> Result<(Configuration, String), ExtensionE
         || l.default_timeout > l.max_timeout
         || l.default_timeout.subsec_nanos() != 0
         || l.max_timeout < Duration::from_secs(1)
-        || l.max_timeout > Duration::from_secs(86400)
+        || l.max_timeout > Duration::from_hours(24)
         || l.max_timeout.subsec_nanos() != 0
     {
         return Err(crate::config_error("execution-timeout"));

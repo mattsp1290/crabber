@@ -1,12 +1,14 @@
-//! The file_move tool definition.
+//! The `file_move` tool definition.
 use crate::{FileTool, Kind, Options};
 use crabber::{ToolDefinition, core::ToolInfo};
 use std::sync::Arc;
 /// Deterministic model-facing schema and advisory safety metadata.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo { name: "file_move".into(), description: "Move or rename one workspace-relative regular file to a new workspace-relative path that does not exist yet. Optional create_dirs=true creates the destination parent chain. The file keeps its mode and ownership. Fails with conflict if the destination exists.".into(), parameters: serde_json::json!({"type": "object", "additionalProperties": false, "required": ["path", "new_path"], "properties": {"path": {"type": "string", "minLength": 1, "description": "Workspace-relative source file. Must be a regular file."}, "new_path": {"type": "string", "minLength": 1, "description": "Workspace-relative destination. Must not exist."}, "create_dirs": {"type": "boolean", "description": "If true, mkdir -p the destination parent chain. Default false."}}}), retry_safe: false, required_permissions: vec![crabber_tools_core::permission::FS_WRITE.into()] }
 }
 /// Build a context-required executor sharing the mount's capacity.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),
@@ -197,8 +199,8 @@ mod fault_tests {
         let destination = temp.path().join("dst/new");
         BEFORE_LINK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(move || {
-                std::fs::write(destination, b"external").unwrap()
-            }))
+                std::fs::write(destination, b"external").unwrap();
+            }));
         });
         assert_eq!(
             request.relocate(&options, &args).unwrap_err().category,
@@ -222,7 +224,7 @@ mod fault_tests {
             *slot.borrow_mut() = Some(Box::new(move || {
                 std::fs::remove_file(&source).unwrap();
                 symlink("target", source).unwrap();
-            }))
+            }));
         });
         assert_eq!(
             request.relocate(&options, &args).unwrap_err().category,
@@ -274,7 +276,7 @@ mod fault_tests {
                         )
                         .unwrap();
                     }
-                }))
+                }));
             });
             if partial {
                 let value = request.relocate(&options, &args).unwrap();

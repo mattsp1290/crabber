@@ -46,50 +46,61 @@ impl Request {
 
     /// Spawn nested jobs through this handle to retain actual parent attribution.
     /// A separate child Agent does not inherit this link automatically.
+    #[must_use]
     pub fn session_invocations(&self) -> &SessionInvocations {
         &self.invocations
     }
 
     /// Parent session identity supplied by Crabber.
+    #[must_use]
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
     /// Parent run identity supplied by Crabber.
+    #[must_use]
     pub fn run_id(&self) -> &RunId {
         &self.run_id
     }
     /// Parent tool-call identity supplied by Crabber.
+    #[must_use]
     pub fn call_id(&self) -> &ToolCallId {
         &self.call_id
     }
     /// Persisted workspace routing data, not a filesystem capability.
+    #[must_use]
     pub fn workspace(&self) -> &WorkspaceContext {
         &self.workspace
     }
     /// Bounded task preserved exactly from model input.
+    #[must_use]
     pub fn task(&self) -> &str {
         &self.task
     }
     /// Opaque host profile preserved exactly from model input.
+    #[must_use]
     pub fn profile(&self) -> &str {
         &self.profile
     }
     /// Inline tokens cancel on interruption, deadline or executor exit.
     /// Background tokens cancel on their deadline, extension/owner close or a host
-    /// drain_session_invocations cancellation request.
+    /// `drain_session_invocations` cancellation request.
     /// Cancelling this token does not cancel the parent run.
+    #[must_use]
     pub fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
     /// Whether this request runs independently of its parent invocation.
+    #[must_use]
     pub fn background(&self) -> bool {
         self.background
     }
-    /// Runner deadline duration: inline max_wait or max_background_duration.
+    /// Runner deadline duration: inline `max_wait` or `max_background_duration`.
+    #[must_use]
     pub fn deadline(&self) -> Duration {
         self.deadline
     }
     /// Alias for [`Self::deadline`].
+    #[must_use]
     pub fn max_wait(&self) -> Duration {
         self.deadline()
     }

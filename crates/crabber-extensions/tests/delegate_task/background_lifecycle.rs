@@ -448,8 +448,8 @@ async fn shutdown_before_first_runner_poll_skips_host_callback() {
         task(SessionInvocationContext {
             cancel: CancellationToken::new(),
             cleanup: cleanup.tracker().clone(),
-            public_source: Default::default(),
-            invocations: Default::default(),
+            public_source: crabber::extension::PublicSourceWriter::default(),
+            invocations: crabber::extension::SessionInvocations::default(),
         })
         .await
         .unwrap();

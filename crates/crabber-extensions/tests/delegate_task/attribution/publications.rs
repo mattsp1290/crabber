@@ -167,7 +167,10 @@ async fn inline_interrupt_attempts_settlement_inside_the_actual_phase_drain() {
             .iter()
             .any(|issue| issue.kind == crabber::runtime::RunCloseIssueKind::NativeOutcomeUnknown)
     );
-    assert!(closed.runtime.executions.pending.is_empty());
+    assert_eq!(
+        closed.runtime.executions.pending,
+        [] as [crabber::core::RunId; 0]
+    );
     assert_eq!(ext.live_runners(), 0);
     let publications = publications(&store.list_events(&session, None, 1000).await.unwrap());
     let statuses = publications.iter().map(status).collect::<Vec<_>>();

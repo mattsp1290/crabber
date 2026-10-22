@@ -1,6 +1,7 @@
 //! Host-owned durable questions and a pending relay.
 //! Questions and answers cross the host boundary unredacted. Hosts should mount
 //! a tool-result redactor; this tool must not be used to collect secrets.
+#![warn(missing_docs)]
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolDefinition, ToolExecutor, extension::ToolContext};
 use crabber_tools_core::{category, check_cancelled, failed};
@@ -20,6 +21,9 @@ pub struct Options {
     pub policy: UserInteractPolicy,
 }
 /// Validate policy and construct a relay or resumable durable tool.
+///
+/// # Errors
+/// Returns a plan error if the interaction policy is invalid.
 pub fn definition(options: Arc<Options>) -> Result<Arc<ToolDefinition>, ExtensionError> {
     options.policy.validate()?;
     match &options.policy.surface {
@@ -54,13 +58,12 @@ impl ToolExecutor for UserTool {
         ctx: ToolContext,
         value: Value,
     ) -> Result<crabber::core::ToolOutput, ExtensionError> {
-        self.invoke(ctx, value)
-            .await
+        self.invoke(&ctx, value)
             .map(|value| crabber_tools_core::to_output(value, &[]))
     }
 }
 impl UserTool {
-    async fn invoke(&self, ctx: ToolContext, value: Value) -> Result<Value, ExtensionError> {
+    fn invoke(&self, ctx: &ToolContext, value: Value) -> Result<Value, ExtensionError> {
         check_cancelled(&ctx.cancel)?;
         let args = match parse_args(value, &self.options.policy) {
             Ok(args) => args,

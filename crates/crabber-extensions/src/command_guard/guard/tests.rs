@@ -69,7 +69,7 @@ fn saturation_denies_immediately_and_recovers() {
         let g = g.clone();
         std::thread::spawn(move || {
             tx.send(g.check("shell", &json!({"cmd":"echo ok"})))
-                .unwrap()
+                .unwrap();
         })
     };
     let decision = rx.recv_timeout(Duration::from_secs(1));
@@ -113,9 +113,7 @@ fn panic_in_analysis_denies_and_releases_permit() {
     let g = CommandGuard::with_analyzer(
         options(),
         Arc::new(move |p, n, a| {
-            if first.fetch_add(1, Ordering::SeqCst) == 0 {
-                panic!("SECRET_MARKER");
-            }
+            assert!(first.fetch_add(1, Ordering::SeqCst) != 0, "SECRET_MARKER");
             p.analyze(n, a)
         }),
     )
@@ -198,6 +196,10 @@ impl PermissionPolicy for Counter {
     }
 }
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep admission, process ownership, and cleanup in one ordered lifecycle."
+)]
 async fn internal_and_capacity_denials_never_execute_through_the_agent() {
     for internal in [true, false] {
         let g = Arc::new(if internal {

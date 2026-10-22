@@ -9,6 +9,10 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Owned error callbacks match the Result::map_err interface."
+)]
 fn io_error(e: std::io::Error) -> ToolError {
     ToolError::new(category_for_io(&e), "workspace traversal failed")
 }
@@ -106,8 +110,8 @@ impl Cursor {
 
 pub(crate) fn discover(
     root: &WorkspaceRoot,
-    start: RelPath,
-    pattern: GlobSet,
+    start: &RelPath,
+    pattern: &GlobSet,
     limit: usize,
     cancel: &CancellationToken,
 ) -> Result<Value, ToolError> {
@@ -203,13 +207,13 @@ mod tests {
                         while !*go {
                             go = cv.wait(go).unwrap();
                         }
-                    }))
+                    }));
                 });
                 let matcher = crate::pattern::compile("**").unwrap();
                 discover(
                     &root,
-                    RelPath::parse("", true).unwrap(),
-                    matcher,
+                    &RelPath::parse("", true).unwrap(),
+                    &matcher,
                     10,
                     &scan_cancel,
                 )

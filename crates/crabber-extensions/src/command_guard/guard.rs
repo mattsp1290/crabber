@@ -30,6 +30,7 @@ pub struct Stats {
 }
 impl Stats {
     /// Saturating sum of the six denial counters.
+    #[must_use]
     pub fn denials(&self) -> u64 {
         self.rule_match
             .saturating_add(self.invalid_command)
@@ -62,6 +63,9 @@ pub struct CommandGuard {
 }
 impl CommandGuard {
     /// Validate and freeze options through [`Policy::new`].
+    ///
+    /// # Errors
+    /// Returns a plan error if command bindings, rules, or parser budgets are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         Ok(Self::from_guard(Guard::new(Policy::new(options)?)))
     }
@@ -77,10 +81,12 @@ impl CommandGuard {
         }
     }
     /// Frozen policy for host re-analysis of stored normalized arguments.
+    #[must_use]
     pub fn policy(&self) -> &Policy {
         &self.guard.policy
     }
     /// Read independent, relaxed counter snapshots.
+    #[must_use]
     pub fn stats(&self) -> Stats {
         self.guard.stats()
     }
@@ -101,7 +107,7 @@ impl fmt::Debug for CommandGuard {
         f.debug_struct("CommandGuard")
             .field("policy", self.policy())
             .field("hash", &self.hash)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 #[async_trait]
@@ -109,7 +115,7 @@ impl Extension for CommandGuard {
     fn id(&self) -> &str {
         GUARD_ID
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

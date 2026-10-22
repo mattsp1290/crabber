@@ -28,7 +28,7 @@ async fn committed_result_lost_after_send_resets_before_next_call() {
             drop(call);
         } else {
             cancel.cancel();
-            code(call.await.unwrap_err(), "cancelled");
+            code(&call.await.unwrap_err(), "cancelled");
         }
         f.manager.hooks.lock().unwrap().after_send = None;
         barrier.release();
@@ -63,7 +63,7 @@ async fn cancellation_boundaries_and_dropped_receiver_reset() {
                     "after_write" => h.after_request_write = Some(barrier.hook()),
                     "before_commit" => h.before_commit = Some(barrier.hook()),
                     _ => h.before_send = Some(barrier.hook()),
-                };
+                }
             }
             let cancel = CancellationToken::new();
             let token = cancel.clone();
@@ -86,7 +86,7 @@ async fn cancellation_boundaries_and_dropped_receiver_reset() {
                 let _ = task.await;
             } else {
                 cancel.cancel();
-                code(task.await.unwrap().unwrap_err(), "cancelled");
+                code(&task.await.unwrap().unwrap_err(), "cancelled");
             }
             {
                 let mut h = f.manager.hooks.lock().unwrap();

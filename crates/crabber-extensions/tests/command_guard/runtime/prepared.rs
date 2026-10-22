@@ -8,7 +8,7 @@ pub(crate) struct PrepareProbe {
 }
 struct OtherGuard(Arc<AtomicUsize>);
 impl crabber::extension::ToolGuard for OtherGuard {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/other-guard"
     }
     fn check(&self, _: &str, _: &Value) -> crabber::extension::GuardDecision {
@@ -18,10 +18,10 @@ impl crabber::extension::ToolGuard for OtherGuard {
 }
 #[async_trait]
 impl Extension for PrepareProbe {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/prepare"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {

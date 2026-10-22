@@ -18,6 +18,9 @@ pub enum ProcessRunError {
 }
 
 /// Run bounded capture inside a registered process resource.
+///
+/// # Errors
+/// Returns a process error on cancellation, unavailable resources, spawn failure, or capture failure.
 pub async fn run_process_owned(
     ctx: &ToolContext,
     cmd: Command,
@@ -31,6 +34,9 @@ pub async fn run_process_owned(
 }
 
 /// Retain capacity and writer guards until capture and process cleanup finish.
+///
+/// # Errors
+/// Returns a process error on cancellation, unavailable resources, spawn failure, or capture failure.
 pub async fn run_process_owned_guarded(
     ctx: &ToolContext,
     cmd: Command,
@@ -47,6 +53,9 @@ pub async fn run_process_owned_guarded(
 /// Run a streaming reader under the same registered process ownership as capture.
 /// The callback must await its own output work; cancellation drops it before the
 /// owner kills and reaps the process group. No callback may detach pipe readers.
+///
+/// # Errors
+/// Returns a process error on cancellation, unavailable resources, spawn failure, or callback/cleanup failure.
 pub async fn run_process_owned_with<T: Send + 'static>(
     ctx: &ToolContext,
     mut cmd: Command,
@@ -74,22 +83,19 @@ pub async fn run_process_owned_with<T: Send + 'static>(
             };
             tokio::pin!(closed);
             tokio::select! { biased;
-                _ = cancel.cancelled() => { let _=tx.send(Err(ProcessRunError::Cancelled));return Ok(()); },
-                _ = &mut closed => { let _=tx.send(Err(ProcessRunError::Cancelled));return Ok(()); },
-                _ = tx.closed() => return Ok(()),
-                _ = std::future::ready(()) => {},
+                () = cancel.cancelled() => { let _=tx.send(Err(ProcessRunError::Cancelled));return Ok(()); },
+                () = &mut closed => { let _=tx.send(Err(ProcessRunError::Cancelled));return Ok(()); },
+                () = tx.closed() => return Ok(()),
+                () = std::future::ready(()) => {},
             }
-            let mut guard = match ProcessGroupGuard::spawn(&mut cmd) {
-                Ok(guard) => guard,
-                Err(_) => {
-                    let _ = tx.send(Err(ProcessRunError::Spawn));
-                    return Ok(());
-                }
+            let Ok(mut guard) = ProcessGroupGuard::spawn(&mut cmd) else {
+                let _ = tx.send(Err(ProcessRunError::Spawn));
+                return Ok(());
             };
             let result = tokio::select! { biased;
-                _ = cancel.cancelled() => Err(ProcessRunError::Cancelled),
-                _ = &mut closed => Err(ProcessRunError::Cancelled),
-                _ = tx.closed() => Err(ProcessRunError::Cancelled),
+                () = cancel.cancelled() => Err(ProcessRunError::Cancelled),
+                () = &mut closed => Err(ProcessRunError::Cancelled),
+                () = tx.closed() => Err(ProcessRunError::Cancelled),
                 result = work(&mut guard) => result.map_err(|_| ProcessRunError::Capture),
             };
             // A completed callback may have already reaped and disarmed the guard.
@@ -110,7 +116,7 @@ pub async fn run_process_owned_with<T: Send + 'static>(
         })
         .map_err(|_| ProcessRunError::Unavailable)?;
     tokio::select! { biased;
-        _ = ctx.cancel.cancelled() => Err(ProcessRunError::Cancelled),
+        () = ctx.cancel.cancelled() => Err(ProcessRunError::Cancelled),
         result = rx => result.unwrap_or(Err(ProcessRunError::Capture)),
     }
 }

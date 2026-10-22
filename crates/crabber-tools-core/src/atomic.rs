@@ -17,6 +17,9 @@ pub enum Install {
 /// Mode and conditional ownership are supplied by the tool's preflight. Root
 /// preserves the source owner; its owner may preserve the group. Cleanup errors
 /// can occur after installation, so callers must account for partial effects.
+///
+/// # Errors
+/// Returns an I/O error if temporary creation, ownership, writing, syncing, or installation fails.
 pub fn write_sibling(
     parent: &Dir,
     name: &OsStr,

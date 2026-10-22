@@ -1,7 +1,11 @@
 //! Preflighted capability-confined multi-file structured patches.
+#![warn(missing_docs)]
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolDefinition, ToolExecutor, extension::ToolContext};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, Capacity, Limits, RootLock, ToolError, WorkspaceRoot, acquire_mutating, category,
+    check_cancelled, run_blocking_owned,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -29,6 +33,7 @@ pub struct Options {
     pub capacity: Capacity,
 }
 /// Construct a context-required patch executor.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),
@@ -59,15 +64,12 @@ impl ToolExecutor for PatchTool {
 impl PatchTool {
     async fn invoke(&self, ctx: ToolContext, args: Value) -> Result<Value, ExtensionError> {
         check_cancelled(&ctx.cancel)?;
-        let fail = |e| result::failure(e, vec![], false);
-        let args = match serde_json::from_value::<Args>(args) {
-            Ok(a) => a,
-            Err(_) => {
-                return Ok(fail(ToolError::new(
-                    category::VALIDATION,
-                    "invalid arguments",
-                )));
-            }
+        let fail = |e| result::failure(&e, &[], false);
+        let Ok(args) = serde_json::from_value::<Args>(args) else {
+            return Ok(fail(ToolError::new(
+                category::VALIDATION,
+                "invalid arguments",
+            )));
         };
         if args.patch_text.len() > MAX_PATCH_BYTES {
             return Ok(fail(ToolError::new(
@@ -108,7 +110,7 @@ impl PatchTool {
             };
             match preflight::plan(&options.root, operations, cancel) {
                 Ok(plan) => commit::apply(&options.root, plan, cancel),
-                Err((error, files)) => result::failure(error, files, false),
+                Err((error, files)) => result::failure(&error, &files, false),
             }
         })
         .await

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Context, Cow, Dialect, Direction, Op, Outcome, Parser, PartContext, Script, Word, WordPart,
+    variables,
+};
 
 impl<'a> Parser<'a, '_, '_> {
     pub(super) fn word(&mut self, depth: usize) -> Result<Word<'a>, Outcome> {
@@ -9,6 +12,10 @@ impl<'a> Parser<'a, '_, '_> {
         }
         Ok(Word { parts })
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep shell word parsing cases together to preserve rejection order."
+    )]
     pub(super) fn parts(
         &mut self,
         depth: usize,
@@ -142,9 +149,9 @@ impl<'a> Parser<'a, '_, '_> {
                 if self.bump() != Some('}') {
                     return Err(Outcome::InvalidCommand);
                 }
-                if !variables::variable_name(&name)
-                    && !(!name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()))
-                    && !(name.len() == 1 && name.bytes().all(|b| b"@*#?-$!".contains(&b)))
+                if !(variables::variable_name(&name)
+                    || !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+                    || name.len() == 1 && name.bytes().all(|b| b"@*#?-$!".contains(&b)))
                 {
                     return Err(Outcome::Unanalysable);
                 }

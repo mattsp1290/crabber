@@ -1,6 +1,7 @@
 //! Deterministic upstream-compatible metadata.
 use crabber::core::ToolInfo;
 /// Model-facing schema and advisory write permission.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {
         name:"apply_patch".into(),

@@ -13,6 +13,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Preserve the shared scripted-provider fixture signature used by the consumer."
+)]
 fn turn(name: &str, args: Value) -> Vec<StreamDelta> {
     let id = ToolCallId::new();
     vec![
@@ -51,10 +55,10 @@ fn record_tool(name: &str, record: Arc<Mutex<Vec<Value>>>) -> Arc<ToolDefinition
 }
 #[async_trait]
 impl Extension for HostExtension {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "example/host"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
@@ -66,7 +70,11 @@ impl Extension for HostExtension {
     }
 }
 /// Mount a per-node subset beside a host extension and a plain host tool.
-/// Optionally add a consumer extension registering consumer_marker.
+/// Optionally add a consumer extension registering `consumer_marker`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 pub async fn run(
     deny_shell: bool,
     extra: Option<Arc<dyn Extension>>,

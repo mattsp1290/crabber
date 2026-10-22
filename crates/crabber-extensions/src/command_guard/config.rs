@@ -23,6 +23,7 @@ pub struct Binding {
     pub dialect: Dialect,
 }
 /// Conventional host bindings; hosts must confirm their own tool contracts.
+#[must_use]
 pub fn default_bindings() -> Vec<Binding> {
     [("shell", "cmd"), ("background_job_start", "command")]
         .into_iter()
@@ -56,9 +57,9 @@ pub const MAX_JSON_DEPTH: usize = 64;
 /// Hard cap: JSON values and object keys visited.
 pub const MAX_JSON_NODES: usize = 65536;
 /// Hard cap: Bytes in each script admitted to the parser.
-pub const MAX_COMMAND_BYTES: usize = 262144;
+pub const MAX_COMMAND_BYTES: usize = 262_144;
 /// Hard cap: Script bytes shared across nested analyses.
-pub const MAX_ANALYSIS_BYTES: usize = 1048576;
+pub const MAX_ANALYSIS_BYTES: usize = 1_048_576;
 /// Hard cap: AST values constructed across the analysis.
 pub const MAX_AST_NODES: usize = 32768;
 /// Hard cap: syntactic nesting and wrapper delegation depth.
@@ -68,7 +69,7 @@ pub const MAX_AST_DEPTH: usize = 32;
 /// Hard cap: Words constructed across the analysis.
 pub const MAX_WORDS: usize = 16384;
 /// Hard cap: Decoded bytes in each word and configuration string.
-pub const MAX_WORD_BYTES: usize = 262144;
+pub const MAX_WORD_BYTES: usize = 262_144;
 /// Hard cap: Wrapper delegations in a command chain.
 pub const MAX_WRAPPER_DEPTH: usize = 64;
 /// Hard cap: Concurrent bound-tool checks in `CommandGuard`.
@@ -151,7 +152,7 @@ impl fmt::Debug for Policy {
             .field("binding_count", &self.bindings.len())
             .field("rule_count", &self.rules.len())
             .field("hash", &self.hash)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 #[derive(Serialize)]
@@ -182,6 +183,9 @@ fn identifier(s: &str) -> bool {
 impl Policy {
     /// Validate settings in contract order, then canonicalize and freeze ownership.
     /// Identifiers accept 1–256 ASCII alphanumerics, `_`, `-`, `.`, and `:`.
+    ///
+    /// # Errors
+    /// Returns a plan error for invalid bindings, rules, or parser budgets.
     pub fn new(mut options: Options) -> Result<Self, ExtensionError> {
         let fail = crate::config_error;
         let l = &options.limits;
@@ -279,22 +283,27 @@ impl Policy {
         })
     }
     /// Versioned fingerprint of every behavior-bearing configuration value.
+    #[must_use]
     pub fn config_hash(&self) -> &str {
         &self.hash
     }
     /// Bindings sorted by tool name.
+    #[must_use]
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
     }
     /// Rules sorted by identifier.
+    #[must_use]
     pub fn rules(&self) -> &[Rule] {
         &self.rules
     }
     /// Validated limits; `CommandGuard` enforces the bound-tool capacity limit.
+    #[must_use]
     pub fn limits(&self) -> &Limits {
         &self.limits
     }
     /// Exact, case-sensitive tool-name lookup.
+    #[must_use]
     pub fn binding(&self, tool_name: &str) -> Option<&Binding> {
         self.bindings
             .binary_search_by(|b| b.tool_name.as_str().cmp(tool_name))

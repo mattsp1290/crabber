@@ -32,6 +32,7 @@ pub enum Filter {
 }
 impl Filter {
     /// Argument passed after `rtk pipe --filter`.
+    #[must_use]
     pub fn cli_name(self) -> &'static str {
         match self {
             Self::CargoTest => "cargo-test",
@@ -92,13 +93,13 @@ pub struct Limits {
     pub max_field_bytes: usize,
     /// Concurrent transform leases; 1–64. Capacity never queues.
     pub max_concurrent: usize,
-    /// Child stdout bytes; 1–1 MiB, at most max_field_bytes.
+    /// Child stdout bytes; 1–1 MiB, at most `max_field_bytes`.
     pub max_stdout_bytes: usize,
     /// One deadline across every field in a transform; positive, at most 60 s.
     pub timeout: Duration,
     /// Reaping bound after KILL; positive, at most 60 s.
     pub kill_wait: Duration,
-    /// Close bound; positive, at most 120 s, at least timeout + kill_wait.
+    /// Close bound; positive, at most 120 s, at least timeout + `kill_wait`.
     pub shutdown_grace: Duration,
 }
 /// Host-owned executable and temporary root. Construction never executes RTK.
@@ -129,7 +130,7 @@ impl fmt::Debug for Options {
             .field("order", &self.order)
             .field("bindings", &self.bindings.len())
             .field("limits", &self.limits)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 pub(super) const PRIVATE_KEYS: [(&str, &str); 7] = [
@@ -192,8 +193,8 @@ fn validate_unix(options: Options) -> Result<(Configuration, String), ExtensionE
         return Err(crate::config_error("executable-digest"));
     }
     let bindings = bindings::canonicalize(bindings, l)?;
-    let executable = paths::executable(executable_path, &executable_sha256)?;
-    let temp_root = paths::temp_root(temp_root)?;
+    let executable = paths::executable(&executable_path, &executable_sha256)?;
+    let temp_root = paths::temp_root(&temp_root)?;
     let canonical: Vec<_> = bindings
         .iter()
         .map(|(name, b)| (name, &b.match_input, &b.selection))

@@ -41,7 +41,7 @@ pub(crate) struct Reap {
     pub(crate) status: Option<ExitStatus>,
     pub(crate) output_forced: bool,
 }
-pub(crate) fn spawn(launch: Launch<'_>, _: Tails, _: &CleanupTracker) -> Result<Spawned, Fault> {
+pub(crate) fn spawn(launch: &Launch<'_>, _: Tails, _: &CleanupTracker) -> Result<Spawned, Fault> {
     let _ = (
         launch.shell,
         launch.command,
@@ -88,7 +88,7 @@ pub(crate) struct RunnerLaunch<'a> {
     pub(crate) environment: &'a [(String, String)],
 }
 pub(crate) struct RunnerChild;
-pub(crate) fn spawn_runner(launch: RunnerLaunch<'_>) -> Result<RunnerChild, Fault> {
+pub(crate) fn spawn_runner(launch: &RunnerLaunch<'_>) -> Result<RunnerChild, Fault> {
     let _ = (
         launch.program,
         launch.args,

@@ -12,6 +12,10 @@ fn outcome(s: &str) -> Outcome {
     }
 }
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "The checked-in corpus wrapper depths are at most 32, fitting supported usize targets."
+)]
 fn ported_reference_tests() {
     let rows: Vec<Value> =
         serde_json::from_str(include_str!("fixtures/ported-corpus.json")).unwrap();

@@ -68,7 +68,7 @@ pub(super) async fn pause(mounted: bool) -> Paused {
     let mut o = options(dir.path());
     // Inherited-mode drift must be valid without depending on host entry count.
     o.limits.max_environment_entries = 512;
-    o.limits.max_environment_bytes = 131072;
+    o.limits.max_environment_bytes = 131_072;
     let ext = Arc::new(PythonRepl::new(o.clone()).unwrap());
     let store = Arc::new(MemoryStore::new());
     let script = if mounted {
@@ -94,7 +94,7 @@ pub(super) async fn pause(mounted: bool) -> Paused {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].status, ToolCallStatus::Pending);
     assert_eq!(ext.live_runners(), 0);
-    assert!(pgids(dir.path()).is_empty());
+    assert_eq!(pgids(dir.path()), [] as [i32; 0]);
     Paused {
         dir,
         store,
@@ -139,42 +139,42 @@ pub(super) fn mutations() -> Vec<(&'static str, Edit)> {
     vec![
         ("max_sessions", |o| o.limits.max_sessions += 1),
         ("max_queued_per_session", |o| {
-            o.limits.max_queued_per_session += 1
+            o.limits.max_queued_per_session += 1;
         }),
         ("max_code_bytes", |o| o.limits.max_code_bytes += 1),
         ("max_output_bytes_per_stream", |o| {
-            o.limits.max_output_bytes_per_stream += 1
+            o.limits.max_output_bytes_per_stream += 1;
         }),
         ("max_result_bytes", |o| o.limits.max_result_bytes += 1),
         ("max_exception_bytes", |o| o.limits.max_exception_bytes += 1),
         ("max_environment_entries", |o| {
-            o.limits.max_environment_entries += 1
+            o.limits.max_environment_entries += 1;
         }),
         ("max_environment_bytes", |o| {
-            o.limits.max_environment_bytes += 1
+            o.limits.max_environment_bytes += 1;
         }),
         ("default_timeout", |o| {
-            o.limits.default_timeout += Duration::from_secs(1)
+            o.limits.default_timeout += Duration::from_secs(1);
         }),
         ("max_timeout", |o| {
-            o.limits.max_timeout += Duration::from_secs(1)
+            o.limits.max_timeout += Duration::from_secs(1);
         }),
         ("runner_start_timeout", |o| {
-            o.limits.runner_start_timeout += Duration::from_secs(1)
+            o.limits.runner_start_timeout += Duration::from_secs(1);
         }),
         ("terminate_grace", |o| {
-            o.limits.terminate_grace += Duration::from_secs(1)
+            o.limits.terminate_grace += Duration::from_secs(1);
         }),
         ("kill_wait", |o| {
-            o.limits.kill_wait += Duration::from_secs(1)
+            o.limits.kill_wait += Duration::from_secs(1);
         }),
         ("shutdown_grace", |o| {
-            o.limits.shutdown_grace += Duration::from_secs(1)
+            o.limits.shutdown_grace += Duration::from_secs(1);
         }),
         ("python_identity", |o| o.python_identity.push('x')),
         ("environment.identity", |o| o.environment.identity.push('x')),
         ("environment.mode", |o| {
-            o.environment.mode = EnvironmentMode::InheritAndOverride
+            o.environment.mode = EnvironmentMode::InheritAndOverride;
         }),
     ]
 }

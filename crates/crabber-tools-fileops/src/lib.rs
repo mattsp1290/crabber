@@ -1,7 +1,11 @@
 //! Capability-confined reads, atomic writes, anchored edits, and directory listings.
+#![warn(missing_docs)]
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolExecutor, extension::ToolContext};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, RootLock, acquire_mutating, acquire_read, category, check_cancelled, failed,
+    run_blocking_owned,
+};
 use serde_json::Value;
 use std::sync::Arc;
 mod atomic;

@@ -3,6 +3,10 @@ use crate::{MAX_LINE_BYTES, MAX_RESULT_BYTES};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Offsets are checked against MAX_LINE_BYTES (4096) and raw.len() before indexing."
+)]
 pub(crate) fn retained(data: &Value, line: &str, include: bool) -> Option<Vec<Value>> {
     let mut result = vec![];
     if !include {
@@ -62,7 +66,10 @@ mod tests {
             while !raw.is_char_boundary(boundary) {
                 boundary -= 1;
             }
-            assert!(retained(&data, &raw[..boundary], true).unwrap().is_empty());
+            assert_eq!(
+                retained(&data, &raw[..boundary], true).unwrap(),
+                [] as [serde_json::Value; 0]
+            );
         }
     }
     #[test]
@@ -73,6 +80,9 @@ mod tests {
             retained(&data, line, true).unwrap(),
             vec![json!({"start":3,"end":9,"text":"needle"})]
         );
-        assert!(retained(&data, line, false).unwrap().is_empty());
+        assert_eq!(
+            retained(&data, line, false).unwrap(),
+            [] as [serde_json::Value; 0]
+        );
     }
 }

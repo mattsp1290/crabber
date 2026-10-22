@@ -2,6 +2,7 @@
 use crabber::core::ToolInfo;
 use crabber_tools_core::permission;
 /// Tool metadata; the durable surface rejects model-supplied answers.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {
         name: "user_interact".into(),

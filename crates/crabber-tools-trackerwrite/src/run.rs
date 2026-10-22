@@ -1,5 +1,7 @@
 use crate::{Options, args::Args, result};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    CappedOutput, ProcessRunError, ToolError, apply_policy, category, run_process_owned_guarded,
+};
 use serde_json::{Value, json};
 use std::{ffi::OsString, process::Stdio, time::Duration};
 use tokio::{process::Command, time::Instant};
@@ -23,24 +25,32 @@ fn diagnostic(code: i32, stderr: &CappedOutput) -> (&'static str, &'static str) 
 pub(crate) async fn run(
     options: &Options,
     args: &Args,
-    argv: Vec<OsString>,
+    command_args: Vec<OsString>,
     ctx: &crabber::extension::ToolContext,
     permit: impl Send + 'static,
 ) -> Value {
-    run_until(options, args, argv, Instant::now() + TIMEOUT, ctx, permit).await
+    run_until(
+        options,
+        args,
+        command_args,
+        Instant::now() + TIMEOUT,
+        ctx,
+        permit,
+    )
+    .await
 }
 async fn run_until(
     options: &Options,
     args: &Args,
-    argv: Vec<OsString>,
+    command_args: Vec<OsString>,
     deadline: Instant,
     ctx: &crabber::extension::ToolContext,
     permit: impl Send + 'static,
 ) -> Value {
-    let fail = |e| result::failure(&args.op, &args.id, e);
+    let fail = |e| result::failure(&args.op, &args.id, &e);
     let mut command = Command::new(&options.policy.bn_binary);
     command
-        .args(argv)
+        .args(command_args)
         .current_dir(options.root.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -88,6 +98,7 @@ use crabber_tools_testkit as support;
 mod tests {
     use super::*;
     use crate::TrackerPolicy;
+    use crabber_tools_core::{Capacity, WorkspaceRoot};
     use std::{collections::BTreeSet, sync::Arc};
     #[tokio::test]
     async fn deadline_kills_group_and_reports_timeout() {
@@ -116,11 +127,11 @@ mod tests {
         let task = tokio::spawn(async move {
             let args: Args =
                 serde_json::from_value(json!({"op":"close","id":"demo-ab12"})).unwrap();
-            let argv = args.command(&child_options.policy).unwrap();
+            let command_args = args.command(&child_options.policy).unwrap();
             run_until(
                 &child_options,
                 &args,
-                argv,
+                command_args,
                 Instant::now() + Duration::from_secs(1),
                 &support::context(
                     &child_options.root,

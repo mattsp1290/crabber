@@ -75,7 +75,7 @@ fn validates_every_limit_and_identity_and_hashes_every_behavior() {
         ))
         .is_ok()
     );
-    for identity in ["".into(), " ".into(), "a".repeat(257), "host\n".into()] {
+    for identity in [String::new(), " ".into(), "a".repeat(257), "host\n".into()] {
         assert!(
             WebSearch::new(options(limits(), &identity))
                 .err()

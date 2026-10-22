@@ -57,11 +57,11 @@ async fn parent_finishes_while_child_is_active_and_a_cold_controller_does_not_ow
     assert_eq!(observed.len(), 1);
     assert!(!observed[0].local_joined);
     assert_eq!(observed[0].id, owner_id);
-    assert!(
+    assert_eq!(
         j.agent
             .drain_session_invocations(&SessionId::new(), true, Duration::ZERO)
-            .await
-            .is_empty()
+            .await,
+        [] as [crabber::SessionInvocationReport; 0]
     );
     let cold_store = j.store.clone();
     let cold_ext = Arc::new(configured(pending.runner.clone(), bounds));
@@ -71,10 +71,10 @@ async fn parent_finishes_while_child_is_active_and_a_cold_controller_does_not_ow
         Arc::new(FakeProvider::scripted(vec![status_call(&id), done()])),
         PermissionDecision::Allow,
     );
-    assert!(
+    assert_eq!(
         cold.drain_session_invocations(&session, false, Duration::ZERO)
-            .await
-            .is_empty()
+            .await,
+        [] as [crabber::SessionInvocationReport; 0]
     );
     assert_eq!(
         cold_store

@@ -24,6 +24,9 @@ pub struct BoundaryReader {
 }
 impl BoundaryReader {
     /// Admit canonical absolute directories once. Sibling paths remain denied.
+    ///
+    /// # Errors
+    /// Returns a plan error for invalid boundaries or an inaccessible workspace directory.
     pub fn for_workspace(
         boundary: &Path,
         workspace_directory: &Path,
@@ -45,6 +48,7 @@ impl BoundaryReader {
         })
     }
     /// Canonical identity the host should persist as the workspace directory.
+    #[must_use]
     pub fn directory(&self) -> &Path {
         &self.directory
     }
@@ -75,6 +79,9 @@ pub struct WorkspaceRootReader {
     root: Arc<Dir>,
 }
 impl WorkspaceRootReader {
+    ///
+    /// # Errors
+    /// Returns a plan error if the workspace directory cannot be admitted.
     pub fn open(workspace_directory: &Path) -> Result<Self, ExtensionError> {
         let directory = canonical(workspace_directory)?;
         let root = Arc::new(
@@ -82,6 +89,7 @@ impl WorkspaceRootReader {
         );
         Ok(Self { directory, root })
     }
+    #[must_use]
     pub fn directory(&self) -> &Path {
         &self.directory
     }
@@ -105,6 +113,9 @@ pub struct AllowListResolver {
     readers: BTreeMap<(String, String), Arc<dyn WorkspaceReader>>,
 }
 impl AllowListResolver {
+    ///
+    /// # Errors
+    /// Returns a plan error for empty or duplicate routing identities, or noncanonical directories.
     pub fn new(
         entries: Vec<(String, String, Arc<dyn WorkspaceReader>)>,
     ) -> Result<Self, ExtensionError> {
@@ -166,6 +177,10 @@ fn split(path: &str) -> Result<(&str, &str), WorkspaceReadError> {
     }
     Ok((directory, name))
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Owned error callbacks match the Result::map_err interface."
+)]
 fn io(error_value: std::io::Error) -> WorkspaceReadError {
     #[cfg(unix)]
     if error_value.raw_os_error() == Some(libc::ELOOP) {

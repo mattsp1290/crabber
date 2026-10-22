@@ -1,6 +1,10 @@
 use super::*;
 // Reference verdicts executed with Go net/url at Eino commit 5389549.
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn url_corpus_agrees_with_reference_or_is_stricter_and_preserves_verbatim_urls() {
     let cases = [
         ("", false),                                       // Go: reject; agrees

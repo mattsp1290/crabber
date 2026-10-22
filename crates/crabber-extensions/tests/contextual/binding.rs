@@ -157,7 +157,10 @@ async fn missing_workspace_or_directory_refuses_without_business_effects() {
     ) if component == "crabber-extensions/background-jobs-factory"),
         "{error:?}"
     );
-    assert!(provider.requests().is_empty());
+    assert_eq!(
+        provider.requests(),
+        [] as [crabber::providers::ModelRequest; 0]
+    );
     let no_root = context(std::path::Path::new(""), "ws", "missing-directory");
     let records = h
         .first(

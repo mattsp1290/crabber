@@ -1,9 +1,8 @@
 use super::*;
 
 fn assert_config(options: Options, code: &str) {
-    let error = match BackgroundJobs::new(options) {
-        Err(error) => error,
-        Ok(_) => panic!("configuration accepted: {code}"),
+    let Err(error) = BackgroundJobs::new(options) else {
+        panic!("configuration accepted: {code}")
     };
     assert_eq!(
         error.to_string(),
@@ -18,12 +17,12 @@ fn config_validation_table() {
         ("shell-path", |o| o.shell_path = "/bin/../bin/sh".into()),
         ("shell-path", |o| o.shell_path = "/bin/sh/".into()),
         ("shell-path", |o| {
-            o.shell_path = "/definitely-missing-synthetic-shell".into()
+            o.shell_path = "/definitely-missing-synthetic-shell".into();
         }),
         ("shell-executable", |o| o.shell_path = "/tmp".into()),
         ("shell-identity", |o| o.shell_identity.clear()),
         ("environment-identity", |o| {
-            o.environment.identity = "bad\nidentity".into()
+            o.environment.identity = "bad\nidentity".into();
         }),
         ("environment-entries", |o| {
             o.limits.max_environment_entries = 1;
@@ -41,25 +40,25 @@ fn config_validation_table() {
         ("tracked-below-running", |o| o.limits.max_tracked = 1),
         ("max-timeout", |o| o.limits.max_timeout = Duration::ZERO),
         ("max-timeout", |o| {
-            o.limits.max_timeout = Duration::from_millis(1001)
+            o.limits.max_timeout = Duration::from_millis(1001);
         }),
         ("max-timeout", |o| {
-            o.limits.max_timeout = Duration::from_secs(86401)
+            o.limits.max_timeout = Duration::from_secs(86401);
         }),
         ("default-timeout", |o| {
-            o.limits.default_timeout = Duration::from_secs(31)
+            o.limits.default_timeout = Duration::from_secs(31);
         }),
         ("default-timeout", |o| {
-            o.limits.default_timeout = Duration::from_millis(1)
+            o.limits.default_timeout = Duration::from_millis(1);
         }),
         ("termination-bounds", |o| {
-            o.limits.terminate_grace = Duration::ZERO
+            o.limits.terminate_grace = Duration::ZERO;
         }),
         ("termination-bounds", |o| {
-            o.limits.kill_wait = Duration::from_secs(61)
+            o.limits.kill_wait = Duration::from_secs(61);
         }),
         ("termination-bounds", |o| {
-            o.limits.shutdown_grace = Duration::from_secs(121)
+            o.limits.shutdown_grace = Duration::from_secs(121);
         }),
     ];
     for (code, edit) in edits {
@@ -78,7 +77,7 @@ fn config_validation_table() {
     ];
     for (field, cap) in fields
         .into_iter()
-        .zip([64, 256, 65536, 4096, 163840, 1024, 262144])
+        .zip([64, 256, 65536, 4096, 163_840, 1024, 262_144])
     {
         for value in [0, cap + 1] {
             let mut o = options();

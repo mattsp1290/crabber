@@ -15,7 +15,7 @@ fn options(path: &std::path::Path) -> Options {
             startup_mode: StartupMode::NonLogin,
             env: EnvPolicy::minimal_allowlist(),
             run_as: None,
-            output_cap_bytes: 262144,
+            output_cap_bytes: 262_144,
         },
         capacity: Capacity::new(&l).unwrap(),
         limits: l,
@@ -51,8 +51,8 @@ async fn behavior_caps_validation_and_runtime() {
         format!("{}\n", tmp.path().canonicalize().unwrap().display())
     );
     let v=call(options(tmp.path()),json!({"cmd":"head -c 300000 /dev/zero | tr '\\000' x; head -c 300000 /dev/zero | tr '\\000' y >&2"})).await;
-    assert_eq!(v["stdout"].as_str().unwrap().len(), 262144);
-    assert_eq!(v["stderr"].as_str().unwrap().len(), 262144);
+    assert_eq!(v["stdout"].as_str().unwrap().len(), 262_144);
+    assert_eq!(v["stderr"].as_str().unwrap().len(), 262_144);
     assert_eq!(v["stdout_truncated"], true);
     assert_eq!(v["stderr_truncated"], true);
     for a in [
@@ -180,7 +180,10 @@ async fn runtime_interrupt_kills_group_and_permission_denies_effect() {
     assert!(resources.resources.sealed);
     assert!(resources.resources.joined >= 1);
     assert_eq!(resources.resources.pending, 0);
-    assert!(resources.resources.failures.is_empty());
+    assert_eq!(
+        resources.resources.failures,
+        [] as [crabber::extension::ResourceFailure; 0]
+    );
 
     assert_gone(pid(&tmp.path().join("leader"))).await;
     assert_gone(pid(&tmp.path().join("child"))).await;

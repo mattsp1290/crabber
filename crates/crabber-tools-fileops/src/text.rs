@@ -53,7 +53,7 @@ pub(crate) fn line(reader: &mut impl BufRead) -> io::Result<Option<(String, bool
     }
     let truncated = total > MAX_READ_LINE_BYTES;
     let text =
-        utf8_prefix(&kept, truncated).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        utf8_prefix(&kept, truncated).map_err(|()| io::Error::from(io::ErrorKind::InvalidData))?;
     let mut text = text.to_owned();
     if truncated {
         text.push_str("… [line truncated]\n");

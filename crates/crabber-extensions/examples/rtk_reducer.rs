@@ -1,5 +1,5 @@
 //! Credential-free host-provisioning example. Verify the release archive before
-//! computing RTK_EXAMPLE_SHA256 from its extracted immutable executable.
+//! computing `RTK_EXAMPLE_SHA256` from its extracted immutable executable.
 use crabber::JsonToolExecutor;
 use crabber::{
     Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision,
@@ -9,7 +9,7 @@ use crabber::{
     session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store},
 };
 use crabber_extensions::{
-    rtk_reducer::*,
+    rtk_reducer::{Binding, DEFAULT_ORDER, Filter, Limits, Options, RtkReducer, Selection},
     tool_result_redactor::{
         Limits as RedactorLimits, Options as RedactorOptions, ToolResultRedactor,
     },
@@ -55,6 +55,10 @@ async fn persisted(
     Ok(text.len())
 }
 #[tokio::main(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (Some(executable), Ok(digest)) = (
         std::env::var_os("RTK_EXAMPLE_EXECUTABLE"),
@@ -161,10 +165,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run = agent.prompt(None, "Reduce the fixture log").await?;
     let session = run.session_id().clone();
     run.done().await?;
-    let reduced = persisted(&store, session).await?;
+    let encoded_bytes = persisted(&store, session).await?;
     agent.close_extensions().await?;
     println!(
-        "Encoded bytes: {original} -> {reduced}; {:?}",
+        "Encoded bytes: {original} -> {encoded_bytes}; {:?}",
         reducer.stats()
     );
     Ok(())

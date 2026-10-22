@@ -1,4 +1,5 @@
 //! Standard workspace tools as one Crabber extension, with explicit host policies.
+#![warn(missing_docs)]
 #![doc = include_str!("../../../docs/standard-tools.md")]
 use async_trait::async_trait;
 use crabber::{
@@ -33,6 +34,7 @@ pub struct Definition {
     pub definition: Arc<ToolDefinition>,
 }
 /// Root-free, deterministic metadata in canonical id order.
+#[must_use]
 pub fn metadata() -> Vec<(ToolId, ToolInfo, String)> {
     ToolId::ALL
         .into_iter()
@@ -69,13 +71,13 @@ pub struct Policies {
     pub shell: ShellPolicy,
     /// Host-owned ripgrep policy.
     pub search: SearchPolicy,
-    /// Explicit URL policy; required when UrlFetch is enabled.
+    /// Explicit URL policy; required when `UrlFetch` is enabled.
     pub url_fetch: Option<UrlFetchPolicy>,
-    /// Explicit bn backend policy; required when TrackerWrite is enabled.
+    /// Explicit bn backend policy; required when `TrackerWrite` is enabled.
     pub tracker: Option<TrackerPolicy>,
-    /// Explicit interaction policy; required when UserInteract is enabled.
+    /// Explicit interaction policy; required when `UserInteract` is enabled.
     pub user_interact: Option<UserInteractPolicy>,
-    /// Shared finite bounds for tools other than user_interact.
+    /// Shared finite bounds for tools other than `user_interact`.
     pub limits: Limits,
 }
 /// One extension for one root. Different roots on one agent collide on tool names.
@@ -86,6 +88,13 @@ pub struct StandardTools {
 }
 impl StandardTools {
     /// Validate all policies and build a shared capacity plus process-global root lock.
+    ///
+    /// # Errors
+    /// Returns a plan error if enabled tools, required policies, or shared limits are invalid.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Preserve the documented public constructor and fixture signatures accepting owned values."
+    )]
     pub fn new(root: Arc<WorkspaceRoot>, options: Policies) -> Result<Self, ExtensionError> {
         options.validate()?;
         let capacity = Capacity::new(&options.limits)?;
@@ -185,16 +194,17 @@ impl StandardTools {
         })
     }
     /// Enabled tools in canonical registration order.
+    #[must_use]
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
     }
 }
 #[async_trait]
 impl Extension for StandardTools {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-tools/standard"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {
@@ -235,6 +245,9 @@ impl Policies {
     }
 
     /// Validate all configured policies, including optional disabled-tool policies.
+    ///
+    /// # Errors
+    /// Returns a plan error for invalid limits or policies, an empty enabled set, or a missing required policy.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         self.shell.validate()?;
         self.search.validate()?;

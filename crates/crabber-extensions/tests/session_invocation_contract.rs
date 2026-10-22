@@ -104,6 +104,10 @@ impl JsonToolExecutor for Probe {
     }
 }
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn nested_public_source_keeps_parent_call_and_actual_invocation_identity() {
     let store = Arc::new(MemoryStore::new());
     let fixture = Arc::new(Fixture::default());
@@ -209,11 +213,11 @@ async fn nested_public_source_keeps_parent_call_and_actual_invocation_identity()
             assert!(invocation.parent_invocation.is_none());
         }
     }
-    assert!(
+    assert_eq!(
         agent
             .drain_session_invocations(&SessionId::new(), true, Duration::ZERO)
-            .await
-            .is_empty()
+            .await,
+        [] as [crabber::SessionInvocationReport; 0]
     );
     fixture.parent_release.notify_one();
     fixture.nested_release.notify_one();

@@ -107,9 +107,10 @@ impl Fixture {
     }
 }
 fn skip(text: &str) {
-    if std::env::var("COMMAND_GUARD_REQUIRE_SHELLS").as_deref() == Ok("1") {
-        panic!("{text}");
-    }
+    assert!(
+        std::env::var("COMMAND_GUARD_REQUIRE_SHELLS").as_deref() != Ok("1"),
+        "{text}"
+    );
     eprintln!("{text}");
 }
 fn discover(f: &Fixture) -> Option<Shells> {

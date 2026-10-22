@@ -48,10 +48,9 @@ fetching a credential, opening a stream, or contacting the network.
 
 Migration notes for the named downstream consumers:
 
-- **crabber-extensions:** its inspected immutable Crabber pin uses only generic
-  provider contracts, so its existing source needs no change and remains
-  unaffected. To adopt this adapter, advance to an immutable Crabber pin that
-  includes it, enable `custom-http`, and configure/register the custom adapter.
+- **crabber-extensions:** now a workspace crate using the public Crabber API.
+  Enable `custom-http` on its `crabber` path dependency to use the custom
+  adapter, then configure and register that adapter on the host.
 - **Agentcraft:** inspected checkout `fe08b03d3847690f641a3d2380d973819ac0d8ec`.
   Its `rust-proof`, `rust-migration-proof`, and `rust-telemetry-proof` manifests
   all pin Crabber `5e3046a8f959184fd237969705ce922a67252c1f`; the first two enable only

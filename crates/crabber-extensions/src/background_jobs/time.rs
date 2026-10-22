@@ -1,5 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "Duration::MAX nanoseconds fit in i128: seconds are bounded by u64::MAX."
+)]
 pub(super) fn rfc3339_utc(time: SystemTime) -> String {
     let nanos = match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_nanos() as i128,
@@ -10,10 +14,10 @@ pub(super) fn rfc3339_utc(time: SystemTime) -> String {
     let days = seconds.div_euclid(86400);
     let daytime = seconds.rem_euclid(86400);
     // Gregorian civil date from days since Unix epoch (400-year eras).
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let mut year = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -37,11 +41,11 @@ mod tests {
     fn rfc3339_utc_pins() {
         assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00.000000000Z");
         assert_eq!(
-            rfc3339_utc(UNIX_EPOCH + Duration::from_secs(951782400)),
+            rfc3339_utc(UNIX_EPOCH + Duration::from_hours(264_384)),
             "2000-02-29T00:00:00.000000000Z"
         );
         assert_eq!(
-            rfc3339_utc(UNIX_EPOCH + Duration::new(2147483647, 1)),
+            rfc3339_utc(UNIX_EPOCH + Duration::new(2_147_483_647, 1)),
             "2038-01-19T03:14:07.000000001Z"
         );
         assert_eq!(

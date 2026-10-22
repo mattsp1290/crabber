@@ -1,7 +1,11 @@
 //! Explicit-policy bn-backed tracker mutations with bounded process capture.
+#![warn(missing_docs)]
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolDefinition, ToolExecutor, extension::ToolContext};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, Capacity, Limits, ToolError, WorkspaceRoot, acquire_read, category,
+    check_cancelled,
+};
 use serde_json::Value;
 use std::sync::Arc;
 mod args;
@@ -21,10 +25,13 @@ pub struct Options {
     pub policy: TrackerPolicy,
     /// Finite acquisition and concurrency bounds.
     pub limits: Limits,
-    /// Mount-wide capacity. Hub mutations use bn's own lock, not RootLock.
+    /// Mount-wide capacity. Hub mutations use bn's own lock, not `RootLock`.
     pub capacity: Capacity,
 }
 /// Validate policy and construct a context-required tracker executor.
+///
+/// # Errors
+/// Returns a plan error if tracker policy or shared execution limits are invalid.
 pub fn definition(options: Arc<Options>) -> Result<Arc<ToolDefinition>, ExtensionError> {
     options.policy.validate()?;
     options.limits.validate()?;
@@ -52,18 +59,15 @@ impl ToolExecutor for TrackerTool {
 impl TrackerTool {
     async fn invoke(&self, ctx: ToolContext, value: Value) -> Result<Value, ExtensionError> {
         check_cancelled(&ctx.cancel)?;
-        let args = match serde_json::from_value::<args::Args>(value) {
-            Ok(a) => a,
-            Err(_) => {
-                return Ok(result::failure(
-                    "",
-                    "",
-                    ToolError::new(category::VALIDATION, "invalid tracker arguments"),
-                ));
-            }
+        let Ok(args) = serde_json::from_value::<args::Args>(value) else {
+            return Ok(result::failure(
+                "",
+                "",
+                &ToolError::new(category::VALIDATION, "invalid tracker arguments"),
+            ));
         };
-        let fail = |e| result::failure(&args.op, &args.id, e);
-        let argv = match args.command(&self.0.policy) {
+        let fail = |e| result::failure(&args.op, &args.id, &e);
+        let command_args = match args.command(&self.0.policy) {
             Ok(a) => a,
             Err(e) => return Ok(fail(e)),
         };
@@ -85,8 +89,8 @@ impl TrackerTool {
             }
         };
         tokio::select! {biased;
-            _=ctx.cancel.cancelled()=>Err(ExtensionError::Tool("cancelled".into())),
-            result=run::run(&self.0,&args,argv,&ctx,permit)=>Ok(result),
+            ()=ctx.cancel.cancelled()=>Err(ExtensionError::Tool("cancelled".into())),
+            result=run::run(&self.0,&args,command_args,&ctx,permit)=>Ok(result),
         }
     }
 }

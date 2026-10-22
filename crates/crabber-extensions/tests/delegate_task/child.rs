@@ -12,10 +12,10 @@ impl JsonToolExecutor for ChildWait {
 struct ChildTool(Arc<tokio::sync::Notify>);
 #[async_trait::async_trait]
 impl Extension for ChildTool {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "synthetic-child"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
@@ -103,7 +103,7 @@ impl ChildHost {
                     loop {
                         tokio::select! {
                             biased;
-                            _ = request.cancellation().cancelled() => {run.interrupt(); break;},
+                            () = request.cancellation().cancelled() => {run.interrupt(); break;},
                             event = events.recv() => {if !matches!(event, Ok(Some(_))) {break;}},
                         }
                     }
@@ -211,7 +211,7 @@ async fn host_owned_child_agent_completes_or_is_interrupted_by_parent_and_deadli
         let child_session = host.session.lock().unwrap().clone().unwrap();
         let page = snapshot_page(&host.store, &child_session).await;
         if mode == 0 {
-            assert!(page.tool_calls.is_empty());
+            assert_eq!(page.tool_calls, [] as [crabber::core::ToolCallRecord; 0]);
         } else {
             assert_eq!(
                 page.tool_calls[0].status,

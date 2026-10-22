@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ExtensionError, KILL_TOOL, LIST_TOOL, PERMISSION_KILL, PERMISSION_READ, PERMISSION_START,
+    START_TOOL, STATUS_TOOL,
+};
 #[cfg(unix)]
 use crate::process;
 use serde::Serialize;
@@ -40,7 +43,7 @@ impl fmt::Debug for Environment {
 pub struct Limits {
     /// Simultaneously starting/running/hidden jobs; 1–64.
     pub max_running: usize,
-    /// Tracked jobs including retained finished jobs; 1–256, at least max_running.
+    /// Tracked jobs including retained finished jobs; 1–256, at least `max_running`.
     pub max_tracked: usize,
     /// Command UTF-8 bytes; 1–64 KiB.
     pub max_command_bytes: usize,
@@ -52,7 +55,7 @@ pub struct Limits {
     pub max_environment_entries: usize,
     /// Frozen key + equals + value bytes; 1–256 KiB.
     pub max_environment_bytes: usize,
-    /// Whole-second default, zero disables automatic timeout; at most max_timeout.
+    /// Whole-second default, zero disables automatic timeout; at most `max_timeout`.
     pub default_timeout: Duration,
     /// Maximum admitted whole-second timeout; 1 second–24 hours.
     pub max_timeout: Duration,
@@ -66,15 +69,18 @@ pub struct Limits {
 impl Limits {
     /// Conservative encoded status-result bound, including lossy UTF-8 and JSON
     /// escaping. Hosts size Crabber snapshot/text budgets with this bound.
+    #[must_use]
     pub fn worst_case_status_bytes(&self) -> usize {
         1024usize.saturating_add(self.max_output_bytes_per_stream.saturating_mul(12))
     }
     /// Conservative encoded list-result bound for every tracked job.
+    #[must_use]
     pub fn worst_case_list_bytes(&self) -> usize {
         16usize.saturating_add(self.max_tracked.saturating_mul(512))
     }
     /// Maximum raw bytes retained in both tails across tracked jobs; excludes
     /// snapshot strings, allocator overhead and in-flight result copies.
+    #[must_use]
     pub fn worst_case_retained_bytes(&self) -> usize {
         self.max_tracked
             .saturating_mul(2)
@@ -98,7 +104,7 @@ impl fmt::Debug for Options {
         f.debug_struct("Options")
             .field("shell_identity", &self.shell_identity)
             .field("environment", &self.environment)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -120,6 +126,10 @@ pub(super) fn validate(options: Options) -> Result<(Configuration, String), Exte
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep option normalization and validation together to preserve failure ordering."
+)]
 fn validate_unix(options: Options) -> Result<(Configuration, String), ExtensionError> {
     use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
     let limits = &options.limits;
@@ -140,7 +150,7 @@ fn validate_unix(options: Options) -> Result<(Configuration, String), ExtensionE
         return Err(crate::config_error("tracked-below-running"));
     }
     if limits.max_timeout < Duration::from_secs(1)
-        || limits.max_timeout > Duration::from_secs(86400)
+        || limits.max_timeout > Duration::from_hours(24)
         || limits.max_timeout.subsec_nanos() != 0
     {
         return Err(crate::config_error("max-timeout"));

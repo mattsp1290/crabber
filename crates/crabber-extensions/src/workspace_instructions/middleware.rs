@@ -52,7 +52,7 @@ impl SystemPromptMiddleware for Middleware {
         });
         let result = tokio::select! {
             biased;
-            _ = cancelled.cancelled() => Err(failure("cancelled")),
+            () = cancelled.cancelled() => Err(failure("cancelled")),
             reply = tokio::time::timeout(self.0.limits.max_wait, recv) => match reply {
                 Ok(Ok(result)) => result,
                 Ok(Err(_)) => Err(failure("worker")),
@@ -96,14 +96,14 @@ async fn render(
                     if bytes.len() > policy.limits.max_file_bytes {
                         return Err(failure("reader"));
                     }
-                    let Ok(content) = String::from_utf8(bytes) else {
+                    let Ok(instructions) = String::from_utf8(bytes) else {
                         continue;
                     };
-                    let content = content.trim_end();
-                    if content.is_empty() || content.contains('\0') {
+                    let instructions = instructions.trim_end();
+                    if instructions.is_empty() || instructions.contains('\0') {
                         continue;
                     }
-                    Entry::Content(content.into())
+                    Entry::Content(instructions.into())
                 }
                 Err(e) if e.kind() == Kind::NotFound => continue,
                 Err(e) if e.kind() == Kind::TooLarge => Entry::TooLarge,

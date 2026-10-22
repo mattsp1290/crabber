@@ -10,18 +10,21 @@ pub struct TrackerPolicy {
     pub bn_binary: PathBuf,
     /// Explicit hub project; never inferred from cwd.
     pub project: String,
-    /// Absolute UTF-8 hub directory passed as BEANS_HUB.
+    /// Absolute UTF-8 hub directory passed as `BEANS_HUB`.
     pub hub: PathBuf,
-    /// Audit actor passed as BN_ACTOR.
+    /// Audit actor passed as `BN_ACTOR`.
     pub actor: String,
     /// Configured workflow states admitted for transitions.
     pub statuses: BTreeSet<String>,
     /// Additional replacement environment, e.g. explicit PATH/HOME for git.
-    /// BEANS_HUB and BN_ACTOR are reserved; nothing is inherited implicitly.
+    /// `BEANS_HUB` and `BN_ACTOR` are reserved; nothing is inherited implicitly.
     pub environment: Vec<(String, String)>,
 }
 impl TrackerPolicy {
     /// Reject invalid executables, namespaces, statuses or environment entries.
+    ///
+    /// # Errors
+    /// Returns a plan error for an invalid executable, tracker routing, environment, or workflow state set.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         validate_binary(&self.bn_binary)?;
         let valid_label =

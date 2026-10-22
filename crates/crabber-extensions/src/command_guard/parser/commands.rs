@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Assignment, CaseEnd, CaseItem, Command, CommandKind, Cow, Op, Outcome, Parser, Token, WordPart,
+    variables,
+};
 
 impl<'a> Parser<'a, '_, '_> {
     pub(super) fn command(&mut self, depth: usize) -> Result<Command<'a>, Outcome> {
@@ -52,7 +55,7 @@ impl<'a> Parser<'a, '_, '_> {
                     _ => {}
                 },
                 Token::Op(_) => return Err(Outcome::InvalidCommand),
-                _ => {}
+                Token::Redirect(..) => {}
             }
             return self.simple(depth);
         };

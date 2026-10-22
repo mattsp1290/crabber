@@ -55,6 +55,10 @@ pub fn agent_config() -> AgentConfig {
 pub fn call_with(arguments: Value) -> Vec<StreamDelta> {
     tool_call(TOOL_NAME, arguments)
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Preserve the public scripted-provider fixture signature reused by consumers."
+)]
 pub fn tool_call(name: &str, arguments: Value) -> Vec<StreamDelta> {
     let call_id = ToolCallId::new();
     vec![

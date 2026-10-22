@@ -95,10 +95,10 @@ async fn stats_snapshot_counts_accepted_no_gain_and_denied_calls() {
 }
 #[async_trait::async_trait]
 impl Extension for MarkError {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/mark-error"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
@@ -114,6 +114,10 @@ impl Extension for MarkError {
     }
 }
 #[tokio::test(flavor = "multi_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn error_classes_and_prior_mark_error_never_spawn() {
     if !shell_available() {
         return;
@@ -188,7 +192,7 @@ async fn error_classes_and_prior_mark_error_never_spawn() {
             assert_eq!(records[0].status, crabber::core::ToolCallStatus::Pending);
             assert!(records[0].result.is_none());
             assert!(j.probe.classes.lock().unwrap().is_empty());
-            assert!(j.argv().is_empty());
+            assert_eq!(j.argv(), [] as [std::string::String; 0]);
             assert_eq!(j.ext.stats().passed_through, 0);
             j.close().await;
             continue;
@@ -213,7 +217,7 @@ async fn error_classes_and_prior_mark_error_never_spawn() {
             &result_value(&records[0]),
         )
         .await;
-        assert!(j.argv().is_empty());
+        assert_eq!(j.argv(), [] as [std::string::String; 0]);
         assert_eq!(j.ext.stats().passed_through, 1);
         j.close().await;
     }
@@ -257,7 +261,7 @@ async fn closed_instance_is_single_use_and_options_errors_are_sanitized() {
         &json!("x".repeat(300)),
     )
     .await;
-    assert!(j.argv().is_empty());
+    assert_eq!(j.argv(), [] as [std::string::String; 0]);
     assert!(j.ext.stats().closed);
     j.close().await;
     let mut o = options(j.dir.path(), "exit 0");

@@ -1,6 +1,8 @@
 //! Argv-only ripgrep invocation and bounded streaming collection.
 use crate::{MAX_STDERR_BYTES, Options, args::Args, parse::Parser};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    CappedOutput, ProcessRunError, WAIT_AFTER_KILL, apply_policy, category, run_process_owned_with,
+};
 use serde_json::{Value, json};
 use std::{io, process::Stdio, time::Duration};
 use tokio::{
@@ -86,12 +88,12 @@ pub(crate) async fn run(
             break;
         }
         tokio::select! {biased;
-            _=tokio::time::sleep_until(stop)=>{
+            ()=tokio::time::sleep_until(stop)=>{
                 timed_out=status.is_none();guard.kill_group();
                 let _=guard.wait_with_deadline(Instant::now()+WAIT_AFTER_KILL).await;break;
             },
             exit=guard.wait(),if status.is_none()=>{
-                match exit{Ok(s)=>status=Some(s),Err(_)=>{failed=true;break;}}
+                if let Ok(s) = exit { status=Some(s) } else {failed=true;break;}
                 stop=deadline.min(Instant::now()+WAIT_AFTER_KILL);
             },
             next=next_record(&mut stdout,&mut record),if !out_eof=>{
@@ -102,20 +104,24 @@ pub(crate) async fn run(
                 }
             },
             n=stderr.read(&mut error_chunk),if !err_eof=>{
-                match n{Ok(n)=>{err_eof=n==0;diagnostic.push(&error_chunk[..n],MAX_STDERR_BYTES);},Err(_)=>{failed=true;break;}}
+                if let Ok(n) = n {err_eof=n==0;diagnostic.push(&error_chunk[..n],MAX_STDERR_BYTES);} else {failed=true;break;}
             },
         }
     }
-    Ok(result(parser, start, timed_out, failed, status.and_then(|s| s.code()), &diagnostic.text()))
+    Ok(result(&parser, start, timed_out, failed, status.and_then(|s| s.code()), &diagnostic.text()))
     })).await {
         Ok(value) => value,
         Err(ProcessRunError::Unavailable) => failed_value(category::UNAVAILABLE, "call resources unavailable"),
-        Err(_) => result(Parser::new(context, limit, regex), start, false, true, None, ""),
+        Err(_) => result(&Parser::new(context, limit, regex), start, false, true, None, ""),
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Retain the timing ABI; u64 milliseconds overflow only after 584 million years."
+)]
 fn result(
-    parser: Parser,
+    parser: &Parser,
     start: Instant,
     timed_out: bool,
     failed: bool,

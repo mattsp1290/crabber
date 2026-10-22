@@ -9,6 +9,7 @@ pub const CONFIG_IDENTITY_VERSION: &str = "crabber-tools-config-v2";
 /// Explicit revision of persisted tool behavior, independent of the workspace version.
 pub const TOOLS_IDENTITY_REVISION: &str = "1";
 /// Hash name, description, and recursively sorted parameter keys.
+#[must_use]
 pub fn schema_hash(info: &ToolInfo) -> String {
     let mut parameters = info.parameters.clone();
     parameters.sort_all_objects();
@@ -21,6 +22,9 @@ pub fn schema_hash(info: &ToolInfo) -> String {
 }
 /// SHA256 over JSON encoding. Caller must include the appropriate domain separator.
 /// Panics only for a policy whose Serialize implementation rejects serialization.
+///
+/// # Panics
+/// Panics if the supplied value rejects JSON serialization.
 pub fn config_hash(value: &impl Serialize) -> String {
     let bytes = serde_json::to_vec(value).expect("policy serializes");
     format!("{:x}", Sha256::digest(bytes))

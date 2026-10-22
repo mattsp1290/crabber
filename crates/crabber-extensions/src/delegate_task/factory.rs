@@ -20,6 +20,9 @@ pub struct Factory {
 }
 impl Factory {
     /// Validate once without invoking the runner. Use Session scope for session close.
+    ///
+    /// # Errors
+    /// Returns a plan error if runner identity, delegation limits, or factory configuration are invalid.
     pub fn new(options: Options, scope: FactoryScope) -> Result<Self, ExtensionError> {
         let validated = DelegateTask::new(options)?;
         Ok(Self {
@@ -34,6 +37,7 @@ impl Factory {
         })
     }
     /// Add a shared nonqueueing budget retained until every runner future exits.
+    #[must_use]
     pub fn with_shared_capacity(mut self, shared: SharedCapacity) -> Self {
         self.shared = Some(shared);
         self
@@ -71,7 +75,7 @@ impl ExtensionFactory for Factory {
     async fn create(&self, context: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError> {
         let binding = Binding::from_factory(&context)?;
         let instance = Arc::new(DelegateTask::from_configuration(
-            self.configuration.clone(),
+            &self.configuration.clone(),
             Some(binding.clone()),
             self.shared.clone(),
             self.instance_hash.clone(),

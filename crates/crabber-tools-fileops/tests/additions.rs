@@ -27,7 +27,7 @@ async fn call(tool: Arc<ToolDefinition>, options: &Options, args: Value) -> Valu
 }
 fn keys(v: &Value) -> Vec<&str> {
     let mut k: Vec<_> = v.as_object().unwrap().keys().map(String::as_str).collect();
-    k.sort();
+    k.sort_unstable();
     k
 }
 #[tokio::test]

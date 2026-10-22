@@ -41,7 +41,7 @@ async fn blocking_directory_removal_obeys_deadline_and_retry() {
         .unwrap()
         .forget();
     code(
-        timeout(Duration::from_secs(2), closing)
+        &timeout(Duration::from_secs(2), closing)
             .await
             .unwrap()
             .unwrap()
@@ -87,7 +87,7 @@ async fn close_interrupts_inflight_and_all_ignoring_owners_concurrently() {
     f.close().await;
     assert!(now.elapsed() < grace + Duration::from_secs(2));
     for task in tasks {
-        code(task.await.unwrap().unwrap_err(), "manager-closing");
+        code(&task.await.unwrap().unwrap_err(), "manager-closing");
     }
 }
 
@@ -104,19 +104,19 @@ async fn quarantine_blocks_reuse_and_close_reports_survivors() {
         .store(true, Ordering::SeqCst);
     f.execute(key("one"), "x=1").await.unwrap();
     code(
-        f.manager
+        &f.manager
             .clear_owner(key("one"), f.root.clone(), CancellationToken::new())
             .await
             .unwrap_err(),
         "cleanup-incomplete",
     );
     code(
-        f.execute(key("one"), "1").await.unwrap_err(),
+        &f.execute(key("one"), "1").await.unwrap_err(),
         "owner-quarantined",
     );
     assert_eq!(f.manager.live_runners(), 1);
     code(
-        f.manager.close(Duration::from_secs(5)).await.unwrap_err(),
+        &f.manager.close(Duration::from_secs(5)).await.unwrap_err(),
         "cleanup-incomplete",
     );
     // Quarantine is intentionally permanent; the test owns emergency cleanup.
@@ -137,7 +137,7 @@ async fn close_deadline_is_retryable_and_concurrent_close_joins() {
     let owner = f.manager.state.lock().unwrap().owners[&key("one")].clone();
     let held = owner.gate.lock().await;
     code(
-        f.manager.close(Duration::ZERO).await.unwrap_err(),
+        &f.manager.close(Duration::ZERO).await.unwrap_err(),
         "cleanup-incomplete",
     );
     drop(held);
@@ -191,7 +191,7 @@ async fn close_during_runner_start_interrupts_and_removes_directories() {
     let now = Instant::now();
     f.close().await;
     assert!(now.elapsed() < f.manager.configuration.limits.runner_start_timeout / 2);
-    code(call.await.unwrap().unwrap_err(), "manager-closing");
+    code(&call.await.unwrap().unwrap_err(), "manager-closing");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -200,7 +200,7 @@ async fn first_timeout_has_no_generation_and_reap_failure_quarantines() {
         return;
     };
     code(
-        f.manager
+        &f.manager
             .execute_owner(
                 key("one"),
                 f.root.clone(),
@@ -222,18 +222,18 @@ async fn first_timeout_has_no_generation_and_reap_failure_quarantines() {
     f.manager.hooks.lock().unwrap().reap_timeout_once = true;
     f.execute(key("one"), "1").await.unwrap();
     code(
-        f.manager
+        &f.manager
             .clear_owner(key("one"), f.root.clone(), CancellationToken::new())
             .await
             .unwrap_err(),
         "cleanup-incomplete",
     );
     code(
-        f.execute(key("one"), "1").await.unwrap_err(),
+        &f.execute(key("one"), "1").await.unwrap_err(),
         "owner-quarantined",
     );
     code(
-        f.manager.close(Duration::from_secs(5)).await.unwrap_err(),
+        &f.manager.close(Duration::from_secs(5)).await.unwrap_err(),
         "cleanup-incomplete",
     );
     assert_eq!(f.manager.live_runners(), 1);
@@ -251,11 +251,11 @@ async fn private_directory_removal_failure_is_reported_and_retryable() {
         .unwrap()
         .unwrap()
         .path();
-    let moved = f._directory.path().join("retained");
+    let moved = f.directory.path().join("retained");
     std::fs::rename(&dirs, &moved).unwrap();
     std::fs::write(&dirs, "fixture obstructs removal").unwrap();
     code(
-        f.manager.close(Duration::from_secs(5)).await.unwrap_err(),
+        &f.manager.close(Duration::from_secs(5)).await.unwrap_err(),
         "cleanup-incomplete",
     );
     assert_eq!(f.manager.live_runners(), 0);

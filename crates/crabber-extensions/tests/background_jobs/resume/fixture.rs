@@ -72,7 +72,7 @@ pub(super) async fn pause(mounted: bool) -> Paused {
     let mut o = options(dir.path());
     // Inherited-mode drift must be valid without depending on host entry count.
     o.limits.max_environment_entries = 512;
-    o.limits.max_environment_bytes = 131072;
+    o.limits.max_environment_bytes = 131_072;
     let ext = Arc::new(BackgroundJobs::new(o.clone()).unwrap());
     let store = Arc::new(MemoryStore::new());
     let script = if mounted {
@@ -95,7 +95,7 @@ pub(super) async fn pause(mounted: bool) -> Paused {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].status, ToolCallStatus::Pending);
     assert_eq!(ext.live_jobs(), 0);
-    assert!(pgids(dir.path()).is_empty());
+    assert_eq!(pgids(dir.path()), [] as [i32; 0]);
     Paused {
         dir,
         store,
@@ -128,7 +128,7 @@ pub(super) async fn resumed(paused: &Paused, ext: Arc<BackgroundJobs>) -> Agent 
         assert_eq!(pgids(paused.dir.path()).len(), 1);
         assert_eq!(ext.live_jobs(), 1);
     } else {
-        assert!(pgids(paused.dir.path()).is_empty());
+        assert_eq!(pgids(paused.dir.path()), [] as [i32; 0]);
         assert_eq!(ext.live_jobs(), 0);
     }
     a
@@ -140,36 +140,36 @@ pub(super) fn mutations() -> Vec<(&'static str, Edit)> {
         ("max_tracked", |o| o.limits.max_tracked += 1),
         ("max_command_bytes", |o| o.limits.max_command_bytes += 1),
         ("max_working_directory_bytes", |o| {
-            o.limits.max_working_directory_bytes += 1
+            o.limits.max_working_directory_bytes += 1;
         }),
         ("max_output_bytes_per_stream", |o| {
-            o.limits.max_output_bytes_per_stream += 1
+            o.limits.max_output_bytes_per_stream += 1;
         }),
         ("max_environment_entries", |o| {
-            o.limits.max_environment_entries += 1
+            o.limits.max_environment_entries += 1;
         }),
         ("max_environment_bytes", |o| {
-            o.limits.max_environment_bytes += 1
+            o.limits.max_environment_bytes += 1;
         }),
         ("default_timeout", |o| {
-            o.limits.default_timeout = Duration::from_secs(1)
+            o.limits.default_timeout = Duration::from_secs(1);
         }),
         ("max_timeout", |o| {
-            o.limits.max_timeout += Duration::from_secs(1)
+            o.limits.max_timeout += Duration::from_secs(1);
         }),
         ("terminate_grace", |o| {
-            o.limits.terminate_grace += Duration::from_millis(1)
+            o.limits.terminate_grace += Duration::from_millis(1);
         }),
         ("kill_wait", |o| {
-            o.limits.kill_wait += Duration::from_millis(1)
+            o.limits.kill_wait += Duration::from_millis(1);
         }),
         ("shutdown_grace", |o| {
-            o.limits.shutdown_grace += Duration::from_millis(1)
+            o.limits.shutdown_grace += Duration::from_millis(1);
         }),
         ("shell_identity", |o| o.shell_identity.push('x')),
         ("environment.identity", |o| o.environment.identity.push('x')),
         ("environment.mode", |o| {
-            o.environment.mode = EnvironmentMode::InheritAndOverride
+            o.environment.mode = EnvironmentMode::InheritAndOverride;
         }),
     ]
 }

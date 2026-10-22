@@ -25,7 +25,7 @@ pub(crate) fn read(
     }
     let absolute = url
         .to_file_path()
-        .map_err(|_| ToolError::new("validation", "invalid file URL"))?;
+        .map_err(|()| ToolError::new("validation", "invalid file URL"))?;
     let relative = absolute
         .strip_prefix(root.path())
         .map_err(|_| ToolError::new("path_escape", "file URL must stay inside workspace"))?;

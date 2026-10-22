@@ -352,7 +352,7 @@ async fn cancellation_during_dns_returns_executor_error_and_releases_capacity() 
     let ctx = support::context(&tool.options.root, cancel.clone());
     let work = tool.execute_owned_context(ctx, json!({"url":"https://example.com/"}));
     tokio::pin!(work);
-    tokio::select! { biased; result = &mut work => panic!("unexpected result: {result:?}"), _ = tokio::task::yield_now() => {} }
+    tokio::select! { biased; result = &mut work => panic!("unexpected result: {result:?}"), () = tokio::task::yield_now() => {} }
     cancel.cancel();
     assert!(work.await.is_err());
     let _permit = acquire_read(
@@ -490,7 +490,7 @@ async fn cancellation_drops_streaming_body_and_recovers_capacity() {
     tokio::pin!(work);
     tokio::select! { biased;
         result = &mut work => panic!("unexpected result {result:?}"),
-        _ = transport.started.notified() => {}
+        () = transport.started.notified() => {}
     }
     cancel.cancel();
     assert!(work.await.is_err());

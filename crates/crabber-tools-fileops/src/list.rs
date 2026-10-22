@@ -1,12 +1,14 @@
-//! The file_list tool definition.
+//! The `file_list` tool definition.
 use crate::{FileTool, Kind, Options};
 use crabber::{ToolDefinition, core::ToolInfo};
 use std::sync::Arc;
 /// Deterministic model-facing schema and advisory safety metadata.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {name: "file_list".into(), description: "List directory entries under a workspace-relative path (empty or \".\" lists the workspace root). Output is sorted and capped at 5000 entries; oversize results set truncated=true.".into(), parameters: serde_json::json!({"properties": {"path": {"minLength": 1, "description": "Workspace-relative directory. Use '.' for the workspace root. Omit the field entirely to default to '.'.", "type": "string"}, "recursive": {"description": "If true, walk descendants. Default false (immediate children only).", "type": "boolean"}}, "additionalProperties": false, "type": "object"}), retry_safe: true, required_permissions: vec![crabber_tools_core::permission::FS_READ.into()]}
 }
 /// Build a context-required executor sharing the mount's capacity.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),

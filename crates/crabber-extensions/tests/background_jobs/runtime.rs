@@ -153,7 +153,7 @@ async fn permission_deny_and_ask_never_spawn() {
         }
         assert_eq!(h.ext.live_jobs(), 0);
         assert!(!h.dir.path().join("canary").exists());
-        assert!(pgids(h.dir.path()).is_empty());
+        assert_eq!(pgids(h.dir.path()), [] as [i32; 0]);
         assert_eq!(
             h.execute(LIST_TOOL, json!({})).await.unwrap(),
             json!({"jobs":[]})

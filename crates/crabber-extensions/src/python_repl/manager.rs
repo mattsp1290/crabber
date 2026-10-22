@@ -6,6 +6,7 @@ use super::{
     runtime_error,
 };
 use crabber::extension::{CleanupOwner, ExtensionError, ToolContext};
+use std::fmt::Write as _;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -71,13 +72,12 @@ pub(super) struct TestHooks {
 impl Manager {
     pub(super) fn new(configuration: Configuration) -> Self {
         #[cfg(unix)]
-        let epoch = (0..2)
-            .map(|_| {
-                let mut h = RandomState::new().build_hasher();
-                h.write(b"python-repl-epoch");
-                format!("{:016x}", h.finish())
-            })
-            .collect();
+        let epoch = (0..2).fold(String::new(), |mut epoch, _| {
+            let mut h = RandomState::new().build_hasher();
+            h.write(b"python-repl-epoch");
+            let _ = write!(&mut epoch, "{:016x}", h.finish());
+            epoch
+        });
         Self {
             binding: None,
             shared: None,
@@ -266,6 +266,10 @@ impl Manager {
             },
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep admission, process ownership, and cleanup in one ordered lifecycle."
+    )]
     async fn run(
         &self,
         owner: &OwnerSession,
@@ -287,9 +291,9 @@ impl Manager {
         let shared_permit = if started_now {
             self.shared
                 .as_ref()
-                .map(|pool| pool.acquire())
+                .map(super::super::contextual::SharedCapacity::acquire)
                 .transpose()
-                .map_err(|_| failure("capacity-exhausted"))?
+                .map_err(|()| failure("capacity-exhausted"))?
         } else {
             None
         };
@@ -519,7 +523,7 @@ impl Manager {
                     .join(format!(".python-repl-{}-{}", state.epoch, state.counter))
             };
             match super::private_dirs::create_root(&root) {
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(_) => return Err(failure("private-dirs")),
                 Ok(()) => {
                     slot.dirs = Some(root);

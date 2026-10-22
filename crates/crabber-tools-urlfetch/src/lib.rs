@@ -1,7 +1,11 @@
 //! Policy-constrained HTTPS and workspace-confined file text fetching.
+#![warn(missing_docs)]
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolDefinition, ToolExecutor, extension::ToolContext};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, Capacity, Limits, ToolError, WorkspaceRoot, acquire_read, check_cancelled,
+    failed, run_blocking_owned,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -33,6 +37,9 @@ pub struct Options {
     pub capacity: Capacity,
 }
 /// Validate policy and build a context-required executor.
+///
+/// # Errors
+/// Returns a plan error if URL policy or shared execution limits are invalid.
 pub fn definition(options: Arc<Options>) -> Result<Arc<ToolDefinition>, ExtensionError> {
     options.policy.validate()?;
     options.limits.validate()?;
@@ -126,7 +133,7 @@ impl FetchTool {
             }
         };
         tokio::select! { biased;
-            _ = ctx.cancel.cancelled() => Err(ExtensionError::Tool("cancelled".into())),
+            () = ctx.cancel.cancelled() => Err(ExtensionError::Tool("cancelled".into())),
             result = tokio::time::timeout(TIMEOUT, work) => result.unwrap_or_else(|_| Ok(failed("timeout", "URL fetch timed out"))),
         }
     }

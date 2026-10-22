@@ -1,12 +1,15 @@
-//! The file_read tool definition.
+//! The `file_read` tool definition.
 use crate::{FileTool, Kind, Options};
 use crabber::{ToolDefinition, core::ToolInfo};
+use std::fmt::Write as _;
 use std::sync::Arc;
 /// Deterministic model-facing schema and advisory safety metadata.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {name: "file_read".into(), description: "Read a workspace-relative UTF-8 text file. Plain {path} calls return the leading content prefix capped at 256 KiB. Supplying offset and/or limit returns a line-window with raw and numbered content. Returns structured errors including path_escape, not_found, is_directory, binary, validation, and io.".into(), parameters: serde_json::json!({"properties": {"path": {"minLength": 1, "description": "Workspace-relative path of the file to read.", "type": "string"}, "offset": {"minimum": 1, "description": "Optional 1-based starting line for a line-windowed read. When omitted, legacy prefix reads are preserved unless limit is present.", "type": "integer"}, "limit": {"maximum": 5000, "minimum": 1, "description": "Optional number of lines for a line-windowed read. Default 2000 when offset or limit is present; cap is 5000.", "type": "integer"}}, "additionalProperties": false, "required": ["path"], "type": "object"}), retry_safe: true, required_permissions: vec![crabber_tools_core::permission::FS_READ.into()]}
 }
 /// Build a context-required executor sharing the mount's capacity.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),
@@ -43,7 +46,7 @@ impl Request {
                 return Err(ToolError::new(category::BINARY, "not UTF-8 text"));
             }
             let content = text::utf8_prefix(&bytes, truncated)
-                .map_err(|_| ToolError::new(category::BINARY, "not UTF-8 text"))?;
+                .map_err(|()| ToolError::new(category::BINARY, "not UTF-8 text"))?;
             let mut out = json!({"outcome":"succeeded"});
             if !content.is_empty() {
                 out["content"] = json!(content);
@@ -89,7 +92,7 @@ impl Request {
                         }
                     }
                     content.push_str(&line);
-                    numbered.push_str(&format!("{total}: {line}"));
+                    let _ = write!(&mut numbered, "{total}: {line}");
                     if !line.ends_with('\n') {
                         numbered.push('\n');
                     }

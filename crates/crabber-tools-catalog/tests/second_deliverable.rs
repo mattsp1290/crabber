@@ -40,6 +40,10 @@ fn options(_root: &Path, hub: &Path) -> Policies {
     }
 }
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 fn explicit_policies_are_required_only_for_enabled_tools_and_hashed() {
     let root = tempfile::tempdir().unwrap();
     let hub = tempfile::tempdir().unwrap();

@@ -19,6 +19,7 @@ impl CappedOutput {
         self.truncated |= count < chunk.len();
     }
     /// Decode lossily while omitting an incomplete trailing UTF-8 codepoint.
+    #[must_use]
     pub fn text(&self) -> String {
         let bytes = if self.truncated {
             match std::str::from_utf8(&self.bytes) {
@@ -44,6 +45,9 @@ pub struct Capture {
 }
 /// Drain both pipes concurrently with the leader wait. Once the leader exits,
 /// allow at most five seconds for inherited pipes; preserve partial output.
+///
+/// # Errors
+/// Returns an I/O error when pipe reading, child waiting, or bounded process cleanup fails.
 pub async fn capture(
     guard: &mut ProcessGroupGuard,
     cap: usize,
@@ -70,7 +74,7 @@ pub async fn capture(
             return Ok(out);
         }
         tokio::select! { biased;
-            _ = tokio::time::sleep_until(stop) => {
+            () = tokio::time::sleep_until(stop) => {
                 out.timed_out = out.status.is_none(); guard.kill_group();
                 if out.status.is_none() && let Ok(Ok(s)) = tokio::time::timeout(WAIT_AFTER_KILL, guard.wait()).await { out.status = Some(s); }
                 return Ok(out);

@@ -171,7 +171,7 @@ async fn permission_denial_and_ask_have_no_python_side_effect() {
             );
         }
         assert_eq!(h.ext.live_runners(), 0);
-        assert!(pgids(h.dir.path()).is_empty());
+        assert_eq!(pgids(h.dir.path()), [] as [i32; 0]);
         assert_eq!(
             std::fs::read_dir(h.dir.path().join("temporary"))
                 .unwrap()

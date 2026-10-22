@@ -28,10 +28,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "
 tempfile = "3"
 jsonschema = { version = "0.58", default-features = false }
 
-[lints.rust]
-unsafe_code = "forbid"
-[lints.clippy]
-all = "warn"
+
 
 [features]
 live-opencode-go = ["crabber/opencode-go"]
@@ -39,3 +36,6 @@ live-opencode-go = ["crabber/opencode-go"]
 [[test]]
 name = "delegate_task_live"
 required-features = ["live-opencode-go"]
+
+[lints]
+workspace = true

@@ -1,5 +1,5 @@
 //! Synthetic host for typed-envelope and replay tests. Runtime ownership itself
-//! is qualified separately against Agent + MemoryStore, never inferred here.
+//! is qualified separately against Agent + `MemoryStore`, never inferred here.
 use crabber::extension::{
     CleanupOwner, SessionInvocationAdmission, SessionInvocationContext, SessionInvocationError,
     SessionInvocationRequest, SessionInvocationSpawner, SessionInvocationTask,
@@ -31,8 +31,8 @@ impl SessionInvocationSpawner for JoinedSpawner {
         task(SessionInvocationContext {
             cancel: tokio_util::sync::CancellationToken::new(),
             cleanup: cleanup.tracker().clone(),
-            public_source: Default::default(),
-            invocations: Default::default(),
+            public_source: crabber::extension::PublicSourceWriter::default(),
+            invocations: crabber::extension::SessionInvocations::default(),
         })
         .await
         .unwrap();

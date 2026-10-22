@@ -171,7 +171,7 @@ async fn resume_refuses_every_drift_before_mutation() {
     assert_eq!(edits.len() + 1, 21);
     edits.extend(mutations::additional_mutations());
     assert_eq!(edits.len() + 1, 24);
-    for row in 0..edits.len() + 1 {
+    for row in 0..=edits.len() {
         let p = pause().await;
         let mut o = p.options.clone();
         let label = if row < edits.len() {
@@ -197,7 +197,10 @@ async fn resume_refuses_every_drift_before_mutation() {
             "{label}"
         );
         assert_eq!(before, persistence(&p).await, "{label}");
-        assert!(provider.requests().is_empty());
+        assert_eq!(
+            provider.requests(),
+            [] as [crabber::providers::ModelRequest; 0]
+        );
         assert_eq!(p.executor.executions.load(Ordering::Relaxed), 0);
         assert!(!p.dir.path().join("argv.log").exists());
         assert_eq!(changed.live_children() + p.ext.live_children(), 0);

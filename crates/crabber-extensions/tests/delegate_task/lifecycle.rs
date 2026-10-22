@@ -125,7 +125,7 @@ async fn parallel_runtime_capacity_settles_both_calls_with_one_invocation() {
                 tool_calls: 100,
                 parts: 100,
                 text_bytes: 10000,
-                encoded_bytes: 100000,
+                encoded_bytes: 100_000,
             },
             continuation: None,
         })

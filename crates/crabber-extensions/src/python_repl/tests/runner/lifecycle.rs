@@ -197,17 +197,6 @@ async fn leader_that_leaves_group_is_killed_directly() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn detached_descendant_is_outside_cleanup_contract() {
-    let Some(mut runner) = real().await else {
-        return;
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let file = directory.path().join("holder");
-    let code = format!(
-        "import os,time,pathlib\npid = os.fork()\nif pid == 0:\n os.setsid()\n pathlib.Path({}).write_text(str(os.getpid()))\n time.sleep(60)\n os._exit(0)\nwhile not pathlib.Path({}).exists(): time.sleep(.01)\npid",
-        serde_json::to_string(file.to_str().unwrap()).unwrap(),
-        serde_json::to_string(file.to_str().unwrap()).unwrap()
-    );
-    // Always recover the holder even if a later assertion panics.
     struct Holder(std::path::PathBuf);
     impl Drop for Holder {
         fn drop(&mut self) {
@@ -221,6 +210,17 @@ async fn detached_descendant_is_outside_cleanup_contract() {
             }
         }
     }
+    let Some(mut runner) = real().await else {
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("holder");
+    let code = format!(
+        "import os,time,pathlib\npid = os.fork()\nif pid == 0:\n os.setsid()\n pathlib.Path({}).write_text(str(os.getpid()))\n time.sleep(60)\n os._exit(0)\nwhile not pathlib.Path({}).exists(): time.sleep(.01)\npid",
+        serde_json::to_string(file.to_str().unwrap()).unwrap(),
+        serde_json::to_string(file.to_str().unwrap()).unwrap()
+    );
+    // Always recover the holder even if a later assertion panics.
     let guard = Holder(file.clone());
     let result = response(&mut runner, &code).await;
     let pid: i32 = result.result.text.parse().unwrap();

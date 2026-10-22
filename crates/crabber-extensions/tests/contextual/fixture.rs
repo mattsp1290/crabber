@@ -113,6 +113,7 @@ impl Harness {
             .unwrap();
         let cleanup = owned_process::ProcessCleanup::new(root.path());
         Some(Self {
+            cleanup,
             root,
             agent,
             store,
@@ -120,7 +121,6 @@ impl Harness {
             jobs,
             python,
             delegate,
-            cleanup,
         })
     }
     pub async fn records(&self, execution: &ExecutionContext, run: &RunId) -> Vec<ToolCallRecord> {

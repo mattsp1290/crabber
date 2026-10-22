@@ -110,33 +110,33 @@ fn every_error_code_is_reachable() {
     let rows: Vec<(&str, Edit)> = vec![
         ("limits", |o| o.limits.max_bindings = 0),
         ("limit-order", |o| {
-            o.limits.max_field_bytes = o.limits.max_stdout_bytes - 1
+            o.limits.max_field_bytes = o.limits.max_stdout_bytes - 1;
         }),
         ("timeouts", |o| o.limits.timeout = Duration::ZERO),
         ("timeouts", |o| o.limits.kill_wait = Duration::from_secs(61)),
         ("shutdown-grace", |o| {
-            o.limits.shutdown_grace = Duration::from_secs(1)
+            o.limits.shutdown_grace = Duration::from_secs(1);
         }),
         ("executable-digest", |o| o.executable_sha256.push('0')),
         ("executable-digest", |o| {
-            o.executable_sha256 = "A".repeat(64)
+            o.executable_sha256 = "A".repeat(64);
         }),
         ("bindings-required", |o| o.bindings.clear()),
         ("binding-count", |o| o.limits.max_bindings = 1),
         ("config-bytes", |o| o.limits.max_config_bytes = 1),
         ("tool-name", |o| o.bindings[0].tool_name = "bad/name".into()),
         ("duplicate-tool", |o| {
-            o.bindings[1].tool_name = o.bindings[0].tool_name.clone()
+            o.bindings[1].tool_name = o.bindings[0].tool_name.clone();
         }),
         ("json-fields", |o| {
-            o.bindings[0].selection = Selection::JsonFields(vec![])
+            o.bindings[0].selection = Selection::JsonFields(vec![]);
         }),
         ("field-count", |o| o.limits.max_fields_per_binding = 1),
         ("field-name", |o| {
             o.bindings[0].selection = Selection::JsonFields(vec![Field {
                 name: "\0".into(),
                 filter: Filter::Log,
-            }])
+            }]);
         }),
         ("duplicate-field", |o| {
             o.bindings[0].selection = Selection::JsonFields(vec![
@@ -145,31 +145,31 @@ fn every_error_code_is_reachable() {
                     filter: Filter::Log
                 };
                 2
-            ])
+            ]);
         }),
         ("match-field", |o| {
-            o.bindings[1].match_input.as_mut().unwrap().field.clear()
+            o.bindings[1].match_input.as_mut().unwrap().field.clear();
         }),
         ("input-match-count", |o| {
-            o.bindings[1].match_input.as_mut().unwrap().equals.clear()
+            o.bindings[1].match_input.as_mut().unwrap().equals.clear();
         }),
         ("input-match-count", |o| o.limits.max_input_matches = 1),
         ("input-match-value", |o| {
-            o.bindings[1].match_input.as_mut().unwrap().equals[0] = "\0".into()
+            o.bindings[1].match_input.as_mut().unwrap().equals[0] = "\0".into();
         }),
         ("input-match-value", |o| o.limits.max_input_bytes = 1),
         ("duplicate-input-match", |o| {
-            o.bindings[1].match_input.as_mut().unwrap().equals = vec!["x".into(); 2]
+            o.bindings[1].match_input.as_mut().unwrap().equals = vec!["x".into(); 2];
         }),
         ("executable-path", |o| o.executable_path = "relative".into()),
         ("executable-path", |o| {
-            o.executable_path = o.executable_path.with_file_name("missing")
+            o.executable_path = o.executable_path.with_file_name("missing");
         }),
         ("executable-file", |o| {
-            o.executable_path = o.temp_root.clone()
+            o.executable_path = o.temp_root.clone();
         }),
         ("executable-digest-mismatch", |o| {
-            o.executable_sha256 = "0".repeat(64)
+            o.executable_sha256 = "0".repeat(64);
         }),
         ("temp-root", |o| o.temp_root = "relative".into()),
         ("temp-root", |o| o.temp_root = o.executable_path.clone()),

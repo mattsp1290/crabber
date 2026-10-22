@@ -84,6 +84,9 @@ struct Tool {
 }
 impl AskUser {
     /// Validate bounds without creating an interaction or executing host work.
+    ///
+    /// # Errors
+    /// Returns a plan error if question bounds or wait limits are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let l = &options.limits;
         if l.max_question_bytes == 0
@@ -95,7 +98,7 @@ impl AskUser {
             || l.max_custom_answer_bytes == 0
             || l.max_custom_answer_bytes > MAX_CUSTOM_ANSWER_BYTES
             || l.max_wait < Duration::from_secs(1)
-            || l.max_wait > Duration::from_secs(86400)
+            || l.max_wait > Duration::from_hours(24)
             || 2 * MAX_OPTIONS * (l.max_option_label_bytes + l.max_option_description_bytes) + 1024
                 > 16384
         {
@@ -139,6 +142,10 @@ impl ResumableTool for Tool {
     fn identity(&self) -> ResumableToolIdentity {
         self.identity.clone()
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Construction bounds max_wait to 24 hours, whose milliseconds fit u64."
+    )]
     async fn start(
         &self,
         context: ToolContext,
@@ -217,7 +224,7 @@ impl Extension for AskUser {
     fn id(&self) -> &str {
         SCHEMA_ID
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

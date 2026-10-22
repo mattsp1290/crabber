@@ -188,11 +188,11 @@ async fn process_environment_caps_timeout_and_pipe_grace() {
         None,
     );
     let mut guard = ProcessGroupGuard::spawn(&mut cmd).unwrap();
-    let result = capture(
+    let result = Box::pin(capture(
         &mut guard,
         4,
         tokio::time::Instant::now() + Duration::from_secs(2),
-    )
+    ))
     .await
     .unwrap();
     assert_eq!(result.stdout.text(), "yes:");
@@ -206,7 +206,7 @@ async fn process_environment_caps_timeout_and_pipe_grace() {
     apply_policy(&mut cmd, &EnvPolicy::minimal_allowlist(), None);
     let mut guard = ProcessGroupGuard::spawn(&mut cmd).unwrap();
     let start = tokio::time::Instant::now();
-    let result = capture(&mut guard, 1024, start + Duration::from_secs(30))
+    let result = Box::pin(capture(&mut guard, 1024, start + Duration::from_secs(30)))
         .await
         .unwrap();
     assert_eq!(result.stdout.text(), "started\n");
@@ -247,6 +247,10 @@ async fn dropped_guard_kills_group() {
         assert!(!process_running(pid), "process {pid} survived");
     }
 }
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "OS process IDs are positive pid_t values bounded by i32::MAX."
+)]
 fn process_running(pid: u32) -> bool {
     // Linux may retain a killed orphan as a zombie until its init process reaps it.
     #[cfg(target_os = "linux")]
@@ -413,7 +417,10 @@ async fn owned_process_task_is_joined_on_executor_drop() {
     assert!(report.sealed);
     assert!(report.joined >= 1);
     assert_eq!(report.pending, 0);
-    assert!(report.failures.is_empty());
+    assert_eq!(
+        report.failures,
+        [] as [crabber::extension::ResourceFailure; 0]
+    );
     assert!(!process_running(leader));
     for _ in 0..200 {
         if !process_running(child) {
@@ -448,7 +455,10 @@ async fn slow_blocking_cleanup_retains_join_until_finished() {
     let complete = owner.drain(Duration::from_secs(2)).await;
     assert_eq!(complete.pending, 0);
     assert_eq!(complete.joined, 1);
-    assert!(complete.failures.is_empty());
+    assert_eq!(
+        complete.failures,
+        [] as [crabber::extension::ResourceFailure; 0]
+    );
 }
 #[tokio::test]
 async fn blocking_panic_is_tool_failure_with_clean_resource_join() {
@@ -462,5 +472,8 @@ async fn blocking_panic_is_tool_failure_with_clean_resource_join() {
     let report = owner.drain(Duration::from_secs(2)).await;
     assert_eq!(report.joined, 1);
     assert_eq!(report.pending, 0);
-    assert!(report.failures.is_empty());
+    assert_eq!(
+        report.failures,
+        [] as [crabber::extension::ResourceFailure; 0]
+    );
 }

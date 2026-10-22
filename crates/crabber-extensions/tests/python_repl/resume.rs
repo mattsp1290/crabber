@@ -68,7 +68,7 @@ async fn resume_refuses_every_drift_before_mutation() {
         );
         assert_eq!(persistence(&p).await, before, "{label}");
         assert_eq!(changed.live_runners() + p.ext.live_runners(), 0);
-        assert!(pgids(p.dir.path()).is_empty());
+        assert_eq!(pgids(p.dir.path()), [] as [i32; 0]);
         assert_eq!(std::fs::read_dir(&p.options.temp_root).unwrap().count(), 0);
         assert!(!p.dir.path().join("executions").exists());
         a.close_extensions().await.unwrap();

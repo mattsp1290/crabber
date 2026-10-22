@@ -1,8 +1,15 @@
 //! Process-local owner registry and background tool lifecycle.
-use super::*;
+use super::{
+    Arc, CancellationToken, ExtensionError, LIST_TOOL, Limits, Mutex, Ordering,
+    PERMISSION_DELEGATE, PERMISSION_DELEGATE_READ, Policy, Registrar, Request, Response,
+    START_TOOL, STATUS_TOOL, SessionId, TASK_ID_COUNTER_BYTES, TASK_ID_EPOCH_BYTES, TASK_ID_PREFIX,
+    ToolContext, ToolDefinition, ToolInfo, Value, WAIT_TOOL, async_trait, failure, guarded, input,
+    invalid, json, task_schema,
+};
 use crabber::JsonToolExecutor;
 use crabber::core::{InputFingerprint, SessionOwnerId, SessionOwnerOperationId};
 use crabber::extension::{ResourceFailure, SessionInvocationContext, SessionInvocationRequest};
+use std::fmt::Write as _;
 mod admission;
 mod lifecycle;
 use lifecycle::RunnerLifecycle;
@@ -108,17 +115,17 @@ impl TaskRecord {
 // Std-only randomness supplies process-local uniqueness without a dependency.
 // Ownership checks, rather than ID secrecy, gate access.
 fn process_epoch() -> String {
-    (0..2)
-        .map(|_| {
-            let mut hash = RandomState::new().build_hasher();
-            hash.write(b"delegate-task-epoch");
-            format!(
-                "{:0width$x}",
-                hash.finish(),
-                width = TASK_ID_EPOCH_BYTES / 2
-            )
-        })
-        .collect()
+    (0..2).fold(String::new(), |mut epoch, _| {
+        let mut hash = RandomState::new().build_hasher();
+        hash.write(b"delegate-task-epoch");
+        let _ = write!(
+            &mut epoch,
+            "{:0width$x}",
+            hash.finish(),
+            width = TASK_ID_EPOCH_BYTES / 2
+        );
+        epoch
+    })
 }
 struct ReservedRecord {
     record: Arc<TaskRecord>,
@@ -254,7 +261,7 @@ impl Policy {
         arguments: Value,
     ) -> Result<Value, ExtensionError> {
         let owner = Owner::from_context(&context)?;
-        let (ids, timeout) = input::wait(arguments, &self.limits)?;
+        let (ids, timeout) = input::wait(&arguments, &self.limits)?;
         let records = {
             let tasks = lock(&self.tasks);
             ids.iter()
@@ -270,8 +277,8 @@ impl Policy {
                 break;
             }
             tokio::select! { biased;
-                _ = context.cancel.cancelled() => return Err(failure("cancelled")),
-                _ = &mut deadline => break,
+                () = context.cancel.cancelled() => return Err(failure("cancelled")),
+                () = &mut deadline => break,
                 _ = settled.changed() => {}
             }
         }

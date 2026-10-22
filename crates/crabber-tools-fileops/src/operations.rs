@@ -83,6 +83,10 @@ enum Args {
 fn validation() -> ToolError {
     ToolError::new(category::VALIDATION, "invalid arguments")
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Owned error callbacks match the Result::map_err interface."
+)]
 pub(crate) fn io_error(e: io::Error) -> ToolError {
     ToolError::new(category_for_io(&e), "filesystem operation failed")
 }

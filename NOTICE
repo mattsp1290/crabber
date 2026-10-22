@@ -9,3 +9,7 @@ It does not claim complete nine-feature parity yet.
 URL validation uses the url crate, whose IDNA support bundles ICU4X data
 crates distributed under the Unicode-3.0 license; their license text travels
 with the Cargo registry sources.
+
+The standard tool schemas and runtime corpora under fixtures/eino-tools/ were
+extracted from eino-tools c0975d6764b2536faf639efe516a79de6154a55d as recorded
+in fixtures/eino-tools/PROVENANCE.md.

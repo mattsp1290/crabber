@@ -1,4 +1,4 @@
-use super::*;
+use super::{Duration, ExtensionError, Limits};
 pub(super) fn validate(l: &Limits) -> Result<(), ExtensionError> {
     let Limits {
         max_bindings,

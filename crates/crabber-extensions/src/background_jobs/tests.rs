@@ -98,10 +98,10 @@ fn group_members(pgid: i32) -> Vec<u32> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
+            let process_id = fields.next()?.parse().ok()?;
             let group: i32 = fields.next()?.parse().ok()?;
             let state = fields.next()?;
-            (group == pgid && !state.starts_with('Z')).then_some(pid)
+            (group == pgid && !state.starts_with('Z')).then_some(process_id)
         })
         .collect()
 }

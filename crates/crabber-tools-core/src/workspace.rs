@@ -15,6 +15,9 @@ pub struct WorkspaceRoot {
 }
 impl WorkspaceRoot {
     /// Admit an existing absolute directory. Invalid admission yields Plan("workspace").
+    ///
+    /// # Errors
+    /// Returns a plan error for a relative, missing, inaccessible, or non-directory workspace.
     pub fn open(path: &Path) -> Result<Arc<Self>, ExtensionError> {
         let fail = || ExtensionError::Plan("workspace".into());
         if !path.is_absolute() {
@@ -25,14 +28,19 @@ impl WorkspaceRoot {
         Ok(Arc::new(Self { root, dir }))
     }
     /// Canonical absolute path used for cwd, root locks, and identity.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.root
     }
     /// All file operations must use this directory capability.
+    #[must_use]
     pub fn dir(&self) -> &Dir {
         &self.dir
     }
     /// Missing, relative or different session directories fail closed.
+    ///
+    /// # Errors
+    /// Returns `workspace_mismatch` for absent, relative, inaccessible, or different directories.
     pub fn matches_session_directory(&self, directory: Option<&str>) -> Result<(), ToolError> {
         let Some(d) = directory else {
             return Err(ToolError::new(
@@ -56,7 +64,10 @@ impl WorkspaceRoot {
 #[derive(Clone, Debug)]
 pub struct RelPath(PathBuf);
 impl RelPath {
-    /// Empty and dot paths are root only when allow_empty is true. Never expands tilde.
+    /// Empty and dot paths are root only when `allow_empty` is true. Never expands tilde.
+    ///
+    /// # Errors
+    /// Returns `validation` for NULs or a required empty path, and `path_escape` for traversal or absolute paths.
     pub fn parse(value: &str, allow_empty: bool) -> Result<Self, ToolError> {
         if value.contains('\0') {
             return Err(ToolError::new(category::VALIDATION, "path contains NUL"));
@@ -83,6 +94,7 @@ impl RelPath {
         Ok(Self(path))
     }
     /// Capability-relative path (dot represents the root).
+    #[must_use]
     pub fn as_path(&self) -> &Path {
         if self.is_root() {
             Path::new(".")
@@ -91,11 +103,13 @@ impl RelPath {
         }
     }
     /// Whether this names the admitted root.
+    #[must_use]
     pub fn is_root(&self) -> bool {
         self.0.as_os_str().is_empty() || self.0 == Path::new(".")
     }
 }
 /// Map filesystem failures without exposing the operating-system error message.
+#[must_use]
 pub fn category_for_io(error: &io::Error) -> &'static str {
     if error
         .to_string()
@@ -115,8 +129,11 @@ pub fn category_for_io(error: &io::Error) -> &'static str {
 /// Implementations must refuse missing identity and never derive authority from
 /// an unconfigured session directory or the process working directory.
 pub trait WorkspaceAdmission: Send + Sync {
-    /// Admit a configured workspace, or return WorkspaceUnavailable / Plan.
+    /// Admit a configured workspace, or return `WorkspaceUnavailable` / Plan.
     /// Factories invoke this on the blocking pool; implementations may perform I/O.
+    ///
+    /// # Errors
+    /// Returns `WorkspaceUnavailable` for absent routing identity or a plan error when admission is refused.
     fn admit(
         &self,
         workspace: &crabber::extension::WorkspaceContext,
@@ -128,6 +145,9 @@ pub trait WorkspaceAdmission: Send + Sync {
 pub struct ExactRoots(std::collections::BTreeMap<String, PathBuf>);
 impl ExactRoots {
     /// Validate a host admission table. Duplicate or empty IDs are rejected.
+    ///
+    /// # Errors
+    /// Returns a plan error for duplicate or empty IDs, or paths that are not absolute UTF-8.
     pub fn new(
         entries: impl IntoIterator<Item = (String, PathBuf)>,
     ) -> Result<Self, ExtensionError> {

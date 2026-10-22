@@ -51,6 +51,9 @@ struct Policy {
     capacity: Arc<Semaphore>,
 }
 impl WorkspaceInstructions {
+    ///
+    /// # Errors
+    /// Returns a plan error if instruction basenames, rooting boundaries, or rendering limits are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let l = &options.limits;
         if l.max_file_names == 0
@@ -123,10 +126,10 @@ fn failure(code: &'static str) -> String {
 }
 #[async_trait]
 impl Extension for WorkspaceInstructions {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/workspace-instructions"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

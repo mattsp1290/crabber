@@ -141,7 +141,7 @@ impl Attribution {
             let status = tokio::select! {
                 biased;
                 status = recv => status.unwrap_or("cancelled"),
-                _ = cancelled.cancelled() => "cancelled",
+                () = cancelled.cancelled() => "cancelled",
             };
             attribution.status("settle", status).await;
             Ok(())

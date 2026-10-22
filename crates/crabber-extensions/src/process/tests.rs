@@ -40,10 +40,10 @@ fn group_members(pgid: Pid) -> Vec<u32> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
+            let process_id = fields.next()?.parse().ok()?;
             let group: i32 = fields.next()?.parse().ok()?;
             let state = fields.next()?;
-            (group == pgid.as_raw_nonzero().get() && !state.starts_with('Z')).then_some(pid)
+            (group == pgid.as_raw_nonzero().get() && !state.starts_with('Z')).then_some(process_id)
         })
         .collect()
 }
@@ -76,7 +76,7 @@ impl Fixture {
     }
     fn spawn(&self, command: &str, environment: &[(String, String)]) -> Spawned {
         spawn(
-            Launch {
+            &Launch {
                 shell: Path::new("/bin/sh"),
                 command,
                 directory: self.directory.path(),

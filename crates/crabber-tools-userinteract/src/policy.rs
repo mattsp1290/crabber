@@ -44,6 +44,7 @@ pub struct UserInteractPolicy {
 }
 impl UserInteractPolicy {
     /// Default relay policy.
+    #[must_use]
     pub fn pending() -> Self {
         Self {
             surface: Surface::Pending,
@@ -52,6 +53,7 @@ impl UserInteractPolicy {
         }
     }
     /// Default durable policy with an 8 KiB answer limit and no expiry.
+    #[must_use]
     pub fn durable(authority: AuthorityRequirement) -> Self {
         Self {
             surface: Surface::Durable {
@@ -63,6 +65,9 @@ impl UserInteractPolicy {
         }
     }
     /// Validate finite question and answer bounds.
+    ///
+    /// # Errors
+    /// Returns a plan error if interaction bounds or the selected authority are invalid.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         if !(1..=MAX_QUESTION_BYTES).contains(&self.max_question_bytes)
             || !(1..=MAX_ANSWER_BYTES).contains(&self.max_answer_bytes)

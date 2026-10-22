@@ -1,4 +1,4 @@
-use super::*;
+use super::{Cow, Outcome, Parser, WordPart};
 
 impl<'a> Parser<'a, '_, '_> {
     pub(super) fn tabs_at(&self, mut pos: usize) -> usize {

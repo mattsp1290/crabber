@@ -47,7 +47,7 @@ pub(crate) struct RunnerChild {
     pub(crate) hooks: TestHooks,
 }
 
-pub(crate) fn spawn_runner(launch: RunnerLaunch<'_>) -> Result<RunnerChild, Fault> {
+pub(crate) fn spawn_runner(launch: &RunnerLaunch<'_>) -> Result<RunnerChild, Fault> {
     let mut child = Command::new(launch.program)
         .args(launch.args)
         .current_dir(launch.directory)
@@ -143,6 +143,16 @@ impl RunnerChild {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn signal_for_cleanup(
+        &mut self,
+        signal: GroupSignal,
+        _bound: Duration,
+    ) -> std::future::Ready<Result<(), SignalFault>> {
+        std::future::ready(self.signal(signal))
+    }
+
+    #[cfg(target_os = "macos")]
     async fn signal_for_cleanup(
         &mut self,
         signal: GroupSignal,
@@ -334,7 +344,7 @@ impl Spawned {
 }
 
 pub(crate) fn spawn(
-    launch: Launch<'_>,
+    launch: &Launch<'_>,
     tails: Tails,
     tracker: &CleanupTracker,
 ) -> Result<Spawned, Fault> {

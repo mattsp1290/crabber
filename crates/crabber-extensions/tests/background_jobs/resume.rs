@@ -28,6 +28,7 @@ async fn paused_pending_start_runs_once_on_resume() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resume_refuses_every_drift_before_mutation() {
+    use std::os::unix::fs::PermissionsExt;
     if !shell_available() {
         return;
     }
@@ -46,7 +47,6 @@ async fn resume_refuses_every_drift_before_mutation() {
         if label == "shell_path" {
             let copy = p.dir.path().join("shell-copy");
             std::fs::copy(o.shell_path.canonicalize().unwrap(), &copy).unwrap();
-            use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert!(
                 std::process::Command::new(&copy)
@@ -71,7 +71,7 @@ async fn resume_refuses_every_drift_before_mutation() {
             "{label}"
         );
         assert_eq!(persistence(&p).await, before, "{label}");
-        assert!(pgids(p.dir.path()).is_empty());
+        assert_eq!(pgids(p.dir.path()), [] as [i32; 0]);
         assert_eq!(changed.live_jobs() + p.ext.live_jobs(), 0);
         let equal = Arc::new(BackgroundJobs::new(p.options.clone()).unwrap());
         let original = resumed(&p, equal.clone()).await;
