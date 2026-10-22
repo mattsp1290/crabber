@@ -283,7 +283,7 @@ mod tests {
         let session = crabber_core::SessionId::new();
         for keyed in [false, true] {
             let source = LibraryScriptedSource::new(
-                crabber::Selection {
+                crabber_providers::Selection {
                     provider_id: "library".into(),
                     model_id: "text".into(),
                 },

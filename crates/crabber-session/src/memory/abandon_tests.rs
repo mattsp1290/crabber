@@ -1,6 +1,8 @@
 use super::*;
 use crabber_core::{AbandonAuthority, AbandonError, AbandonRequest, EventKind, MessageId, Role};
+facade_only_test_items! {
 use serde_json::json;
+}
 use std::time::Duration;
 
 fn request() -> AdmitRequest {
@@ -28,6 +30,7 @@ fn request() -> AdmitRequest {
         },
     }
 }
+facade_only_test_items! {
 fn event(run: &Run) -> EventRecord {
     EventRecord {
         cursor: None,
@@ -41,7 +44,9 @@ fn event(run: &Run) -> EventRecord {
         created_at: run.created_at,
     }
 }
+}
 
+facade_only_test_items! {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox() {
@@ -289,6 +294,7 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
         vec![followup]
     );
 }
+}
 
 #[tokio::test]
 async fn replacement_owner_and_unrelated_terminal_are_not_abandonment_replay() {
@@ -337,9 +343,9 @@ async fn replacement_owner_and_unrelated_terminal_are_not_abandonment_replay() {
     );
 }
 
-// A dev dependency compiles the session library twice (normal and unit-test).
-// Bridge only the abandonment boundary to the normal facade trait, retaining
-// the privately seeded Pending state and fault injection in this test instance.
+// The facade harness bridges abandonment to its source-embedded MemoryStore,
+// retaining privately seeded Pending state and every fault injection boundary.
+facade_only_test_items! {
 struct PendingFacadeStore(MemoryStore);
 #[allow(unused_variables)]
 #[async_trait]
@@ -414,6 +420,7 @@ impl crabber::session::Store for PendingFacadeStore {
         panic!("abandonment must only invoke abandon_run")
     }
 }
+}
 
 #[tokio::test]
 async fn paused_live_lease_is_not_permission_to_steal() {
@@ -440,6 +447,7 @@ async fn paused_live_lease_is_not_permission_to_steal() {
     assert_eq!(store.get_run(&admitted.run.id).await.unwrap(), original);
 }
 
+facade_only_test_items! {
 #[tokio::test]
 async fn facade_each_memory_candidate_boundary_rolls_back_including_private_commit() {
     for boundary in 1..=7 {
@@ -500,4 +508,5 @@ async fn facade_each_memory_candidate_boundary_rolls_back_including_private_comm
             [] as [crabber::providers::ModelRequest; 0]
         );
     }
+}
 }

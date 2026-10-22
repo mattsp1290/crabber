@@ -52,6 +52,11 @@ pub use attempt_control::{
 };
 mod attempt_conclusion;
 pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBoundary};
+// Facade-only abandonment journeys run in the source-embedding harness.
+#[cfg(test)]
+macro_rules! facade_only_test_items {
+    ($($item:item)*) => {};
+}
 // The source-embedding harness supplies an Unsupported transport adapter.
 // Only this native root compiles private Pending constructors and publishers.
 macro_rules! native_pending_initial_items {

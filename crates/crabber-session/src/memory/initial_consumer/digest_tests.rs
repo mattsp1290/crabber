@@ -12,7 +12,7 @@ async fn streamed_original_digests_and_borrowed_index_preserve_native_records() 
         let store = store();
         let answer = "Unicode λ / slash \" quote \\ newline\n literal escape \\0".repeat(1024);
         let source = LibraryScriptedSource::new(
-            crabber::Selection {
+            crabber_providers::Selection {
                 provider_id: "p".into(),
                 model_id: "m".into(),
             },

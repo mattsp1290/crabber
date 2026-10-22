@@ -121,7 +121,7 @@ async fn joined_resources<T>(
     child: &SessionOwnerAuthority,
 ) {
     use crate::session_owner::owned_scope::{OwnedCleanupFailure, OwnedCleanupTask};
-    use crabber::extension::ToolResourceOwner;
+    use crabber_extension::ToolResourceOwner;
     let owner = ToolResourceOwner::new();
     let release = Arc::new(tokio::sync::Notify::new());
     let waiter = release.clone();

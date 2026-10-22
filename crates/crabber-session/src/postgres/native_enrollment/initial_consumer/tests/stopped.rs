@@ -11,7 +11,7 @@ async fn postgres_scripted_original_open_refusal_has_absorbing_no_opened_member(
 
     for keyed in [false, true] {
         let source = crabber_extension::LibraryScriptedSource::new(
-            crabber::Selection {
+            crabber_providers::Selection {
                 provider_id: "library".into(),
                 model_id: "text".into(),
             },

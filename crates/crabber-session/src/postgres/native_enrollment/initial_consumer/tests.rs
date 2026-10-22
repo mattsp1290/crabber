@@ -24,7 +24,7 @@ async fn postgres_closed_initial_scripted_consumer_preserves_all_actual_original
 
         for keyed in [false, true] {
             let source = crabber_extension::LibraryScriptedSource::new(
-                crabber::Selection {
+                crabber_providers::Selection {
                     provider_id: "library".into(),
                     model_id: "text".into(),
                 },

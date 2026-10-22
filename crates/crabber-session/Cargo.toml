@@ -32,7 +32,7 @@ crabber-test-support = { path = "../crabber-test-support", default-features = fa
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 tempfile = "3"
 allocation-counter = "0.8.1"
-crabber = { path = "../crabber" }
+crabber-providers = { path = "../crabber-providers", default-features = false }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time", "net", "io-util"] }
 
 [lints]

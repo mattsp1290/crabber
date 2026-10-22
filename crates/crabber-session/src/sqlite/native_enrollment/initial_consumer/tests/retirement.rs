@@ -67,7 +67,7 @@ async fn older_driver_new_no_opened(
     session: &crabber_core::SessionId,
 ) {
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },
@@ -186,7 +186,7 @@ async fn fault_case(store: Arc<crate::SqliteStore>, keyed: bool, case: (CallKind
     ));
     let store = Arc::new(store.as_ref().clone().with_clock(clock.clone()));
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },

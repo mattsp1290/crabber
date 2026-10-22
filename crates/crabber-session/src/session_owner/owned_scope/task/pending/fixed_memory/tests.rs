@@ -30,7 +30,7 @@ async fn managed(host: &FixedMemoryInitialHost) -> (SessionContext, SessionRevis
 }
 fn source() -> LibraryScriptedSource {
     LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "finite-text".into(),
         },

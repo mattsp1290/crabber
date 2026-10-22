@@ -2,7 +2,7 @@ use super::*;
 use std::sync::atomic::Ordering;
 fn source() -> crabber_extension::LibraryScriptedSource {
     crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },

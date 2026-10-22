@@ -13,7 +13,7 @@ async fn completed(keyed: bool) -> Arc<MemoryStore> {
         crabber_core::ManualClock::new(time::OffsetDateTime::UNIX_EPOCH),
     )));
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "p".into(),
             model_id: "m".into(),
         },
@@ -268,7 +268,7 @@ async fn incomplete_original(keyed: bool, kind: IncompleteOriginal) -> Arc<Memor
         crabber_core::ManualClock::new(time::OffsetDateTime::UNIX_EPOCH),
     )));
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "p".into(),
             model_id: "m".into(),
         },

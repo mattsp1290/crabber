@@ -391,6 +391,27 @@
       "after": "Only the exact embedded duplicate registration is omitted via native_store_unit_tests; canonical Memory, SQL immutable-capacity and adapter-specific parent/fault/fenced histories remain.",
       "rationale": "Both wrappers compile identical MemoryStore, immutable owner ledger, record authentication and capacity helpers. Root Preparation reservations have parent=None and resource_contract=None, so they never enter the opaque attempt/phase adapter bridge or pending native transport. All 1024 insertions, overflow refusal and actual Join/slot reuse assertions remain unchanged in the canonical owner.",
       "validation": "All three affected canonical capacity and blocked-drop tests passed; actual complete native inventory differs by exactly the intended embedded test (3038 to3037). No full timing qualification claim."
+    },
+    {
+      "id": "native-facade-abandonment-registration",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-unqualified",
+      "failure": "Facade abandonment must preserve rollback, usage, fence, calls, history and inbox, reject all seven candidate boundaries including private publication, replay exactly once and invoke no provider or unrelated Store method.",
+      "owner": [
+        "crates/crabber-session/src/memory/abandon_tests.rs",
+        "crates/crabber/tests/fenced_abandon.rs"
+      ],
+      "retained_tests": [
+        "memory::abandon_tests::pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox",
+        "memory::abandon_tests::facade_each_memory_candidate_boundary_rolls_back_including_private_commit"
+      ],
+      "required_backends": [
+        "memory"
+      ],
+      "before": "Both exact facade-only histories registered in Session units and the facade source-embedding harness.",
+      "after": "Both unchanged histories register only in crabber::fenced_abandon; other native abandonment tests remain.",
+      "rationale": "Raw admission and legacy Pending fixture status use canonical source journal, Memory transaction and fault implementation in both registrations. Neither history enters genuine opaque Pending transport, preparation or phase authority paths. The facade bridge forwards only abandon_run and panics on every other Store method. Every rollback, replay, inbox and seven-boundary assertion and zero-provider-effects assertion is retained. Removing the redundant native registration permits removing the Session dev dependency on facade/Runtime.",
+      "validation": "Source and graph validation in progress; no timing gain or final qualification claimed."
     }
   ],
   "required_behaviors": [
@@ -654,6 +675,22 @@
         {
           "package": "crabber",
           "suffix": "counter_state_survives_independent_agent_runs"
+        }
+      ]
+    },
+    {
+      "behavior": "Facade Memory abandonment rollback and replay",
+      "primary_owner": "Canonical Memory transaction through facade source embedding",
+      "required_layer": "crabber::fenced_abandon",
+      "status": "implemented-unqualified",
+      "required_detectors": [
+        {
+          "package": "crabber",
+          "suffix": "memory::abandon_tests::pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox"
+        },
+        {
+          "package": "crabber",
+          "suffix": "memory::abandon_tests::facade_each_memory_candidate_boundary_rolls_back_including_private_commit"
         }
       ]
     }

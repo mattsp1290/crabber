@@ -9,7 +9,7 @@ async fn postgres_initial_consumer_real_gate_original_join_then_absorbing_close(
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },

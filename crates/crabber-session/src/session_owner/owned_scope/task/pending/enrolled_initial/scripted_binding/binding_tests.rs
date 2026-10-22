@@ -4,7 +4,7 @@ use serde_json::json;
 
 fn source(responses: &[&str]) -> LibraryScriptedSource {
     LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "p".into(),
             model_id: "m".into(),
         },

@@ -98,7 +98,7 @@ async fn observed_join(
     source: OwnedScopeSource,
     mode: Mode,
 ) {
-    let resources = crabber::extension::ToolResourceOwner::new();
+    let resources = crabber_extension::ToolResourceOwner::new();
     let scope = resources.clone();
     let mut task = OwnedTaskRegistration::register(source, move || async move {
         scope.resources().spawn(async { Ok(()) }).unwrap();

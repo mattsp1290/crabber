@@ -1,5 +1,9 @@
 #[path = "../../crabber-session/src/event_persistence.rs"]
 mod event_persistence;
+// Facade-only abandonment journeys run in the source-embedding harness.
+macro_rules! facade_only_test_items {
+    ($($item:item)*) => { $($item)* };
+}
 // The source-embedding adapter retains the canonical read and negative domains.
 // Genuine opaque Pending transport remains native-crate-only.
 macro_rules! native_pending_initial_items {
