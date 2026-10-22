@@ -47,6 +47,34 @@ fn capture_json(gates: &mut Checks, arguments: &[&str], destination: PathBuf) {
     );
 }
 
+fn capture_native_binaries(gates: &mut Checks, directory: &Path, destination: PathBuf) {
+    let workspace = crate::workspace();
+    let mut compile = Command::new("cargo");
+    compile.current_dir(workspace).args([
+        "nextest",
+        "list",
+        "--workspace",
+        "--features",
+        FEATURES,
+        "--list-type",
+        "binaries-only",
+        "--message-format",
+        "json",
+        "--cargo-message-format",
+        "json-render-diagnostics",
+    ]);
+    gates.captured_native(
+        workspace,
+        compile,
+        directory.join("native-artifacts.jsonl"),
+        move |output| {
+            let value = crate::native_artifacts::summary(&output.stdout);
+            fs::write(&destination, serde_json::to_vec(&value).unwrap())
+                .expect("persist canonical native build metadata");
+        },
+    );
+}
+
 pub(crate) fn schedule(environment: Vec<(String, String)>, directory: &Path) -> Checks {
     let workspace = crate::workspace();
     let mut gates = Checks::required(environment);
@@ -214,21 +242,7 @@ fn behavior_graph(gates: &mut Checks, directory: &Path) {
         &["metadata", "--format-version", "1", "--features", FEATURES],
         cargo_metadata.clone(),
     );
-    capture_json(
-        gates,
-        &[
-            "nextest",
-            "list",
-            "--workspace",
-            "--features",
-            FEATURES,
-            "--list-type",
-            "binaries-only",
-            "--message-format",
-            "json",
-        ],
-        binaries.clone(),
-    );
+    capture_native_binaries(gates, directory, binaries.clone());
     // Compile tests first so Cargo can schedule library and test targets
     // together. Building every normal CLI first would serialize those builds
     // unnecessarily when a workspace library changed. CLI-only outputs still

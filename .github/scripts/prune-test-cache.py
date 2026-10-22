@@ -23,7 +23,11 @@ def within(root, path):
     return path.resolve()
 
 
-def inventory(root, revision, directory, audit=None):
+class IncompleteDiscovery(ValueError):
+    pass
+
+
+def run_inventory(root, revision, directory):
     """Bind native discovery to the supplied terminal run, never a latest glob."""
     qualification = directory / 'qualification'
     if qualification.exists():
@@ -56,6 +60,11 @@ def inventory(root, revision, directory, audit=None):
     manifest_dir = within(root, phases['fixture_metrics']).parent
     if manifest_dir.parent != root / 'target/test-performance':
         raise ValueError('unexpected complete manifest directory')
+    return report, phases_path, phases, manifest_dir
+
+
+def inventory(root, revision, directory, audit=None):
+    _, phases_path, phases, manifest_dir = run_inventory(root, revision, directory)
     gates = phases['gates']
     compiled = [g for g in gates if g.get('argv', [])[:4] == ['cargo', 'nextest', 'list', '--workspace']
                 and '--list-type' in g['argv'] and 'binaries-only' in g['argv']]
@@ -64,7 +73,7 @@ def inventory(root, revision, directory, audit=None):
     coverage = [g for g in gates if g['id'] == 'required-coverage-and-features']
     if any(len(items) != 1 or items[0]['status'] != 'passed'
            for items in [compiled, listed, coverage]):
-        raise ValueError('current native discovery and coverage did not complete')
+        raise IncompleteDiscovery('current native discovery and coverage did not complete')
     args = listed[0]['argv']
     metadata_path = within(root, args[args.index('--cargo-metadata') + 1])
     binaries_path = within(root, args[args.index('--binaries-metadata') + 1])
@@ -94,6 +103,176 @@ def inventory(root, revision, directory, audit=None):
                              for p in [phases_path, metadata_path, binaries_path]},
                      retained_paths=sorted(str(p.relative_to(root)) for p in keep))
     return target, packages.values(), keep
+
+
+FINGERPRINT_CONTEXT = ('rustc', 'target', 'profile', 'path', 'features',
+                       'declared_features', 'rustflags', 'config', 'compile_kind')
+
+
+def fingerprint_context(path):
+    if any(parent.is_symlink() for parent in [path, path.parent, path.parent.parent]):
+        raise ValueError('native fingerprint context must not use symlinks')
+    value = read_json(path)
+    if not all(key in value for key in FINGERPRINT_CONTEXT):
+        raise ValueError('incomplete native fingerprint context')
+    return {key: value[key] for key in FINGERPRINT_CONTEXT}
+
+
+def partial_inputs(root, revision, directory):
+    """Bind the safe journal to one terminal, pinned native build."""
+    report, phases_path, phases, manifest = run_inventory(root, revision, directory)
+    builds = [g for g in phases['gates']
+              if g.get('argv', [])[:4] == ['cargo', 'nextest', 'list', '--workspace']]
+    if len(builds) != 1:
+        raise ValueError('no unique native build')
+    build = builds[0]
+    features = build.get('features')
+    expected = ['cargo', 'nextest', 'list', '--workspace', '--features', features,
+                '--list-type', 'binaries-only', '--message-format', 'json',
+                '--cargo-message-format', 'json-render-diagnostics']
+    if (not isinstance(features, str) or build['argv'] != expected
+            or build['status'] not in {'failed', 'cancelled', 'passed'}):
+        raise ValueError('no supported streamed native build')
+    journal = within(root, build.get('native_artifacts', ''))
+    if journal != manifest / 'native-artifacts.jsonl':
+        raise ValueError('native artifact journal differs from this build')
+    raw = journal.read_bytes()
+    if not raw.endswith(b'\n'):
+        raise ValueError('native artifact reader did not finish')
+    records = [json.loads(line) for line in raw.splitlines()]
+    if (len(records) < 2 or records[0].get('kind') != 'header'
+            or records[-1].get('kind') != 'reader-finished'
+            or records[-1].get('invalid') is not False):
+        raise ValueError('native artifact stream is incomplete or invalid')
+    header = records[0]
+    metadata_path = manifest / 'cargo-metadata.json'
+    metadata = read_json(metadata_path)
+    target = root / 'target'
+    if (header.get('version') != 1 or header.get('workspace_root') != str(root)
+            or header.get('source') != phases['source']
+            or header.get('argv') != expected
+            or header.get('metadata_sha256') != hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+            or metadata['workspace_root'] != str(root) or metadata['target_directory'] != str(target)):
+        raise ValueError('native artifact provenance differs from the current run')
+    metadata_builds = [g for g in phases['gates'] if g.get('argv') ==
+                       ['cargo', 'metadata', '--format-version', '1', '--features', features]
+                       and g['status'] == 'passed']
+    version_checks = [g for g in phases['gates'] if g.get('argv') ==
+                      ['cargo', 'nextest', '--version'] and g['status'] == 'passed']
+    if len(metadata_builds) != 1 or len(version_checks) != 1:
+        raise ValueError('native metadata or pinned runner was not verified')
+    profile = header.get('profile', {})
+    if (profile.get('CARGO_PROFILE_DEV_DEBUG') != '0'
+            or profile.get('CARGO_PROFILE_TEST_DEBUG') != '0'
+            or profile.get('CARGO_BUILD_TARGET') is not None
+            or profile.get('CARGO_BUILD_BUILD_DIR') is not None):
+        raise ValueError('unsupported native build profile or target')
+    if any(profile.get(key) != value for key, value in report['profile'].items()):
+        raise ValueError('native profile differs from launcher profile')
+    host = re.search(r'^host: (\S+)$', phases['source'].get('rustc', ''), re.M)
+    machine = {'x86_64': 62, 'aarch64': 183}.get(host[1].split('-')[0]) if host else None
+    if machine is None:
+        raise ValueError('unsupported native host')
+    return phases_path, manifest, build, journal, metadata, target, records, machine
+
+
+def observed_units(root, target, metadata, records, machine):
+    """Keep all emitted paths; ambiguity removes the whole pair's authority."""
+    packages = {p['id']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
+    nodes = {n['id']: n for n in metadata['resolve']['nodes']}
+    keep, blocked, observed = set(), set(), {}
+    for record in records[1:-1]:
+        if record.get('kind') != 'artifact':
+            raise ValueError('unexpected native artifact record')
+        package = packages.get(record.get('package_id'))
+        if package is None:
+            raise ValueError('artifact is not a workspace package')
+        info = record.get('target', {})
+        name = info.get('name')
+        pair = (package['id'], name)
+        executable = within(root, record.get('executable', ''))
+        if record.get('profile', {}).get('test') is False:
+            if executable.parent == target / 'debug/deps' and executable.is_file():
+                keep.add(executable)
+            continue
+        if executable.parent != target / 'debug/deps' or not executable.is_file():
+            blocked.add(pair)
+            continue
+        keep.add(executable)
+        targets = [t for t in package['targets'] if t.get('test') and
+                   all(t.get(key) == info.get(key) for key in ['name', 'kind', 'src_path'])]
+        signature = record.get('profile')
+        if (len(targets) != 1 or info.get('kind') not in [['lib'], ['bin'], ['test']]
+                or signature != {'opt_level': '0', 'debuginfo': 0, 'debug_assertions': True,
+                                 'overflow_checks': True, 'test': True}
+                or not isinstance(record.get('fresh'), bool)
+                or not isinstance(record.get('features'), list)
+                or record['features'] != sorted(nodes[package['id']]['features'])):
+            blocked.add(pair)
+            continue
+        match = re.fullmatch(re.escape(name.replace('-', '_')) + r'-([0-9a-f]{16})', executable.name)
+        label = 'integration-test' if info['kind'] == ['test'] else info['kind'][0]
+        if match is None:
+            blocked.add(pair)
+            continue
+        marker = target / 'debug/.fingerprint' / (package['name'] + '-' + match[1]) / ('test-' + label + '-' + name.replace('-', '_') + '.json')
+        try:
+            context = fingerprint_context(marker)
+            with executable.open('rb') as stream:
+                elf = stream.read(20)
+        except (OSError, ValueError):
+            blocked.add(pair)
+            continue
+        if (len(elf) < 20 or elf[:6] != b'\x7fELF\x02\x01'
+                or int.from_bytes(elf[18:20], 'little') != machine
+                or not executable.stat().st_mode & 0o111
+                or json.loads(context['features']) != record['features']):
+            blocked.add(pair)
+            continue
+        identity = (info, signature, record['features'], context)
+        previous = observed.get(pair)
+        if previous is not None and (previous['identity'] != identity or previous['path'] != executable):
+            blocked.add(pair)
+        else:
+            observed[pair] = {'package': package, 'target': targets[0], 'identity': identity,
+                              'context': context, 'path': executable, 'label': label}
+    return keep, blocked, observed
+
+
+def partial_candidates(root, revision, directory, audit):
+    """Only equivalent old variants of individually observed native test units."""
+    phases_path, manifest, build, journal, metadata, target, records, machine = partial_inputs(root, revision, directory)
+    keep, blocked, observed = observed_units(root, target, metadata, records, machine)
+    obsolete, eligible = [], []
+    for pair, unit in observed.items():
+        if pair in blocked:
+            continue
+        package = dict(unit['package'], targets=[unit['target']])
+        # The completed current test unit supersedes old dependency/source
+        # generations in this exact context. Other features, profiles, source
+        # paths, flags and native compilation contexts remain untouched.
+        for path, size in candidates(target, [package], keep):
+            suffix = path.name.rsplit('-', 1)[1]
+            marker = target / 'debug/.fingerprint' / (package['name'] + '-' + suffix) / ('test-' + unit['label'] + '-' + unit['target']['name'].replace('-', '_') + '.json')
+            try:
+                equivalent = fingerprint_context(marker) == unit['context']
+            except (OSError, ValueError):
+                equivalent = False
+            if equivalent:
+                obsolete.append((path, size))
+        eligible.append({'package_id': pair[0], 'target': unit['target'],
+                         'current_executable': str(unit['path'].relative_to(root)),
+                         'fingerprint_context': unit['context']})
+    if not eligible:
+        raise ValueError('no unambiguous completed native test units')
+    audit.update(mode='partial-artifacts', revision=revision, build_status=build['status'],
+                 workspace_root=str(root), manifest_directory=str(manifest),
+                 inputs={str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                         for p in [phases_path, manifest / 'cargo-metadata.json', journal]},
+                 retained_paths=sorted(str(p.relative_to(root)) for p in keep),
+                 eligible_units=eligible, blocked_pairs=sorted(blocked),
+                 unknown_pairs_retained=True, qualified=False)
+    return sorted(set(obsolete))
 
 
 def candidates(target, packages, keep):
@@ -167,10 +346,14 @@ def main():
         revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
         if subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip():
             raise ValueError('checkout is not clean')
-        target, packages, keep = inventory(root, revision, directory, result)
-        obsolete = candidates(target, packages, keep)
+        try:
+            target, packages, keep = inventory(root, revision, directory, result)
+            obsolete = candidates(target, packages, keep)
+            result.update(mode='complete-discovery', retained_executables=len(keep))
+        except IncompleteDiscovery:
+            obsolete = partial_candidates(root, revision, directory, result)
         result.update(status='applied' if args.apply else 'dry-run', revision=revision,
-                      retained_executables=len(keep), candidate_bytes=sum(n for _, n in obsolete),
+                      candidate_bytes=sum(n for _, n in obsolete),
                       executables=[str(p.relative_to(root)) for p, _ in obsolete])
         if args.apply:
             remove_obsolete(result, obsolete)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise provenance refusal and executable-only cache pruning."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -70,6 +71,141 @@ class CachePruneTests(unittest.TestCase):
     def selected(self):
         target, packages, keep = prune.inventory(self.root, 'revision', self.run)
         return prune.candidates(target, packages, keep)
+
+    def partial_mode(self):
+        self.package['targets'][0]['src_path'] = str(self.root / 'tests/contract.rs')
+        metadata = prune.read_json(self.manifest / 'cargo-metadata.json')
+        metadata['packages'] = [self.package]
+        metadata['resolve'] = {'nodes': [{'id': self.package['id'], 'features': []}]}
+        self.write(self.manifest / 'cargo-metadata.json', metadata)
+        for path in [self.kept, self.old]:
+            elf = bytearray(64)
+            elf[:6] = b'\x7fELF\x02\x01'
+            elf[18:20] = (62).to_bytes(2, 'little')
+            path.write_bytes(elf)
+            suffix = path.name.rsplit('-', 1)[1]
+            self.write(self.debug / '.fingerprint' / ('example-package-' + suffix) /
+                       'test-integration-test-contract.json', {
+                           'rustc': 1, 'target': 2, 'profile': 3, 'path': 4,
+                           'features': '[]', 'declared_features': '[]', 'rustflags': [],
+                           'config': 5, 'compile_kind': 0, 'deps': [], 'local': []})
+        self.phases['source']['rustc'] = 'rustc pinned\nhost: x86_64-unknown-linux-gnu\n'
+        compile_gate = self.phases['gates'][0]
+        compile_gate.update(status='cancelled', features='xtask/postgres-check', argv=[
+            'cargo', 'nextest', 'list', '--workspace', '--features', 'xtask/postgres-check',
+            '--list-type', 'binaries-only', '--message-format', 'json',
+            '--cargo-message-format', 'json-render-diagnostics'],
+            native_artifacts=str(self.manifest / 'native-artifacts.jsonl'))
+        self.phases['gates'] += [
+            {'status': 'passed', 'argv': ['cargo', 'metadata', '--format-version', '1',
+                                        '--features', 'xtask/postgres-check']},
+            {'status': 'passed', 'argv': ['cargo', 'nextest', '--version']}]
+        self.report['profile'] = {'CARGO_BUILD_JOBS': '4', 'CARGO_INCREMENTAL': '0',
+                                  'CARGO_PROFILE_DEV_DEBUG': '0', 'CARGO_PROFILE_TEST_DEBUG': '0'}
+        self.header = {'kind': 'header', 'version': 1, 'workspace_root': str(self.root),
+                       'source': self.phases['source'], 'argv': compile_gate['argv'],
+                       'metadata_sha256': hashlib.sha256((self.manifest / 'cargo-metadata.json').read_bytes()).hexdigest(),
+                       'profile': dict(self.report['profile'], CARGO_BUILD_TARGET=None,
+                                       CARGO_BUILD_BUILD_DIR=None)}
+        self.artifact = {'kind': 'artifact', 'package_id': self.package['id'],
+                         'target': {k: self.package['targets'][0][k] for k in ['name', 'kind', 'src_path']},
+                         'profile': {'opt_level': '0', 'debuginfo': 0, 'debug_assertions': True,
+                                     'overflow_checks': True, 'test': True},
+                         'features': [], 'executable': str(self.kept), 'fresh': True}
+        self.footer = {'kind': 'reader-finished', 'invalid': False, 'truncated_tail': False}
+        self.persist()
+        self.partial_journal()
+
+    def partial_journal(self, records=None):
+        records = records if records is not None else [self.artifact]
+        (self.manifest / 'native-artifacts.jsonl').write_text(
+            ''.join(json.dumps(row) + '\n' for row in [self.header, *records, self.footer]))
+
+    def partial_selected(self):
+        return prune.partial_candidates(self.root, 'revision', self.run, {})
+
+    def test_partial_build_prunes_only_observed_unit_and_keeps_unknowns(self):
+        self.partial_mode()
+        unknown = self.executable('3333333333333333', name='unbuilt')
+        self.package['targets'].append({'name': 'unbuilt', 'kind': ['test'], 'test': True,
+                                       'src_path': str(self.root / 'tests/unbuilt.rs')})
+        metadata = prune.read_json(self.manifest / 'cargo-metadata.json')
+        metadata['packages'] = [self.package]
+        self.write(self.manifest / 'cargo-metadata.json', metadata)
+        self.header['metadata_sha256'] = hashlib.sha256((self.manifest / 'cargo-metadata.json').read_bytes()).hexdigest()
+        self.partial_journal()
+        self.assertEqual([p for p, _ in self.partial_selected()], [self.old])
+        self.assertTrue(unknown.exists())
+        self.assertTrue(self.kept.exists())
+        # A dependency-generation change is not a second required feature or
+        # profile: the completed current unit supersedes only its old context.
+        marker = self.debug / '.fingerprint/example-package-2222222222222222/test-integration-test-contract.json'
+        value = prune.read_json(marker)
+        value['deps'] = ['older dependency generation']
+        self.write(marker, value)
+        self.assertEqual([p for p, _ in self.partial_selected()], [self.old])
+
+    def test_partial_build_keeps_other_fingerprint_contexts_and_normal_aliases(self):
+        self.partial_mode()
+        marker = self.debug / '.fingerprint/example-package-2222222222222222/test-integration-test-contract.json'
+        value = prune.read_json(marker)
+        for key, different in [('features', '["other"]'), ('profile', 99), ('rustflags', ['--cfg=other']), ('path', 99)]:
+            changed = dict(value, **{key: different})
+            self.write(marker, changed)
+            self.assertEqual(self.partial_selected(), [])
+        self.write(marker, value)
+        os.link(self.old, self.debug / 'normal-cli')
+        self.assertEqual(self.partial_selected(), [])
+
+    def test_partial_build_rejects_stale_provenance_and_failed_reader(self):
+        self.partial_mode()
+        for key, invalid in [('metadata_sha256', 'stale'), ('workspace_root', '/other')]:
+            valid = self.header[key]
+            self.header[key] = invalid
+            self.partial_journal()
+            with self.assertRaises(ValueError):
+                self.partial_selected()
+            self.header[key] = valid
+        self.footer['invalid'] = True
+        self.partial_journal()
+        with self.assertRaises(ValueError):
+            self.partial_selected()
+        self.footer['invalid'] = False
+        self.partial_journal()
+        journal = self.manifest / 'native-artifacts.jsonl'
+        journal.write_text(journal.read_text().rsplit('\n', 2)[0] + '\n')
+        with self.assertRaises(ValueError):
+            self.partial_selected()
+        self.assertTrue(self.old.exists())
+
+    def test_partial_build_keeps_entire_ambiguous_pair(self):
+        self.partial_mode()
+        conflicting = dict(self.artifact, features=['another-context'])
+        self.partial_journal([self.artifact, conflicting])
+        with self.assertRaises(ValueError):
+            self.partial_selected()
+        self.assertTrue(self.old.exists())
+        self.assertTrue(self.kept.exists())
+
+    def test_partial_build_does_not_follow_current_fingerprint_directory_symlink(self):
+        self.partial_mode()
+        fingerprint = self.debug / '.fingerprint/example-package-1111111111111111'
+        detached = self.debug / 'detached-fingerprint'
+        fingerprint.rename(detached)
+        fingerprint.symlink_to(detached, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.partial_selected()
+        self.assertTrue(self.old.exists())
+
+    def test_partial_build_requires_completed_artifact_not_truncated_record(self):
+        self.partial_mode()
+        self.footer['truncated_tail'] = True
+        self.partial_journal()
+        self.assertEqual([p for p, _ in self.partial_selected()], [self.old])
+        self.partial_journal([])
+        with self.assertRaises(ValueError):
+            self.partial_selected()
+        self.assertTrue(self.old.exists())
 
     def test_keeps_current_and_removes_only_proven_obsolete_executable(self):
         library = self.debug / 'deps/libcontract.rlib'

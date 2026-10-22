@@ -12,6 +12,7 @@ mod complete;
 mod datadog;
 mod inventory;
 mod lease;
+mod native_artifacts;
 mod nextest;
 #[cfg(feature = "postgres-check")]
 mod postgres;

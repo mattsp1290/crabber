@@ -74,7 +74,7 @@ impl Options {
 enum Action {
     Command(Command),
     Internal(Box<dyn Fn(&Path)>),
-    Captured(Command, Box<dyn Fn(&Output)>),
+    Captured(Command, Box<dyn Fn(&Output)>, Option<PathBuf>),
 }
 
 pub(crate) struct GateCommand {
@@ -105,8 +105,13 @@ impl GateCommand {
                     },
                 )
             }
-            Action::Captured(command, validate) => {
-                let output = crate::process::output(command, signal).map_err(|error| {
+            Action::Captured(command, validate, journal) => {
+                let output = if let Some(path) = journal {
+                    crate::process::native_output(command, signal, path)
+                } else {
+                    crate::process::output(command, signal)
+                }
+                .map_err(|error| {
                     eprintln!(
                         "command {} could not start or be reaped: {error}",
                         self.inventory["id"]
@@ -305,7 +310,28 @@ impl Checks {
         if let Action::Command(command) =
             std::mem::replace(&mut gate.action, Action::Internal(Box::new(|_| {})))
         {
-            gate.action = Action::Captured(command, Box::new(validate));
+            gate.action = Action::Captured(command, Box::new(validate), None);
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn captured_native(
+        &mut self,
+        directory: &Path,
+        command: Command,
+        journal: PathBuf,
+        validate: impl Fn(&Output) + 'static,
+    ) {
+        self.captured(
+            directory,
+            command,
+            "successful canonical native build metadata",
+            validate,
+        );
+        let gate = self.gates.last_mut().unwrap();
+        gate.inventory["native_artifacts"] = json!(journal);
+        if let Action::Captured(_, _, path) = &mut gate.action {
+            *path = Some(journal);
         }
     }
 

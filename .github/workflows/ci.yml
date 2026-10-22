@@ -136,7 +136,8 @@ jobs:
       - name: Prune obsolete native test executables as CI maintenance
         if: always() && steps.cache.outcome == 'success'
         # Run only after the complete check or whole qualification protocol.
-        # Missing/incomplete current discovery skips deletion, retaining cache.
+        # Partial builds may prune only equivalent variants of completed units;
+        # absent or ambiguous current artifact evidence retains their cache.
         run: |
           directory="target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$directory"
@@ -174,6 +175,8 @@ jobs:
             target/test-performance/ci-*/**/*.json
             target/test-performance/complete-*/fixtures.jsonl
             target/test-performance/complete-*/tests.json
+            target/test-performance/complete-*/cargo-metadata.json
+            target/test-performance/complete-*/native-artifacts.jsonl
             target/test-performance/complete-*/boundary-features.json
             target/test-performance/complete-*/resource-groups.json
             target/test-performance/complete-*/*-version.txt

@@ -115,7 +115,7 @@ fn persist(path: Option<&Path>, report: &Value) -> std::io::Result<()> {
     Ok(())
 }
 
-fn source_identity() -> Value {
+pub(crate) fn source_identity() -> Value {
     let output = |program: &str, args: &[&str]| {
         std::process::Command::new(program)
             .args(args)

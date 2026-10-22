@@ -135,6 +135,23 @@ pub(crate) fn status(command: &mut Command, signal: &AtomicUsize) -> io::Result<
 }
 
 pub(crate) fn output(command: &mut Command, signal: &AtomicUsize) -> io::Result<Output> {
+    output_impl(command, signal, None)
+}
+
+pub(crate) fn native_output(
+    command: &mut Command,
+    signal: &AtomicUsize,
+    journal: &std::path::Path,
+) -> io::Result<Output> {
+    let journal = crate::native_artifacts::Journal::create(journal, command)?;
+    output_impl(command, signal, Some(journal))
+}
+
+fn output_impl(
+    command: &mut Command,
+    signal: &AtomicUsize,
+    journal: Option<crate::native_artifacts::Journal>,
+) -> io::Result<Output> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -147,7 +164,12 @@ pub(crate) fn output(command: &mut Command, signal: &AtomicUsize) -> io::Result<
             stream.read_to_end(&mut bytes).map(|_| bytes)
         })
     };
-    let stdout = reader(Box::new(child.stdout.take().unwrap()));
+    let stream = child.stdout.take().unwrap();
+    let stdout = if let Some(journal) = journal {
+        std::thread::spawn(move || journal.read(stream))
+    } else {
+        reader(Box::new(stream))
+    };
     let stderr = reader(Box::new(child.stderr.take().unwrap()));
     let status = wait(&mut child, signal);
     if status.is_err() && child.try_wait()?.is_none() {

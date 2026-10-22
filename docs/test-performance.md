@@ -756,3 +756,16 @@ audited. Real SQL fixtures, environment-dispatched SQL children and four tracing
 fixtures with inherited export-capture paths retain their previous routing.
 Backend limits, worker weights, test bodies and deadlines remain unchanged.
 Complete-check timing improvements require measurement.
+
+Native discovery now records a filtered journal of completed Cargo executable
+artifacts from the same supervised build. Successful discovery still requires
+the final canonical nextest inventory and all existing coverage gates. The
+journal excludes build-script environments, diagnostics and arbitrary payloads.
+After a terminal CI check, `partial-artifacts` cache maintenance may remove old
+executables only for an observed, unambiguous native test unit in the same
+compiler, target, profile, source path, feature and flag context. It retains all
+observed current outputs, unknown units, other contexts, normal binaries,
+libraries, fingerprints, dependency metadata and registry artifacts. Missing,
+invalid or ambiguous evidence preserves the affected cache. Partial maintenance
+does not qualify a check or create a complete-cache marker. Cache size, restore
+time and complete-check improvements remain unmeasured for this change.
