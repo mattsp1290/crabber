@@ -1,5 +1,5 @@
 use super::*;
-pub(crate) async fn run(store: &impl Store, arm: impl Fn(u8)) {
+pub(crate) async fn run(store: &dyn Store, arm: impl Fn(u8)) {
     for outcome in [
         AttemptRetirementOutcome::Failed,
         AttemptRetirementOutcome::Interrupted,
@@ -7,7 +7,7 @@ pub(crate) async fn run(store: &impl Store, arm: impl Fn(u8)) {
         one(store, &arm, outcome).await;
     }
 }
-async fn one(store: &impl Store, arm: &impl Fn(u8), outcome: AttemptRetirementOutcome) {
+async fn one(store: &dyn Store, arm: &impl Fn(u8), outcome: AttemptRetirementOutcome) {
     let (admitted, _, _, planned) = crate::phase_contract::fixture(store).await;
     let request = uncertainty(
         &admitted,

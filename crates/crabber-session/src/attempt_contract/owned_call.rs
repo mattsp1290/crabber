@@ -10,7 +10,7 @@ use crabber_core::{
 };
 use serde_json::json;
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let admitted = crate::public_state_contract::admit(store, clock.now()).await;
     let execution = store.execution(admitted.fence).await.unwrap();
     let (reserved, authority) = applied(

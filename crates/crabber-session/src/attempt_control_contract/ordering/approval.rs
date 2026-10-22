@@ -5,7 +5,7 @@ use super::{
     result_order, retirement, source_event,
 };
 #[allow(clippy::too_many_lines)] // One real approval claim and ordered parent retirement journey.
-pub(super) async fn run(store: &impl Store, clock: &ManualClock, later_turn: bool) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock, later_turn: bool) {
     let mut f = crate::approval_contract::fixture::staged(store, clock).await;
     f.batch.calls.reverse();
     let source = crabber_core::TurnId::new();

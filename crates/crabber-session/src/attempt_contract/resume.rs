@@ -9,7 +9,7 @@ use crabber_core::{Clock, ControlId, ManualClock, RunStatus, Usage};
 use serde_json::json;
 
 async fn suspended(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
 ) -> (
     crate::AdmitOutcome,
@@ -78,7 +78,7 @@ async fn suspended(
     );
     (admitted, execution, owner, finished)
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     assert_eq!(
         store
             .latest_execution_attempt(&crabber_core::RunId::new())
@@ -90,7 +90,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     running_work_blocks_new_generation(store, clock).await;
     legacy_pause_cannot_gain_attempt_authority(store, clock).await;
 }
-async fn lifecycle(store: &impl Store, clock: &ManualClock) {
+async fn lifecycle(store: &dyn Store, clock: &ManualClock) {
     let (admitted, old_execution, old_owner, finished) = suspended(store, clock).await;
     let current = store
         .latest_execution_attempt(&admitted.run.id)
@@ -213,7 +213,7 @@ async fn begin_winner(
 }
 
 pub(super) async fn faults(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     inject: &impl Fn(super::FaultPoint),
 ) {
@@ -303,7 +303,7 @@ pub(super) async fn faults(
     }
 }
 
-async fn legacy_pause_cannot_gain_attempt_authority(store: &impl Store, clock: &ManualClock) {
+async fn legacy_pause_cannot_gain_attempt_authority(store: &dyn Store, clock: &ManualClock) {
     let admitted = crate::public_state_contract::admit(store, clock.now()).await;
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
     execution
@@ -358,7 +358,7 @@ async fn legacy_pause_cannot_gain_attempt_authority(store: &impl Store, clock: &
     );
 }
 
-async fn running_work_blocks_new_generation(store: &impl Store, clock: &ManualClock) {
+async fn running_work_blocks_new_generation(store: &dyn Store, clock: &ManualClock) {
     let (admitted, _, _, previous) = suspended(store, clock).await;
     let fence = store
         .claim_expired_run(&admitted.run.id, "barrier-host")

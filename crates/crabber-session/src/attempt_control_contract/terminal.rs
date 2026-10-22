@@ -10,7 +10,7 @@ pub(crate) struct Fixture {
     pub audit: EventRecord,
     pub older: EventRecord,
 }
-pub(crate) async fn fixture(store: &impl Store, outcome: AttemptRetirementOutcome) -> Fixture {
+pub(crate) async fn fixture(store: &dyn Store, outcome: AttemptRetirementOutcome) -> Fixture {
     let (admitted, execution, _, planned) = crate::phase_contract::fixture(store).await;
     let status = match outcome {
         AttemptRetirementOutcome::Failed => RunStatus::Failed,
@@ -114,7 +114,7 @@ fn verify_changed(
     )
     .unwrap_err()
 }
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     for outcome in [
         AttemptRetirementOutcome::Failed,
         AttemptRetirementOutcome::Interrupted,

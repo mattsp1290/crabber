@@ -5,7 +5,7 @@ use crate::{
 };
 use crabber_core::{Clock, ControlId, ManualClock};
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let admitted = crate::public_state_contract::admit(store, clock.now()).await;
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
     let reserve = reserve(store.session_revision(&admitted.session.id).await.unwrap());
@@ -94,7 +94,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     .await;
 }
 async fn deny_started_reclaim(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     run: &crabber_core::RunId,
     session: &crabber_core::SessionId,

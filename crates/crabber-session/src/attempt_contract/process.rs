@@ -50,7 +50,7 @@ pub(crate) struct Fixture {
     pub request: AttemptMutation,
     pub mode: Mode,
 }
-pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
+pub(crate) async fn pending(store: &dyn Store, mode: Mode) -> Fixture {
     if matches!(mode, Mode::ReserveBound) {
         let admitted = super::bound::admit(store, time::OffsetDateTime::now_utc()).await;
         let request =
@@ -92,7 +92,7 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
         mode,
     }
 }
-pub(crate) async fn write(store: &impl Store, fixture: &Fixture) -> Result<Outcome, Error> {
+pub(crate) async fn write(store: &dyn Store, fixture: &Fixture) -> Result<Outcome, Error> {
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
     let authority = prepare_authority(execution.as_ref(), fixture).await;
     apply(execution.as_ref(), fixture, authority).await
@@ -158,7 +158,7 @@ fn prior_reserve(fixture: &Fixture) -> AttemptMutation {
         },
     }
 }
-pub(crate) async fn prepare_loss(store: &impl Store, mode: Mode, inject: impl Fn(u8)) -> Fixture {
+pub(crate) async fn prepare_loss(store: &dyn Store, mode: Mode, inject: impl Fn(u8)) -> Fixture {
     let fixture = pending(store, mode).await;
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
     let authority = prepare_authority(execution.as_ref(), &fixture).await;
@@ -172,7 +172,7 @@ pub(crate) async fn prepare_loss(store: &impl Store, mode: Mode, inject: impl Fn
     inject(0);
     fixture
 }
-pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
+pub(crate) async fn verify_loss(store: &dyn Store, fixture: Fixture) {
     if fixture.mode.conclusion() {
         conclusion::verify_loss(store, fixture).await;
         return;
@@ -318,7 +318,7 @@ pub(crate) fn spawn(
     Child(command.spawn().unwrap())
 }
 
-pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
+pub(crate) async fn uncommitted(store: &dyn Store, fixture: &Fixture) {
     assert_eq!(
         store
             .lookup_attempt_mutation(&fixture.session, &fixture.request.id)
@@ -374,7 +374,7 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
     }
 }
 pub(crate) async fn retry_crash(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &crabber_core::ManualClock,
     fixture: &Fixture,
 ) {

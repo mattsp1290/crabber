@@ -119,7 +119,7 @@ pub async fn run_fault_contract(
     super::resume::faults(store, clock, &inject).await;
 }
 pub(crate) async fn fixture(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     case: Case,
 ) -> (

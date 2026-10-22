@@ -3,7 +3,7 @@ use crate::{
     AttemptRetirement, PhaseCommand, PhaseSettlement, PhaseStart, PhaseWriteAuthority, Store,
 };
 use crabber_core::{MessageId, PartId, PhaseId, ToolCallId, ToolResultStatus};
-pub(crate) async fn ready(store: &impl Store) -> (AttemptRetirement, ToolCallId, PhaseId) {
+pub(crate) async fn ready(store: &dyn Store) -> (AttemptRetirement, ToolCallId, PhaseId) {
     let (admitted, execution, owner, planned) = crate::phase_contract::fixture(store).await;
     let (claimed, worker) = crate::phase_contract::applied(
         execution
@@ -61,7 +61,7 @@ pub(crate) async fn ready(store: &impl Store) -> (AttemptRetirement, ToolCallId,
         target.id,
     )
 }
-pub(crate) async fn refused(store: &impl Store, request: AttemptRetirement) {
+pub(crate) async fn refused(store: &dyn Store, request: AttemptRetirement) {
     let before = super::process::evidence(
         store,
         &crate::attempt_control::Control::Retire(request.clone()),
@@ -89,7 +89,7 @@ pub(crate) async fn refused(store: &impl Store, request: AttemptRetirement) {
 }
 
 pub(crate) async fn claimed(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &crabber_core::ManualClock,
 ) -> (AttemptRetirement, crabber_core::ContinuationId) {
     let p = crate::approval_contract::recovery::prepare(store, clock).await;

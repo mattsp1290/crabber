@@ -29,7 +29,7 @@ pub(super) fn request(fixture: &Fixture) -> AttemptConclusion {
         elapsed: std::time::Duration::from_millis(1),
     }
 }
-pub(super) async fn verify_loss(store: &impl Store, fixture: Fixture) {
+pub(super) async fn verify_loss(store: &dyn Store, fixture: Fixture) {
     let conclusion = request(&fixture);
     let receipt = store
         .lookup_attempt_mutation(&fixture.session, &fixture.request.id)

@@ -16,7 +16,7 @@ pub(crate) struct Fixture {
     pub call: ToolCallId,
     pub revision: SessionRevision,
 }
-pub(crate) async fn fixture(store: &impl Store) -> Fixture {
+pub(crate) async fn fixture(store: &dyn Store) -> Fixture {
     let admitted =
         crate::public_state_contract::admit(store, time::OffsetDateTime::now_utc()).await;
     let execution = store.execution(admitted.fence.clone()).await.unwrap();

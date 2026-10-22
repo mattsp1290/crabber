@@ -5,7 +5,7 @@ use super::{
     PhaseWriteAuthority, RunStatus, Store, UncertainPhaseChoice, fresh, read_calls, retirement,
     uncertainty,
 };
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     for result in [false, true] {
         for cleanup_first in [false, true] {
             reconcile(store, result, cleanup_first).await;
@@ -13,7 +13,7 @@ pub(super) async fn run(store: &impl Store) {
     }
 }
 #[allow(clippy::too_many_lines)] // Both result/cleanup orders share one exact lifecycle fixture.
-async fn reconcile(store: &impl Store, failed: bool, cleanup_first: bool) {
+async fn reconcile(store: &dyn Store, failed: bool, cleanup_first: bool) {
     let (admitted, execution, owner, planned) = crate::phase_contract::fixture(store).await;
     let (claimed, worker) = crate::phase_contract::applied(
         execution

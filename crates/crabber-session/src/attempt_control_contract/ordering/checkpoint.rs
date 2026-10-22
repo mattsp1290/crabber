@@ -5,7 +5,7 @@ use super::{
     claim, fresh, historical_turn, result_order, retirement,
 };
 #[allow(clippy::too_many_lines)] // One real suspended/resumed checkpoint retirement journey.
-pub(super) async fn run(store: &impl Store, already_closed: bool) {
+pub(super) async fn run(store: &dyn Store, already_closed: bool) {
     let (admitted, execution, owner, planned) = crate::phase_contract::fixture(store).await;
     let mut order = vec![
         ToolCallId::from(format!("z-checkpoint/{}", admitted.run.id)),

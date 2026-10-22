@@ -76,7 +76,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     expiry(&store, &clock).await;
 }
 #[allow(clippy::too_many_lines)] // One end-to-end replay/racing controller contract.
-async fn pending_and_replay(store: &impl Store) {
+async fn pending_and_replay(store: &dyn Store) {
     let (admitted, execution, owner, planned) = crate::phase_contract::fixture(store).await;
     let source_turn = crabber_core::TurnId::new();
     execution
@@ -236,7 +236,7 @@ async fn pending_and_replay(store: &impl Store) {
     ));
 }
 pub(crate) async fn read_calls(
-    store: &impl Store,
+    store: &dyn Store,
     session: &crabber_core::SessionId,
 ) -> Vec<crabber_core::ToolCallRecord> {
     let SnapshotOutcome::Page(page) = store
@@ -258,7 +258,7 @@ pub(crate) async fn read_calls(
     };
     page.tool_calls
 }
-async fn expiry(store: &impl Store, clock: &ManualClock) {
+async fn expiry(store: &dyn Store, clock: &ManualClock) {
     let (admitted, _, _, planned) = crate::phase_contract::fixture(store).await;
     let mut request = uncertainty(
         &admitted,

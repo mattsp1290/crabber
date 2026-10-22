@@ -9,13 +9,13 @@ use crabber_core::{
     AttemptId, ContentBlock, ControlId, EventKind, EventRecord, ManualClock, Role, ToolCallId,
     ToolCallRecord, ToolCallStatus, Usage,
 };
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     approval::run(store, clock, false).await;
     approval::run(store, clock, true).await;
     checkpoint::run(store, false).await;
     checkpoint::run(store, true).await;
 }
-async fn result_order(store: &impl Store, session: &crabber_core::SessionId) -> Vec<ToolCallId> {
+async fn result_order(store: &dyn Store, session: &crabber_core::SessionId) -> Vec<ToolCallId> {
     store
         .list_all_messages(session)
         .await

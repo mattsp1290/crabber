@@ -58,7 +58,7 @@ fn applied(result: Outcome) -> (AttemptReceipt, Option<AttemptAuthority>) {
     };
     (receipt, authority)
 }
-async fn lifecycle(store: &impl Store) {
+async fn lifecycle(store: &dyn Store) {
     let admitted = crate::public_state_contract::admit(store, OffsetDateTime::UNIX_EPOCH).await;
     let execution = store.execution(admitted.fence).await.unwrap();
     let request = reserve(store.session_revision(&admitted.session.id).await.unwrap());
@@ -146,7 +146,7 @@ async fn lifecycle(store: &impl Store) {
     reconcile(store, execution.as_ref(), &request, &reserved, &finished).await;
 }
 async fn reconcile(
-    store: &impl Store,
+    store: &dyn Store,
     execution: &dyn crate::ExecutionStore,
     request: &AttemptMutation,
     reserved: &AttemptReceipt,
@@ -197,7 +197,7 @@ async fn reconcile(
         3
     );
 }
-async fn competing_begin(store: &impl Store) {
+async fn competing_begin(store: &dyn Store) {
     let admitted = crate::public_state_contract::admit(store, OffsetDateTime::UNIX_EPOCH).await;
     let execution = store.execution(admitted.fence).await.unwrap();
     let request = reserve(store.session_revision(&admitted.session.id).await.unwrap());
