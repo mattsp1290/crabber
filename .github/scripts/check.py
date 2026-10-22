@@ -153,7 +153,10 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
                     supervisors = []
                     for pid, row in live.items():
                         try:
-                            if Path(f'/proc/{pid}/exe').resolve().name == 'xtask':
+                            # Cargo can replace xtask during the full schedule;
+                            # the running inode then has Linux's deleted suffix.
+                            executable = Path(f'/proc/{pid}/exe').resolve().name
+                            if executable.removesuffix(' (deleted)') == 'xtask':
                                 supervisors.append((pid, row[1]))
                         except OSError:
                             pass

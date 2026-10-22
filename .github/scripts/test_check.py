@@ -129,28 +129,37 @@ class DeadlineTests(unittest.TestCase):
                     except ChildProcessError:
                         pass
 
-    def test_deadline_during_child_test_allows_supervisor_cleanup(self):
-        # An executable named xtask exercises the launcher's cooperative
-        # handoff rather than its pre-compiler kill-all path. The running child
-        # acknowledges cancellation before its parent writes the cleanup marker.
+    def test_unlinked_supervisor_retains_cooperative_cleanup(self):
+        # The full schedule rebuilds xtask while its original inode is running.
+        # Linux then exposes /proc/PID/exe as "xtask (deleted)". Only the parent
+        # may initiate cancellation; signalling its child directly is observable.
         supervisor = self.root / 'xtask'
         shutil.copyfile(Path(sys.executable).resolve(), supervisor)
         supervisor.chmod(0o700)
         ready = self.root / 'test-ready'
         stopped = self.root / 'test-stopped'
+        unexpected = self.root / 'unexpected-termination'
         cleaned = self.root / 'fixture-cleaned'
-        child = (
-            'import pathlib,signal,sys,time; '
-            f'signal.signal(signal.SIGTERM,lambda *_:(pathlib.Path({str(stopped)!r}).write_text("stopped"),sys.exit(0))); '
-            f'pathlib.Path({str(ready)!r}).write_text("ready"); time.sleep(60)'
-        )
+        child = '\n'.join([
+            'import pathlib,signal,sys,time',
+            'def stop(*_):',
+            f'    pathlib.Path({str(stopped)!r}).write_text("stopped")',
+            '    time.sleep(.2)',
+            '    raise SystemExit(0)',
+            'signal.signal(signal.SIGUSR1,stop)',
+            f'signal.signal(signal.SIGTERM,lambda *_:pathlib.Path({str(unexpected)!r}).write_text("unexpected"))',
+            f'pathlib.Path({str(supervisor)!r}).unlink()',
+            f'pathlib.Path({str(ready)!r}).write_text("ready")',
+            'time.sleep(60)',
+        ])
         program = '\n'.join([
             'import pathlib,signal,subprocess,sys,time',
             f'p=subprocess.Popen({[sys.executable, '-I', '-S', '-B', '-c', child]!r})',
             'def cleanup(*_):',
-            '    p.terminate()',
+            '    p.send_signal(signal.SIGUSR1)',
             '    p.wait(timeout=.5)',
             f'    assert pathlib.Path({str(stopped)!r}).exists()',
+            f'    assert not pathlib.Path({str(unexpected)!r}).exists()',
             f'    pathlib.Path({str(cleaned)!r}).write_text("cleaned")',
             '    raise SystemExit(0)',
             'signal.signal(signal.SIGTERM,cleanup)',
