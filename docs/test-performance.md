@@ -695,3 +695,5 @@ must not be compared with the warm settings as test-only resource usage. See
 The whole-gate cold/warm qualification remains separate.
 
 The required bounded-snapshot CLI checks use `--smoke`: eight fixture messages still cross the seven-message page limit, preserve the event high-water mark, settle the tool relation, and pass the continuation into the actual durable child entrypoint. The native `bounded_snapshots` facade tests retain the same source-included journey with 1024 messages and the unchanged allocation proof over 512KiB/32MiB histories on Memory, SQLite and PostgreSQL. The default example continues running its full demonstration.
+
+The native pending-approval case is split into same-task, held-claim, held-recovery, malformed/replay and blocked-main families on every backend. These keep all original variant tables, effect/ownership assertions and deadlines. Each family gets a fresh Store and clock, as the independent pending-tool families already do. The earlier unoptimized PostgreSQL aggregate took76.664s; targeted serial and parallel validation of the split remains pending.

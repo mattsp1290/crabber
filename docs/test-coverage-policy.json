@@ -239,6 +239,41 @@
       "before": "Each CLI backend repeats the canonical 1024-message, 147-page and 512KiB/32MiB allocation histories already required in facade tests.",
       "after": "Required native facade tests keep the full fixture and allocation proof unchanged; CLI --smoke uses eight fixture messages and the same continuation, settled relation, invalidation, event-tail and actual cold-child assertions.",
       "rationale": "Facade tests source-include the exact journey.rs and still call journey with 1024 messages plus allocation_proof for every backend. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing; smoke keeps those actual executable child entrypoints and requires a multi-page continuation. No allocation or large-history detector is removed from the required native graph."
+    },
+    {
+      "id": "native-pending-approval-family-scheduling",
+      "disposition": "KEEP",
+      "state": "implemented-pending-validation",
+      "failure": "Approval completion, inspection and the actual main must share the original task; dropped ACK waiters, malformed claims and committed replay must never dispatch; blocked cleanup must retain the owner.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/approval_tests.rs",
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/approval_tests/faults.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_pending_approval_same_task",
+        "memory_pending_approval_held_claim",
+        "memory_pending_approval_held_recovery",
+        "memory_pending_approval_malformed_replay",
+        "memory_pending_approval_blocked_main",
+        "sqlite_pending_approval_same_task",
+        "sqlite_pending_approval_held_claim",
+        "sqlite_pending_approval_held_recovery",
+        "sqlite_pending_approval_malformed_replay",
+        "sqlite_pending_approval_blocked_main",
+        "postgres_pending_approval_same_task",
+        "postgres_pending_approval_held_claim",
+        "postgres_pending_approval_held_recovery",
+        "postgres_pending_approval_malformed_replay",
+        "postgres_pending_approval_blocked_main"
+      ],
+      "before": "One test per backend sequentially runs four keyed/unkeyed claim/recovery success histories, held complete/inspect/register/activate ACKs with both faults, all four malformed variants plus committed replay for each origin, and blocked-main cleanup; PostgreSQL took76.664s in the unoptimized full baseline.",
+      "after": "Five independently scheduled families per backend receive fresh Store and ManualClock state: same-task success, held claim, held recovery, malformed/replay and blocked main. Every original loop, fault variant, assertion and timeout is preserved.",
+      "rationale": "Each prepared history already creates a distinct session and PendingDriverTasks owner. No assertion depends on unrelated earlier family rows or absolute clock time. Fresh family fixtures therefore remove cross-family accumulation and permit normal service-group scheduling. Current PostgreSQL fixtures are already migrated; the dedicated current-schema/migration detectors remain required."
     }
   ],
   "required_behaviors": [

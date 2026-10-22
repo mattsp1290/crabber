@@ -4,22 +4,29 @@ use super::*;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-pub(super) async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
+pub(super) async fn held_contract<S: Store + 'static>(
+    store: Arc<S>,
+    clock: &ManualClock,
+    recovery: bool,
+) {
+    for stage in [
+        Stage::Complete,
+        Stage::Inspect,
+        Stage::Register,
+        Stage::Activate,
+    ] {
+        for fault in [false, true] {
+            held(store.clone(), clock, recovery, stage, fault).await;
+        }
+    }
+}
+
+pub(super) async fn malformed_contract<S: Store + 'static>(store: Arc<S>, clock: &ManualClock) {
     for recovery in [false, true] {
-        for stage in [
-            Stage::Complete,
-            Stage::Inspect,
-            Stage::Register,
-            Stage::Activate,
-        ] {
-            for fault in [false, true] {
-                held(store.clone(), &clock, recovery, stage, fault).await;
-            }
-        }
         for corruption in 0..4 {
-            malformed(store.clone(), &clock, recovery, corruption).await;
+            malformed(store.clone(), clock, recovery, corruption).await;
         }
-        replay(store.clone(), &clock, recovery).await;
+        replay(store.clone(), clock, recovery).await;
     }
 }
 async fn held<S: Store + 'static>(

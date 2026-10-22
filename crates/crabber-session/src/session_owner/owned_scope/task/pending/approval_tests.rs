@@ -10,7 +10,7 @@ use crate::successor_driver_contract::approval::pending::prepared;
 use crabber_core::ManualClock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
+async fn same_task<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
     let owner = PendingDriverTasks::default();
     for (recovery, unkeyed) in [(false, false), (true, false), (false, true), (true, true)] {
         let (context, original) = prepared(store.as_ref(), &clock, recovery, unkeyed).await;
@@ -104,55 +104,109 @@ async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
         ));
     }
     owner.wait_for_supervision().await;
-    Box::pin(faults::contract(store.clone(), clock.clone())).await;
-    faults::blocked_main(store, &clock).await;
 }
-#[tokio::test]
-async fn memory_pending_approval_same_task() {
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(crate::MemoryStore::with_clock(clock.clone())),
-        clock,
-    ))
-    .await;
+// Each family owns fresh storage and a clock; no other test establishes its state.
+#[derive(Clone, Copy)]
+enum Family {
+    SameTask,
+    HeldClaim,
+    HeldRecovery,
+    MalformedReplay,
+    BlockedMain,
 }
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn sqlite_pending_approval_same_task() {
-    let path = tempfile::tempdir().unwrap();
-    let database = path.path().join("pending-approval.sqlite");
-    crate::SqliteStore::migrate(&database).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(
-            crate::SqliteStore::connect(database)
-                .await
-                .unwrap()
-                .with_clock(clock.clone()),
-        ),
-        clock,
-    ))
-    .await;
-}
-#[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_pending_approval_same_task() {
-    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
-        crate::PostgresStore::migrate(&url).await.unwrap();
-        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-        Box::pin(contract(
-            Arc::new(
-                crate::PostgresStore::connect(&url)
-                    .await
-                    .unwrap()
-                    .with_clock(clock.clone()),
-            ),
-            clock,
-        ))
-        .await;
-    })
-    .await
-    .unwrap();
+async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>, family: Family) {
+    match family {
+        Family::SameTask => Box::pin(same_task(store, clock)).await,
+        Family::HeldClaim => Box::pin(faults::held_contract(store, &clock, false)).await,
+        Family::HeldRecovery => Box::pin(faults::held_contract(store, &clock, true)).await,
+        Family::MalformedReplay => Box::pin(faults::malformed_contract(store, &clock)).await,
+        Family::BlockedMain => Box::pin(faults::blocked_main(store, &clock)).await,
+    }
 }
+
+macro_rules! cases {
+    ($memory:ident, $sqlite:ident, $postgres:ident, $family:ident) => {
+        #[tokio::test]
+        async fn $memory() {
+            let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+            contract(
+                Arc::new(crate::MemoryStore::with_clock(clock.clone())),
+                clock,
+                Family::$family,
+            )
+            .await;
+        }
+        #[cfg(feature = "sqlite")]
+        #[tokio::test]
+        async fn $sqlite() {
+            let directory = tempfile::tempdir().unwrap();
+            let database = directory.path().join("pending-approval.sqlite");
+            crate::SqliteStore::migrate(&database).await.unwrap();
+            let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+            contract(
+                Arc::new(
+                    crate::SqliteStore::connect(database)
+                        .await
+                        .unwrap()
+                        .with_clock(clock.clone()),
+                ),
+                clock,
+                Family::$family,
+            )
+            .await;
+        }
+        #[cfg(feature = "postgres")]
+        #[tokio::test]
+        async fn $postgres() {
+            use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+            TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+                let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+                contract(
+                    Arc::new(
+                        crate::PostgresStore::connect(&url)
+                            .await
+                            .unwrap()
+                            .with_clock(clock.clone()),
+                    ),
+                    clock,
+                    Family::$family,
+                )
+                .await;
+            })
+            .await
+            .unwrap();
+        }
+    };
+}
+
+cases!(
+    memory_pending_approval_same_task,
+    sqlite_pending_approval_same_task,
+    postgres_pending_approval_same_task,
+    SameTask
+);
+cases!(
+    memory_pending_approval_held_claim,
+    sqlite_pending_approval_held_claim,
+    postgres_pending_approval_held_claim,
+    HeldClaim
+);
+cases!(
+    memory_pending_approval_held_recovery,
+    sqlite_pending_approval_held_recovery,
+    postgres_pending_approval_held_recovery,
+    HeldRecovery
+);
+cases!(
+    memory_pending_approval_malformed_replay,
+    sqlite_pending_approval_malformed_replay,
+    postgres_pending_approval_malformed_replay,
+    MalformedReplay
+);
+cases!(
+    memory_pending_approval_blocked_main,
+    sqlite_pending_approval_blocked_main,
+    postgres_pending_approval_blocked_main,
+    BlockedMain
+);
