@@ -81,14 +81,12 @@ pub async fn validated_claims(
     let kid = header
         .kid
         .ok_or(AuthError::Authentication("missing ID token key"))?;
-    let keys: JwkSet = client
+    let response = client
         .get(jwks_url)
         .send()
         .await
-        .map_err(|_| AuthError::Transport)?
-        .json()
-        .await
         .map_err(|_| AuthError::Transport)?;
+    let keys: JwkSet = crate::http_body::json(response).await?;
     let key = keys
         .find(&kid)
         .ok_or(AuthError::Authentication("untrusted ID token key"))?;
@@ -197,11 +195,17 @@ pub async fn login_browser(
     store: Arc<dyn CredentialStore>,
     on_auth_url: impl FnOnce(&str) + Send,
 ) -> Result<OAuthCredentials, AuthError> {
+    let existing = store.load()?;
+    if existing
+        .as_ref()
+        .is_some_and(|credentials| credentials.profile != CredentialProfile::Siwc)
+    {
+        return Err(AuthError::ProfileMismatch);
+    }
     let listener = TcpListener::bind("127.0.0.1:1455")
         .await
         .map_err(|_| AuthError::PortInUse)?;
     let redirect = "http://127.0.0.1:1455/auth/callback";
-    let existing = store.load()?;
     let client_id = existing
         .as_ref()
         .map_or("dynamic_agent_client", |c| &c.client_id);
@@ -281,7 +285,7 @@ pub async fn login_browser(
         if !response.status().is_success() {
             return Err(AuthError::Authentication("token exchange rejected"));
         }
-        let token: serde_json::Value = response.json().await.map_err(|_| AuthError::Transport)?;
+        let token: serde_json::Value = crate::http_body::json(response).await?;
         let id_token = token["id_token"]
             .as_str()
             .ok_or(AuthError::Authentication("missing ID token"))?;

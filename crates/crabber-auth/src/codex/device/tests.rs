@@ -58,43 +58,8 @@ async fn idp(polls: Vec<(u16, Value)>, usercode: Value) -> Idp {
         let mut polls = std::collections::VecDeque::from(polls);
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let mut chunk = [0; 4096];
-            let (header_end, length) = loop {
-                let n = socket.read(&mut chunk).await.unwrap();
-                if n == 0 {
-                    return;
-                }
-                bytes.extend_from_slice(&chunk[..n]);
-                if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&bytes[..end]);
-                    let length = header
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    break (end + 4, length);
-                }
-            };
-            while bytes.len() < header_end + length {
-                let n = socket.read(&mut chunk).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                bytes.extend_from_slice(&chunk[..n]);
-            }
-            let path = String::from_utf8_lossy(&bytes)
-                .split_whitespace()
-                .nth(1)
-                .unwrap()
-                .to_owned();
-            output.lock().unwrap().push((
-                path.clone(),
-                String::from_utf8_lossy(&bytes[header_end..]).into_owned(),
-            ));
+            let (path, body) = read_request(&mut socket).await;
+            output.lock().unwrap().push((path.clone(), body));
             let (status, body) = match path.as_str() {
                 "/usercode" => (200, usercode.clone()),
                 "/token" => polls.pop_front().unwrap_or((403, json!({}))),
@@ -317,3 +282,44 @@ fn account_id_precedence() {
     value["https://api.openai.com/auth"] = json!({});
     assert_eq!(read(value), "organization");
 }
+
+async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, String) {
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    let (header_end, length) = loop {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert_ne!(n, 0, "test request ended before headers");
+        bytes.extend_from_slice(&chunk[..n]);
+        if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+            let header = String::from_utf8_lossy(&bytes[..end]);
+            let length = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            break (end + 4, length);
+        }
+    };
+    while bytes.len() < header_end + length {
+        let n = socket.read(&mut chunk).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    let path = String::from_utf8_lossy(&bytes)
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_owned();
+    (
+        path,
+        String::from_utf8_lossy(&bytes[header_end..]).into_owned(),
+    )
+}
+
+#[path = "tests/transport.rs"]
+mod transport;

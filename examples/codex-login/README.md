@@ -25,3 +25,7 @@ manual commands are not part of the workspace verification gate.
 
 The protected credential file serializes a `profile` (`siwc` or `codex-cli`).
 Its optional `refresh_token` is absent for broker-owned access-only credentials.
+
+Browser login refuses an existing `codex-cli` registration before opening its
+listener; run `codex-login logout` before switching that store back to SIWC.
+Authentication responses and JWKS are limited to 1 MiB of received body data.

@@ -100,7 +100,7 @@ impl DeviceLogin {
         if response.status() != reqwest::StatusCode::OK {
             return Err(AuthError::Authentication("device authorization refused"));
         }
-        let body: Value = response.json().await.map_err(|_| AuthError::Transport)?;
+        let body: Value = crate::http_body::json(response).await?;
         let device_auth_id = required(&body, "device_auth_id")?;
         let user_code = required(&body, "user_code")?;
         if !(4..=16).contains(&user_code.len())
@@ -132,7 +132,8 @@ impl DeviceLogin {
                 .await
                 .map_err(|_| AuthError::Transport)?;
             let status = response.status();
-            let body: Value = response.json().await.unwrap_or_default();
+            let bytes = crate::http_body::bytes(response).await?;
+            let body: Value = serde_json::from_slice(&bytes).unwrap_or_default();
             if body["error"] == "access_denied" {
                 return Err(AuthError::DeviceDenied);
             }
@@ -161,7 +162,7 @@ impl DeviceLogin {
         if response.status() != reqwest::StatusCode::OK {
             return Err(AuthError::Authentication("token exchange rejected"));
         }
-        let token: Value = response.json().await.map_err(|_| AuthError::Transport)?;
+        let token: Value = crate::http_body::json(response).await?;
         let id_token = required(&token, "id_token")?;
         let claims = validated_claims(
             &self.client,

@@ -16,6 +16,7 @@ use std::{
     sync::Mutex as StdMutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+mod http_body;
 mod token_manager;
 pub use token_manager::TokenManager;
 
@@ -179,7 +180,8 @@ async fn acquire_refresh_lock(
     }
 }
 fn same_rotation(left: &OAuthCredentials, right: &OAuthCredentials) -> bool {
-    left.client_id == right.client_id
+    left.profile == right.profile
+        && left.client_id == right.client_id
         && left.account_id == right.account_id
         && left.access_token == right.access_token
         && left.refresh_token == right.refresh_token

@@ -48,7 +48,7 @@ impl ExecutionContext {
         Self {
             session,
             selection,
-            model_controls: Default::default(),
+            model_controls: crabber_core::ModelControls::default(),
             selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
         }
     }

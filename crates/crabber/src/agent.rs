@@ -75,7 +75,7 @@ impl AgentConfig {
             title: "Crabber session".into(),
             system_prompt: None,
             max_output_tokens: None,
-            model_controls: Default::default(),
+            model_controls: crabber_core::ModelControls::default(),
         }
     }
     #[must_use]

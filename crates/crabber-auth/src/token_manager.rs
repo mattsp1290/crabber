@@ -41,6 +41,28 @@ impl TokenManager {
         }
         Ok(())
     }
+    fn load_checked(&self) -> Result<OAuthCredentials, AuthError> {
+        let current = self.store.load()?.ok_or(AuthError::NoCredentials)?;
+        self.check_profile(&current)?;
+        if current.is_access_only() && current.expires_unix_ms <= now_ms().saturating_add(60_000) {
+            return Err(AuthError::AccessOnly);
+        }
+        Ok(current)
+    }
+    fn broker_rotation(
+        &self,
+        current: OAuthCredentials,
+        previous_access: Option<&str>,
+    ) -> Result<OAuthCredentials, AuthError> {
+        self.check_profile(&current)?;
+        if previous_access.is_some_and(|previous| current.access_token != previous)
+            && current.expires_unix_ms > now_ms().saturating_add(60_000)
+        {
+            Ok(current)
+        } else {
+            Err(AuthError::AccessOnly)
+        }
+    }
     pub async fn credentials(&self) -> Result<OAuthCredentials, AuthError> {
         self.ensure(false, None).await
     }
@@ -67,24 +89,23 @@ impl TokenManager {
         if existing.is_access_only() {
             let current = self.store.load()?.ok_or(AuthError::NoCredentials)?;
             self.check_profile(&current)?;
-            return if previous_access.is_some_and(|previous| current.access_token != previous) {
-                Ok(current)
-            } else {
-                Err(AuthError::AccessOnly)
-            };
+            return self.broker_rotation(current, previous_access);
         }
         // Keep this OS advisory lock across reload, network exchange and CAS.
         // Rotating refresh tokens must never be used concurrently by processes.
         let _process_guard = acquire_refresh_lock(self.store.refresh_lock()).await?;
         let current = self.store.load()?.ok_or(AuthError::NoCredentials)?;
         self.check_profile(&current)?;
+        if current.is_access_only() {
+            if !force && current.expires_unix_ms > now_ms().saturating_add(60_000) {
+                return Ok(current);
+            }
+            return self.broker_rotation(current, previous_access);
+        }
         if (!force && current.expires_unix_ms > now_ms() + 60_000)
             || (force && previous_access.is_some_and(|previous| current.access_token != previous))
         {
             return Ok(current);
-        }
-        if current.is_access_only() {
-            return Err(AuthError::AccessOnly);
         }
         let response = self
             .client
@@ -98,13 +119,14 @@ impl TokenManager {
             .await
             .map_err(|_| AuthError::Transport)?;
         if !response.status().is_success() {
-            let body: serde_json::Value = response.json().await.unwrap_or_default();
+            let bytes = crate::http_body::bytes(response).await?;
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
             if body["error"] == "invalid_grant" && !self.store.compare_exchange(&current, None)? {
-                return self.store.load()?.ok_or(AuthError::NoCredentials);
+                return self.load_checked();
             }
             return Err(AuthError::Authentication("refresh rejected"));
         }
-        let body: serde_json::Value = response.json().await.map_err(|_| AuthError::Transport)?;
+        let body: serde_json::Value = crate::http_body::json(response).await?;
         let mut updated = current.clone();
         updated.access_token = body["access_token"]
             .as_str()
@@ -114,11 +136,16 @@ impl TokenManager {
             .as_str()
             .map(str::to_owned)
             .or(updated.refresh_token);
-        updated.expires_unix_ms = now_ms() + body["expires_in"].as_u64().unwrap_or(3600) * 1000;
+        updated.expires_unix_ms = body["expires_in"]
+            .as_u64()
+            .unwrap_or(3600)
+            .checked_mul(1000)
+            .and_then(|duration| now_ms().checked_add(duration))
+            .ok_or(AuthError::Transport)?;
         if self.store.compare_exchange(&current, Some(&updated))? {
             Ok(updated)
         } else {
-            self.store.load()?.ok_or(AuthError::NoCredentials)
+            self.load_checked()
         }
     }
 }
@@ -133,7 +160,7 @@ mod refresh_tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
-    fn expired() -> OAuthCredentials {
+    pub(super) fn expired() -> OAuthCredentials {
         OAuthCredentials {
             profile: CredentialProfile::Siwc,
             client_id: "client".into(),
@@ -146,7 +173,7 @@ mod refresh_tests {
             expires_unix_ms: 1,
         }
     }
-    async fn server(body: &'static str, status: &'static str) -> String {
+    pub(super) async fn server(body: &'static str, status: &'static str) -> String {
         server_delayed(body, status, Duration::ZERO).await
     }
     async fn server_delayed(body: &'static str, status: &'static str, delay: Duration) -> String {
@@ -359,3 +386,7 @@ mod refresh_tests {
         lock.unlock().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "token_manager/review_tests.rs"]
+mod review_tests;
