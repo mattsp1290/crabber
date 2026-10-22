@@ -133,6 +133,14 @@ jobs:
           result = json.loads(report.read_text())
           pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True, 'check': result}) + '\n')
           PY
+      - name: Prune obsolete native test executables as CI maintenance
+        if: always() && steps.cache.outcome == 'success'
+        # Run only after the complete check or whole qualification protocol.
+        # Missing/incomplete current discovery skips deletion, retaining cache.
+        run: |
+          directory="target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$directory"
+          python3 -I -S .github/scripts/prune-test-cache.py --run-directory "$directory" --apply | tee "$directory/native-cache-prune.json"
       - name: Prune artifacts that must rebuild after every restore
         if: always() && steps.cache.outcome == 'success'
         # Keep the restore-side clean: old snapshots still contain these files.

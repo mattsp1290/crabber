@@ -104,6 +104,15 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
         freshness_tests,
         "unchanged cache inputs reuse timestamps; changed inputs rebuild",
     );
+    let mut pruning_tests = Command::new("python3");
+    pruning_tests
+        .args(["-I", "-S", ".github/scripts/test_prune_test_cache.py"])
+        .current_dir(workspace);
+    gates.command(
+        workspace,
+        pruning_tests,
+        "cache maintenance retains current executables and rejects incomplete provenance",
+    );
     crate::probes::schedule(workspace, gates);
     crate::schedule_fixtures(workspace, gates)
 }
