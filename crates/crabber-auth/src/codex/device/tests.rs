@@ -58,7 +58,9 @@ async fn idp(polls: Vec<(u16, Value)>, usercode: Value) -> Idp {
         let mut polls = std::collections::VecDeque::from(polls);
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (path, body) = read_request(&mut socket).await;
+            let Some((path, body)) = read_request(&mut socket).await else {
+                continue;
+            };
             output.lock().unwrap().push((path.clone(), body));
             let (status, body) = match path.as_str() {
                 "/usercode" => (200, usercode.clone()),
@@ -178,10 +180,10 @@ async fn device_login_cap_and_cancel() {
             .await,
         Err(AuthError::DeviceExpired)
     ));
+    let login = login(store.clone(), &idp).with_poll_floor(Duration::from_secs(2));
     let start = std::time::Instant::now();
     assert!(matches!(
-        login(store.clone(), &idp)
-            .with_poll_floor(Duration::from_secs(2))
+        login
             .run(|_| {}, tokio::time::sleep(Duration::from_millis(10)))
             .await,
         Err(AuthError::Cancelled)
@@ -283,12 +285,14 @@ fn account_id_precedence() {
     assert_eq!(read(value), "organization");
 }
 
-async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, String) {
+async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
     let mut bytes = Vec::new();
     let mut chunk = [0; 4096];
     let (header_end, length) = loop {
-        let n = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(n, 0, "test request ended before headers");
+        let n = read_client_bytes(socket, &mut chunk).await;
+        if n == 0 {
+            return None;
+        }
         bytes.extend_from_slice(&chunk[..n]);
         if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
             let header = String::from_utf8_lossy(&bytes[..end]);
@@ -304,9 +308,9 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, String) {
         }
     };
     while bytes.len() < header_end + length {
-        let n = socket.read(&mut chunk).await.unwrap();
+        let n = read_client_bytes(socket, &mut chunk).await;
         if n == 0 {
-            break;
+            return None;
         }
         bytes.extend_from_slice(&chunk[..n]);
     }
@@ -315,10 +319,19 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, String) {
         .nth(1)
         .unwrap()
         .to_owned();
-    (
+    Some((
         path,
         String::from_utf8_lossy(&bytes[header_end..]).into_owned(),
-    )
+    ))
+}
+
+// A capped or cancelled client can close before sending its complete request.
+async fn read_client_bytes(socket: &mut tokio::net::TcpStream, chunk: &mut [u8]) -> usize {
+    match socket.read(chunk).await {
+        Ok(n) => n,
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 0,
+        Err(error) => panic!("test request read failed: {error}"),
+    }
 }
 
 #[path = "tests/transport.rs"]
