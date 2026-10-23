@@ -234,6 +234,35 @@ impl RawServer {
         Self { url, body, task }
     }
 
+    async fn start_staged(declared_length: usize) -> (Self, StagedResponseController) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (writes, mut fragments) =
+            tokio::sync::mpsc::channel::<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>(8);
+        let (sender, body) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
+                .await
+                .expect("timed out accepting raw request")
+                .expect("failed to accept raw request");
+            let captured = read_request(&mut socket).await;
+            let _ = sender.send(captured);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            while let Some((fragment, ack)) = fragments.recv().await {
+                socket.write_all(&fragment).await.unwrap();
+                socket.flush().await.unwrap();
+                let _ = ack.send(());
+            }
+        });
+        (
+            Self { url, body, task },
+            StagedResponseController { writes },
+        )
+    }
+
     async fn body(self) -> Vec<u8> {
         self.headers_and_body().await.1
     }
@@ -248,6 +277,27 @@ impl RawServer {
             .expect("raw server task timed out")
             .expect("raw server task failed");
         body
+    }
+}
+
+/// Releases fragments of a staged `RawServer` response and acknowledges each
+/// completed socket write. Client consumption must be asserted independently.
+struct StagedResponseController {
+    writes: tokio::sync::mpsc::Sender<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>,
+}
+impl StagedResponseController {
+    async fn release(&self, fragment: impl Into<Vec<u8>>) {
+        let (ack, written) = tokio::sync::oneshot::channel();
+        self.writes.send((fragment.into(), ack)).await.unwrap();
+        timeout(LOOPBACK_TIMEOUT, written)
+            .await
+            .expect("timed out awaiting staged write")
+            .expect("staged writer dropped acknowledgement");
+    }
+
+    async fn finish(self, server: RawServer) -> (Headers, Vec<u8>) {
+        drop(self.writes);
+        server.headers_and_body().await
     }
 }
 

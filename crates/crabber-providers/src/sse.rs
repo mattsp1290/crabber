@@ -25,10 +25,11 @@ impl Parser {
                 let line =
                     std::str::from_utf8(&self.line).map_err(|_| invalid("invalid SSE UTF-8"))?;
                 if line.is_empty() {
+                    let event = std::mem::take(&mut self.event);
                     if !self.data.is_empty() {
                         self.data.pop();
                         out.push(Event {
-                            name: std::mem::take(&mut self.event),
+                            name: event,
                             data: std::mem::take(&mut self.data),
                         });
                     }
@@ -77,6 +78,43 @@ fn invalid(message: &str) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const UNNAMED_ERROR: &[u8] = b"data: {\"error\":{\"code\":429,\"message\":\"opaque upstream detail\",\"metadata\":{\"error_type\":\"rate_limit_exceeded\",\"provider_name\":\"opaque-provider\"}},\"provider_code\":\"opaque-provider-code\"}\n\n";
+    const NAMED_ERROR: &[u8] = b"event: error\ndata: {\"error\":{\"code\":503,\"message\":\"opaque upstream detail\",\"metadata\":{\"error_type\":\"provider_overloaded\",\"provider_name\":\"opaque-provider\"}},\"provider_code\":\"opaque-provider-code\"}\n\n";
+
+    #[test]
+    fn chat_error_fragment_split_boundary_matrix() {
+        for (bytes, expected) in [
+            (
+                UNNAMED_ERROR,
+                Event {
+                    name: String::new(),
+                    data: String::from_utf8(UNNAMED_ERROR[6..UNNAMED_ERROR.len() - 2].to_vec())
+                        .unwrap(),
+                },
+            ),
+            (
+                NAMED_ERROR,
+                Event {
+                    name: "error".into(),
+                    data: String::from_utf8(NAMED_ERROR[19..NAMED_ERROR.len() - 2].to_vec())
+                        .unwrap(),
+                },
+            ),
+        ] {
+            for split in 1..bytes.len() {
+                let mut parser = Parser::default();
+                assert!(
+                    parser.push(&bytes[..split]).unwrap().is_empty(),
+                    "split={split}"
+                );
+                assert_eq!(
+                    parser.push(&bytes[split..]).unwrap(),
+                    vec![expected.clone()]
+                );
+            }
+        }
+    }
+
     #[test]
     fn framing_across_chunks() {
         let mut parser = Parser::default();
@@ -89,6 +127,18 @@ mod tests {
             vec![Event {
                 name: "foo".into(),
                 data: "a\nb".into()
+            }]
+        );
+    }
+    #[test]
+    fn empty_data_boundary_resets_event_name() {
+        let mut parser = Parser::default();
+        assert_eq!(parser.push(b"event: error\n\n").unwrap(), [] as [Event; 0]);
+        assert_eq!(
+            parser.push(b"data: normal\n\n").unwrap(),
+            vec![Event {
+                name: String::new(),
+                data: "normal".into(),
             }]
         );
     }
