@@ -274,6 +274,19 @@ fn check_custom_http(workspace: &Path) {
     run(
         workspace,
         &[
+            "test",
+            "-p",
+            "crabber",
+            "--no-default-features",
+            "--features",
+            "custom-http",
+            "--test",
+            "custom_chat",
+        ],
+    );
+    run(
+        workspace,
+        &[
             "check",
             "-p",
             "crabber",
