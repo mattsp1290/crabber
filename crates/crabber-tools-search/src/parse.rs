@@ -13,7 +13,11 @@ fn decode(v: &Value) -> String {
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
 }
-fn allowed_path(deny: &crabber_tools_core::PathDenyPolicy, value: &Value) -> bool {
+fn allowed_path(
+    root: &crabber_tools_core::WorkspaceRoot,
+    deny: &crabber_tools_core::PathDenyPolicy,
+    value: &Value,
+) -> bool {
     use std::{
         ffi::OsString,
         os::unix::ffi::OsStringExt,
@@ -36,7 +40,12 @@ fn allowed_path(deny: &crabber_tools_core::PathDenyPolicy, value: &Value) -> boo
     {
         return false;
     }
-    !deny.matches(path.strip_prefix(Path::new(".")).unwrap_or(&path))
+    crabber_tools_core::deny::check(
+        root,
+        deny,
+        path.strip_prefix(Path::new(".")).unwrap_or(&path),
+    )
+    .is_ok()
 }
 
 #[cfg(test)]
@@ -46,7 +55,9 @@ mod deny_tests {
     #[test]
     fn denied_raw_paths_and_context_are_filtered_before_limits() {
         let deny = crabber_tools_core::PathDenyPolicy::new([".env*".to_owned()]).unwrap();
-        let mut parser = Parser::new(1, 1, false).with_deny(deny);
+        let temp = tempfile::tempdir().unwrap();
+        let root = crabber_tools_core::WorkspaceRoot::open(temp.path()).unwrap();
+        let mut parser = Parser::new(1, 1, false).with_deny(root, deny);
         for path in [
             json!({"text":".env"}),
             json!({"bytes":STANDARD.encode(b".env-\xff")}),
@@ -83,7 +94,10 @@ fn line(data: &Value) -> Value {
 }
 pub(crate) struct Parser {
     pub matches: Vec<Value>,
-    deny: crabber_tools_core::PathDenyPolicy,
+    deny: Option<(
+        std::sync::Arc<crabber_tools_core::WorkspaceRoot>,
+        crabber_tools_core::PathDenyPolicy,
+    )>,
     pub reason: Option<&'static str>,
     pub malformed: bool,
     before: VecDeque<Value>,
@@ -95,7 +109,7 @@ impl Parser {
     pub fn new(context: usize, limit: usize, include_submatches: bool) -> Self {
         Self {
             matches: vec![],
-            deny: crabber_tools_core::PathDenyPolicy::none(),
+            deny: None,
             reason: None,
             malformed: false,
             before: VecDeque::new(),
@@ -104,8 +118,14 @@ impl Parser {
             include_submatches,
         }
     }
-    pub(crate) fn with_deny(mut self, deny: crabber_tools_core::PathDenyPolicy) -> Self {
-        self.deny = deny;
+    pub(crate) fn with_deny(
+        mut self,
+        root: std::sync::Arc<crabber_tools_core::WorkspaceRoot>,
+        deny: crabber_tools_core::PathDenyPolicy,
+    ) -> Self {
+        if !deny.patterns().is_empty() {
+            self.deny = Some((root, deny));
+        }
         self
     }
     pub fn feed(&mut self, record: &[u8]) {
@@ -116,9 +136,9 @@ impl Parser {
             return;
         };
         let data = &record["data"];
-        if !self.deny.patterns().is_empty()
+        if let Some((root, deny)) = &self.deny
             && matches!(record["type"].as_str(), Some("match" | "context"))
-            && !allowed_path(&self.deny, &data["path"])
+            && !allowed_path(root, deny, &data["path"])
         {
             self.before.clear();
             return;

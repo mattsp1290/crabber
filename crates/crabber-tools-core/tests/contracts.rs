@@ -477,3 +477,27 @@ async fn blocking_panic_is_tool_failure_with_clean_resource_join() {
         [] as [crabber::extension::ResourceFailure; 0]
     );
 }
+
+#[test]
+fn non_utf8_identity_paths_fail_fallible_validation() {
+    use std::{
+        ffi::OsString,
+        os::unix::{ffi::OsStringExt, fs::PermissionsExt},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join(OsString::from_vec(b"root-\xff".to_vec()));
+    std::fs::create_dir(&root).unwrap();
+    assert!(matches!(
+        WorkspaceRoot::open(&root),
+        Err(crabber::ExtensionError::Plan(_))
+    ));
+    let executable = temp
+        .path()
+        .join(OsString::from_vec(b"binary-\xff".to_vec()));
+    std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(
+        validate_binary(&executable),
+        Err(crabber::ExtensionError::Plan(_))
+    ));
+}

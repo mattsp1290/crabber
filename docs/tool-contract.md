@@ -859,7 +859,7 @@ Success keys: `outcome`, `path`, `new_path`. Failure keys: `outcome`, `error`; a
 (file_read, file_write, file_edit, file_list, search, shell), then glob,
 apply_patch, url_fetch, tracker_write, user_interact, multi_edit, file_delete and file_move. `ToolId::EINO_PARITY`
 is the explicit eleven-tool upstream set; `EnabledSet::eino_parity()` selects it.
-`Options::url_fetch`, `Options::tracker` and `Options::user_interact` are optional
+`Policies::url_fetch`, `Policies::tracker` and `Policies::user_interact` are optional
 only for disabled tools; an enabled tool without its policy is a Plan construction
 error. The parity set requires all three to be `Some`. Supplied policies are
 validated even when disabled, and all three values participate in configuration

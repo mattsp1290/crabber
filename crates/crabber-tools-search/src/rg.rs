@@ -79,13 +79,14 @@ pub(crate) async fn run(
     let limit = args.limit;
     let regex = !args.literal;
     let deny = options.deny.clone();
+    let root = options.root.clone();
     match run_process_owned_with(ctx, command, permit, move |guard| Box::pin(async move {
     let mut stdout = BufReader::new(guard.take_stdout().expect("piped stdout"));
     let mut stderr = guard.take_stderr().expect("piped stderr");
     let mut diagnostic = CappedOutput::default();
     let mut error_chunk = [0; 4096];
     let mut record = vec![];
-    let mut parser = Parser::new(args.context, args.limit, !args.literal).with_deny(deny);
+    let mut parser = Parser::new(args.context, args.limit, !args.literal).with_deny(root, deny);
     let (mut out_eof, mut err_eof) = (false, false);
     let mut status = None;
     let mut timed_out = false;

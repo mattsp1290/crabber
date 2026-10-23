@@ -17,13 +17,16 @@ impl WorkspaceRoot {
     /// Admit an existing absolute directory. Invalid admission yields Plan("workspace").
     ///
     /// # Errors
-    /// Returns a plan error for a relative, missing, inaccessible, or non-directory workspace.
+    /// Returns a plan error for a relative, missing, inaccessible, non-UTF-8, or non-directory workspace.
     pub fn open(path: &Path) -> Result<Arc<Self>, ExtensionError> {
         let fail = || ExtensionError::Plan("workspace".into());
         if !path.is_absolute() {
             return Err(fail());
         }
         let root = path.canonicalize().map_err(|_| fail())?;
+        if root.to_str().is_none() {
+            return Err(fail());
+        }
         let dir = Dir::open_ambient_dir(&root, ambient_authority()).map_err(|_| fail())?;
         Ok(Arc::new(Self { root, dir }))
     }

@@ -142,3 +142,23 @@ fn opened_handle_is_checked_before_reading() {
     );
     assert!(deny::verify_open(&root, &PathDenyPolicy::none(), &allowed).is_ok());
 }
+
+#[test]
+fn empty_policy_preserves_unreadable_prefix_and_enabled_policy_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let directory = temp.path().join("blocked");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let none = deny::check(&root, &PathDenyPolicy::none(), Path::new("blocked/file"));
+    let enabled = deny::check(&root, &policy(&[".env"]), Path::new("blocked/file"));
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(none.is_ok());
+    // Root can traverse mode-000 directories; normal CI workers cannot.
+    if !rustix::process::geteuid().is_root() {
+        let error = enabled.unwrap_err();
+        assert_eq!(error.category, category::PATH_DENIED);
+        assert_eq!(error.message, "path denied by host policy");
+    }
+}
