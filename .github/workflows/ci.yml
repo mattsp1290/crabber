@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
       - name: Install ripgrep for standard tools
         run: |
           sudo apt-get update && sudo apt-get install -y ripgrep
@@ -129,12 +132,18 @@ jobs:
   aarch64-gnu:
     runs-on: ubuntu-24.04-arm
     env:
+      BACKGROUND_JOBS_REQUIRE_SHELL: "1"
+      PYTHON_REPL_REQUIRE_PYTHON: "1"
+      CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE: "1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
       - name: Install ripgrep for standard tools
         run: |
           sudo apt-get update && sudo apt-get install -y ripgrep
@@ -159,6 +168,8 @@ jobs:
         run: cargo test --workspace
       - name: Run credential-free embedding smoke test
         run: cargo run --quiet -p minimal-embed
+      - name: Run standard tools mounting smoke test
+        run: cargo run --quiet -p mount-standard -- --check
 
   aarch64-musl:
     runs-on: ubuntu-24.04-arm
@@ -166,6 +177,7 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
       CC_aarch64_unknown_linux_musl: musl-gcc
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
@@ -178,8 +190,70 @@ jobs:
       - name: Install native musl toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools ripgrep
+          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
+          test "$major" -ge 14
       - name: Build musl workspace without native TLS example
         run: cargo build --workspace --exclude agui-sse --target aarch64-unknown-linux-musl
-      - name: Verify static linking without executing the binary
-        run: file target/aarch64-unknown-linux-musl/debug/minimal-embed | grep -E 'statically linked|static-pie linked'
+      - name: Test standard tools as native arm64 musl binaries
+        shell: bash
+        run: |
+          cargo test -p crabber-tools-catalog -p crabber-tools-fileops -p crabber-tools-glob -p crabber-tools-search --target aarch64-unknown-linux-musl 2>&1 | tee musl-tests.log
+          grep -E '^test result: ok\. [1-9][0-9]* passed' musl-tests.log
+      - name: Run static standard tools mounting smoke test
+        run: cargo run -p mount-standard --target aarch64-unknown-linux-musl -- --check
+      - name: Verify static linking of embedding and tools binaries
+        shell: bash
+        run: |
+          for binary in minimal-embed mount-standard; do
+            file "target/aarch64-unknown-linux-musl/debug/$binary" | grep -E 'statically linked|static-pie linked'
+          done
+
+  extensions-python-311:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      PYTHON_REPL_REQUIRE_PYTHON: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test native Python REPL with the oldest supported Python
+        run: cargo test -p crabber-extensions --test python_repl
+
+  consumer-probe:
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/consumer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
+          test "$major" -ge 14
+      - name: Fetch the public Crabber source over HTTPS
+        run: git config --global url.https://github.com/mattsp1290/crabber.git.insteadOf ssh://git@github.com/mattsp1290/crabber.git
+      - name: Qualify the runtime, tools, and native extensions at one revision
+        env:
+          CRABBER_REV: ${{ github.sha }}
+        run: ./testdata/standard-tools-consumer/check.sh
+      - name: Qualify native extension host and restart journeys
+        env:
+          CRABBER_REV: ${{ github.sha }}
+        run: ./testdata/extensions-consumer/run.sh

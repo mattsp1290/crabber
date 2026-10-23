@@ -1,11 +1,13 @@
 //! Local development commands, invoked with `cargo xtask`.
 
 use sha2::Digest;
+use std::io::{self, Write as _};
 use std::{env, fmt::Write, fs, path::Path, process::Command};
 
 mod agui;
 mod datadog;
 mod probes;
+mod standard_tools;
 mod telemetry_messages;
 
 const GLUE_START: &str = "crabber:glue-start";
@@ -35,7 +37,7 @@ fn check() {
         .parent()
         .expect("xtask belongs directly under the workspace root");
 
-    check_tool_prerequisites();
+    standard_tools::check_tool_prerequisites();
     telemetry_messages::check(workspace);
     agui::check(workspace);
     probes::check(workspace);
@@ -71,7 +73,8 @@ fn check() {
             "warnings",
         ],
     );
-    check_workspace_tests(workspace);
+    standard_tools::check_workspace_tests(workspace);
+    standard_tools::check(workspace);
     run(
         workspace,
         &["run", "--quiet", "-p", "agui-sse", "--", "--check"],
@@ -793,63 +796,32 @@ fn check_observability(workspace: &Path) {
     check_datadog_offline(workspace);
 }
 
-// Fail before the long workspace gate when subprocess-backed tools cannot run.
-fn check_tool_prerequisites() {
-    let output = Command::new("rg")
-        .arg("--version")
-        .output()
-        .expect("standard tools tests need ripgrep >= 14 on PATH");
-    let version = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success()
-            && version
-                .split_whitespace()
-                .nth(1)
-                .and_then(|number| number.split('.').next())
-                .and_then(|number| number.parse::<u32>().ok())
-                .is_some_and(|major| major >= 14),
-        "standard tools tests need ripgrep >= 14 on PATH"
-    );
-    println!("{}", version.lines().next().unwrap_or_default());
-    let python = Command::new("python3")
-        .arg("--version")
-        .output()
-        .expect("extensions tests need python3 3.11-3.14 on PATH");
-    let version = String::from_utf8_lossy(&python.stdout);
-    let mut components = version
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .split('.');
-    let major = components
-        .next()
-        .and_then(|number| number.parse::<u32>().ok());
-    let minor = components
-        .next()
-        .and_then(|number| number.parse::<u32>().ok());
-    assert!(
-        python.status.success()
-            && major == Some(3)
-            && minor.is_some_and(|number| (11..=14).contains(&number)),
-        "extensions tests need python3 3.11-3.14 on PATH"
-    );
-    println!("{}", version.lines().next().unwrap_or_default());
-}
-
-fn check_workspace_tests(workspace: &Path) {
-    println!("$ cargo test --workspace");
+fn run_env(
+    workspace: &Path,
+    args: &[&str],
+    set: &[(&str, &str)],
+    remove: &[&str],
+) -> std::process::Output {
+    println!("$ cargo {}", args.join(" "));
     let mut command = Command::new("cargo");
-    command.args(["test", "--workspace"]).current_dir(workspace);
-    if cfg!(target_os = "linux") {
-        command.env("CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE", "1");
-    }
     command
-        .env("BACKGROUND_JOBS_REQUIRE_SHELL", "1")
-        .env("PYTHON_REPL_REQUIRE_PYTHON", "1");
-    let status = command.status().expect("launch workspace tests");
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        .args(args)
+        .current_dir(workspace)
+        .envs(set.iter().copied());
+    for name in remove {
+        command.env_remove(name);
     }
+    let output = command.output().expect("failed to launch cargo");
+    io::stdout()
+        .write_all(&output.stdout)
+        .expect("write cargo stdout");
+    io::stderr()
+        .write_all(&output.stderr)
+        .expect("write cargo stderr");
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
+    }
+    output
 }
 
 #[cfg(test)]
