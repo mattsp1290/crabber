@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 fn options(path: &std::path::Path) -> Arc<Options> {
     let limits = limits();
     Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: WorkspaceRoot::open(path).unwrap(),
         capacity: Capacity::new(&limits).unwrap(),
         limits,
@@ -385,6 +386,7 @@ async fn repetitive_near_match_is_preflighted_without_effects() {
         + " b\n+c\n*** End Patch\n";
     let limits = support::limits();
     let options = std::sync::Arc::new(crabber_tools_applypatch::Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: crabber_tools_core::WorkspaceRoot::open(root.path()).unwrap(),
         capacity: crabber_tools_core::Capacity::new(&limits).unwrap(),
         limits,
@@ -408,5 +410,65 @@ async fn repetitive_near_match_is_preflighted_without_effects() {
     assert_eq!(
         std::fs::read_to_string(root.path().join("large")).unwrap(),
         content
+    );
+}
+
+#[tokio::test]
+async fn denied_patch_paths_fail_before_any_installation() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("secrets")).unwrap();
+    std::fs::write(temp.path().join(".env"), "private fixture\n").unwrap();
+    std::fs::write(temp.path().join("secrets/x"), "private fixture\n").unwrap();
+    std::os::unix::fs::symlink(".env", temp.path().join("notes")).unwrap();
+    std::os::unix::fs::symlink("secrets", temp.path().join("d")).unwrap();
+    let mut options = options(temp.path());
+    Arc::get_mut(&mut options).unwrap().deny =
+        PathDenyPolicy::new([".env", "secrets"].map(String::from)).unwrap();
+    for path in [".env", "notes", "secrets/x", "d/x"] {
+        for operation in [
+            format!("*** Update File: {path}\n@@\n-private fixture\n+changed\n"),
+            format!("*** Add File: {path}\n+changed\n"),
+            format!("*** Delete File: {path}\n"),
+        ] {
+            let patch = format!(
+                "*** Begin Patch\n*** Add File: allowed-new\n+allowed\n{operation}*** End Patch\n"
+            );
+            let result = support::execute(
+                temp.path(),
+                definition(options.clone()),
+                json!({"patch_text":patch}),
+            )
+            .await;
+            assert_eq!(result["error"]["category"], "path_denied", "{result}");
+            assert_eq!(result["error"]["message"], "path denied by host policy");
+            assert_eq!(result["partial"], false);
+            assert!(!temp.path().join("allowed-new").exists());
+        }
+    }
+    std::fs::write(temp.path().join("ok"), "original\n").unwrap();
+    for destination in [".env", "notes", "secrets/new", "d/new"] {
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: ok\n*** Move to: {destination}\n@@\n-original\n+changed\n*** End Patch\n"
+        );
+        let result = support::execute(
+            temp.path(),
+            definition(options.clone()),
+            json!({"patch_text":patch}),
+        )
+        .await;
+        assert_eq!(result["error"]["category"], "path_denied");
+        assert_eq!(result["partial"], false);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("ok")).unwrap(),
+            "original\n"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+        "private fixture\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("secrets/x")).unwrap(),
+        "private fixture\n"
     );
 }

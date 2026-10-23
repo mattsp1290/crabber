@@ -24,6 +24,7 @@ impl Drop for Cwd {
 }
 fn policies() -> Policies {
     Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled: EnabledSet::all(),
         restrict_to_enabled: false,
         shell: ShellPolicy {

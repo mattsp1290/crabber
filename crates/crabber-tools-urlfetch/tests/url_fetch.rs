@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 fn options(root: &Path) -> Arc<Options> {
     let limits = support::limits();
     Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: WorkspaceRoot::open(root).unwrap(),
         policy: UrlFetchPolicy::default(),
         capacity: Capacity::new(&limits).unwrap(),
@@ -188,3 +189,27 @@ fn upstream_and_documented_metadata_match() {
 }
 
 use support::ExecuteOwned as _;
+
+#[tokio::test]
+async fn file_url_deny_checks_direct_and_symlink_targets() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(".git")).unwrap();
+    std::fs::write(temp.path().join(".env"), "private fixture").unwrap();
+    std::fs::write(temp.path().join(".git/config"), "private fixture").unwrap();
+    std::os::unix::fs::symlink(".env", temp.path().join("notes")).unwrap();
+    std::os::unix::fs::symlink(".git", temp.path().join("d")).unwrap();
+    let mut options = options(temp.path());
+    Arc::get_mut(&mut options).unwrap().deny =
+        PathDenyPolicy::new([".env", ".git/config"].map(String::from)).unwrap();
+    for path in [".env", "notes", ".git/config", "d/config"] {
+        let result = support::execute(
+            temp.path(),
+            definition(options.clone()).unwrap(),
+            json!({"url":file(&temp.path().join(path))}),
+        )
+        .await;
+        assert_eq!(result["error"]["category"], "path_denied");
+        assert_eq!(result["error"]["message"], "path denied by host policy");
+        assert!(result.get("content").is_none());
+    }
+}

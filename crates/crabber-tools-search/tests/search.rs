@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 fn options(path: &std::path::Path) -> Options {
     let limits = limits();
     Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: WorkspaceRoot::open(path).unwrap(),
         policy: SearchPolicy::resolve_rg_from_path(EnvPolicy::minimal_allowlist())
             .expect("search tests require rg >=14 on PATH"),
@@ -301,4 +302,114 @@ async fn truncated_submatch_ranges_and_literal_parity() {
     )
     .await;
     assert_eq!(v["matches"][0]["submatches"], json!([]));
+}
+
+#[tokio::test]
+async fn deny_covers_search_corpus_and_explicit_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    for path in [
+        ".env",
+        "key.pem",
+        "sub/id_rsa",
+        "nested/.git/config",
+        "ok.txt",
+    ] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "deny-corpus-needle\n").unwrap();
+    }
+    std::os::unix::fs::symlink(".env", temp.path().join("notes")).unwrap();
+    std::os::unix::fs::symlink("nested/.git", temp.path().join("d")).unwrap();
+    let policy =
+        PathDenyPolicy::new([".env", "*.pem", "id_*", "**/.git/config"].map(String::from)).unwrap();
+    let mut configured = options(temp.path());
+    configured.deny = policy.clone();
+    let result = support::execute(
+        temp.path(),
+        definition(Arc::new(configured)).unwrap(),
+        json!({"pattern":"deny-corpus-needle","glob":["**"]}),
+    )
+    .await;
+    assert_eq!(result["match_count"], 1, "{result}");
+    assert_eq!(result["matches"][0]["path"], "ok.txt");
+    for path in [".env", "notes", "d/config"] {
+        let mut configured = options(temp.path());
+        configured.deny = policy.clone();
+        let result = support::execute(
+            temp.path(),
+            definition(Arc::new(configured)).unwrap(),
+            json!({"pattern":"needle","path":path}),
+        )
+        .await;
+        assert_eq!(result["error"]["category"], "path_denied");
+        assert_eq!(result["error"]["message"], "path denied by host policy");
+        assert_eq!(result["matches"], json!([]));
+    }
+}
+
+#[test]
+fn deny_dialect_agrees_with_ripgrep_exclusions() {
+    use std::collections::BTreeSet;
+    let temp = tempfile::tempdir().unwrap();
+    let corpus = [
+        "key.pem",
+        "a/b/key.pem",
+        ".env",
+        ".env.local",
+        ".netrc",
+        "id_rsa",
+        "a/id_x",
+        ".git/config",
+        "nested/.git/config",
+        "ok.txt",
+        "x",
+        "a/x",
+        "xdir/allowed",
+    ];
+    for name in corpus {
+        let path = temp.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+    for pattern in [
+        "*.pem",
+        ".env",
+        ".env.*",
+        ".netrc",
+        "id_*",
+        "**/.git/config",
+        "**/x",
+    ] {
+        let deny = PathDenyPolicy::new([pattern.to_owned()]).unwrap();
+        let translated = if pattern.contains('/') {
+            format!("!/{pattern}")
+        } else {
+            format!("!{pattern}")
+        };
+        let output = std::process::Command::new("rg")
+            .args([
+                "--files",
+                "--hidden",
+                "--no-ignore",
+                "--no-config",
+                "-g",
+                &translated,
+            ])
+            .current_dir(temp.path())
+            .env_remove("RIPGREP_CONFIG_PATH")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let actual: BTreeSet<_> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|name| name.strip_prefix("./").unwrap_or(name).to_owned())
+            .collect();
+        let expected: BTreeSet<_> = corpus
+            .into_iter()
+            .filter(|name| !deny.matches(std::path::Path::new(name)))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(actual, expected, "{pattern}");
+    }
 }

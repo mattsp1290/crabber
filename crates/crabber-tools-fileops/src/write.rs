@@ -52,7 +52,7 @@ impl Request {
         }
         let created = atomic::write(
             options.root.dir(),
-            self.path.as_path(),
+            self.resolved_path(),
             a.content.as_bytes(),
         )
         .map_err(io_error)?;

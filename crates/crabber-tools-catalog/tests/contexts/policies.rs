@@ -92,3 +92,37 @@ async fn shell_and_url_policies_are_observable() {
     }
     agent.close_extensions().await.unwrap();
 }
+
+#[tokio::test]
+async fn shared_deny_policy_applies_to_both_admitted_workspaces() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    for root in [a.path(), b.path()] {
+        std::fs::write(root.join(".env"), "private fixture").unwrap();
+    }
+    let mut policy = base();
+    policy.enabled = EnabledSet::only([ToolId::FileRead]);
+    policy.deny = PathDenyPolicy::new([".env".to_owned()]).unwrap();
+    let (agent, store) = agent(
+        a.path(),
+        b.path(),
+        policy,
+        vec![
+            turn("file_read", json!({"path":".env"})),
+            done(),
+            turn("file_read", json!({"path":".env"})),
+            done(),
+        ],
+        allow(),
+    );
+    for (workspace, root) in [("ws-a", a.path()), ("ws-b", b.path())] {
+        let records = execute_in(&agent, &store, workspace, root).await;
+        assert_eq!(records[0].status, ToolCallStatus::Failed);
+        assert_eq!(value(&records[0])["error"]["category"], "path_denied");
+        assert_eq!(
+            value(&records[0])["error"]["message"],
+            "path denied by host policy"
+        );
+    }
+    agent.close_extensions().await.unwrap();
+}

@@ -112,7 +112,7 @@ impl Request {
                 hook();
             }
         });
-        dir.hard_link(self.path.as_path(), dir, destination)
+        dir.hard_link(self.resolved_path(), dir, destination)
             .map_err(link_error)?;
         // Supported platforms link the source name itself, including a raced-in symlink.
         match dir.symlink_metadata(destination) {
@@ -137,7 +137,7 @@ impl Request {
             if let Some(hook) = &options.pre_write {
                 hook();
             }
-            dir.remove_file(self.path.as_path())
+            dir.remove_file(self.resolved_path())
         }));
         let (category, rollback_message, partial_message) = match removal {
             Ok(Ok(())) => return Ok(json!({"outcome":"succeeded"})),
@@ -178,6 +178,7 @@ mod fault_tests {
             max_blocking_wait: Duration::from_secs(1),
         };
         let options = Options {
+            deny: crabber_tools_core::PathDenyPolicy::none(),
             root: WorkspaceRoot::open(temp.path()).unwrap(),
             capacity: Capacity::new(&limits).unwrap(),
             limits,

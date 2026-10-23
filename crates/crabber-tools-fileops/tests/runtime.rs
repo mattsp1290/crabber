@@ -12,6 +12,7 @@ use support::*;
 fn options(path: &std::path::Path, hook: Option<Arc<dyn Fn() + Send + Sync>>) -> Arc<Options> {
     let limits = limits();
     Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: WorkspaceRoot::open(path).unwrap(),
         capacity: Capacity::new(&limits).unwrap(),
         limits,

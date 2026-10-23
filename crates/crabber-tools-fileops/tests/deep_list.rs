@@ -30,6 +30,7 @@ fn deep_listing_worker() {
     }
     let limits = support::limits();
     let tool = list::definition(Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: root.clone(),
         capacity: Capacity::new(&limits).unwrap(),
         limits,

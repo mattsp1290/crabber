@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 fn options(path: &std::path::Path) -> Arc<Options> {
     let limits = limits();
     Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: WorkspaceRoot::open(path).unwrap(),
         capacity: Capacity::new(&limits).unwrap(),
         limits,
@@ -149,6 +150,7 @@ async fn capacity_and_agent_interruption() {
             .is_err()
     );
     let short = Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: o.root.clone(),
         capacity: o.capacity.clone(),
         limits: Limits {
@@ -311,6 +313,7 @@ async fn pathological_pattern_worker() {
     let root = tempfile::tempdir().unwrap();
     let limits = support::limits();
     let options = std::sync::Arc::new(crabber_tools_glob::Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: crabber_tools_core::WorkspaceRoot::open(root.path()).unwrap(),
         capacity: crabber_tools_core::Capacity::new(&limits).unwrap(),
         limits,
@@ -368,4 +371,38 @@ async fn interrupted_large_walk_joins_owned_resources() {
         report.failures,
         [] as [crabber::extension::ResourceFailure; 0]
     );
+}
+
+#[tokio::test]
+async fn deny_hides_entries_and_aliases_and_refuses_start_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("secrets")).unwrap();
+    for path in [".env", "secrets/x", "ok"] {
+        std::fs::write(temp.path().join(path), "fixture").unwrap();
+    }
+    std::os::unix::fs::symlink(".env", temp.path().join("notes")).unwrap();
+    std::os::unix::fs::symlink("secrets", temp.path().join("d")).unwrap();
+    let mut options = options(temp.path());
+    Arc::get_mut(&mut options).unwrap().deny =
+        PathDenyPolicy::new([".env", "secrets"].map(String::from)).unwrap();
+    let result = support::execute(
+        temp.path(),
+        definition(options.clone()),
+        json!({"pattern":"**"}),
+    )
+    .await;
+    assert_eq!(result["paths"], json!([{"path":"ok","is_dir":false}]));
+    assert_eq!(result["count"], 1);
+    assert_eq!(result["truncated"], false);
+    for path in ["secrets", "d", ".env", "notes"] {
+        let denied = support::execute(
+            temp.path(),
+            definition(options.clone()),
+            json!({"pattern":"**","path":path}),
+        )
+        .await;
+        assert_eq!(denied["error"]["category"], "path_denied");
+        assert_eq!(denied["error"]["message"], "path denied by host policy");
+        assert_eq!(denied["paths"], json!([]));
+    }
 }

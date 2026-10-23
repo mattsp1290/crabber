@@ -82,14 +82,28 @@ pub async fn run(
     let temp = tempfile::tempdir()?;
     std::fs::write(temp.path().join("README.md"), "known-line\n")?;
     std::fs::write(temp.path().join("AGENTS.md"), "Use the standard tools.\n")?;
+    std::fs::write(temp.path().join(".env"), "host-deny-probe-needle\n")?;
+    std::os::unix::fs::symlink(".env", temp.path().join("private-notes"))?;
     let root = WorkspaceRoot::open(temp.path())?;
     let tools = StandardTools::new(
         root.clone(),
         Policies {
+            deny: PathDenyPolicy::new(
+                [
+                    "*.pem",
+                    ".env",
+                    ".env.*",
+                    ".netrc",
+                    "id_*",
+                    "**/.git/config",
+                ]
+                .map(String::from),
+            )?,
             enabled: EnabledSet::only([
                 ToolId::FileRead,
                 ToolId::FileWrite,
                 ToolId::FileEdit,
+                ToolId::FileList,
                 ToolId::Search,
                 ToolId::Shell,
                 ToolId::UserInteract,
@@ -125,7 +139,7 @@ pub async fn run(
             "file_edit",
             json!({"path":"notes.txt","anchor":"world","replacement":"Crabber"}),
         ),
-        turn("file_list", json!({})),
+        turn("glob", json!({"pattern":"**"})),
         turn("user_interact", json!({"question":"Proceed?"})),
         turn("finish_job", json!({"label":"done","payload":{"ok":true}})),
     ];
@@ -133,6 +147,16 @@ pub async fn run(
         script.push(turn("consumer_marker", json!({})));
         script.push(turn("shell", json!({"cmd":"echo ok"})));
     }
+    let denied_start = script.len();
+    script.extend([
+        turn("file_read", json!({"path":".env"})),
+        turn("file_read", json!({"path":"private-notes"})),
+        turn("file_list", json!({"recursive":true})),
+        turn(
+            "search",
+            json!({"pattern":"host-deny-probe-needle","glob":["**"]}),
+        ),
+    ]);
     script.push(vec![
         StreamDelta::TextDelta("done".into()),
         StreamDelta::Completed,
@@ -207,10 +231,14 @@ pub async fn run(
     else {
         panic!("probe snapshot page required")
     };
-    assert_eq!(page.tool_calls.len(), if has_extra { 9 } else { 7 });
+    assert_eq!(page.tool_calls.len(), denied_start + 4);
     assert!(settled >= 7);
     for (i, call) in page.tool_calls.iter().enumerate() {
-        let expected = if i == 4 || ((i == 2 || i == 8) && deny_shell) {
+        let expected = if i == 4
+            || i == denied_start
+            || i == denied_start + 1
+            || ((i == 2 || (has_extra && i == 8)) && deny_shell)
+        {
             ToolCallStatus::Failed
         } else {
             ToolCallStatus::Completed
@@ -223,6 +251,18 @@ pub async fn run(
             v => panic!("unexpected {v:?}"),
         }
     };
+    for index in [denied_start, denied_start + 1] {
+        assert_eq!(value(index)["error"]["category"], "path_denied");
+    }
+    let listing = value(denied_start + 2);
+    assert!(
+        listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["path"] != ".env" && entry["path"] != "private-notes")
+    );
+    assert_eq!(value(denied_start + 3)["match_count"], 0);
     assert_eq!(value(5)["answer"], "yes");
     assert_eq!(value(0)["bytes_written"], 12);
     assert_eq!(value(1)["match_count"], 1);

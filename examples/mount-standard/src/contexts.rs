@@ -130,6 +130,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ("ws-b".into(), b.path().canonicalize()?),
     ])?;
     let policies = Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled: EnabledSet::only([ToolId::FileWrite, ToolId::FileRead, ToolId::FileList]),
         restrict_to_enabled: false,
         shell: ShellPolicy {

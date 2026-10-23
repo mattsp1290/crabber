@@ -110,11 +110,13 @@ impl Cursor {
 
 pub(crate) fn discover(
     root: &WorkspaceRoot,
+    deny: &crabber_tools_core::PathDenyPolicy,
     start: &RelPath,
     pattern: &GlobSet,
     limit: usize,
     cancel: &CancellationToken,
 ) -> Result<Value, ToolError> {
+    crabber_tools_core::deny::check(root, deny, start.as_path())?;
     let dir = root.dir().open_dir(start.as_path()).map_err(io_error)?;
     let prefix = if start.is_root() {
         Path::new("")
@@ -129,21 +131,23 @@ pub(crate) fn discover(
         .map(PathBuf::from);
     while let Some(path) = current.take() {
         check(cancel)?;
-        let meta = dir.symlink_metadata(&path).map_err(io_error)?;
-        let skip = meta.is_dir()
-            && matches!(
-                path.file_name().and_then(OsStr::to_str),
-                Some(".git" | ".hg" | ".svn" | ".jj")
-            );
+        let visible = crabber_tools_core::deny::check(root, deny, &prefix.join(&path)).is_ok();
+        let is_dir = visible && dir.symlink_metadata(&path).map_err(io_error)?.is_dir();
+        let skip = !visible
+            || is_dir
+                && matches!(
+                    path.file_name().and_then(OsStr::to_str),
+                    Some(".git" | ".hg" | ".svn" | ".jj")
+                );
         if !skip && pattern.is_match(&path) {
             let raw = prefix.join(&path);
-            selected.insert((raw.to_string_lossy().into_owned(), raw), meta.is_dir());
+            selected.insert((raw.to_string_lossy().into_owned(), raw), is_dir);
             if selected.len() > limit {
                 selected.pop_last();
                 truncated = true;
             }
         }
-        if meta.is_dir()
+        if is_dir
             && !skip
             && let Some(child) = cursor.next_child(&dir, &path, None, cancel)?
         {
@@ -212,6 +216,7 @@ mod tests {
                 let matcher = crate::pattern::compile("**").unwrap();
                 discover(
                     &root,
+                    &crabber_tools_core::PathDenyPolicy::none(),
                     &RelPath::parse("", true).unwrap(),
                     &matcher,
                     10,

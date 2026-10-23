@@ -3,6 +3,9 @@
 #![cfg_attr(not(unix), allow(unused))]
 #[cfg(not(unix))]
 compile_error!("crabber-tools requires Unix");
+pub mod deny;
+pub mod glob_bounds;
+pub use deny::PathDenyPolicy;
 pub mod envelope;
 pub mod exec;
 pub mod identity;

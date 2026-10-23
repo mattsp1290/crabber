@@ -70,6 +70,7 @@ struct RawMoveArgs {
 pub(crate) struct Request {
     args: Args,
     pub(crate) path: RelPath,
+    resolved: Option<std::path::PathBuf>,
 }
 enum Args {
     Read(ReadArgs),
@@ -155,22 +156,38 @@ impl Request {
             Kind::List => Args::List(serde_json::from_value(value).map_err(|_| validation())?),
         };
         let path = RelPath::parse(args.path(), matches!(args, Args::List(_)))?;
-        Ok(Self { args, path })
+        Ok(Self {
+            args,
+            path,
+            resolved: None,
+        })
     }
-    pub(crate) fn run(self, options: &Options, cancel: &CancellationToken) -> Value {
+    pub(crate) fn run(mut self, options: &Options, cancel: &CancellationToken) -> Value {
         if cancel.is_cancelled() {
             return failed(category::UNKNOWN, "cancelled");
         }
-        let mut value = match &self.args {
-            Args::Read(a) => self.read(options, a, cancel),
-            Args::Write(a) => self.write(options, a),
-            Args::Edit(a) => self.edit(options, a),
-            Args::List(a) => self.list(options, a, cancel),
-            Args::MultiEdit(a) => self.multi_edit(options, a),
-            Args::Delete(_) => self.delete(options),
-            Args::Move(a) => self.relocate(options, a),
-        }
-        .unwrap_or_else(|e| e.value());
+        let mut value = (|| {
+            let checked =
+                crabber_tools_core::deny::check(&options.root, &options.deny, self.path.as_path())?;
+            self.resolved = Some(checked.resolved);
+            if let Args::Move(args) = &self.args {
+                crabber_tools_core::deny::check(
+                    &options.root,
+                    &options.deny,
+                    args.new_path.as_path(),
+                )?;
+            }
+            match &self.args {
+                Args::Read(a) => self.read(options, a, cancel),
+                Args::Write(a) => self.write(options, a),
+                Args::Edit(a) => self.edit(options, a),
+                Args::List(a) => self.list(options, a, cancel),
+                Args::MultiEdit(a) => self.multi_edit(options, a),
+                Args::Delete(_) => self.delete(options),
+                Args::Move(a) => self.relocate(options, a),
+            }
+        })()
+        .unwrap_or_else(|e: ToolError| e.value());
         value["path"] = json!(if self.path.is_root() {
             "."
         } else {
@@ -184,6 +201,11 @@ impl Request {
         }
         value
     }
+    pub(crate) fn resolved_path(&self) -> &std::path::Path {
+        self.resolved
+            .as_deref()
+            .unwrap_or_else(|| self.path.as_path())
+    }
     pub(crate) fn open(&self, options: &Options) -> Result<cap_std::fs::File, ToolError> {
         let f = options
             .root
@@ -193,6 +215,7 @@ impl Request {
                 OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK),
             )
             .map_err(io_error)?;
+        crabber_tools_core::deny::verify_open(&options.root, &options.deny, &f)?;
         let m = f.metadata().map_err(io_error)?;
         if m.is_dir() {
             return Err(ToolError::new(

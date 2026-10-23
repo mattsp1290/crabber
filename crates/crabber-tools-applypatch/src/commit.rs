@@ -81,6 +81,7 @@ mod tests {
     fn planned(root: &WorkspaceRoot, patch: &str) -> Plan {
         preflight::plan(
             root,
+            &crabber_tools_core::PathDenyPolicy::none(),
             parser::parse(patch).unwrap(),
             &CancellationToken::new(),
         )

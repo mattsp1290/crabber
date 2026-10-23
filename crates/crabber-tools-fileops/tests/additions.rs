@@ -11,6 +11,7 @@ fn options(root: &std::path::Path) -> Arc<Options> {
         max_blocking_wait: Duration::from_secs(1),
     };
     Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: WorkspaceRoot::open(root).unwrap(),
         capacity: Capacity::new(&limits).unwrap(),
         limits,
@@ -525,6 +526,7 @@ async fn panicking_move_hook_reports_state_and_releases_guards() {
             b"original"
         );
         let next = Arc::new(Options {
+            deny: crabber_tools_core::PathDenyPolicy::none(),
             root: o.root.clone(),
             capacity: o.capacity.clone(),
             limits: o.limits.clone(),

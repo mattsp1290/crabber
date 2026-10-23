@@ -14,6 +14,7 @@ use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(super) fn policies(enabled: EnabledSet) -> Result<Policies, Box<dyn std::error::Error>> {
     Ok(Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled,
         restrict_to_enabled: false,
         shell: ShellPolicy {
@@ -91,6 +92,7 @@ pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     for root in [a.path(), b.path()] {
         std::fs::write(root.join("x"), "owned")?;
     }
+    path_deny_reopen().await?;
     for case in scenarios() {
         let store = Arc::new(MemoryStore::new());
         let mut p = policies(EnabledSet::only(case.enabled.iter().copied()))?;
@@ -179,6 +181,92 @@ pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         json!({"check":"factory_allowlist_restriction_host_deny_shell_cap_and_url_policy","ok":true})
+    );
+    Ok(())
+}
+
+async fn path_deny_reopen() -> Result<(), Box<dyn std::error::Error>> {
+    use crabber::session::SqliteStore;
+    let temp = tempfile::tempdir()?;
+    let a = temp.path().join("a");
+    let b = temp.path().join("b");
+    for root in [&a, &b] {
+        std::fs::create_dir(root)?;
+        std::fs::write(root.join(".env"), "private fixture")?;
+    }
+    let path = temp.path().join("deny.sqlite");
+    SqliteStore::migrate(&path).await?;
+    let store = Arc::new(SqliteStore::connect(&path).await?);
+    let mut policy = policies(EnabledSet::only([ToolId::FileRead]))?;
+    policy.deny = PathDenyPolicy::new([".env".to_owned()])?;
+    let roots = ExactRoots::new([
+        ("a".into(), a.canonicalize()?),
+        ("b".into(), b.canonicalize()?),
+    ])?;
+    let agent = Agent::builder()
+        .behavior_version("consumer-path-deny/1")
+        .store(store.clone())
+        .provider(Arc::new(FakeProvider::scripted(vec![
+            turn("file_read", json!({"path":".env"})),
+            done(),
+            turn("file_read", json!({"path":".env"})),
+            done(),
+        ])))
+        .config(AgentConfig::new(Selection {
+            provider_id: "fake".into(),
+            model_id: "scripted".into(),
+        }))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .extension_factory(Arc::new(StandardToolsFactory::new(
+            policy,
+            Arc::new(roots),
+        )?))
+        .build()?;
+    let mut sessions = Vec::new();
+    for (workspace, root) in [("a", &a), ("b", &b)] {
+        let session = SessionId::new();
+        let directory = root.canonicalize()?;
+        let context = ExecutionContext::new(
+            SessionContext::new(session.clone(), workspace, directory.to_str().unwrap()),
+            Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            },
+        );
+        let options = AdmissionOptions {
+            key: AdmissionKey::new(ControlId::new().0)?,
+            fingerprint: InputFingerprint::new("a".repeat(64))?,
+            behavior_fingerprint: agent.behavior_fingerprint().clone(),
+        };
+        let Admission::Started { handle, .. } = agent
+            .prompt_keyed_in(&context, "denied read", options, None)
+            .await?
+        else {
+            return Err("fresh deny admission replayed".into());
+        };
+        handle.done().await?;
+        agent
+            .close_workspace_resources(context.session(), Duration::from_secs(2))
+            .await?;
+        sessions.push(session);
+    }
+    agent.close_extensions().await?;
+    drop(agent);
+    drop(store);
+    let reopened = SqliteStore::connect(&path).await?;
+    for session in sessions {
+        let records = results(&reopened, &session).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, ToolCallStatus::Failed);
+        assert_eq!(value(&records[0])["error"]["category"], "path_denied");
+        assert_eq!(
+            value(&records[0])["error"]["message"],
+            "path denied by host policy"
+        );
+    }
+    println!(
+        "{}",
+        json!({"check":"path_deny_sqlite_reopen_two_workspaces","ok":true})
     );
     Ok(())
 }
