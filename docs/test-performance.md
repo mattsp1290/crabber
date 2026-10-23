@@ -820,3 +820,12 @@ An isolated, serial four-CPU diagnostic using incremental builds and debug level
 CI archives the canonical native binaries metadata alongside its selected test inventory so every complete-discovery cache-pruner input can be independently checked against the report.
 
 Phase and Approval fault conformance entrypoints retain their public generic signatures and forward to private borrowed Store helpers. Their callbacks remain generic and owned by value. The six native backend callers construct callbacks through one test-only setter per fault-point type, preserving the same atomic field, enum conversion and sequentially consistent store. All existing histories, fault boundaries, assertions, registrations and deadlines remain. This shares callback types and borrowed history bodies within each compilation context; build-time and complete-check benefits remain unverified.
+
+The complete check uses a thin PostgreSQL launcher and builds the Session-enabled
+fixture operations with the combined native graph. The parent keeps ownership of
+its blank template during compilation; a required supervised migration gate runs
+after normal binaries are built and before native tests. Partial fixture commands
+replace the thin process before supervision starts, so the enabled owner retains
+its original cleanup responsibility and absolute deadline. This arrangement is
+unqualified until the complete local and CI protocols pass; isolated ownership
+probes do not prove managed PostgreSQL cleanup or a timing improvement.

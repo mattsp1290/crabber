@@ -227,6 +227,7 @@ impl Checks {
                 "CRABBER_TEST_POSTGRES_CHILD_DATABASE",
                 "CRABBER_TEST_HISTORY_CHILD",
                 "CRABBER_TEST_POSTGRES_METRICS_FILE",
+                "CRABBER_TEST_POSTGRES_TEMPLATE_URL",
             ] {
                 command.env_remove(name);
             }
@@ -496,5 +497,55 @@ mod tests {
         let mut checks = Checks::default();
         checks.internal("panic", Path::new("."), |_| panic!("fixture failure"));
         assert_eq!(checks.execute(&Options::default()), 1);
+    }
+    #[cfg(feature = "postgres-check")]
+    #[test]
+    fn complete_migrates_the_owned_template_after_builds_before_native_execution() {
+        let directory = std::env::temp_dir().join(format!(
+            "crabber-migration-list-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!directory.exists());
+        let checks = crate::complete::schedule(Vec::new(), &directory, None);
+        let position = |prefix: &[&str]| {
+            let prefix: Vec<Value> = prefix.iter().map(|arg| json!(arg)).collect();
+            checks
+                .gates
+                .iter()
+                .position(|gate| {
+                    gate.inventory["argv"]
+                        .as_array()
+                        .is_some_and(|args| args.starts_with(&prefix))
+                })
+                .unwrap()
+        };
+        let compile = position(&["cargo", "nextest", "list", "--workspace"]);
+        let bins = position(&["cargo", "build", "--workspace", "--bins"]);
+        let migration = checks
+            .gates
+            .iter()
+            .position(|gate| gate.inventory["argv"][1] == "postgres-template-migrate")
+            .unwrap();
+        let behavior = position(&["cargo", "nextest", "run", "--cargo-metadata"]);
+        assert!(compile < bins && bins + 1 == migration && migration < behavior);
+        assert_eq!(
+            checks.gates[migration].inventory["prerequisites"],
+            json!([checks.gates[bins].inventory["id"]])
+        );
+        assert_eq!(
+            checks.execute(&Options {
+                list: true,
+                ..Options::default()
+            }),
+            0
+        );
+        assert!(
+            !directory.exists(),
+            "--list must not initialize a fixture run"
+        );
     }
 }

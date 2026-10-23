@@ -27,6 +27,16 @@ const GLUE_LIMIT: usize = 60;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    // A partial fixture command replaces this process before any owner,
+    // signal handler or budget thread exists. The enabled binary owns cleanup.
+    #[cfg(all(
+        feature = "postgres-check",
+        not(feature = "session-fixtures"),
+        target_os = "linux"
+    ))]
+    if let Some(code) = postgres::session::delegate(&args) {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "linux")]
     if !(args.first().map(String::as_str) == Some("check")
         && args.iter().skip(1).any(|arg| arg == "--list"))
@@ -56,6 +66,10 @@ fn main() {
                 eprintln!("the complete check requires postgres-check; use cargo xtask check");
                 std::process::exit(2);
             }
+        }
+        #[cfg(feature = "session-fixtures")]
+        Some("postgres-template-migrate") if args.len() == 1 => {
+            std::process::exit(postgres::session::migrate())
         }
         #[cfg(feature = "postgres-check")]
         Some("postgres-fixture-helper") => {

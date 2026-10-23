@@ -9,7 +9,7 @@ use std::{
 };
 
 const FEATURES: &str = concat!(
-    "xtask/postgres-check,crabber/wasm,crabber/sqlite,crabber/postgres,crabber/custom-http,",
+    "xtask/postgres-check,xtask/session-fixtures,crabber/wasm,crabber/sqlite,crabber/postgres,crabber/custom-http,",
     "crabber/codex,crabber/all-providers,crabber/otlp,crabber-runtime/postgres,",
     "server-host-probe/sqlite,server-host-probe/postgres,server-host-probe/wasm,",
     "workspace-context-probe/sqlite,workspace-context-probe/postgres,",
@@ -75,12 +75,16 @@ fn capture_native_binaries(gates: &mut Checks, directory: &Path, destination: Pa
     );
 }
 
-pub(crate) fn schedule(environment: Vec<(String, String)>, directory: &Path) -> Checks {
+pub(crate) fn schedule(
+    environment: Vec<(String, String)>,
+    directory: &Path,
+    migration: Option<crate::postgres::session::TemplateMigration>,
+) -> Checks {
     let workspace = crate::workspace();
     let mut gates = Checks::required(environment);
     let fixture_lease = preflight(&mut gates, directory);
     feature_boundaries(&mut gates, directory);
-    behavior_graph(&mut gates, directory);
+    behavior_graph(&mut gates, directory, migration);
     gates.script(
         workspace,
         "external embedding consumer",
@@ -217,7 +221,11 @@ fn driver_free_libraries(gates: &mut Checks, destination: PathBuf) {
     );
 }
 
-fn behavior_graph(gates: &mut Checks, directory: &Path) {
+fn behavior_graph(
+    gates: &mut Checks,
+    directory: &Path,
+    migration: Option<crate::postgres::session::TemplateMigration>,
+) {
     let workspace = crate::workspace();
     gates.cargo(
         workspace,
@@ -251,6 +259,7 @@ fn behavior_graph(gates: &mut Checks, directory: &Path) {
         workspace,
         &["build", "--workspace", "--bins", "--features", FEATURES],
     );
+    crate::postgres::session::TemplateMigration::schedule(gates, migration);
     let profile = if std::env::var("CI").as_deref() == Ok("true") {
         "complete-ci"
     } else {

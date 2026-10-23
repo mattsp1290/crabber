@@ -4,6 +4,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
     time::Instant,
 };
 
@@ -14,7 +15,9 @@ use futures_util::FutureExt;
 
 pub(crate) mod child;
 mod container;
+#[cfg(feature = "session-fixtures")]
 mod fixtures;
+pub(crate) mod session;
 use container::{ADMIN_OVERRIDE, Endpoint};
 mod arguments;
 mod schedule;
@@ -154,7 +157,7 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
     let started = Instant::now();
     let directory = crate::complete::output_directory();
     if options.list {
-        return crate::complete::schedule(Vec::new(), &directory).execute(&options);
+        return crate::complete::schedule(Vec::new(), &directory, None).execute(&options);
     }
     if let Err(error) = std::fs::create_dir_all(&directory) {
         eprintln!("cannot prepare complete-check reports: {error}");
@@ -239,7 +242,8 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
     let metrics = metrics_path
         .as_deref()
         .map(FixtureMetrics::create)
-        .transpose()?;
+        .transpose()?
+        .map(Arc::new);
     let endpoint = Endpoint::start().await?;
     let admin = &endpoint.admin;
     let result = async {
@@ -290,7 +294,7 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
 async fn execute_owned_run(
     admin: &str,
     options: &Options,
-    metrics: Option<&FixtureMetrics>,
+    metrics: Option<&Arc<FixtureMetrics>>,
     metrics_path: Option<&Path>,
     started: Instant,
 ) -> Result<i32, Box<dyn std::error::Error>> {
@@ -306,22 +310,32 @@ async fn execute_owned_run(
         if let Some(metrics) = metrics {
             metrics.record("run_setup", run.identity(), None, setup.elapsed())?;
         }
-        let migration = Instant::now();
-        crabber_session::PostgresStore::migrate(&run.template_url())
-            .await
-            .map_err(|_| "cannot migrate run-owned PostgreSQL template")?;
-        if let Some(metrics) = metrics {
-            metrics.record(
-                "template_migration",
-                run.identity(),
-                None,
-                migration.elapsed(),
-            )?;
+        #[cfg(feature = "session-fixtures")]
+        if options.complete.is_none() {
+            let environment = run
+                .environment()
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect();
+            let mut migration = crate::checks::Checks::required(environment);
+            session::TemplateMigration::schedule(
+                &mut migration,
+                Some(session::TemplateMigration::new(&run, metrics.cloned())),
+            );
+            let code = migration.execute(&crate::checks::Options::default());
+            if code != 0 {
+                return Ok(code);
+            }
         }
         crate::process::check_cancelled()?;
         if options.fixtures_only {
-            fixtures::verify(&run, admin).await?;
-            return Ok(0);
+            #[cfg(feature = "session-fixtures")]
+            {
+                fixtures::verify(&run, admin).await?;
+                return Ok(0);
+            }
+            #[cfg(not(feature = "session-fixtures"))]
+            return Err("fixture qualification requires the enabled owner".into());
         }
         if let Some(complete) = &options.complete {
             let mut environment: Vec<(String, String)> = run
@@ -333,13 +347,15 @@ async fn execute_owned_run(
                 environment.push((METRICS_FILE.into(), path.to_string_lossy().into_owned()));
             }
             let directory = metrics_path.unwrap().parent().unwrap();
-            let code = crate::complete::schedule(environment, directory).execute(complete);
+            let migration = session::TemplateMigration::new(&run, metrics.cloned());
+            let code = crate::complete::schedule(environment, directory, Some(migration))
+                .execute(complete);
             if code != 0 {
                 return Ok(code);
             }
-            return execute_demos(&run, metrics, metrics_path).await;
+            return execute_demos(&run, metrics.map(Arc::as_ref), metrics_path).await;
         }
-        execute_schedule(&run, options, metrics, metrics_path).await
+        execute_schedule(&run, options, metrics.map(Arc::as_ref), metrics_path).await
     })
     .catch_unwind()
     .await

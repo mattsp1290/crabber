@@ -22,7 +22,8 @@ signal-hook = "=0.4.5"
 nix = { version = "=0.31.3", features = ["signal", "process", "time"] }
 
 [features]
-postgres-check = ["dep:futures-util", "dep:testcontainers-modules", "dep:tokio", "dep:crabber-session", "dep:crabber-test-support", "dep:sqlx"]
+postgres-check = ["dep:futures-util", "dep:testcontainers-modules", "dep:tokio", "dep:crabber-test-support", "dep:sqlx"]
+session-fixtures = ["postgres-check", "dep:crabber-session"]
 
 [dependencies.testcontainers-modules]
 version = "=0.15.0"

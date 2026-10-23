@@ -30,7 +30,10 @@ pub(crate) fn main(mode: Option<&str>) -> i32 {
 }
 async fn run(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     if mode == Some("scoped-history") {
+        #[cfg(feature = "session-fixtures")]
         return scoped_history().await;
+        #[cfg(not(feature = "session-fixtures"))]
+        return Err("scoped history requires the enabled owner".into());
     }
     if mode == Some("allocate-panic") {
         let database = crabber_test_support::postgres::TestDatabase::create(
@@ -101,6 +104,7 @@ async fn run(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "session-fixtures")]
 async fn scoped_history() -> Result<(), Box<dyn std::error::Error>> {
     let ready = env::var(READY).map_err(|_| "scoped helper requires readiness path")?;
     crabber_test_support::postgres::TestDatabase::run_if_available(

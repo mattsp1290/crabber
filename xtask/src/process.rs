@@ -51,6 +51,23 @@ fn interrupted() -> bool {
         .is_some_and(|signal| signal.load(Ordering::SeqCst) != 0)
 }
 
+#[cfg(all(
+    feature = "postgres-check",
+    not(feature = "session-fixtures"),
+    target_os = "linux"
+))]
+pub(crate) fn replace_before_supervision(command: &mut Command) -> io::Error {
+    use std::os::unix::process::CommandExt;
+    assert!(
+        SIGNAL.get().is_none(),
+        "exec must precede owner supervision"
+    );
+    environment::remove_parent_package(command);
+    // Keep the caller's process group and absolute deadline. Cargo Unix-execs
+    // the enabled owner; an extra relay must not force-kill its cleanup.
+    command.exec()
+}
+
 fn spawn(command: &mut Command) -> io::Result<Child> {
     check_cancelled()?;
     environment::remove_parent_package(command);
