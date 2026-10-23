@@ -5,6 +5,8 @@ use super::super::{
 };
 use crabber::extension::{ToolInput, ToolOutcomeClass, ToolResultContext};
 use sha2::{Digest, Sha256};
+use std::os::unix::fs::PermissionsExt;
+use std::process::{Command, Stdio};
 use std::{fs, io::Write, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -31,10 +33,24 @@ fn engine(dir: &Path, body: &str, timeout: Duration) -> Arc<Engine> {
         dir.display(),
         dir.display()
     );
-    let mut file = fs::File::create(&o.executable_path).unwrap();
-    file.write_all(script.as_bytes()).unwrap();
-    file.sync_all().unwrap();
-    drop(file);
+    // A concurrent fork can inherit a writer even after this thread closes it.
+    // Publish a fresh inode from a separate process and wait for its writers to exit.
+    fs::remove_file(&o.executable_path).unwrap();
+    let mut writer = Command::new("/bin/sh")
+        .env_clear()
+        .args(["-c", "umask 077; /bin/cat > \"$1\"", "rtk-fixture"])
+        .arg(&o.executable_path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    assert!(writer.wait().unwrap().success());
+    fs::set_permissions(&o.executable_path, fs::Permissions::from_mode(0o700)).unwrap();
     o.executable_sha256 = format!("{:x}", Sha256::digest(script.as_bytes()));
     o.limits.timeout = timeout;
     o.limits.max_concurrent = 1;
