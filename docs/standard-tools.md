@@ -26,6 +26,7 @@ use crabber_tools_catalog::prelude::*;
 let directory = tempfile::tempdir()?;
 let root = WorkspaceRoot::open(directory.path())?;
 let tools = StandardTools::new(root.clone(), Policies {
+    deny: PathDenyPolicy::new(["*.pem", ".env", ".env.*", ".netrc", "id_*", "**/.git/config"].map(String::from))?,
     enabled: EnabledSet::only([ToolId::FileRead, ToolId::Search, ToolId::Shell]),
     restrict_to_enabled: false,
     shell: ShellPolicy {
@@ -174,3 +175,7 @@ resource ownership, interruption uncertainty, output bounds and restart limits.
 The standalone consumer template lives in
 [testdata/standard-tools-consumer](../testdata/standard-tools-consumer).
 Its adoption check qualifies the published revision outside the workspace.
+
+Hosts can supply `PathDenyPolicy::none()` for an empty exclusion set. See the
+[path deny contract](tool-contract.md#path-deny-policy) for the dialect, all writing
+tools, Linux post-open verification, and remaining shell, race and hard-link limits.

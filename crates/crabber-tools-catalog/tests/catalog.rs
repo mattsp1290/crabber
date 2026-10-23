@@ -14,6 +14,7 @@ use std::{sync::Arc, time::Duration};
 use support::*;
 fn options(_path: &std::path::Path) -> Policies {
     Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled: EnabledSet::only([
             ToolId::FileRead,
             ToolId::FileWrite,
@@ -38,6 +39,27 @@ fn options(_path: &std::path::Path) -> Policies {
             max_in_flight: 4,
             max_blocking_wait: Duration::from_secs(2),
         },
+    }
+}
+fn assert_deny_contract(name: &str, section: &str) {
+    if matches!(
+        name,
+        "file_read"
+            | "file_write"
+            | "file_edit"
+            | "file_list"
+            | "search"
+            | "glob"
+            | "apply_patch"
+            | "url_fetch"
+            | "multi_edit"
+            | "file_delete"
+            | "file_move"
+    ) {
+        assert!(
+            section.contains("path_denied"),
+            "{name} must document path denial"
+        );
     }
 }
 #[test]
@@ -111,6 +133,7 @@ fn metadata_parity_docs_hashes_and_prelude() {
             .split("\n## ")
             .next()
             .unwrap();
+        assert_deny_contract(&info.name, section);
         let schema: Value = serde_json::from_str(
             section
                 .split("```json\n")
@@ -125,6 +148,7 @@ fn metadata_parity_docs_hashes_and_prelude() {
     }
     assert_eq!(used, allowed.len());
     // These names compile from the prelude alone.
+    let _: Option<PathDenyPolicy> = None;
     let _: Option<(
         Definition,
         RelPath,
@@ -154,13 +178,14 @@ fn hashes_cover_policies_root_enabled_and_restrictions() {
             .unwrap()
             .config_hash()
     );
-    for change in 0..4 {
+    for change in 0..5 {
         let mut o = options(a.path());
         match change {
             0 => o.shell.env = EnvPolicy::Replace(vec![]),
             1 => o.shell.run_as = Some(RunAs { uid: 123, gid: 456 }),
             2 => o.restrict_to_enabled = true,
-            _ => o.enabled = EnabledSet::only([ToolId::FileRead]),
+            3 => o.enabled = EnabledSet::only([ToolId::FileRead]),
+            _ => o.deny = PathDenyPolicy::new([".env".into()]).unwrap(),
         }
         assert_ne!(
             hash,
@@ -169,6 +194,18 @@ fn hashes_cover_policies_root_enabled_and_restrictions() {
                 .config_hash()
         );
     }
+    let mut first = options(a.path());
+    first.deny = PathDenyPolicy::new([".env", "*.pem"].map(String::from)).unwrap();
+    let mut reordered = options(a.path());
+    reordered.deny = PathDenyPolicy::new(["*.pem", ".env", ".env"].map(String::from)).unwrap();
+    assert_eq!(
+        StandardTools::new(WorkspaceRoot::open(a.path()).unwrap(), first)
+            .unwrap()
+            .config_hash(),
+        StandardTools::new(WorkspaceRoot::open(a.path()).unwrap(), reordered)
+            .unwrap()
+            .config_hash(),
+    );
     let mut o = options(a.path());
     o.enabled = EnabledSet::only([]);
     assert!(StandardTools::new(WorkspaceRoot::open(a.path()).unwrap(), o).is_err());

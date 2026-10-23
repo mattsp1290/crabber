@@ -71,7 +71,7 @@ impl Request {
         if let Some(hook) = &options.pre_write {
             hook();
         }
-        atomic::write(options.root.dir(), self.path.as_path(), text.as_bytes())
+        atomic::write(options.root.dir(), self.resolved_path(), text.as_bytes())
             .map_err(io_error)?;
         Ok(json!({"outcome":"succeeded","bytes_written":text.len(),"edits_applied":a.edits.len()}))
     }

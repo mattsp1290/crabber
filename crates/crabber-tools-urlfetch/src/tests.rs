@@ -313,6 +313,7 @@ fn tool(root: &std::path::Path) -> FetchTool {
     let limits = support::limits();
     FetchTool {
         options: Arc::new(Options {
+            deny: crabber_tools_core::PathDenyPolicy::none(),
             root: WorkspaceRoot::open(root).unwrap(),
             policy: UrlFetchPolicy::default(),
             capacity: Capacity::new(&limits).unwrap(),

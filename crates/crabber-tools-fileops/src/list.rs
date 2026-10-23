@@ -41,17 +41,16 @@ impl Request {
             .open_dir(self.path.as_path())
             .map_err(io_error)?;
         let mut entries = vec![];
-        let truncated = walk(
-            &dir,
-            if self.path.is_root() {
-                Path::new("")
-            } else {
-                self.path.as_path()
-            },
-            a.recursive,
-            cancel,
-            &mut entries,
-        )?;
+        let prefix = if self.path.is_root() {
+            Path::new("")
+        } else {
+            self.path.as_path()
+        };
+        let visible = |relative: &Path| {
+            crabber_tools_core::deny::check(&options.root, &options.deny, &prefix.join(relative))
+                .is_ok()
+        };
+        let truncated = walk(&dir, prefix, a.recursive, cancel, &mut entries, &visible)?;
         Ok(if truncated {
             json!({"outcome":"succeeded","entries":entries,"truncated":true})
         } else {
@@ -66,14 +65,25 @@ fn walk(
     recursive: bool,
     cancel: &CancellationToken,
     out: &mut Vec<Value>,
+    visible: &dyn Fn(&Path) -> bool,
 ) -> Result<bool, ToolError> {
     // Path ordering compares components, placing a/b before a.txt. One
     // global frontier keeps the earliest remaining pre-order entries without
     // retaining one heap or one open directory per level.
     let mut pending = std::collections::BTreeSet::new();
-    enqueue(dir, Path::new(""), MAX_LIST_ENTRIES, cancel, &mut pending)?;
+    enqueue(
+        dir,
+        Path::new(""),
+        MAX_LIST_ENTRIES,
+        cancel,
+        &mut pending,
+        visible,
+    )?;
     while let Some(relative) = pending.pop_first() {
         check_walk_cancelled(cancel)?;
+        if !visible(&relative) {
+            continue;
+        }
         let is_dir = dir.symlink_metadata(&relative).map_err(io_error)?.is_dir();
         out.push(json!({"path":prefix.join(&relative).to_string_lossy(),"is_dir":is_dir}));
         if out.len() == MAX_LIST_ENTRIES {
@@ -86,6 +96,7 @@ fn walk(
                 MAX_LIST_ENTRIES - out.len(),
                 cancel,
                 &mut pending,
+                visible,
             )?;
         }
     }
@@ -106,6 +117,7 @@ fn enqueue(
     budget: usize,
     cancel: &CancellationToken,
     pending: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    visible: &dyn Fn(&Path) -> bool,
 ) -> Result<(), ToolError> {
     let dir = root
         .open_dir(if relative.as_os_str().is_empty() {
@@ -116,7 +128,11 @@ fn enqueue(
         .map_err(io_error)?;
     for entry in dir.entries().map_err(io_error)? {
         check_walk_cancelled(cancel)?;
-        pending.insert(relative.join(entry.map_err(io_error)?.file_name()));
+        let candidate = relative.join(entry.map_err(io_error)?.file_name());
+        if !visible(&candidate) {
+            continue;
+        }
+        pending.insert(candidate);
         if pending.len() > budget {
             pending.pop_last();
         }
@@ -141,13 +157,13 @@ mod tests {
             cap_std::fs::Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
         let mut pending = std::collections::BTreeSet::new();
         let cancel = CancellationToken::new();
-        enqueue(&root, Path::new(""), 10, &cancel, &mut pending).unwrap();
+        enqueue(&root, Path::new(""), 10, &cancel, &mut pending, &|_| true).unwrap();
         assert_eq!(pending.len(), 10);
         assert_eq!(pending.pop_first().unwrap(), Path::new("a"));
-        enqueue(&root, Path::new("a"), 9, &cancel, &mut pending).unwrap();
+        enqueue(&root, Path::new("a"), 9, &cancel, &mut pending, &|_| true).unwrap();
         assert_eq!(pending.len(), 9);
         assert_eq!(pending.pop_first().unwrap(), Path::new("a/a"));
-        enqueue(&root, Path::new("a/a"), 8, &cancel, &mut pending).unwrap();
+        enqueue(&root, Path::new("a/a"), 8, &cancel, &mut pending, &|_| true).unwrap();
         assert_eq!(pending.len(), 8);
         assert_eq!(pending.pop_first().unwrap(), Path::new("a/a/z00"));
     }

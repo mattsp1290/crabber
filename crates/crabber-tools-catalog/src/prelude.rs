@@ -3,7 +3,8 @@ pub use crate::{
     Definition, EnabledSet, Policies, StandardTools, StandardToolsFactory, ToolId, metadata,
 };
 pub use crabber_tools_core::{
-    EnvPolicy, ExactRoots, Limits, RelPath, RunAs, WorkspaceAdmission, WorkspaceRoot,
+    EnvPolicy, ExactRoots, Limits, PathDenyPolicy, RelPath, RunAs, WorkspaceAdmission,
+    WorkspaceRoot,
 };
 pub use crabber_tools_search::SearchPolicy;
 pub use crabber_tools_shell::{ShellPolicy, StartupMode};

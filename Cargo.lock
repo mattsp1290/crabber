@@ -810,6 +810,7 @@ dependencies = [
  "cap-std",
  "crabber",
  "getrandom 0.3.4",
+ "globset",
  "libc",
  "rustix",
  "serde",

@@ -63,6 +63,8 @@ pub fn metadata() -> Vec<(ToolId, ToolInfo, String)> {
 /// Root-independent policies cloned into each admitted workspace.
 #[derive(Clone)]
 pub struct Policies {
+    /// Host path exclusions, included in the persisted configuration identity.
+    pub deny: crabber_tools_core::PathDenyPolicy,
     /// Register only this subset; cannot be empty.
     pub enabled: EnabledSet,
     /// Run-wide restriction: also denies other extensions and host tools. Usually false.
@@ -99,12 +101,14 @@ impl StandardTools {
         options.validate()?;
         let capacity = Capacity::new(&options.limits)?;
         let files = Arc::new(crabber_tools_fileops::Options {
+            deny: options.deny.clone(),
             root: root.clone(),
             limits: options.limits.clone(),
             capacity: capacity.clone(),
             pre_write: None,
         });
         let search = Arc::new(crabber_tools_search::Options {
+            deny: options.deny.clone(),
             root: root.clone(),
             limits: options.limits.clone(),
             capacity: capacity.clone(),
@@ -135,6 +139,7 @@ impl StandardTools {
                     ToolId::Shell => crabber_tools_shell::definition(shell.clone())?,
                     ToolId::Glob => {
                         crabber_tools_glob::definition(Arc::new(crabber_tools_glob::Options {
+                            deny: options.deny.clone(),
                             root: root.clone(),
                             limits: options.limits.clone(),
                             capacity: capacity.clone(),
@@ -142,6 +147,7 @@ impl StandardTools {
                     }
                     ToolId::ApplyPatch => crabber_tools_applypatch::definition(Arc::new(
                         crabber_tools_applypatch::Options {
+                            deny: options.deny.clone(),
                             root: root.clone(),
                             limits: options.limits.clone(),
                             capacity: capacity.clone(),
@@ -149,6 +155,7 @@ impl StandardTools {
                     )),
                     ToolId::UrlFetch => crabber_tools_urlfetch::definition(Arc::new(
                         crabber_tools_urlfetch::Options {
+                            deny: options.deny.clone(),
                             root: root.clone(),
                             limits: options.limits.clone(),
                             capacity: capacity.clone(),
@@ -186,10 +193,9 @@ impl StandardTools {
         if definitions.is_empty() {
             return Err(ExtensionError::Plan("enabled set is empty".into()));
         }
-        let hash = config_hash(&(options.config_identity(), root.path()));
         Ok(Self {
             definitions,
-            hash,
+            hash: config_hash(&(options.config_identity(), root.path())),
             restrict: options.restrict_to_enabled,
         })
     }
@@ -241,6 +247,7 @@ impl Policies {
             &self.user_interact,
             &self.limits,
             self.restrict_to_enabled,
+            &self.deny,
         ))
     }
 

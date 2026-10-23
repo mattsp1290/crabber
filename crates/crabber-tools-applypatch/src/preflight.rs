@@ -236,9 +236,19 @@ fn change(
 }
 pub(crate) fn plan(
     root: &WorkspaceRoot,
+    deny: &crabber_tools_core::PathDenyPolicy,
     operations: Vec<Operation>,
     cancel: &CancellationToken,
 ) -> Result<Plan, (ToolError, Vec<FileResult>)> {
+    if !deny.patterns().is_empty() {
+        for operation in &operations {
+            for path in std::iter::once(&operation.path).chain(operation.new_path.iter()) {
+                let relative = RelPath::parse(path, false).map_err(|error| (error, Vec::new()))?;
+                crabber_tools_core::deny::check(root, deny, relative.as_path())
+                    .map_err(|error| (error, Vec::new()))?;
+            }
+        }
+    }
     let mut changes = vec![];
     let mut files = vec![];
     let mut syntactic = BTreeSet::new();
