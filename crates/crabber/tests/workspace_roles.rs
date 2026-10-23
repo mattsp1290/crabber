@@ -4,6 +4,8 @@
 mod controls;
 #[path = "workspace_roles/fixture.rs"]
 mod fixture;
+#[path = "workspace_roles/held_run.rs"]
+mod held_run;
 #[path = "workspace_roles/management.rs"]
 mod management;
 #[path = "workspace_roles/positive.rs"]
