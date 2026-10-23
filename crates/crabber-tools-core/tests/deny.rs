@@ -118,6 +118,85 @@ fn resolving_checks_deny_aliases_and_missing_tails() {
     );
 }
 
+#[test]
+fn intermediate_symlink_routes_are_checked_before_the_final_target() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("public")).unwrap();
+    std::fs::create_dir(temp.path().join("secrets")).unwrap();
+    std::fs::write(temp.path().join("public/file"), "allowed fixture").unwrap();
+    symlink("../public", temp.path().join("secrets/link")).unwrap();
+    symlink("secrets/link", temp.path().join("alias")).unwrap();
+    symlink("public", temp.path().join("blocked-link")).unwrap();
+    symlink("blocked-link", temp.path().join("basename-alias")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["secrets", "blocked-link"]);
+    for name in [
+        "alias/file",
+        "alias/new",
+        "basename-alias/file",
+        "basename-alias/new",
+    ] {
+        let error = deny::check(&root, &deny, Path::new(name)).unwrap_err();
+        assert_eq!(error.category, category::PATH_DENIED, "{name}");
+        assert_eq!(error.message, "path denied by host policy");
+    }
+    assert!(deny::check(&root, &deny, Path::new("public/file")).is_ok());
+}
+
+#[test]
+fn stepwise_resolution_preserves_capability_and_missing_tail_contracts() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("a/b")).unwrap();
+    std::fs::create_dir(temp.path().join("public")).unwrap();
+    std::fs::write(temp.path().join("public/file"), "allowed fixture").unwrap();
+    symlink("../../public", temp.path().join("a/b/up")).unwrap();
+    symlink("new/nested", temp.path().join("missing")).unwrap();
+    symlink("../outside", temp.path().join("escape")).unwrap();
+    symlink(temp.path().join("public"), temp.path().join("absolute")).unwrap();
+    symlink("public/file/../new", temp.path().join("not-directory")).unwrap();
+    symlink("public/file/", temp.path().join("trailing-slash")).unwrap();
+    symlink("public/file/.", temp.path().join("trailing-dot")).unwrap();
+    symlink("new/../public", temp.path().join("missing-parent")).unwrap();
+    for index in 0..41 {
+        symlink(
+            format!("hop{}", index + 1),
+            temp.path().join(format!("hop{index}")),
+        )
+        .unwrap();
+    }
+    symlink("public", temp.path().join("hop41")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["excluded"]);
+    for (requested, resolved) in [
+        ("a/b/up/file", "public/file"),
+        ("missing/file", "new/nested/file"),
+    ] {
+        assert_eq!(
+            deny::check(&root, &deny, Path::new(requested))
+                .unwrap()
+                .resolved,
+            Path::new(resolved)
+        );
+    }
+    for (name, category) in [
+        ("escape/file", category::PATH_ESCAPE),
+        ("absolute/file", category::PATH_ESCAPE),
+        ("not-directory", category::NOT_DIRECTORY),
+        ("trailing-slash", category::NOT_DIRECTORY),
+        ("trailing-dot", category::NOT_DIRECTORY),
+        ("missing-parent", category::PATH_DENIED),
+        ("hop0/file", category::PATH_DENIED),
+    ] {
+        assert_eq!(
+            deny::check(&root, &deny, Path::new(name))
+                .unwrap_err()
+                .category,
+            category,
+            "{name}"
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn opened_handle_is_checked_before_reading() {

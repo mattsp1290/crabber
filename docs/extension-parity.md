@@ -459,7 +459,7 @@ marker fixtures therefore supply synthetic values through the environment.
 Strict fixture execution requires `/bin/sh`, `ps` and `python3`; the two detached
 output-holder tests publish PID ownership before detaching and readiness after
 setsid, and verify holder disappearance after cleanup. CI sets
-BACKGROUND_JOBS_REQUIRE_SHELL=1 on Linux/macOS. Host-process restart and nine-feature
+BACKGROUND_JOBS_REQUIRE_SHELL=1 on Linux. Host-process restart and nine-feature
 composition acceptance remain separate work; this is not complete parity.
 
 ## Python REPL
@@ -502,7 +502,7 @@ Parallel Agent settlement preserves call order, so queue overflow is observed
 through a public result transform before releasing the holder, then checked
 in durable records. Unit seams prove cancellation commit boundaries, unreaped
 leaders, quarantine and cleanup failures. These local Linux results do not
-claim hosted CI or macOS execution. CI enforces Python 3.11/3.14 on both OSes
+claim hosted CI or macOS execution. CI enforces Python 3.11/3.14 on Linux
 with PYTHON_REPL_REQUIRE_PYTHON=1. Remaining recovery/composition work is tracked
 under crabber-extensions-2bed.
 

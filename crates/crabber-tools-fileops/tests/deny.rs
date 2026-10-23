@@ -83,3 +83,69 @@ async fn every_file_tool_denies_direct_and_aliased_paths_before_effects() {
     assert_eq!(visible["entries"], json!([{"path":"ok","is_dir":false}]));
     assert!(visible.get("truncated").is_none());
 }
+
+#[tokio::test]
+async fn denied_intermediate_symlink_routes_have_no_writer_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("public")).unwrap();
+    std::fs::create_dir(temp.path().join("secrets")).unwrap();
+    std::fs::write(temp.path().join("public/file"), "allowed fixture").unwrap();
+    symlink("../public", temp.path().join("secrets/link")).unwrap();
+    symlink("secrets/link", temp.path().join("alias")).unwrap();
+    symlink("public", temp.path().join("blocked-link")).unwrap();
+    symlink("blocked-link", temp.path().join("basename-alias")).unwrap();
+    let bounds = limits();
+    let options = Arc::new(Options {
+        deny: PathDenyPolicy::new(["secrets", "blocked-link"].map(String::from)).unwrap(),
+        root: WorkspaceRoot::open(temp.path()).unwrap(),
+        capacity: Capacity::new(&bounds).unwrap(),
+        limits: bounds,
+        pre_write: None,
+    });
+    for alias in ["alias", "basename-alias"] {
+        let file = format!("{alias}/file");
+        let new = format!("{alias}/new");
+        for (tool, args) in [
+            (
+                write::definition(options.clone()),
+                json!({"path":new,"content":"changed"}),
+            ),
+            (
+                edit::definition(options.clone()),
+                json!({"path":file,"anchor":"fixture","replacement":"changed"}),
+            ),
+            (
+                multi_edit::definition(options.clone()),
+                json!({"path":file,"edits":[{"anchor":"fixture","replacement":"changed"}]}),
+            ),
+            (
+                file_delete::definition(options.clone()),
+                json!({"path":file}),
+            ),
+            (
+                file_move::definition(options.clone()),
+                json!({"path":file,"new_path":"moved"}),
+            ),
+            (
+                file_move::definition(options.clone()),
+                json!({"path":"public/file","new_path":new}),
+            ),
+        ] {
+            let result = execute(temp.path(), tool, args).await;
+            assert_eq!(result["error"]["category"], "path_denied", "{result}");
+            assert_eq!(result["error"]["message"], "path denied by host policy");
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("public/file")).unwrap(),
+        "allowed fixture"
+    );
+    assert!(!temp.path().join("public/new").exists());
+    assert!(!temp.path().join("moved").exists());
+    assert_eq!(
+        std::fs::read_dir(temp.path().join("public"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
