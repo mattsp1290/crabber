@@ -2,6 +2,7 @@
 mod contexts;
 mod matrix;
 mod probe;
+mod tuple;
 use async_trait::async_trait;
 use crabber::{
     ExtensionError, ToolDefinition,
@@ -48,5 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     probe::run(true, None).await?;
     contexts::run().await?;
     matrix::run().await?;
+    tuple::run().await?;
     Ok(())
 }

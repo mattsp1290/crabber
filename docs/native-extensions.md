@@ -468,7 +468,7 @@ SIGCHLD auto-reaping or `waitpid(-1)` is outside the contract.
 
 Tests use synthetic data and provisioned Python; `PYTHON_REPL_REQUIRE_PYTHON=1`
 forbids interpreter skips and requires 3.11–3.14. CI selects 3.11 and 3.14 on
-Linux/macOS. See [the parity boundaries](extension-parity.md#python-repl).
+Linux. The former satellite macOS CI coverage is no longer run. See [the parity boundaries](extension-parity.md#python-repl).
 Full nine-feature parity is not claimed.
 
 ## RTK reducer
@@ -624,7 +624,9 @@ No data migration is introduced.
 [`testdata/extensions-consumer/`](../testdata/extensions-consumer/README.md) creates a
 fresh project outside this workspace, generates its own lock once, and checks
 composition, public-contract journeys and a two-process SQLite restart using
-immutable Git dependencies. Supply one pushed `CRABBER_REV` for runtime and
-native extensions. The separate standard tools consumer qualifies their combined
-tuple. The script records lock hashes and checks package source identities. See the [durable host adoption record](extension-parity.md#durable-host-adoption-record)
+immutable Git dependencies. Supply one pushed `CRABBER_REV` for both runtime
+and native extensions. The [standard tools consumer](../testdata/standard-tools-consumer/README.md)
+qualifies the combined runtime, tools, command guard and redactor at that same
+revision. Both scripts record lock hashes and check every resolved Crabber
+package's source identity. See the [durable host adoption record](extension-parity.md#durable-host-adoption-record)
 for the qualified revisions and remaining limits.
