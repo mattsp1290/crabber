@@ -81,6 +81,11 @@ async fn interleaved_sessions_keep_each_inline_and_detached_source_on_its_own_pa
     })
     .await
     .unwrap();
+    // Both inline phases and background start attempts have settled. Before
+    // cancelling either job, account for the six best-effort publications:
+    // two inline transitions and one detached start for each parent.
+    let publication_failures = ext.owner_report().publication_failures;
+    let mut publication_count = 0;
     for (execution, run) in [(&a, &runs[0]), (&b, &runs[1])] {
         let session = execution.session().session_id();
         let calls = snapshot_tools(&store, session).await;
@@ -91,7 +96,11 @@ async fn interleaved_sessions_keep_each_inline_and_detached_source_on_its_own_pa
             .unwrap();
         let events = store.list_events(session, None, 1000).await.unwrap();
         let publications = publications(&events);
-        assert!(publications.len() >= 3);
+        publication_count += publications.len();
+        assert!(publications.len() <= 3);
+        if publication_failures == 0 {
+            assert!(publications.len() >= 3);
+        }
         for p in &publications {
             assert_eq!(&p.source.session_id, session);
             assert_eq!(&p.source.run_id, run);
@@ -102,6 +111,37 @@ async fn interleaved_sessions_keep_each_inline_and_detached_source_on_its_own_pa
                 assert_eq!(p.source.call_id.as_ref(), Some(&inline.id));
             }
         }
+        {
+            let captured = seen.lock().unwrap();
+            let requests = captured
+                .iter()
+                .filter(|request| request.session_id() == session)
+                .collect::<Vec<_>>();
+            assert_eq!(requests.len(), 2);
+            for request in requests {
+                assert_eq!(request.run_id(), run);
+                assert_eq!(
+                    request.workspace().workspace_id(),
+                    Some(execution.session().workspace_id())
+                );
+                assert_eq!(
+                    request.call_id(),
+                    if request.background() {
+                        &detached.id
+                    } else {
+                        &inline.id
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(
+        u64::try_from(publication_count).unwrap() + publication_failures,
+        6,
+        "every missing publication must be reported as a best-effort failure"
+    );
+    for execution in [&a, &b] {
+        let session = execution.session().session_id();
         let reports = agent
             .drain_session_invocations(session, true, Duration::from_secs(2))
             .await;

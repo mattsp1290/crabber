@@ -4,11 +4,13 @@ use crabber::ExtensionError;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer};
 use std::{
-    collections::VecDeque,
     io,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::Arc,
 };
+
+mod resolver;
+mod routes;
 
 /// Sorted host globs denying paths and their descendants.
 #[derive(Clone, Debug)]
@@ -145,74 +147,7 @@ pub fn check(
         });
     }
     check_name(policy, relative)?;
-    if relative
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(path_escape());
-    }
-    let mut pending: VecDeque<_> = relative
-        .components()
-        .map(|part| part.as_os_str().to_owned())
-        .collect();
-    let mut resolved = PathBuf::new();
-    let mut missing = false;
-    let mut directory = true;
-    let mut symlinks = 0;
-    while let Some(part) = pending.pop_front() {
-        if !directory {
-            return Err(ToolError::new(
-                category::NOT_DIRECTORY,
-                "filesystem operation failed",
-            ));
-        }
-        match Path::new(&part).components().next() {
-            Some(Component::CurDir) => continue,
-            Some(Component::ParentDir) => {
-                // A missing prefix cannot be traversed with `..` by the OS.
-                if missing {
-                    return Err(denied());
-                }
-                if !resolved.pop() {
-                    return Err(path_escape());
-                }
-                continue;
-            }
-            Some(Component::Normal(name)) => resolved.push(name),
-            _ => return Err(path_escape()),
-        }
-        check_name(policy, &resolved)?;
-        if missing {
-            continue;
-        }
-        match root.dir().symlink_metadata(&resolved) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                symlinks += 1;
-                if symlinks > 40 {
-                    return Err(denied());
-                }
-                // Read one payload, so nested aliases cannot erase denied routes.
-                // The capability rejects absolute targets and confines this read.
-                let target = root.dir().read_link(&resolved).map_err(resolution_error)?;
-                resolved.pop();
-                // Components normalize trailing `/` and `/.`, but both require
-                // a directory when the operating system follows the payload.
-                let bytes = target.as_os_str().as_encoded_bytes();
-                if bytes.ends_with(b"/") || bytes.ends_with(b"/.") {
-                    pending.push_front(".".into());
-                }
-                for part in target.components().rev() {
-                    pending.push_front(part.as_os_str().to_owned());
-                }
-            }
-            Ok(metadata) => directory = metadata.is_dir(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => missing = true,
-            Err(error) => return Err(resolution_error(error)),
-        }
-    }
-    if resolved.as_os_str().is_empty() {
-        resolved.push(".");
-    }
+    let resolved = resolver::resolve(root, policy, relative)?;
     Ok(ResolvedPath {
         requested,
         resolved,

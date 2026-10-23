@@ -150,6 +150,7 @@ fn stepwise_resolution_preserves_capability_and_missing_tail_contracts() {
     std::fs::create_dir(temp.path().join("public")).unwrap();
     std::fs::write(temp.path().join("public/file"), "allowed fixture").unwrap();
     symlink("../../public", temp.path().join("a/b/up")).unwrap();
+    symlink("public", temp.path().join("allowed-alias")).unwrap();
     symlink("new/nested", temp.path().join("missing")).unwrap();
     symlink("../outside", temp.path().join("escape")).unwrap();
     symlink(temp.path().join("public"), temp.path().join("absolute")).unwrap();
@@ -169,7 +170,7 @@ fn stepwise_resolution_preserves_capability_and_missing_tail_contracts() {
     let deny = policy(&["excluded"]);
     for (requested, resolved) in [
         ("a/b/up/file", "public/file"),
-        ("missing/file", "new/nested/file"),
+        ("allowed-alias/new/file", "public/new/file"),
     ] {
         assert_eq!(
             deny::check(&root, &deny, Path::new(requested))
@@ -185,6 +186,7 @@ fn stepwise_resolution_preserves_capability_and_missing_tail_contracts() {
         ("trailing-slash", category::NOT_DIRECTORY),
         ("trailing-dot", category::NOT_DIRECTORY),
         ("missing-parent", category::PATH_DENIED),
+        ("missing/file", category::PATH_DENIED),
         ("hop0/file", category::PATH_DENIED),
     ] {
         assert_eq!(
