@@ -4,6 +4,8 @@ use crabber::ExtensionError;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer};
 use std::{
+    collections::VecDeque,
+    ffi::OsString,
     io,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -140,33 +142,50 @@ pub fn check(
         });
     }
     check_name(policy, relative)?;
+    let mut pending = path_components(relative, false)?;
     let mut resolved = PathBuf::new();
     let mut missing = false;
-    for component in relative.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::Normal(name) => resolved.push(name),
-            _ => {
-                return Err(ToolError::new(
-                    category::PATH_ESCAPE,
-                    "path must stay inside workspace",
-                ));
-            }
+    let mut followed = 0;
+    while let Some((component, target)) = pending.pop_front() {
+        // A route may resolve away before its caller suffix is visited. Check
+        // route/file as well as route, not only the final target's spelling.
+        let mut spelling = resolved.clone();
+        spelling.push(&component);
+        for (component, _) in &pending {
+            spelling.push(component);
         }
+        check_name(policy, &spelling)?;
+        if component == ".." {
+            if !resolved.pop() {
+                return Err(escape());
+            }
+            check_name(policy, &resolved)?;
+            continue;
+        }
+        resolved.push(component);
         check_name(policy, &resolved)?;
         if missing {
             continue;
         }
         match root.dir().symlink_metadata(&resolved) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                resolved = root
-                    .dir()
+                if followed == 40 {
+                    return Err(denied());
+                }
+                followed += 1;
+                // Preserve capability semantics for dangling targets, file/..,
+                // trailing slashes and escapes, but never jump over route names.
+                root.dir()
                     .canonicalize(&resolved)
                     .map_err(resolution_error)?;
-                check_name(policy, &resolved)?;
+                let link = root.dir().read_link(&resolved).map_err(resolution_error)?;
+                let mut target_components = path_components(&link, true)?;
+                resolved.pop();
+                target_components.append(&mut pending);
+                pending = target_components;
             }
             Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => missing = true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !target => missing = true,
             Err(error) => return Err(resolution_error(error)),
         }
     }
@@ -177,6 +196,23 @@ pub fn check(
         requested,
         resolved,
     })
+}
+
+fn escape() -> ToolError {
+    ToolError::new(category::PATH_ESCAPE, "path must stay inside workspace")
+}
+
+// Tag symlink-target components: unlike a caller's create destination, the
+// symlink target itself must exist, even if it disappears after validation.
+fn path_components(path: &Path, target: bool) -> Result<VecDeque<(OsString, bool)>, ToolError> {
+    path.components()
+        .filter(|part| !matches!(part, Component::CurDir))
+        .map(|part| match part {
+            Component::Normal(name) => Ok((name.to_owned(), target)),
+            Component::ParentDir if target => Ok((OsString::from(".."), true)),
+            _ => Err(escape()),
+        })
+        .collect()
 }
 
 #[allow(

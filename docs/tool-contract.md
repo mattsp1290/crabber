@@ -903,8 +903,11 @@ Errors use category `path_denied` and the constant message
 `path denied by host policy`. They never include patterns, resolved targets or
 content. Existing caller-supplied path fields may still be echoed. Resolution
 errors fail closed, except capability escapes retain `path_escape` and
-non-directory ancestors retain `not_directory`. Missing tails are checked under
-the resolved existing prefix, allowing permitted creates and moves.
+non-directory ancestors retain `not_directory`. Each intermediate symlink route is checked with its remaining descendant suffix
+before that route resolves away. Route screening follows at most 40 symlinks
+per check; exhaustion fails closed as `path_denied`. Missing caller tails are
+checked under the resolved existing prefix, allowing permitted creates and moves.
+Dangling symlink targets remain rejected; they are not treated as missing caller tails.
 
 On Linux, content-returning file opens recheck `/proc/self/fd` before reading;
 unavailable descriptor links, deleted targets, outside-root targets and denied

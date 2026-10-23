@@ -142,3 +142,137 @@ fn opened_handle_is_checked_before_reading() {
     );
     assert!(deny::verify_open(&root, &PathDenyPolicy::none(), &allowed).is_ok());
 }
+
+#[test]
+fn intermediate_symlink_routes_cannot_skip_denied_names() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("real/nested")).unwrap();
+    std::fs::create_dir(temp.path().join("links")).unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    symlink("real", temp.path().join("denied-route")).unwrap();
+    symlink("denied-route", temp.path().join("alias")).unwrap();
+    symlink("../denied-route", temp.path().join("links/alias")).unwrap();
+    symlink("real/file", temp.path().join("denied-file")).unwrap();
+    symlink("denied-file", temp.path().join("file-alias")).unwrap();
+    symlink("denied-route/../real", temp.path().join("parent-route")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["denied-route", "denied-file"]);
+    for name in [
+        "alias/file",
+        "alias/new/tail",
+        "links/alias/file",
+        "file-alias",
+        "parent-route/file",
+    ] {
+        let error = deny::check(&root, &deny, Path::new(name)).unwrap_err();
+        assert_eq!(error.category, category::PATH_DENIED, "{name}");
+        assert_eq!(error.message, "path denied by host policy");
+    }
+}
+
+#[test]
+fn intermediate_symlink_descendant_pattern_is_checked_before_route_disappears() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("real")).unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    symlink("real", temp.path().join("route")).unwrap();
+    symlink("route", temp.path().join("alias")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["route/file", "route/new/*"]);
+    for name in ["alias/file", "alias/new/tail"] {
+        assert_eq!(
+            deny::check(&root, &deny, Path::new(name))
+                .unwrap_err()
+                .category,
+            category::PATH_DENIED,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn hop_resolution_preserves_allowed_writer_tails_and_capability_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("real/nested")).unwrap();
+    std::fs::create_dir(temp.path().join("links")).unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    for (name, target) in [
+        ("alias", "real"),
+        ("chain", "alias"),
+        ("links/up", "../real"),
+        ("parent", "real/nested/.."),
+        ("root", "real/.."),
+        ("dangling", "absent"),
+        ("bad-parent", "real/file/../nested"),
+        ("bad-dot", "real/file/."),
+        ("bad-slash", "real/file/"),
+        ("escape", "../outside"),
+        ("absolute", "/etc"),
+        ("loop", "loop"),
+    ] {
+        symlink(target, temp.path().join(name)).unwrap();
+    }
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["unrelated"]);
+    for name in [
+        "alias/new/file",
+        "chain/new/file",
+        "links/up/new/file",
+        "parent/new/file",
+    ] {
+        assert_eq!(
+            deny::check(&root, &deny, Path::new(name)).unwrap().resolved,
+            Path::new("real/new/file"),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        deny::check(&root, &deny, Path::new("root/new/file"))
+            .unwrap()
+            .resolved,
+        Path::new("new/file")
+    );
+    for (name, expected) in [
+        ("dangling", category::PATH_DENIED),
+        ("dangling/new", category::PATH_DENIED),
+        ("loop", category::PATH_DENIED),
+        ("bad-parent", category::NOT_DIRECTORY),
+        ("bad-dot", category::NOT_DIRECTORY),
+        ("bad-slash", category::NOT_DIRECTORY),
+        ("escape", category::PATH_ESCAPE),
+        ("absolute", category::PATH_ESCAPE),
+        ("../real", category::PATH_ESCAPE),
+    ] {
+        assert_eq!(
+            deny::check(&root, &deny, Path::new(name))
+                .unwrap_err()
+                .category,
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn route_walk_has_a_bounded_total_symlink_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    symlink(".", temp.path().join("back")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["unrelated"]);
+    let allowed = std::iter::repeat_n("back", 40)
+        .collect::<Vec<_>>()
+        .join("/");
+    assert_eq!(
+        deny::check(&root, &deny, Path::new(&allowed))
+            .unwrap()
+            .resolved,
+        Path::new(".")
+    );
+    let exhausted = format!("{allowed}/back");
+    assert_eq!(
+        deny::check(&root, &deny, Path::new(&exhausted))
+            .unwrap_err()
+            .category,
+        category::PATH_DENIED
+    );
+}
