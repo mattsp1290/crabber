@@ -2,10 +2,14 @@
 use crate::{category, failed};
 use crabber::ExtensionError;
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 /// Reject a pre-cancelled invocation before side effects.
+///
+/// # Errors
+/// Returns a tool error when the invocation is already cancelled.
 pub fn check_cancelled(cancel: &CancellationToken) -> Result<(), ExtensionError> {
     if cancel.is_cancelled() {
         Err(ExtensionError::Tool("cancelled".into()))
@@ -23,16 +27,22 @@ pub async fn run_blocking(
     check_cancelled(cancel)?;
     let work = tokio::task::spawn_blocking(f);
     tokio::select! { biased;
-        _ = cancel.cancelled() => Err(ExtensionError::Tool("cancelled".into())),
+        () = cancel.cancelled() => Err(ExtensionError::Tool("cancelled".into())),
         result = work => Ok(result.unwrap_or_else(|_| failed(category::UNKNOWN,"internal"))),
     }
 }
 /// Unpredictable per-process sibling name; randomness failure returns an I/O error.
+///
+/// # Errors
+/// Returns an I/O error if the operating system cannot supply randomness.
 pub fn temp_name(prefix: &str) -> std::io::Result<String> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut random = [0; 8];
     getrandom::fill(&mut random).map_err(|_| std::io::Error::other("randomness unavailable"))?;
-    let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = random.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(&mut hex, "{byte:02x}");
+        hex
+    });
     Ok(format!(
         "{prefix}{}-{}-{hex}",
         std::process::id(),
@@ -43,6 +53,9 @@ pub fn temp_name(prefix: &str) -> std::io::Result<String> {
 /// Register blocking work with the call owner. Cancellation returns promptly;
 /// the resource scope retains the join and the closure's permits until it ends.
 /// Ownerless or sealed contexts never start the closure.
+///
+/// # Errors
+/// Returns a tool error if the invocation is cancelled before or during the wait.
 pub async fn run_blocking_owned(
     ctx: &crabber::extension::ToolContext,
     f: impl FnOnce(&CancellationToken) -> Value + Send + 'static,
@@ -64,7 +77,7 @@ pub async fn run_blocking_owned(
         return Ok(failed(category::UNAVAILABLE, "call resources unavailable"));
     }
     tokio::select! { biased;
-        _ = ctx.cancel.cancelled() => Err(ExtensionError::Tool("cancelled".into())),
+        () = ctx.cancel.cancelled() => Err(ExtensionError::Tool("cancelled".into())),
         result = rx => Ok(result.unwrap_or_else(|_| failed(category::UNKNOWN, "internal"))),
     }
 }

@@ -13,10 +13,10 @@ pub(super) struct ResultProbe {
 pub(super) struct ProbeMount(pub Arc<ResultProbe>);
 #[async_trait::async_trait]
 impl Extension for ProbeMount {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/result-probe"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {

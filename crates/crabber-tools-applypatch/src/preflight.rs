@@ -23,6 +23,10 @@ pub(crate) struct Plan {
     pub(crate) changes: Vec<Change>,
     pub(crate) files: Vec<FileResult>,
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Owned error callbacks match the Result::map_err interface."
+)]
 pub(crate) fn error(e: std::io::Error) -> ToolError {
     ToolError::new(category_for_io(&e), "patch filesystem operation failed")
 }
@@ -225,8 +229,8 @@ fn change(
         op,
         src,
         dst,
-        owner,
         bytes,
+        owner,
         mode,
     })
 }
@@ -243,7 +247,7 @@ pub(crate) fn plan(
     for op in operations {
         files.push(FileResult::new(&op));
         let next =
-            check(cancel).and_then(|_| change(root, op, cancel, &mut syntactic, &mut resolved));
+            check(cancel).and_then(|()| change(root, op, cancel, &mut syntactic, &mut resolved));
         match next {
             Ok(next) => {
                 retained += next.bytes.len();

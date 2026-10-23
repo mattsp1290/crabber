@@ -1,4 +1,5 @@
-use super::*;
+const MAX_EXECUTABLE: u64 = 128 * 1024 * 1024;
+use super::{ExtensionError, PathBuf};
 use sha2::{Digest, Sha256};
 use std::{
     io::Read,
@@ -12,8 +13,11 @@ fn normalized(path: &std::path::Path) -> bool {
         && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
         && !path.components().any(|c| c == Component::ParentDir)
 }
-pub(super) fn executable(path: PathBuf, expected: &str) -> Result<PathBuf, ExtensionError> {
-    if !normalized(&path) {
+pub(super) fn executable(
+    path: &std::path::Path,
+    expected: &str,
+) -> Result<PathBuf, ExtensionError> {
+    if !normalized(path) {
         return Err(crate::config_error("executable-path"));
     }
     let executable = path
@@ -30,9 +34,8 @@ pub(super) fn executable(path: PathBuf, expected: &str) -> Result<PathBuf, Exten
             .metadata()
             .map_err(|_| crate::config_error("executable-file"))?,
     )?;
-    const MAX_EXECUTABLE: u64 = 128 * 1024 * 1024;
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 32 * 1024];
+    let mut buffer = vec![0u8; 32 * 1024];
     let mut total = 0u64;
     loop {
         let n = file
@@ -52,8 +55,8 @@ pub(super) fn executable(path: PathBuf, expected: &str) -> Result<PathBuf, Exten
     }
     Ok(executable)
 }
-pub(super) fn temp_root(path: PathBuf) -> Result<PathBuf, ExtensionError> {
-    if !normalized(&path) {
+pub(super) fn temp_root(path: &std::path::Path) -> Result<PathBuf, ExtensionError> {
+    if !normalized(path) {
         return Err(crate::config_error("temp-root"));
     }
     let temp_root = path
@@ -73,7 +76,6 @@ pub(super) fn temp_root(path: PathBuf) -> Result<PathBuf, ExtensionError> {
 }
 
 fn check_executable(metadata: &std::fs::Metadata) -> Result<(), ExtensionError> {
-    const MAX_EXECUTABLE: u64 = 128 * 1024 * 1024;
     if !metadata.is_file()
         || metadata.permissions().mode() & 0o111 == 0
         || metadata.len() > MAX_EXECUTABLE

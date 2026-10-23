@@ -1,7 +1,18 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn failed_natural_sweep_keeps_capacity_until_an_explicit_retry_succeeds() {
+    struct RetryOnDrop(Arc<std::sync::atomic::AtomicBool>, Arc<Job>);
+    impl Drop for RetryOnDrop {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            self.1.request_attempt();
+        }
+    }
     if !shell_available() {
         return;
     }
@@ -20,13 +31,6 @@ async fn failed_natural_sweep_keeps_capacity_until_an_explicit_retry_succeeds() 
     ).await.unwrap();
     let id = result["id"].as_str().unwrap();
     let job = p.registry.lock().unwrap().jobs[id].clone();
-    struct RetryOnDrop(Arc<std::sync::atomic::AtomicBool>, Arc<Job>);
-    impl Drop for RetryOnDrop {
-        fn drop(&mut self) {
-            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-            self.1.request_attempt();
-        }
-    }
     let _cleanup = RetryOnDrop(failure.clone(), job.clone());
     timeout(Duration::from_secs(3), async {
         while !dir.path().join("ready").exists() {
@@ -76,7 +80,7 @@ async fn failed_natural_sweep_keeps_capacity_until_an_explicit_retry_succeeds() 
         "running"
     );
     let pgid = p.test_hooks.lock().unwrap().pgids[0];
-    assert!(!group_members(pgid).is_empty());
+    assert_ne!(group_members(pgid), [] as [u32; 0]);
     let count = signals.lock().unwrap().len();
     sleep(Duration::from_millis(100)).await;
     assert_eq!(

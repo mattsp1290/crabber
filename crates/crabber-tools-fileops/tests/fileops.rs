@@ -27,10 +27,14 @@ async fn call(tool: Arc<ToolDefinition>, options: &Options, args: Value) -> Valu
 }
 fn keys(v: &Value) -> Vec<&str> {
     let mut k: Vec<_> = v.as_object().unwrap().keys().map(String::as_str).collect();
-    k.sort();
+    k.sort_unstable();
     k
 }
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn abi_atomic_modes_symlinks_and_edits() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let temp = tempfile::tempdir().unwrap();

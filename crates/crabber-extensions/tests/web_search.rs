@@ -85,6 +85,10 @@ fn agent_config() -> AgentConfig {
 fn call() -> Vec<StreamDelta> {
     call_with(arguments())
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Keep the scripted-provider fixture interface accepting owned JSON arguments."
+)]
 fn call_with(arguments: Value) -> Vec<StreamDelta> {
     let call_id = ToolCallId::new();
     vec![

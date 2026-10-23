@@ -1,6 +1,9 @@
 //! Runtime-owned runner future. Business settlement is separate from joining.
 use super::super::attribution::Attribution;
-use super::*;
+use super::{
+    Arc, Policy, Request, ResourceFailure, SessionInvocationContext, State, TaskRecord, guarded,
+    lock,
+};
 
 pub(super) struct RunnerLifecycle {
     policy: Arc<Policy>,
@@ -55,18 +58,18 @@ impl RunnerLifecycle {
                     tokio::pin!(wait);
                     tokio::select! { biased;
                         reply = &mut wait => reply,
-                        _ = inv.cancel.cancelled() => {
+                        () = inv.cancel.cancelled() => {
                             self.record.token.cancel();
                             self.policy.settle(&self.record, State::Cancelled);
                             attribution.status("cancelling", "cancelling").await;
                             wait.await
                         }
-                        _ = self.record.token.cancelled() => {
+                        () = self.record.token.cancelled() => {
                             self.policy.settle(&self.record, State::Cancelled);
                             attribution.status("cancelling", "cancelling").await;
                             wait.await
                         }
-                        _ = tokio::time::sleep(self.policy.limits.max_background_duration) => {
+                        () = tokio::time::sleep(self.policy.limits.max_background_duration) => {
                             self.policy.settle(&self.record, State::TimedOut);
                             self.record.token.cancel();
                             wait.await

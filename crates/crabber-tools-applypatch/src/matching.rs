@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn repetitive_prefix_is_linear_and_cancellable() {
         let content = "a\n".repeat(4 * 1024 * 1024);
-        let needle = "a\n".repeat(262144) + "b\n";
+        let needle = "a\n".repeat(262_144) + "b\n";
         assert_eq!(
             unique_line_match(&content, &needle, &CancellationToken::new())
                 .unwrap_err()

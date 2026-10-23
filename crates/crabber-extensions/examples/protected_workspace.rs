@@ -27,6 +27,10 @@ impl JsonToolExecutor for FixtureTool {
     }
 }
 #[tokio::main(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     std::fs::write(temp.path().join("AGENTS.md"), "Use the fixture tool once.")?;

@@ -13,10 +13,10 @@ pub(super) fn group_members(id: i32) -> Vec<(i32, String)> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
+            let process_id = fields.next()?.parse().ok()?;
             let pgid: i32 = fields.next()?.parse().ok()?;
             let state = fields.next()?.to_owned();
-            (pgid == id).then_some((pid, state))
+            (pgid == id).then_some((process_id, state))
         })
         .collect()
 }

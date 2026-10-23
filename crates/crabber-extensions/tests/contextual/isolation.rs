@@ -16,6 +16,10 @@ use std::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn two_workspaces_three_sessions_are_isolated_and_close_targets_one_owner() {
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let seen = Arc::new(Mutex::new(Vec::new()));

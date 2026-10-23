@@ -4,7 +4,7 @@
 //! Python has host-user authority: private directories and isolated flags do
 //! not form a sandbox. Interpreter globals are process-local, while tool results
 //! are persisted by Crabber. Use Tokio with process/I/O support (`enable_all()`).
-//! Closing any mount closes the shared instance; inspect live_runners after close.
+//! Closing any mount closes the shared instance; inspect `live_runners` after close.
 mod config;
 mod factory;
 pub use crate::contextual::{OwnerReport, SharedCapacity};
@@ -76,6 +76,9 @@ pub struct PythonRepl {
 }
 impl PythonRepl {
     /// Validate and freeze policy. Non-Unix targets reject construction.
+    ///
+    /// # Errors
+    /// Returns a plan error if Python process policy or execution limits are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let (configuration, hash) = config::validate(options)?;
         Ok(Self {
@@ -84,7 +87,7 @@ impl PythonRepl {
         })
     }
     fn from_configuration(
-        configuration: Arc<config::Configuration>,
+        configuration: &Arc<config::Configuration>,
         binding: crate::contextual::Binding,
         shared: Option<SharedCapacity>,
         hash: String,
@@ -98,6 +101,7 @@ impl PythonRepl {
         }
     }
     /// Observe local resources without exposing paths, output or process IDs.
+    #[must_use]
     pub fn owner_report(&self) -> OwnerReport {
         self.manager.owner_report()
     }
@@ -106,6 +110,7 @@ impl PythonRepl {
     /// after bounded close. Includes runners that exited while idle until the
     /// owner's next execute, clear or close observes their exit.
     /// Does not expose paths, PIDs or environment values.
+    #[must_use]
     pub fn live_runners(&self) -> usize {
         self.manager.live_runners()
     }
@@ -122,10 +127,10 @@ fn failure(code: &'static str) -> ExtensionError {
 
 #[async_trait::async_trait]
 impl crabber::extension::Extension for PythonRepl {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/python-repl"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

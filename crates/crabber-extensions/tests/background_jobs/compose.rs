@@ -92,7 +92,7 @@ async fn command_guard_denies_matching_start_before_spawn() {
         vec![(records[0].id.clone(), ToolOutcomeClass::PermissionDenied)]
     );
     assert_eq!(g.stats().rule_match, 1);
-    assert!(pgids(h.dir.path()).is_empty());
+    assert_eq!(pgids(h.dir.path()), [] as [i32; 0]);
     assert!(!h.dir.path().join("canary").exists());
     assert_eq!(h.ext.live_jobs(), 0);
     assert_eq!(

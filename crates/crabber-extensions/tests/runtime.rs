@@ -78,7 +78,7 @@ fn tool(failed: bool, rewrite: Option<PathBuf>) -> Arc<ToolDefinition> {
             retry_safe: false,
             required_permissions: vec![],
         },
-        executor: Arc::new(SyntheticTool { failed, rewrite }),
+        executor: Arc::new(SyntheticTool { rewrite, failed }),
     })
 }
 fn call(name: &str) -> Vec<StreamDelta> {
@@ -99,10 +99,10 @@ fn call(name: &str) -> Vec<StreamDelta> {
 struct Reducer;
 #[async_trait]
 impl Extension for Reducer {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/reducer"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
@@ -156,7 +156,7 @@ async fn final_redaction_protects_durable_results_events_and_next_provider_after
                 tool_calls: 100,
                 parts: 100,
                 text_bytes: 10000,
-                encoded_bytes: 100000,
+                encoded_bytes: 100_000,
             },
             continuation: None,
         })

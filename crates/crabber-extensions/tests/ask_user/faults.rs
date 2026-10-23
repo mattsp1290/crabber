@@ -123,6 +123,10 @@ async fn expiry_needs_explicit_host_operation_after_store_deadline() {
     agent.close_extensions().await.unwrap();
 }
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn malformed_inputs_checkpoints_and_responses_fail_closed() {
     let tool = definition(extension()).await;
     let r = tool.executor.resumable().unwrap();

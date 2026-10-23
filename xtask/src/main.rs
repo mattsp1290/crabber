@@ -793,25 +793,6 @@ fn check_observability(workspace: &Path) {
     check_datadog_offline(workspace);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::live_tests_are_ignored;
-
-    #[test]
-    fn live_test_guard_requires_ignore_on_each_test() {
-        let ignored = "#[tokio::test]\n#[ignore = \"live\"]\nasync fn a() {}\n#[ignore]\n#[test]\nfn b() {}\n";
-        assert!(live_tests_are_ignored(ignored).is_ok());
-        for source in [
-            "#[tokio::test]\n#[ignore]\nasync fn a() {}\n#[tokio::test]\nasync fn b() {}\n",
-            "#[tokio::test]\n// #[ignore]\nasync fn a() {}\n",
-            "#[test]\nfn a() {}\n#[ignore]\nfn helper() {}\n",
-            "fn helper() {}\n",
-        ] {
-            assert!(live_tests_are_ignored(source).is_err(), "{source}");
-        }
-    }
-}
-
 // Fail before the long workspace gate when subprocess-backed tools cannot run.
 fn check_tool_prerequisites() {
     let output = Command::new("rg")
@@ -868,5 +849,24 @@ fn check_workspace_tests(workspace: &Path) {
     let status = command.status().expect("launch workspace tests");
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::live_tests_are_ignored;
+
+    #[test]
+    fn live_test_guard_requires_ignore_on_each_test() {
+        let ignored = "#[tokio::test]\n#[ignore = \"live\"]\nasync fn a() {}\n#[ignore]\n#[test]\nfn b() {}\n";
+        assert!(live_tests_are_ignored(ignored).is_ok());
+        for source in [
+            "#[tokio::test]\n#[ignore]\nasync fn a() {}\n#[tokio::test]\nasync fn b() {}\n",
+            "#[tokio::test]\n// #[ignore]\nasync fn a() {}\n",
+            "#[test]\nfn a() {}\n#[ignore]\nfn helper() {}\n",
+            "fn helper() {}\n",
+        ] {
+            assert!(live_tests_are_ignored(source).is_err(), "{source}");
+        }
     }
 }

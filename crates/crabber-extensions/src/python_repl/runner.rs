@@ -163,7 +163,7 @@ impl Runner {
         grace: Duration,
         kill_wait: Duration,
     ) -> Result<Self, StartFailure> {
-        let mut child = spawn_runner(launch).map_err(|_| StartFailure {
+        let mut child = spawn_runner(&launch).map_err(|_| StartFailure {
             fault: StartFault::Spawn,
             runner: None,
         })?;

@@ -21,6 +21,10 @@ pub(crate) struct DurableTool {
 fn completed(value: Value) -> ToolPhaseOutcome {
     ToolPhaseOutcome::Completed(to_output(value, &[]))
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Owned error callbacks match the Result::map_err interface."
+)]
 fn invalid(error: crabber::core::CoreError) -> ExtensionError {
     ExtensionError::Tool(error.to_string())
 }
@@ -39,6 +43,10 @@ impl ResumableTool for DurableTool {
             checkpoint_schema_version: "1".into(),
         }
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Retain the timing ABI; u64 milliseconds overflow only after 584 million years."
+    )]
     async fn start(
         &self,
         ctx: ToolContext,

@@ -20,6 +20,9 @@ fn normalize(value: &str) -> Option<String> {
 }
 impl HostPattern {
     /// Normalize an exact DNS name or IPv4 literal. IPv6 literals use `Exact` with brackets.
+    ///
+    /// # Errors
+    /// Returns a plan error if the value is not a valid exact host pattern.
     pub fn exact(value: &str) -> Result<Self, ExtensionError> {
         let normalized = if value.starts_with('[') {
             Host::parse(value).ok().map(|h| h.to_string())
@@ -31,6 +34,9 @@ impl HostPattern {
             .ok_or_else(|| ExtensionError::Plan("URL host pattern".into()))
     }
     /// Normalize a proper DNS subdomain suffix.
+    ///
+    /// # Errors
+    /// Returns a plan error unless the value is a valid DNS suffix.
     pub fn subdomains(value: &str) -> Result<Self, ExtensionError> {
         let value =
             normalize(value).ok_or_else(|| ExtensionError::Plan("URL host pattern".into()))?;
@@ -66,6 +72,9 @@ impl Default for UrlFetchPolicy {
 }
 impl UrlFetchPolicy {
     /// Validate normalized policy values before mounting.
+    ///
+    /// # Errors
+    /// Returns a plan error if any configured host pattern is invalid.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         for pattern in &self.allow {
             let rebuilt = match pattern {

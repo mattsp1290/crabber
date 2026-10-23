@@ -16,7 +16,7 @@ pub struct Options {
     pub limits: Limits,
     /// Capacity shared with other tools in the mount.
     pub capacity: Capacity,
-    /// Optional host hook immediately before atomic writes; for file_move, between link and unlink.
+    /// Optional host hook immediately before atomic writes; for `file_move`, between link and unlink.
     /// Useful for interruption tests.
     pub pre_write: Option<Arc<dyn Fn() + Send + Sync>>,
 }

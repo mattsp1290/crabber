@@ -58,10 +58,10 @@ fn apply_one(root: &WorkspaceRoot, change: &Change) -> Result<(), ToolError> {
 pub(crate) fn apply(root: &WorkspaceRoot, mut plan: Plan, cancel: &CancellationToken) -> Value {
     for (i, change) in plan.changes.iter().enumerate() {
         // Stop between operations; never interrupt an atomic installation.
-        let result = preflight::check(cancel).and_then(|_| apply_one(root, change));
+        let result = preflight::check(cancel).and_then(|()| apply_one(root, change));
         if let Err(error) = result {
             plan.files[i].status = "failed";
-            return result::failure(error, plan.files, true);
+            return result::failure(&error, &plan.files, true);
         }
         plan.files[i].status = "applied";
     }
@@ -181,7 +181,7 @@ mod tests {
                         while !*go {
                             go = cv.wait(go).unwrap();
                         }
-                    }))
+                    }));
                 });
                 apply(&child_root, plan, &scan_cancel)
             })

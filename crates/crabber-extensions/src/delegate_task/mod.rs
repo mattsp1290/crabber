@@ -58,13 +58,13 @@ pub const TASK_ID_BYTES: usize = TASK_ID_SEPARATOR + 1 + TASK_ID_COUNTER_BYTES;
 const MAX_TASK_BYTES: usize = 64 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 const MAX_IN_FLIGHT: usize = 256;
-const MAX_WAIT: Duration = Duration::from_secs(60 * 60);
+const MAX_WAIT: Duration = Duration::from_hours(1);
 const MAX_TRACKED: usize = 256;
 const MAX_RECONCILIATIONS: usize = 64;
-const MAX_BACKGROUND_DURATION: Duration = Duration::from_secs(24 * 3600);
+const MAX_BACKGROUND_DURATION: Duration = Duration::from_hours(24);
 const MAX_WAIT_IDS: usize = 64;
 const MAX_WAIT_REPLY_BYTES: usize = 320 * 1024;
-const MAX_SHUTDOWN_GRACE: Duration = Duration::from_secs(5 * 60);
+const MAX_SHUTDOWN_GRACE: Duration = Duration::from_mins(5);
 
 /// Finite bounds shared by all mounts of one instance.
 ///
@@ -83,7 +83,7 @@ pub struct Limits {
     /// Maximum live runner futures (up to 256).
     pub max_in_flight: usize,
     /// Inline deadline and default/max read wait (one second to one hour).
-    /// Explicit read timeouts use whole seconds up to floor(max_wait); omitted
+    /// Explicit read timeouts use whole seconds up to `floor(max_wait)`; omitted
     /// timeouts preserve the full configured duration, including fractions.
     pub max_wait: Duration,
     /// Maximum shutdown join time (up to five minutes).
@@ -103,6 +103,7 @@ impl Limits {
     /// Saturating raw-output bound for tracked records, registration reservations
     /// and live lifecycles (including evicted records awaiting final publication).
     /// Excludes record metadata and evicted records pinned by in-flight waits.
+    #[must_use]
     pub fn worst_case_retained_bytes(&self) -> usize {
         self.max_tracked
             .saturating_add(self.max_tracked.min(MAX_RECONCILIATIONS))
@@ -111,6 +112,7 @@ impl Limits {
     }
 
     /// Saturating bound for JSON-escaped wait output and row envelopes.
+    #[must_use]
     pub fn worst_case_wait_bytes(&self) -> usize {
         self.max_wait_reply_bytes
             .saturating_mul(6)
@@ -131,7 +133,7 @@ pub struct Options {
 
 /// Bounded native delegation with shared or factory-scoped policy.
 ///
-/// Inline runners remain extension-owned. Shutdown waits at most shutdown_grace
+/// Inline runners remain extension-owned. Shutdown waits at most `shutdown_grace`
 /// for them, while stragglers retain their permits until they exit. Interrupt
 /// active inline calls before close; their durable native outcome can remain
 /// uncertain even after local workers exit.
@@ -139,7 +141,7 @@ pub struct Options {
 /// Background runners are runtime-owned independent session invocations. Any
 /// shared mount's shutdown permanently refuses starts, settles running records
 /// cancelled and signals their tokens. It does not join runtime-owned jobs:
-/// hosts use Agent::drain_session_invocations to observe actual joins. A terminal
+/// hosts use `Agent::drain_session_invocations` to observe actual joins. A terminal
 /// row or elapsed close deadline does not prove resource exit. Reads and inline
 /// calls remain callable, so hosts stop ingress before closing.
 ///
@@ -171,11 +173,15 @@ impl DelegateTask {
     /// Shared capacity currently held by inline or background runners.
     /// Includes detached runners until their futures exit. This is a snapshot;
     /// concurrent starts and completions may change it immediately.
+    #[must_use]
     pub fn live_runners(&self) -> usize {
         self.policy.limits.max_in_flight - self.policy.capacity.available_permits()
     }
 
     /// Validates all bounds and the runner identity before construction.
+    ///
+    /// # Errors
+    /// Returns a plan error if the runner identity or delegation limits are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let limits = &options.limits;
         if limits.max_task_bytes == 0
@@ -214,7 +220,7 @@ impl DelegateTask {
             limits,
         ));
         Ok(Self::from_configuration(
-            Arc::new(Configuration {
+            &Arc::new(Configuration {
                 runner: options.runner,
                 limits: options.limits,
             }),
@@ -224,7 +230,7 @@ impl DelegateTask {
         ))
     }
     fn from_configuration(
-        configuration: Arc<Configuration>,
+        configuration: &Arc<Configuration>,
         binding: Option<crate::contextual::Binding>,
         shared: Option<SharedCapacity>,
         hash: String,
@@ -247,6 +253,7 @@ impl DelegateTask {
         }
     }
     /// Observe retained records and live runner capacity without private payloads.
+    #[must_use]
     pub fn owner_report(&self) -> OwnerReport {
         self.policy.owner_report()
     }
@@ -303,13 +310,16 @@ impl Policy {
             return Err(failure("owner"));
         }
         let (task, profile) = input::normalize(arguments, &self.limits)?;
-        let shared_permit = match self.shared.as_ref().map(|pool| pool.acquire()).transpose() {
-            Ok(permit) => permit,
-            Err(()) => return Ok(json!({"status":"unavailable"})),
+        let Ok(shared_permit) = self
+            .shared
+            .as_ref()
+            .map(super::contextual::SharedCapacity::acquire)
+            .transpose()
+        else {
+            return Ok(json!({"status":"unavailable"}));
         };
-        let permit = match self.capacity.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => return Ok(json!({"status":"unavailable"})),
+        let Ok(permit) = self.capacity.clone().try_acquire_owned() else {
+            return Ok(json!({"status":"unavailable"}));
         };
         let attribution = attribution::Attribution::new(
             &context,
@@ -340,8 +350,8 @@ impl Policy {
         });
         let result = tokio::select! {
             biased;
-            _ = context.cancel.cancelled() => Err(failure("cancelled")),
-            _ = &mut deadline => Ok(json!({"status":"timed_out"})),
+            () = context.cancel.cancelled() => Err(failure("cancelled")),
+            () = &mut deadline => Ok(json!({"status":"timed_out"})),
             reply = &mut task => match reply {
                 Ok(Ok(response)) => map_reply(response, &self.limits),
                 _ => Err(failure("runner")),
@@ -388,10 +398,10 @@ fn task_schema() -> Value {
 }
 #[async_trait]
 impl Extension for DelegateTask {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/delegate-task"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

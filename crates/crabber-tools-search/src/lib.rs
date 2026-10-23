@@ -1,9 +1,13 @@
 //! Streaming ripgrep search with fixed process identity and bounded result memory.
+#![warn(missing_docs)]
 #[cfg(not(unix))]
 compile_error!("crabber-tools-search requires Unix");
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolDefinition, ToolExecutor, extension::ToolContext};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, Capacity, EnvPolicy, Limits, RunAs, WorkspaceRoot, acquire_read, category,
+    category_for_io, check_cancelled, failed, resolve_binary, validate_binary,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
@@ -36,13 +40,16 @@ pub const MAX_ERROR_MESSAGE_BYTES: usize = 1024;
 pub struct SearchPolicy {
     /// Absolute executable path, resolved once.
     pub rg_binary: PathBuf,
-    /// Explicit child environment; RIPGREP_CONFIG_PATH is always removed.
+    /// Explicit child environment; `RIPGREP_CONFIG_PATH` is always removed.
     pub env: EnvPolicy,
     /// Optional child identity.
     pub run_as: Option<RunAs>,
 }
 impl SearchPolicy {
     /// Resolve rg on the host PATH once, preserving the supplied environment policy.
+    ///
+    /// # Errors
+    /// Returns a plan error if ripgrep cannot be resolved or the supplied environment is invalid.
     pub fn resolve_rg_from_path(env: EnvPolicy) -> Result<Self, ExtensionError> {
         let policy = Self {
             rg_binary: resolve_binary("rg")?,
@@ -53,6 +60,9 @@ impl SearchPolicy {
         Ok(policy)
     }
     /// Reject missing executables and invalid environment fields.
+    ///
+    /// # Errors
+    /// Returns a plan error if the ripgrep executable or environment policy is invalid.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         validate_binary(&self.rg_binary)?;
         self.env.validate()
@@ -70,6 +80,9 @@ pub struct Options {
     pub capacity: Capacity,
 }
 /// Validate and construct a context-required search executor.
+///
+/// # Errors
+/// Returns a plan error if the search policy or shared execution limits are invalid.
 pub fn definition(options: Arc<Options>) -> Result<Arc<ToolDefinition>, ExtensionError> {
     options.policy.validate()?;
     options.limits.validate()?;
@@ -84,6 +97,10 @@ impl ToolExecutor for SearchTool {
     async fn execute(&self, _: Value) -> Result<crabber::core::ToolOutput, ExtensionError> {
         crabber_tools_core::context_required()
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Retain the timing ABI; u64 milliseconds overflow only after 584 million years."
+    )]
     async fn execute_with_context(
         &self,
         ctx: ToolContext,
@@ -133,7 +150,7 @@ impl SearchTool {
             return Ok(failed(category_for_io(&e), "search path unavailable"));
         }
         tokio::select! {biased;
-            _=ctx.cancel.cancelled()=>Err(ExtensionError::Tool("cancelled".into())),
+            ()=ctx.cancel.cancelled()=>Err(ExtensionError::Tool("cancelled".into())),
             result=rg::run(&self.0,args,&ctx,permit)=>Ok(result),
         }
     }

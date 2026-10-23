@@ -33,7 +33,7 @@ async fn later_field_failure_rolls_back_and_empty_fields_never_spawn() {
     assert_eq!(j.ext.stats().reduced, 0);
     let j = Journey::new(REDUCE, json!(""), "fixture_text", json!({}), |_| {});
     check(&j, &json!("")).await;
-    assert!(j.argv().is_empty());
+    assert_eq!(j.argv(), [] as [std::string::String; 0]);
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn text_reduction_durable_journey() {
@@ -124,7 +124,7 @@ async fn no_gain_identity_shapes_and_input_match_pass_through() {
             |_| {},
         );
         check(&j, &value).await;
-        assert!(j.argv().is_empty());
+        assert_eq!(j.argv(), [] as [std::string::String; 0]);
     }
     let value = json!({"stdout":"x".repeat(300),"diff":"x".repeat(300)});
     for args in [
@@ -135,7 +135,7 @@ async fn no_gain_identity_shapes_and_input_match_pass_through() {
     ] {
         let j = Journey::new(REDUCE, value.clone(), "fixture_json", args, |_| {});
         check(&j, &value).await;
-        assert!(j.argv().is_empty());
+        assert_eq!(j.argv(), [] as [std::string::String; 0]);
     }
 }
 #[tokio::test(flavor = "multi_thread")]
@@ -149,7 +149,7 @@ async fn field_bound_and_process_failures_pass_through() {
         o.limits.max_stdout_bytes = 64;
     });
     check(&j, &value).await;
-    assert!(j.argv().is_empty());
+    assert_eq!(j.argv(), [] as [std::string::String; 0]);
     for body in [
         "printf no; exit 3",
         "/bin/cat >/dev/null",

@@ -57,19 +57,19 @@ fn validation_codes() {
         ("count", |o| o.bindings.clear()),
         ("count", |o| o.rules.clear()),
         ("binding-size", |o| {
-            o.bindings[0].tool_name = "a".repeat(4097)
+            o.bindings[0].tool_name = "a".repeat(4097);
         }),
         ("binding-size", |o| {
-            o.bindings[0].command_field = "a".repeat(4097)
+            o.bindings[0].command_field = "a".repeat(4097);
         }),
         ("binding", |o| o.bindings[0].tool_name = "bad name".into()),
         ("binding", |o| o.bindings[0].command_field = " \t".into()),
         ("binding", |o| o.bindings[0].command_field = "\0".into()),
         ("rule-size", |o| {
-            o.rules[0].arg_prefix = vec!["a".into(); 17]
+            o.rules[0].arg_prefix = vec!["a".into(); 17];
         }),
         ("rule-size", |o| {
-            o.rules[0].arg_prefix = vec!["a".repeat(2049)]
+            o.rules[0].arg_prefix = vec!["a".repeat(2049)];
         }),
         ("rule-token", |o| o.rules[0].arg_prefix = vec!["\0".into()]),
         ("rule", |o| o.rules[0].id = "bad name".into()),
@@ -79,7 +79,7 @@ fn validation_codes() {
         ("rule", |o| o.rules[0].executable = "..".into()),
         ("rule", |o| o.rules[0].executable = "\0".into()),
         ("duplicate-binding", |o| {
-            o.bindings.push(o.bindings[0].clone())
+            o.bindings.push(o.bindings[0].clone());
         }),
         ("duplicate-rule", |o| o.rules.push(o.rules[0].clone())),
     ];

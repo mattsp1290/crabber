@@ -1,8 +1,16 @@
 //! Transactional private retention around public runtime registration.
-use super::*;
+use super::{
+    Arc, COMPONENT_ID, ExtensionError, InputFingerprint, Mutex, Ordering, Owner, Policy, Request,
+    ReservedRecord, RunnerLifecycle, SessionInvocationRequest, SessionOwnerId,
+    SessionOwnerOperationId, TaskRecord, ToolContext, Value, failure, input, json, lock,
+};
 use crabber::extension::{SessionInvocationAdmission, SessionInvocationError};
 
 impl Policy {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep admission, process ownership, and cleanup in one ordered lifecycle."
+    )]
     pub(super) async fn start(
         self: &Arc<Self>,
         context: ToolContext,
@@ -38,9 +46,13 @@ impl Policy {
         let Ok(slot) = self.reconciliation.clone().try_acquire_owned() else {
             return Ok(json!({"status":"unavailable"}));
         };
-        let shared_permit = match self.shared.as_ref().map(|pool| pool.acquire()).transpose() {
-            Ok(permit) => permit,
-            Err(()) => return Ok(json!({"status":"unavailable"})),
+        let Ok(shared_permit) = self
+            .shared
+            .as_ref()
+            .map(crate::contextual::SharedCapacity::acquire)
+            .transpose()
+        else {
+            return Ok(json!({"status":"unavailable"}));
         };
         let Ok(permit) = self.capacity.clone().try_acquire_owned() else {
             return Ok(json!({"status":"unavailable"}));

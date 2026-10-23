@@ -170,7 +170,10 @@ async fn parent_interruption_does_not_cancel_its_detached_child() {
         !closed.local_drained(),
         "native uncertainty remains after actual workers join"
     );
-    assert!(closed.runtime.executions.pending.is_empty());
+    assert_eq!(
+        closed.runtime.executions.pending,
+        [] as [crabber::core::RunId; 0]
+    );
     assert!(
         closed
             .runtime

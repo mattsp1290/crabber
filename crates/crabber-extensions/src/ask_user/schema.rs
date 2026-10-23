@@ -13,6 +13,10 @@ pub(super) fn response(options: &[AskOption], custom_cap: usize) -> Value {
         "properties":{"selected":{"type":"integer","minimum":1,"maximum":options.len()},
             "custom":{"type":"string","minLength":1,"maxLength":custom_cap}},"oneOf":choices})
 }
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Validated option indices are at most MAX_OPTIONS (5), exactly representable in f64."
+)]
 pub(super) fn answer(
     value: Option<&Value>,
     options: &[AskOption],
@@ -27,7 +31,8 @@ pub(super) fn answer(
     // JSON Schema integers include values written as 2.0. Compare against the
     // tiny bounded choice set so Store-accepted integral numbers map identically.
     if let Some(number) = object.get("selected").and_then(Value::as_f64)
-        && let Some(index) = (1..=options.len()).find(|i| number == *i as f64)
+        && let Some(index) = (1..=options.len())
+            .find(|i| number.partial_cmp(&(*i as f64)) == Some(std::cmp::Ordering::Equal))
     {
         return Ok(
             json!({"status":"selected","answer":options[index - 1].label,"selected_option":index}),

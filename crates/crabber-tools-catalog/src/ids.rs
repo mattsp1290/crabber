@@ -68,6 +68,7 @@ impl ToolId {
     /// Tools beyond the eleven-tool upstream parity set.
     pub const BEYOND_PARITY: [Self; 3] = [Self::MultiEdit, Self::FileDelete, Self::FileMove];
     /// Stable catalog id.
+    #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
             Self::FileRead => "standard.file-read",
@@ -87,6 +88,7 @@ impl ToolId {
         }
     }
     /// Model-facing tool name.
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::FileRead => "file_read",
@@ -106,6 +108,7 @@ impl ToolId {
         }
     }
     /// Whether repeating the tool has no intentional writes.
+    #[must_use]
     pub const fn retry_safe(self) -> bool {
         matches!(
             self,
@@ -113,6 +116,7 @@ impl ToolId {
         )
     }
     /// Whether execution serializes with other writers of this root.
+    #[must_use]
     pub const fn mutating(self) -> bool {
         matches!(
             self,
@@ -131,10 +135,12 @@ impl ToolId {
 pub struct EnabledSet(std::collections::BTreeSet<ToolId>);
 impl EnabledSet {
     /// Enable every tool in `ToolId::ALL`; URL, tracker and interaction policies are required.
+    #[must_use]
     pub fn all() -> Self {
         Self::only(ToolId::ALL)
     }
     /// Enable the eleven eino-tools parity tools; all three optional policies are required.
+    #[must_use]
     pub fn eino_parity() -> Self {
         Self::only(ToolId::EINO_PARITY)
     }
@@ -143,6 +149,7 @@ impl EnabledSet {
         Self(ids.into_iter().collect())
     }
     /// Whether this id will be mounted.
+    #[must_use]
     pub fn contains(&self, id: ToolId) -> bool {
         self.0.contains(&id)
     }

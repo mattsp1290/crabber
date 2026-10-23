@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 /// Ordinary-phase result-transform identity.
 pub const HANDLER_ID: &str = "rtk-reducer";
-/// Prefix for an accepted replacement; original_bytes counts input UTF-8 bytes.
+/// Prefix for an accepted replacement; `original_bytes` counts input UTF-8 bytes.
+#[must_use]
 pub fn marker(filter: Filter, original_bytes: usize) -> String {
     format!(
         "[Reduced by RTK {}; original_bytes={original_bytes}]\n",
@@ -45,6 +46,9 @@ pub struct RtkReducer {
 impl RtkReducer {
     /// Validate policy and stream-verify the executable digest without spawning.
     /// Non-Unix platforms reject construction before touching paths or limits.
+    ///
+    /// # Errors
+    /// Returns a plan error if reducer bindings, identities, or bounds are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let (configuration, hash) = config::validate(options)?;
         let engine = Arc::new(engine::Engine::new(configuration));
@@ -56,20 +60,22 @@ impl RtkReducer {
     }
     /// Starting children, unreaped survivors and directories awaiting removal.
     /// No text, paths or PIDs are exposed.
+    #[must_use]
     pub fn live_children(&self) -> usize {
         self.engine.live_children()
     }
     /// Independently read wrapping counters and lifecycle flags.
+    #[must_use]
     pub fn stats(&self) -> Stats {
         self.engine.stats()
     }
 }
 #[async_trait::async_trait]
 impl Extension for RtkReducer {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/rtk-reducer"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {
@@ -86,8 +92,8 @@ impl Extension for RtkReducer {
                     let Ok(json) = value.json_value() else {
                         return Ok(TransformOutput::new(value));
                     };
-                    let transformed = transformer.transform(context, json).await;
-                    let output = crabber::core::ToolOutput::from_json(&transformed)
+                    let result_json = transformer.transform(context, json).await;
+                    let output = crabber::core::ToolOutput::from_json(&result_json)
                         .unwrap_or_else(|_| value.clone());
                     Ok(TransformOutput::new(if value.is_error() {
                         output.with_error()

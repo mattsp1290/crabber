@@ -82,7 +82,7 @@ async fn lifetime_budget_and_failed_setup_admissions() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     code(
-        f.manager
+        &f.manager
             .execute_owner(
                 key("canceled"),
                 f.root.clone(),
@@ -100,7 +100,7 @@ async fn lifetime_budget_and_failed_setup_admissions() {
         .await
         .unwrap();
     code(
-        f.execute(key("two"), "1").await.unwrap_err(),
+        &f.execute(key("two"), "1").await.unwrap_err(),
         "capacity-exhausted",
     );
     f.close().await;
@@ -109,12 +109,12 @@ async fn lifetime_budget_and_failed_setup_admissions() {
     };
     std::fs::remove_dir(&f.temp).unwrap();
     code(
-        f.execute(key("one"), "1").await.unwrap_err(),
+        &f.execute(key("one"), "1").await.unwrap_err(),
         "private-dirs",
     );
     std::fs::create_dir(&f.temp).unwrap();
     code(
-        f.execute(key("two"), "1").await.unwrap_err(),
+        &f.execute(key("two"), "1").await.unwrap_err(),
         "capacity-exhausted",
     );
     f.close().await;
@@ -128,7 +128,7 @@ async fn workspace_root_drift_preserves_state() {
     f.execute(key("one"), "x=7").await.unwrap();
     let other = tempfile::tempdir().unwrap();
     code(
-        f.manager
+        &f.manager
             .execute_owner(
                 key("one"),
                 other.path().into(),
@@ -141,7 +141,7 @@ async fn workspace_root_drift_preserves_state() {
         "workspace-root-mismatch",
     );
     code(
-        f.manager
+        &f.manager
             .clear_owner(key("one"), other.path().into(), CancellationToken::new())
             .await
             .unwrap_err(),
@@ -158,7 +158,7 @@ async fn timeout_reset_and_clear_consumes_pending_notice() {
     };
     f.execute(key("one"), "x=1").await.unwrap();
     code(
-        f.manager
+        &f.manager
             .execute_owner(
                 key("one"),
                 f.root.clone(),
@@ -176,7 +176,7 @@ async fn timeout_reset_and_clear_consumes_pending_notice() {
     assert_eq!(next.state_reset_reason, "timed_out");
     assert_eq!(next.status, ExecuteStatus::PythonError);
     code(
-        f.manager
+        &f.manager
             .execute_owner(
                 key("one"),
                 f.root.clone(),
@@ -212,14 +212,14 @@ async fn idle_and_mid_request_death_reset_existing_state() {
     .unwrap();
     sleep(Duration::from_millis(100)).await;
     code(
-        f.execute(key("one"), "1").await.unwrap_err(),
+        &f.execute(key("one"), "1").await.unwrap_err(),
         "runner-failed",
     );
     let next = f.execute(key("one"), "1").await.unwrap();
     assert_eq!(next.state_reset_reason, "runner_failed");
     assert_eq!(next.generation, 1);
     code(
-        f.execute(key("one"), "import os; os._exit(3)")
+        &f.execute(key("one"), "import os; os._exit(3)")
             .await
             .unwrap_err(),
         "runner-failed",
@@ -235,7 +235,7 @@ async fn symlinked_interpreter_executes_unresolved() {
     let Some(mut f) = Fixture::new(|_| {}) else {
         return;
     };
-    let path = f._directory.path().canonicalize().unwrap().join("python");
+    let path = f.directory.path().canonicalize().unwrap().join("python");
     std::os::unix::fs::symlink(&f.manager.configuration.python, &path).unwrap();
     assert_ne!(path, path.canonicalize().unwrap());
     let mut opts = options(&f.temp).unwrap();
@@ -283,6 +283,6 @@ async fn eof_failure_keeps_leader_zombie_until_reset() {
     );
     f.manager.hooks.lock().unwrap().before_reset = None;
     barrier.release();
-    code(task.await.unwrap().unwrap_err(), "runner-failed");
+    code(&task.await.unwrap().unwrap_err(), "runner-failed");
     f.close().await;
 }

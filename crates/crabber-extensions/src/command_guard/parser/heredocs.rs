@@ -1,10 +1,12 @@
-use super::*;
+use super::{
+    Context, Heredoc, Outcome, Parser, PartContext, Pending, Redirect, RedirectOp, RedirectTarget,
+    Token, Word, WordPart,
+};
 
 impl<'a> Parser<'a, '_, '_> {
     pub(super) fn redirect(&mut self, depth: usize) -> Result<Redirect<'a>, Outcome> {
-        let (fd, op) = match self.take(depth)? {
-            Token::Redirect(fd, op) => (fd, op),
-            _ => return Err(Outcome::InvalidCommand),
+        let Token::Redirect(fd, op) = self.take(depth)? else {
+            return Err(Outcome::InvalidCommand);
         };
         self.budget.node()?;
         // A redirect target is a word even when digits abut another operator.

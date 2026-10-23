@@ -39,7 +39,9 @@ async fn cancellation_and_deadline_retain_reader_and_capacity_until_actual_exit(
         } else {
             Duration::from_millis(20)
         };
-        let agent = builder(provider.clone(), o, fixed(reader)).build().unwrap();
+        let agent = builder(provider.clone(), o, Some(fixed(reader)))
+            .build()
+            .unwrap();
         let handle = agent_support::first_prompt(&agent, &execution("ws", "/admitted"), "fixture")
             .await
             .unwrap();
@@ -58,11 +60,17 @@ async fn cancellation_and_deadline_retain_reader_and_capacity_until_actual_exit(
             assert!(outcome.is_err());
         }
         assert!(!dropped.load(Ordering::SeqCst));
-        assert!(provider.requests().is_empty());
+        assert_eq!(
+            provider.requests(),
+            [] as [crabber::providers::ModelRequest; 0]
+        );
         // The second owner cannot enter the reader while the first retains its
         // permit, even though the first caller's bounded wait has ended.
         assert!(run(&agent, "another", "/admitted").await.is_err());
-        assert!(provider.requests().is_empty());
+        assert_eq!(
+            provider.requests(),
+            [] as [crabber::providers::ModelRequest; 0]
+        );
         let bounded = agent.close(Duration::from_millis(20)).await;
         assert!(!bounded.local_drained(), "{bounded:?}");
         release.notify_one();
@@ -74,10 +82,10 @@ async fn cancellation_and_deadline_retain_reader_and_capacity_until_actual_exit(
 struct RetryRewrite(PathBuf);
 #[async_trait]
 impl Extension for RetryRewrite {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/retry"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {

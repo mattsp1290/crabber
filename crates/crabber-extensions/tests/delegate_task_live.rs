@@ -29,7 +29,7 @@ struct LiveConfig {
     protocol: Protocol,
 }
 fn live_config() -> Option<LiveConfig> {
-    if !std::env::var_os("OPENCODE_GO_API_KEY").is_some_and(|v| !v.is_empty()) {
+    if std::env::var_os("OPENCODE_GO_API_KEY").is_none_or(|v| v.is_empty()) {
         assert_ne!(
             std::env::var("DELEGATE_TASK_REQUIRE_OPENCODE_GO").as_deref(),
             Ok("1"),
@@ -120,7 +120,7 @@ impl Host {
                     let mut text_deltas = 0;
                     loop {
                         tokio::select! { biased;
-                            _ = request.cancellation().cancelled() => {
+                            () = request.cancellation().cancelled() => {
                                 observed.lock().unwrap().cancelled = true;
                                 run.interrupt();
                                 break;

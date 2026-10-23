@@ -46,7 +46,7 @@ async fn queue_excludes_holder_is_fifo_and_rejects_at_bound() {
         .unwrap();
     }
     code(
-        f.execute(key("one"), "order.append(3)").await.unwrap_err(),
+        &f.execute(key("one"), "order.append(3)").await.unwrap_err(),
         "queue-full",
     );
     barrier.release();
@@ -113,7 +113,7 @@ async fn queued_cancellation_never_reaches_python() {
             assert!(task.await.unwrap_err().is_cancelled());
         } else {
             cancel.cancel();
-            code(task.await.unwrap().unwrap_err(), "cancelled");
+            code(&task.await.unwrap().unwrap_err(), "cancelled");
         }
         timeout(Duration::from_secs(5), async {
             while f.manager.queued(&key("one")) != 0 {

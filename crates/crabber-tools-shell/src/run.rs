@@ -1,8 +1,14 @@
 use crate::{Options, StartupMode, args::Args};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    ProcessRunError, apply_policy, category, failed, run_process_owned_guarded,
+};
 use serde_json::{Value, json};
 use std::{os::unix::process::ExitStatusExt, process::Stdio, time::Duration};
 use tokio::{process::Command, time::Instant};
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Retain the timing ABI; u64 milliseconds overflow only after 584 million years."
+)]
 pub(crate) async fn run(
     options: &Options,
     args: Args,
@@ -38,10 +44,9 @@ pub(crate) async fn run(
         }
         Err(_) => return failed(category::IO, "could not capture shell output"),
     };
-    let code = capture
-        .status
-        .map(|s| s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0)))
-        .unwrap_or(-1);
+    let code = capture.status.map_or(-1, |s| {
+        s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0))
+    });
     let mut value = if capture.timed_out {
         failed(
             category::TIMEOUT,

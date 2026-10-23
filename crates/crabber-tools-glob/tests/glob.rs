@@ -317,7 +317,7 @@ async fn pathological_pattern_worker() {
     });
     for pattern in [
         "{".repeat(300) + "a" + &"}".repeat(300),
-        "{".repeat(100000) + "a" + &"}".repeat(100000),
+        "{".repeat(100_000) + "a" + &"}".repeat(100_000),
         "x".repeat(4097),
         "[".into(),
     ] {
@@ -364,5 +364,8 @@ async fn interrupted_large_walk_joins_owned_resources() {
     assert!(report.sealed);
     assert_eq!(report.pending, 0);
     assert!(report.joined >= 1);
-    assert!(report.failures.is_empty());
+    assert_eq!(
+        report.failures,
+        [] as [crabber::extension::ResourceFailure; 0]
+    );
 }

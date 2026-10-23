@@ -16,6 +16,9 @@ pub struct StandardToolsFactory {
 }
 impl StandardToolsFactory {
     /// Validate root-free policies. Admission remains the host's authority.
+    ///
+    /// # Errors
+    /// Returns a plan error if the enabled set or any supplied tool policy is invalid.
     pub fn new(
         policies: Policies,
         admission: Arc<dyn WorkspaceAdmission>,

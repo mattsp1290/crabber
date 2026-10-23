@@ -14,8 +14,8 @@ fn invocation() -> SessionInvocationContext {
     SessionInvocationContext {
         cancel: CancellationToken::new(),
         cleanup: cleanup.tracker().clone(),
-        public_source: Default::default(),
-        invocations: Default::default(),
+        public_source: crabber::extension::PublicSourceWriter::default(),
+        invocations: crabber::extension::SessionInvocations::default(),
     }
 }
 fn next(mut context: ToolContext) -> ToolContext {

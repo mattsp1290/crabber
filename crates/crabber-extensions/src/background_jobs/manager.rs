@@ -8,6 +8,7 @@ use super::{
 use crate::process::{self, Launch, Tail, Tails};
 use crabber::extension::{CleanupOwner, ExtensionError, ToolContext};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::{
     collections::{BTreeMap, hash_map::RandomState},
     hash::{BuildHasher, Hasher},
@@ -48,13 +49,12 @@ pub(super) struct TestHooks {
 
 impl Policy {
     pub(super) fn new(configuration: Configuration) -> Self {
-        let epoch: String = (0..2)
-            .map(|_| {
-                let mut hash = RandomState::new().build_hasher();
-                hash.write(b"background-jobs-epoch");
-                format!("{:016x}", hash.finish())
-            })
-            .collect();
+        let epoch: String = (0..2).fold(String::new(), |mut epoch, _| {
+            let mut hash = RandomState::new().build_hasher();
+            hash.write(b"background-jobs-epoch");
+            let _ = write!(&mut epoch, "{:016x}", hash.finish());
+            epoch
+        });
         Self {
             binding: None,
             shared: None,
@@ -90,6 +90,10 @@ impl Policy {
         registry.running + registry.starting
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep admission, process ownership, and cleanup in one ordered lifecycle."
+    )]
     pub(super) async fn start(
         self: &Arc<Self>,
         context: ToolContext,
@@ -104,9 +108,9 @@ impl Policy {
         let shared_permit = self
             .shared
             .as_ref()
-            .map(|pool| pool.acquire())
+            .map(super::super::contextual::SharedCapacity::acquire)
             .transpose()
-            .map_err(|_| failure("capacity-exhausted"))?;
+            .map_err(|()| failure("capacity-exhausted"))?;
         let reservation = self.reserve_start()?;
         let root = std::fs::canonicalize(root).map_err(|_| runtime_error("workspace-root"))?;
         let directory = std::fs::canonicalize(root.join(input.directory))
@@ -123,7 +127,7 @@ impl Policy {
             ))),
         };
         let spawned = process::spawn(
-            Launch {
+            &Launch {
                 shell: &self.configuration.shell,
                 command: &input.command,
                 directory: &directory,
@@ -230,6 +234,10 @@ impl Policy {
             .cloned()
             .ok_or_else(|| failure("job-not-found"))
     }
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Executor dispatch shares an owned context and input signature across tools."
+    )]
     pub(super) fn status(
         &self,
         context: ToolContext,
@@ -238,6 +246,10 @@ impl Policy {
         let owner = Owner::from_context(&context)?;
         Ok(self.lookup(&owner, input::id(&value)?)?.status())
     }
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Executor dispatch shares an owned context and input signature across tools."
+    )]
     pub(super) fn list(&self, context: ToolContext, value: Value) -> Result<Value, ExtensionError> {
         let owner = Owner::from_context(&context)?;
         input::list(&value)?;

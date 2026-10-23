@@ -12,10 +12,10 @@ impl JsonToolExecutor for ChildWait {
 struct ChildTool(Arc<tokio::sync::Notify>);
 #[async_trait::async_trait]
 impl Extension for ChildTool {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "fixture/child-wait"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
@@ -83,7 +83,7 @@ async fn interrupted_run_leaves_the_job_owned() {
         Err(crabber::RuntimeError::PhaseOutcomeUnknown { .. })
     ));
     assert_eq!(h.ext.live_jobs(), 1);
-    assert!(!group_members(pgids(h.dir.path())[0]).is_empty());
+    assert_ne!(group_members(pgids(h.dir.path())[0]), [] as [u32; 0]);
     a.close_extensions().await.unwrap();
     h.close().await;
 }

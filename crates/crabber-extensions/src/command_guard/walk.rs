@@ -1,6 +1,6 @@
 use super::{
     Dialect, Outcome, Policy,
-    ast::*,
+    ast::{Command, CommandKind, Heredoc, RedirectTarget, Script, Word, WordPart},
     budget::Budget,
     parser::{self, Context},
     words,
@@ -44,11 +44,11 @@ impl Analysis<'_> {
     ) -> Result<(), Outcome> {
         self.budget.depth(depth)?;
         for item in &script.items {
-            let _background = item.background;
+            let _ = item.background;
             for pipeline in
                 std::iter::once(&item.and_or.first).chain(item.and_or.rest.iter().map(|(_, p)| p))
             {
-                let _negated = pipeline.negated;
+                let _ = pipeline.negated;
                 for command in &pipeline.commands {
                     self.walk_command(command, heredocs, dialect, depth, wrappers)?;
                 }
@@ -82,11 +82,11 @@ impl Analysis<'_> {
                     self.nested(script, heredocs, dialect, depth, wrappers)?;
                 }
                 WordPart::ProcSubst { dir, script } => {
-                    let _direction = dir;
+                    let _ = dir;
                     self.nested(script, heredocs, dialect, depth, wrappers)?;
                 }
                 WordPart::Param(name) => {
-                    let _parameter = name;
+                    let _ = name;
                 }
                 WordPart::Backquote(body) => {
                     let next = depth.saturating_add(1);
@@ -126,7 +126,7 @@ impl Analysis<'_> {
         wrappers: usize,
     ) -> Result<(), Outcome> {
         for redirect in &command.redirects {
-            let _syntax = (&redirect.fd, &redirect.op);
+            let _ = (&redirect.fd, &redirect.op);
             match &redirect.target {
                 RedirectTarget::Word(word) => {
                     self.word(word, heredocs, dialect, depth, wrappers)?;
@@ -147,7 +147,7 @@ impl Analysis<'_> {
                 words: raw,
             } => {
                 for assignment in assignments {
-                    let _target = &assignment.name;
+                    let _ = &assignment.name;
                     self.word(&assignment.value, heredocs, dialect, depth, wrappers)?;
                 }
                 let mut decoded = vec![];
@@ -162,7 +162,7 @@ impl Analysis<'_> {
                 }
             }
             CommandKind::Subshell(body) | CommandKind::Brace(body) => {
-                self.nested(body, heredocs, dialect, depth, wrappers)?
+                self.nested(body, heredocs, dialect, depth, wrappers)?;
             }
             CommandKind::If { arms, else_ } => {
                 for (cond, body) in arms {
@@ -178,7 +178,7 @@ impl Analysis<'_> {
                 self.nested(body, heredocs, dialect, depth, wrappers)?;
             }
             CommandKind::For { name, words, body } => {
-                let _target = name;
+                let _ = name;
                 if let Some(words) = words {
                     for word in words {
                         self.word(word, heredocs, dialect, depth, wrappers)?;
@@ -189,7 +189,7 @@ impl Analysis<'_> {
             CommandKind::Case { subject, items } => {
                 self.word(subject, heredocs, dialect, depth, wrappers)?;
                 for item in items {
-                    let _terminator = &item.terminator;
+                    let _ = &item.terminator;
                     for word in &item.patterns {
                         self.word(word, heredocs, dialect, depth, wrappers)?;
                     }

@@ -19,6 +19,10 @@ use std::{
     },
     time::Duration,
 };
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Preserve the shared scripted-provider fixture signature used by the consumer."
+)]
 fn turn(name: &str, args: Value) -> Vec<StreamDelta> {
     let id = ToolCallId::new();
     vec![
@@ -57,10 +61,10 @@ fn marker(name: &str, seen: Arc<AtomicUsize>) -> Arc<ToolDefinition> {
 struct Host(Arc<AtomicUsize>);
 #[async_trait]
 impl Extension for Host {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "contexts/host"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "1"
     }
     fn config_hash(&self) -> String {
@@ -111,6 +115,10 @@ fn crabber_tools_core_hash() -> String {
     "a".repeat(64)
 }
 /// Exercise concurrent roots, custom registrations and targeted workspace close.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let a = tempfile::tempdir()?;

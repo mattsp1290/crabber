@@ -49,7 +49,7 @@ pub(super) fn task_id(value: &Value) -> Result<&str, ExtensionError> {
     Ok(id)
 }
 pub(super) fn wait(
-    value: Value,
+    value: &Value,
     limits: &Limits,
 ) -> Result<(Vec<String>, std::time::Duration), ExtensionError> {
     // Preserve absent versus null: serde Option would silently accept null.

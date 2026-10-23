@@ -6,22 +6,22 @@ pub(super) fn mutations() -> Vec<(&'static str, Edit)> {
     vec![
         ("max_bindings", |o| o.limits.max_bindings = 9),
         ("max_fields_per_binding", |o| {
-            o.limits.max_fields_per_binding = 9
+            o.limits.max_fields_per_binding = 9;
         }),
         ("max_input_matches", |o| o.limits.max_input_matches = 9),
         ("max_config_bytes", |o| {
-            o.limits.max_config_bytes = 32 * 1024
+            o.limits.max_config_bytes = 32 * 1024;
         }),
         ("max_input_bytes", |o| o.limits.max_input_bytes = 8 * 1024),
         ("max_field_bytes", |o| o.limits.max_field_bytes = 512 * 1024),
         ("max_concurrent", |o| o.limits.max_concurrent = 3),
         ("max_stdout_bytes", |o| {
-            o.limits.max_stdout_bytes = 128 * 1024
+            o.limits.max_stdout_bytes = 128 * 1024;
         }),
         ("timeout", |o| o.limits.timeout = Duration::from_secs(5)),
         ("kill_wait", |o| o.limits.kill_wait = Duration::from_secs(2)),
         ("shutdown_grace", |o| {
-            o.limits.shutdown_grace = Duration::from_secs(20)
+            o.limits.shutdown_grace = Duration::from_secs(20);
         }),
         ("order", |o| o.order += 1),
         ("digest", |o| {
@@ -48,7 +48,7 @@ pub(super) fn mutations() -> Vec<(&'static str, Edit)> {
             }
         }),
         ("filter", |o| {
-            o.bindings[0].selection = Selection::Text(Filter::GoTest)
+            o.bindings[0].selection = Selection::Text(Filter::GoTest);
         }),
         ("match_value", |o| {
             o.bindings[1]
@@ -56,16 +56,16 @@ pub(super) fn mutations() -> Vec<(&'static str, Edit)> {
                 .as_mut()
                 .unwrap()
                 .equals
-                .push("cargo test -q".into())
+                .push("cargo test -q".into());
         }),
         ("match_field", |o| {
-            o.bindings[1].match_input.as_mut().unwrap().field = "command".into()
+            o.bindings[1].match_input.as_mut().unwrap().field = "command".into();
         }),
         ("selection", |o| {
             o.bindings[0].selection = Selection::JsonFields(vec![Field {
                 name: "out".into(),
                 filter: Filter::Log,
-            }])
+            }]);
         }),
     ]
 }

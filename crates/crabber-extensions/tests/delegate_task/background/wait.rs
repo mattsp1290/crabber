@@ -53,7 +53,7 @@ async fn wait_wakes_on_settlement_without_timeout() {
         tokio::pin!(wait);
         let before = tokio::time::Instant::now();
         if !early {
-            tokio::select! {biased; _=&mut wait=>panic!("completed too early"), _=tokio::task::yield_now()=>{}}
+            tokio::select! {biased; _=&mut wait=>panic!("completed too early"), ()=tokio::task::yield_now()=>{}}
         }
         host.release.notify_one();
         assert_eq!(wait.await.unwrap()["status"], "done");
@@ -75,7 +75,7 @@ async fn parent_cancellation_during_wait_leaves_task_running() {
     wait_context.cancel = cancel.clone();
     let wait = tools[WAIT_TOOL].execute_json_with_context(wait_context, json!({"task_ids":[id]}));
     tokio::pin!(wait);
-    tokio::select! {biased; _=&mut wait=>panic!("completed too early"), _=tokio::task::yield_now()=>{}}
+    tokio::select! {biased; _=&mut wait=>panic!("completed too early"), ()=tokio::task::yield_now()=>{}}
     cancel.cancel();
     assert!(
         wait.await
@@ -194,7 +194,7 @@ async fn wait_at_deadline_tie_reports_done() {
         json!({"task_ids":[id],"timeout_seconds":1}),
     );
     tokio::pin!(wait);
-    tokio::select! {biased;_=&mut wait=>panic!("early"),_=tokio::task::yield_now()=>{}}
+    tokio::select! {biased;_=&mut wait=>panic!("early"),()=tokio::task::yield_now()=>{}}
     tokio::time::advance(Duration::from_secs(1)).await;
     finished.notified().await;
     // Once the runner has actually settled, terminal rows win over the ready deadline.
@@ -283,7 +283,7 @@ async fn wait_holds_records_across_eviction() {
     let wait = tools[WAIT_TOOL]
         .execute_json_with_context(make_context(), json!({"task_ids":[first,second]}));
     tokio::pin!(wait);
-    tokio::select! {biased;_=&mut wait=>panic!("early"),_=tokio::task::yield_now()=>{}}
+    tokio::select! {biased;_=&mut wait=>panic!("early"),()=tokio::task::yield_now()=>{}}
     let mut other = j.other_owner();
     other.start().await;
     host.release.notify_one();

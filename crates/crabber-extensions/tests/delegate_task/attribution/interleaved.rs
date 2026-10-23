@@ -3,6 +3,10 @@ use crabber::{ExecutionContext, core::SessionContext};
 use std::sync::Mutex;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn interleaved_sessions_keep_each_inline_and_detached_source_on_its_own_parent() {
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let seen = Arc::new(Mutex::new(Vec::new()));

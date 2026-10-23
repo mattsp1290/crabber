@@ -24,6 +24,6 @@ impl FileResult {
         }
     }
 }
-pub(crate) fn failure(error: ToolError, files: Vec<FileResult>, partial: bool) -> Value {
+pub(crate) fn failure(error: &ToolError, files: &[FileResult], partial: bool) -> Value {
     json!({"outcome":"failed","files":files,"partial":partial,"error":error})
 }

@@ -4,6 +4,7 @@ use crabber_tools_core::*;
 use crabber_tools_testkit as support;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::{collections::BTreeMap, sync::Arc};
 use support::*;
 use tokio_util::sync::CancellationToken;
@@ -262,7 +263,7 @@ async fn source_and_aggregate_content_caps_prevent_writes() {
     let mut patch = "*** Begin Patch\n".to_owned();
     for i in 0..5 {
         std::fs::write(temp.path().join(format!("old{i}")), &contents).unwrap();
-        patch.push_str(&format!("*** Update File: old{i}\n*** Move to: new{i}\n"));
+        let _ = write!(&mut patch, "*** Update File: old{i}\n*** Move to: new{i}\n");
     }
     patch.push_str("*** End Patch");
     let v = call(&o, &patch).await;
@@ -380,7 +381,7 @@ async fn repetitive_near_match_is_preflighted_without_effects() {
     let content = "a\n".repeat(4 * 1024 * 1024);
     std::fs::write(root.path().join("large"), &content).unwrap();
     let patch = "*** Begin Patch\n*** Update File: large\n@@\n".to_owned()
-        + &" a\n".repeat(262144)
+        + &" a\n".repeat(262_144)
         + " b\n+c\n*** End Patch\n";
     let limits = support::limits();
     let options = std::sync::Arc::new(crabber_tools_applypatch::Options {

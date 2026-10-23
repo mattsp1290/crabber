@@ -22,7 +22,7 @@ async fn exact_boundary_frame_uses_only_chain_paths_and_workspace_mode_only_root
         let agent = builder(
             provider.clone(),
             options(mode, boundaries),
-            fixed(reader.clone()),
+            Some(fixed(reader.clone())),
         )
         .build()
         .unwrap();
@@ -46,7 +46,7 @@ async fn invalid_empty_and_nul_content_skip_and_oversized_files_have_no_partial_
         let agent = builder(
             provider.clone(),
             options(ReaderRoot::Workspace, vec![]),
-            fixed(reader),
+            Some(fixed(reader)),
         )
         .build()
         .unwrap();
@@ -58,7 +58,9 @@ async fn invalid_empty_and_nul_content_skip_and_oversized_files_have_no_partial_
     let reader = MemoryReader::new(&[("AGENTS.md", b"sensitive-prefix-too-large")]);
     let mut o = options(ReaderRoot::Workspace, vec![]);
     o.limits.max_file_bytes = 3;
-    let agent = builder(provider.clone(), o, fixed(reader)).build().unwrap();
+    let agent = builder(provider.clone(), o, Some(fixed(reader)))
+        .build()
+        .unwrap();
     run(&agent, "ws", "/admitted").await.unwrap();
     let frame = provider.requests()[0].system.clone().unwrap();
     assert!(frame.contains("truncated=\"true\"") && frame.contains("[omitted: file exceeds"));

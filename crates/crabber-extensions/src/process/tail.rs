@@ -63,7 +63,7 @@ mod tests {
         assert_eq!(tail.snapshot(), ("��".into(), true));
         let mut tail = Tail::new(4);
         tail.mark_truncated();
-        assert_eq!(tail.snapshot(), ("".into(), true));
+        assert_eq!(tail.snapshot(), (String::new(), true));
     }
     #[test]
     fn tail_flood_stays_at_capacity() {

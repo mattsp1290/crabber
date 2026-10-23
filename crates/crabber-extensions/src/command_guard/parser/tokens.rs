@@ -1,4 +1,4 @@
-use super::*;
+use super::{Context, Cow, Dialect, Op, Outcome, Parser, RedirectOp, Token};
 
 impl<'a> Parser<'a, '_, '_> {
     pub(super) fn lex(&mut self, depth: usize) -> Result<Token<'a>, Outcome> {

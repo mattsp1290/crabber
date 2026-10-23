@@ -55,6 +55,10 @@ fn policy() -> Policy {
     Policy::new(options()).unwrap()
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "The remainder is bounded by the small fixed TOKENS array length."
+)]
 fn generated_corpus(mut state: u64, count: usize) -> Vec<String> {
     const TOKENS: &[&str] = &[
         "blocked", "git", "push", "status", "echo", "tool", "x", "A=b", "env", "sudo", "-n",

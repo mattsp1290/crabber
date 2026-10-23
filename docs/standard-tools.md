@@ -84,12 +84,12 @@ Hosts choose the workspace root, permissions, environment, and uid. Fileops run
 as the host uid; `run_as` applies only to spawned processes. Mount
 crabber-extensions `command_guard` for command analysis and `tool_result_redactor`
 for secret redaction. Shell execution is not a sandbox. `required_permissions`
-is advisory; StaticPolicy matches tool names. Prefer `restrict_to_enabled: false`
+is advisory; `StaticPolicy` matches tool names. Prefer `restrict_to_enabled: false`
 when mounting other tools, because restrictions apply to the entire run.
 
-Use one shared root per agent, or StandardToolsFactory with host-owned WorkspaceAdmission for multiple workspaces. Multiple
+Use one shared root per agent, or `StandardToolsFactory` with host-owned `WorkspaceAdmission` for multiple workspaces. Multiple
 roots mounted globally collide on names. The persisted directory must match the
-admitted absolute root; AgentConfig's default `.` is rejected. Reopen the root
+admitted absolute root; `AgentConfig`'s default `.` is rejected. Reopen the root
 handle after deleting and recreating a directory. Existing hard links and detached processes remain host concerns;
 `file_move` creates a transient second link during a move. Reads are unordered against in-flight writers.
 Started atomic writes may complete after interruption. A started `file_move` may
@@ -117,7 +117,7 @@ extension, a custom host tool, and a reopened SQLite store at one Git revision.
 
 The former [crabber-tools repository](https://github.com/mattsp1290/crabber-tools.git)
 retains the source history: v0.1.0 supplied the initial tools, 0.2.0 established
-eino-tools parity, 0.3.0 added multi_edit, file_delete and file_move, and 0.4.0
+eino-tools parity, 0.3.0 added `multi_edit`, `file_delete` and `file_move`, and 0.4.0
 adopted the durable host APIs. Consolidation resets the crate version to the
 containing workspace's 0.1.0. Configuration identity uses domain v2 and an
 explicit `TOOLS_IDENTITY_REVISION`, independent of the crate version.

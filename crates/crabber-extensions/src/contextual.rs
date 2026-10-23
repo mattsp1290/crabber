@@ -18,6 +18,9 @@ pub struct SharedCapacity {
 }
 impl SharedCapacity {
     /// Reject zero and limits beyond Tokio's representable semaphore capacity.
+    ///
+    /// # Errors
+    /// Returns a plan error if the capacity limit is outside the supported range.
     pub fn new(limit: usize) -> Result<Self, ExtensionError> {
         if limit == 0 || limit > Semaphore::MAX_PERMITS {
             return Err(crate::config_error("shared-capacity"));
@@ -28,6 +31,7 @@ impl SharedCapacity {
         })
     }
     /// Configured aggregate budget, included in the factory fingerprint.
+    #[must_use]
     pub fn limit(&self) -> usize {
         self.limit
     }

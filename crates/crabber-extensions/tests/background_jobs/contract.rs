@@ -35,9 +35,9 @@ async fn registered_contract_is_exact() {
 fn worst_case_helpers_cover_caps_and_saturate_safely() {
     let mut l = limits();
     l.max_tracked = 256;
-    l.max_output_bytes_per_stream = 1048576;
+    l.max_output_bytes_per_stream = 1_048_576;
     assert_eq!(l.worst_case_retained_bytes(), 512 * 1024 * 1024);
-    assert!(l.worst_case_status_bytes() >= 12 * 1048576);
+    assert!(l.worst_case_status_bytes() >= 12 * 1_048_576);
     assert!(l.worst_case_list_bytes() >= 256 * 200);
     l.max_tracked = usize::MAX;
     l.max_output_bytes_per_stream = usize::MAX;

@@ -124,8 +124,8 @@ impl WorkspaceReaderResolver for Fixed {
         Ok(self.0.clone())
     }
 }
-fn fixed(reader: Arc<dyn WorkspaceReader>) -> Option<Arc<dyn WorkspaceReaderResolver>> {
-    Some(Arc::new(Fixed(reader)))
+fn fixed(reader: Arc<dyn WorkspaceReader>) -> Arc<dyn WorkspaceReaderResolver> {
+    Arc::new(Fixed(reader))
 }
 
 #[path = "instructions/frames.rs"]

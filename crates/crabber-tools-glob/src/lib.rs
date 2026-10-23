@@ -1,9 +1,13 @@
 //! Capability-confined glob discovery with bounded retained results.
+#![warn(missing_docs)]
 use async_trait::async_trait;
 use crabber::{
     ExtensionError, ToolDefinition, ToolExecutor, core::ToolInfo, extension::ToolContext,
 };
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, Capacity, Limits, RelPath, ToolError, WorkspaceRoot, acquire_read, category,
+    check_cancelled, permission, run_blocking_owned,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -24,6 +28,7 @@ pub struct Options {
     pub capacity: Capacity,
 }
 /// Deterministic model-facing schema and advisory read permission.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {
         name: "glob".into(),
@@ -37,6 +42,7 @@ pub fn info() -> ToolInfo {
     }
 }
 /// Construct a context-required executor using the admitted root.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),
@@ -72,7 +78,7 @@ impl Args {
         Ok((RelPath::parse(&self.path, true)?, self.pattern, self.limit))
     }
 }
-fn failure(error: ToolError) -> Value {
+fn failure(error: &ToolError) -> Value {
     let mut v = error.value();
     v["paths"] = json!([]);
     v["count"] = json!(0);
@@ -103,20 +109,20 @@ impl GlobTool {
             .and_then(Args::validate)
         {
             Ok(a) => a,
-            Err(e) => return Ok(failure(e)),
+            Err(e) => return Ok(failure(&e)),
         };
         if let Err(e) = self
             .0
             .root
             .matches_session_directory(ctx.workspace().directory())
         {
-            return Ok(failure(e));
+            return Ok(failure(&e));
         }
         let permit = match acquire_read(&self.0.capacity, &self.0.limits, &ctx.cancel).await {
             Ok(p) => p,
             Err(AcquireError::Cancelled) => return Err(ExtensionError::Tool("cancelled".into())),
             Err(AcquireError::Unavailable) => {
-                return Ok(failure(ToolError::new(
+                return Ok(failure(&ToolError::new(
                     category::UNAVAILABLE,
                     "workspace busy",
                 )));
@@ -126,9 +132,9 @@ impl GlobTool {
         run_blocking_owned(&ctx, move |cancel| {
             let _permit = permit;
             match pattern::compile(&args.1) {
-                Ok(pattern) => walk::discover(&options.root, args.0, pattern, args.2, cancel)
-                    .unwrap_or_else(failure),
-                Err(error) => failure(error),
+                Ok(pattern) => walk::discover(&options.root, &args.0, &pattern, args.2, cancel)
+                    .unwrap_or_else(|error| failure(&error)),
+                Err(error) => failure(&error),
             }
         })
         .await

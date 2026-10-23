@@ -1,12 +1,14 @@
-//! The file_edit tool definition.
+//! The `file_edit` tool definition.
 use crate::{FileTool, Kind, Options};
 use crabber::{ToolDefinition, core::ToolInfo};
 use std::sync::Arc;
 /// Deterministic model-facing schema and advisory safety metadata.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {name: "file_edit".into(), description: "Edit a workspace-relative file in place by anchored substring replacement. The anchor MUST appear exactly once in the file. Returns structured error envelopes on path_escape, not_found, is_directory, anchor_not_found, anchor_ambiguous, too_large, or io.".into(), parameters: serde_json::json!({"properties": {"path": {"minLength": 1, "description": "Workspace-relative file to edit. Must exist.", "type": "string"}, "anchor": {"minLength": 1, "description": "Literal substring to find. Must match exactly once. No regex.", "type": "string"}, "replacement": {"description": "Substitute for the anchor. May be empty.", "type": "string"}}, "additionalProperties": false, "required": ["path", "anchor", "replacement"], "type": "object"}), retry_safe: false, required_permissions: vec![crabber_tools_core::permission::FS_WRITE.into()]}
 }
 /// Build a context-required executor sharing the mount's capacity.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),

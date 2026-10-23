@@ -51,16 +51,15 @@ impl Parser {
         }
     }
     pub fn feed(&mut self, record: &[u8]) {
-        let record: Value = match serde_json::from_slice(record) {
-            Ok(v) => v,
-            Err(_) => {
-                self.malformed = true;
-                return;
-            }
+        let record: Value = if let Ok(v) = serde_json::from_slice(record) {
+            v
+        } else {
+            self.malformed = true;
+            return;
         };
         let data = &record["data"];
         match record["type"].as_str() {
-            Some("begin") | Some("end") => {
+            Some("begin" | "end") => {
                 self.before.clear();
             }
             Some("context") => {
@@ -89,16 +88,15 @@ impl Parser {
                 let path = path.strip_prefix("./").unwrap_or(&path);
                 let mut v = line(data);
                 v["path"] = json!(path);
-                match crate::submatches::retained(
+                if let Some(subs) = crate::submatches::retained(
                     data,
                     v["line"].as_str().unwrap(),
                     self.include_submatches,
                 ) {
-                    Some(subs) => v["submatches"] = json!(subs),
-                    None => {
-                        self.reason = Some("bytes");
-                        return;
-                    }
+                    v["submatches"] = json!(subs);
+                } else {
+                    self.reason = Some("bytes");
+                    return;
                 }
                 if !self.before.is_empty() {
                     v["before"] = json!(self.before);

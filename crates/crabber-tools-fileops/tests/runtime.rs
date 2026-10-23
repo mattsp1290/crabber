@@ -116,7 +116,10 @@ async fn interrupted_atomic_write_finishes_with_owned_guard() {
         .resources;
     assert_eq!(resources.pending, 0);
     assert!(resources.joined >= 1);
-    assert!(resources.failures.is_empty());
+    assert_eq!(
+        resources.failures,
+        [] as [crabber::extension::ResourceFailure; 0]
+    );
     agent.close_extensions().await.unwrap();
 }
 #[tokio::test]

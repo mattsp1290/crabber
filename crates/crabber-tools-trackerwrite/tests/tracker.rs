@@ -203,7 +203,7 @@ async fn invalid_arguments_and_policy_fail_before_execution() {
         match change {
             0 => policy.project = "--project".into(),
             1 => policy.hub = "relative".into(),
-            2 => policy.actor = "".into(),
+            2 => policy.actor = String::new(),
             3 => policy.statuses.clear(),
             4 => policy
                 .environment

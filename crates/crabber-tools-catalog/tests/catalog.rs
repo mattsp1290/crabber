@@ -161,7 +161,7 @@ fn hashes_cover_policies_root_enabled_and_restrictions() {
             1 => o.shell.run_as = Some(RunAs { uid: 123, gid: 456 }),
             2 => o.restrict_to_enabled = true,
             _ => o.enabled = EnabledSet::only([ToolId::FileRead]),
-        };
+        }
         assert_ne!(
             hash,
             StandardTools::new(WorkspaceRoot::open(a.path()).unwrap(), o)

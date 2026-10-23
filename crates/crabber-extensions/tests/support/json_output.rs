@@ -17,6 +17,10 @@ pub trait JsonOutputExecutor: ToolExecutor {
     }
 }
 impl<T: ToolExecutor + ?Sized> JsonOutputExecutor for T {}
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "This conversion is used as an owned ToolOutput result callback."
+)]
 fn json(output: ToolOutput) -> Result<Value, ExtensionError> {
     output
         .json_value()

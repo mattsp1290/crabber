@@ -5,12 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_docs = "warn"
 
-[lints.clippy]
-all = "warn"
 
 [dependencies]
 crabber = { path = "../crabber" }
@@ -27,3 +22,6 @@ libc = "0.2"
 [dev-dependencies]
 crabber-tools-testkit = { path = "../crabber-tools-testkit" }
 tempfile = "3"
+
+[lints]
+workspace = true

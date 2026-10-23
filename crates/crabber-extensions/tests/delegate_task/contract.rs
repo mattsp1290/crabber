@@ -80,6 +80,9 @@ fn configuration_bounds_and_hash_cover_every_limit_and_identity() {
 
 #[tokio::test]
 async fn registered_tools_have_exact_contract_metadata_and_session_scope() {
+    use crabber_extensions::delegate_task::{
+        LIST_TOOL, PERMISSION_DELEGATE_READ, START_TOOL, STATUS_TOOL, WAIT_TOOL,
+    };
     let registry = Registry::new();
     let session = SessionId::from("session");
     let handle = registry
@@ -90,9 +93,6 @@ async fn registered_tools_have_exact_contract_metadata_and_session_scope() {
         .await
         .unwrap();
     let plan = registry.acquire(&session);
-    use crabber_extensions::delegate_task::{
-        LIST_TOOL, PERMISSION_DELEGATE_READ, START_TOOL, STATUS_TOOL, WAIT_TOOL,
-    };
     assert_eq!(
         plan.tools
             .iter()

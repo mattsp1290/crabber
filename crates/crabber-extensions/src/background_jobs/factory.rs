@@ -21,6 +21,9 @@ pub struct Factory {
 }
 impl Factory {
     /// Validate and freeze executable/environment policy once, before admission.
+    ///
+    /// # Errors
+    /// Returns a plan error if process policy, limits, or factory configuration are invalid.
     pub fn new(options: Options, scope: FactoryScope) -> Result<Self, ExtensionError> {
         let (configuration, instance_hash) = config::validate(options)?;
         Ok(Self {
@@ -32,6 +35,7 @@ impl Factory {
         })
     }
     /// Add a nonqueueing aggregate budget across this factory's owner instances.
+    #[must_use]
     pub fn with_shared_capacity(mut self, shared: SharedCapacity) -> Self {
         self.shared = Some(shared);
         self
@@ -70,7 +74,7 @@ impl ExtensionFactory for Factory {
     async fn create(&self, context: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError> {
         let binding = Binding::from_factory(&context)?;
         let instance = Arc::new(BackgroundJobs::from_configuration(
-            self.configuration.clone(),
+            &self.configuration.clone(),
             binding.clone(),
             self.shared.clone(),
             self.instance_hash.clone(),

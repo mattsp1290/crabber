@@ -52,6 +52,9 @@ pub struct ToolResultRedactor {
 }
 
 impl ToolResultRedactor {
+    ///
+    /// # Errors
+    /// Returns a plan error for invalid bindings, redaction rules, or resource bounds.
     pub fn new(mut options: Options) -> Result<Self, ExtensionError> {
         let l = &options.limits;
         if [
@@ -122,6 +125,7 @@ impl ToolResultRedactor {
 
     /// Exclusions match the authoritative tool name exactly. They intentionally
     /// bypass all protection, and should only be configured by a trusted host.
+    #[must_use]
     pub fn redact(&self, tool_name: &str, mut value: Value) -> Value {
         if self
             .options
@@ -269,10 +273,10 @@ struct Budget {
 
 #[async_trait]
 impl Extension for ToolResultRedactor {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/tool-result-redactor"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {
@@ -308,7 +312,7 @@ impl Extension for ToolResultRedactor {
                     cleanup.spawn(async move {
                         let result = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            policy.scan_output(value, &context)
+                            policy.scan_output(&value, &context)
                         })
                         .await
                         .unwrap_or_else(|_| placeholder(is_error));
@@ -333,7 +337,7 @@ fn placeholder(is_error: bool) -> ToolOutput {
     }
 }
 impl ToolResultRedactor {
-    fn scan_output(&self, output: ToolOutput, context: &ToolResultContext) -> ToolOutput {
+    fn scan_output(&self, output: &ToolOutput, context: &ToolResultContext) -> ToolOutput {
         let is_error = output.is_error();
         let scanned = if let Ok(mut value) = output.json_value() {
             self.scan(&mut value, Some(context));
@@ -404,7 +408,7 @@ mod typed_output_tests {
         for is_error in [false, true] {
             let json = ToolOutput::from_json(&serde_json::json!({"safe":"unchanged"})).unwrap();
             let json = if is_error { json.with_error() } else { json };
-            assert_eq!(policy.scan_output(json.clone(), &context), json);
+            assert_eq!(policy.scan_output(&json.clone(), &context), json);
             let plain = ToolOutput::new(
                 vec![MessageContent::Text {
                     text: "plain safe text".into(),
@@ -412,7 +416,7 @@ mod typed_output_tests {
                 is_error,
             )
             .unwrap();
-            assert_eq!(policy.scan_output(plain.clone(), &context), plain);
+            assert_eq!(policy.scan_output(&plain.clone(), &context), plain);
             let secret = ToolOutput::new(
                 vec![MessageContent::Text {
                     text: "SYNTHETIC_SECRET".into(),
@@ -420,7 +424,7 @@ mod typed_output_tests {
                 is_error,
             )
             .unwrap();
-            let scanned = policy.scan_output(secret, &context);
+            let scanned = policy.scan_output(&secret, &context);
             assert!(
                 matches!(&scanned.content()[0], MessageContent::Text { text } if text == "[REDACTED]")
             );
@@ -436,7 +440,7 @@ mod typed_output_tests {
                 is_error,
             )
             .unwrap();
-            let replaced = policy.scan_output(media, &context);
+            let replaced = policy.scan_output(&media, &context);
             assert_eq!(replaced, placeholder(is_error));
             assert_eq!(
                 replaced.content(),

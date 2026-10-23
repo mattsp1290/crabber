@@ -1,7 +1,15 @@
 //! Recursive cycles enter a nested list only after checking `depth + 1`.
 //! Words have an iterative part lexer; quoted parts do not nest quotes. Every
 //! substitution reuses this parser and charges the shared syntactic depth.
-use super::{Dialect, Outcome, ast::*, budget::Budget, variables};
+use super::{
+    Dialect, Outcome,
+    ast::{
+        AndOr, AndOrOp, Assignment, CaseEnd, CaseItem, Command, CommandKind, Direction, Heredoc,
+        ListItem, Pipeline, Redirect, RedirectOp, RedirectTarget, Script, Word, WordPart,
+    },
+    budget::Budget,
+    variables,
+};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -156,7 +164,7 @@ impl<'a> Parser<'a, '_, '_> {
             let stop = match self.look(depth)? {
                 Token::Op(o) => stop_ops.contains(o),
                 Token::Word(w) => w.literal().is_some_and(|s| stop_words.contains(&s)),
-                _ => false,
+                Token::Redirect(..) => false,
             };
             if stop {
                 break;

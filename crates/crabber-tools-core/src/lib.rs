@@ -1,4 +1,5 @@
 //! Bounded execution, capability-rooted files, process cleanup, and tool identities.
+#![warn(missing_docs)]
 #![cfg_attr(not(unix), allow(unused))]
 #[cfg(not(unix))]
 compile_error!("crabber-tools requires Unix");

@@ -1,9 +1,13 @@
 //! Explicit-policy Unix shell execution with bounded capture and group cleanup.
+#![warn(missing_docs)]
 #[cfg(not(unix))]
 compile_error!("crabber-tools-shell requires Unix");
 use async_trait::async_trait;
 use crabber::{ExtensionError, ToolDefinition, ToolExecutor, extension::ToolContext};
-use crabber_tools_core::*;
+use crabber_tools_core::{
+    AcquireError, Capacity, EnvPolicy, Limits, RootLock, RunAs, WorkspaceRoot, acquire_mutating,
+    category, check_cancelled, failed, validate_binary,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
@@ -40,6 +44,7 @@ pub struct ShellPolicy {
 }
 impl ShellPolicy {
     /// Eino-shaped login policy with 256 KiB caps; binary and environment remain explicit.
+    #[must_use]
     pub fn eino_default(shell_binary: PathBuf, env: EnvPolicy) -> Self {
         Self {
             shell_binary,
@@ -50,6 +55,9 @@ impl ShellPolicy {
         }
     }
     /// Reject missing executables, invalid environments, or unbounded output caps.
+    ///
+    /// # Errors
+    /// Returns a plan error for invalid shell, environment, identity, or output bounds.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         validate_binary(&self.shell_binary)?;
         self.env.validate()?;
@@ -71,6 +79,9 @@ pub struct Options {
     pub capacity: Capacity,
 }
 /// Validate resources and return a context-required shell executor.
+///
+/// # Errors
+/// Returns a plan error if the shell policy or shared execution limits are invalid.
 pub fn definition(options: Arc<Options>) -> Result<Arc<ToolDefinition>, ExtensionError> {
     options.policy.validate()?;
     options.limits.validate()?;
@@ -85,6 +96,10 @@ impl ToolExecutor for ShellTool {
     async fn execute(&self, _: Value) -> Result<crabber::core::ToolOutput, ExtensionError> {
         crabber_tools_core::context_required()
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Retain the timing ABI; u64 milliseconds overflow only after 584 million years."
+    )]
     async fn execute_with_context(
         &self,
         ctx: ToolContext,
@@ -133,7 +148,7 @@ impl ShellTool {
             }
         };
         tokio::select! {biased;
-            _=ctx.cancel.cancelled()=>Err(ExtensionError::Tool("cancelled".into())),
+            ()=ctx.cancel.cancelled()=>Err(ExtensionError::Tool("cancelled".into())),
             result=run::run(&self.0,args,&ctx,guards)=>Ok(result),
         }
     }

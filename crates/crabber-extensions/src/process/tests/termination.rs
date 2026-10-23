@@ -189,7 +189,7 @@ async fn failed_natural_sweep_retains_ownership_for_retry() {
         let reap = group.sweep_and_reap(status, WAIT).await;
         assert!(!reap.reaped);
         assert_eq!(reap.status.unwrap().code(), Some(7));
-        assert!(!group_members(pgid).is_empty());
+        assert_ne!(group_members(pgid), [] as [u32; 0]);
     }
     let reap = group.sweep_and_reap(status, WAIT).await;
     assert!(reap.reaped);

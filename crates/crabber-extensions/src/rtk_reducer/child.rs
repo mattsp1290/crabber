@@ -28,6 +28,10 @@ pub(super) async fn run(
     }
     let _ = sender.send(output);
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep admission, process ownership, and cleanup in one ordered lifecycle."
+)]
 async fn invoke(
     guard: &mut Guard,
     context: &ToolResultContext,
@@ -51,14 +55,13 @@ async fn invoke(
     };
     let args = ["pipe".into(), "--filter".into(), filter.cli_name().into()];
     let directory = guard.dir.as_ref().unwrap().join("work");
-    let mut child = match spawn_runner(RunnerLaunch {
+    let Ok(mut child) = spawn_runner(&RunnerLaunch {
         program: &guard.engine.configuration.executable,
         args: &args,
         directory: &directory,
         environment: &environment,
-    }) {
-        Ok(child) => child,
-        Err(_) => return (Reduced::Unchanged(Reason::Spawn), true),
+    }) else {
+        return (Reduced::Unchanged(Reason::Spawn), true);
     };
     #[cfg(all(test, unix))]
     {
@@ -120,11 +123,11 @@ async fn invoke(
     };
     let outcome = tokio::select! {
         biased;
-        _ = context.cancellation().cancelled() => Err(Reason::Cancelled),
-        _ = sender.closed() => Err(Reason::Cancelled),
-        _ = context.cleanup().closing() => Err(Reason::Closed),
-        _ = guard.engine.closing.cancelled() => Err(Reason::Closed),
-        _ = tokio::time::sleep_until(deadline) => Err(Reason::Timeout),
+        () = context.cancellation().cancelled() => Err(Reason::Cancelled),
+        () = sender.closed() => Err(Reason::Cancelled),
+        () = context.cleanup().closing() => Err(Reason::Closed),
+        () = guard.engine.closing.cancelled() => Err(Reason::Closed),
+        () = tokio::time::sleep_until(deadline) => Err(Reason::Timeout),
         result = io => result,
     };
     #[cfg(all(test, unix))]

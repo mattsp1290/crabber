@@ -297,6 +297,20 @@ run/event IDs and measured zero provider/tool/mount counters.
 
 ## Adoption examples
 
+The workspace includes [standard tools](docs/standard-tools.md), with a
+[tool contract](docs/tool-contract.md), [parity map](docs/standard-tools-parity.md),
+and [lifecycle guide](docs/standard-tools-lifecycle.md), plus
+[native extensions](docs/native-extensions.md) and their
+[parity evidence](docs/extension-parity.md).
+`crabber-extension` is the extension API; `crabber-extensions` supplies native
+implementations. Use one immutable revision for the entire tuple:
+
+```toml
+crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<sha>", features = ["sqlite"] }
+crabber-tools-catalog = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<sha>" }
+crabber-extensions = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<sha>" }
+```
+
 The [embedding capability matrix](docs/embedding.md) links runnable memory,
 PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
 [native extensions](examples/native-extension/README.md),

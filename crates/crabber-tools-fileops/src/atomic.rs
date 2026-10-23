@@ -24,7 +24,7 @@ pub(crate) fn write(dir: &Dir, target: &Path, bytes: &[u8]) -> io::Result<bool> 
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
     };
-    if existing.as_ref().is_some_and(|m| m.is_dir()) {
+    if existing.as_ref().is_some_and(cap_std::fs::Metadata::is_dir) {
         return Err(io::Error::from(io::ErrorKind::IsADirectory));
     }
     if existing.as_ref().is_some_and(|m| !m.is_file()) {
@@ -33,8 +33,7 @@ pub(crate) fn write(dir: &Dir, target: &Path, bytes: &[u8]) -> io::Result<bool> 
     let owner = existing.clone().unwrap_or(parent.dir_metadata()?);
     let mode = existing
         .as_ref()
-        .map(|m| m.permissions().mode())
-        .unwrap_or(NEW_FILE_MODE);
+        .map_or(NEW_FILE_MODE, |m| m.permissions().mode());
     crabber_tools_core::atomic::write_sibling(
         &parent,
         name,

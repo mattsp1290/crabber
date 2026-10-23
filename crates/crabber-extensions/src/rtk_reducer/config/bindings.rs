@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, BTreeSet, Binding, CanonicalBinding, ExtensionError, Limits, Selection};
 pub(super) fn canonicalize(
     source: Vec<Binding>,
     l: &Limits,

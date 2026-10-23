@@ -24,6 +24,9 @@ pub struct Limits {
 }
 impl Limits {
     /// Reject zero or out-of-range bounds with a plan error.
+    ///
+    /// # Errors
+    /// Returns a plan error for zero, out-of-range, or unrepresentable limits.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         if !(1..=1024).contains(&self.max_in_flight)
             || self.max_blocking_wait.is_zero()
@@ -40,6 +43,9 @@ impl Limits {
 pub struct Capacity(Arc<Semaphore>);
 impl Capacity {
     /// Validate limits and allocate one semaphore.
+    ///
+    /// # Errors
+    /// Returns a plan error if the supplied concurrency or wait limits are invalid.
     pub fn new(limits: &Limits) -> Result<Self, ExtensionError> {
         limits.validate()?;
         Ok(Self(Arc::new(Semaphore::new(limits.max_in_flight))))
@@ -56,7 +62,7 @@ impl RootLock {
         let mut roots = ROOTS
             .get_or_init(Mutex::default)
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         roots.retain(|_, weak| weak.strong_count() > 0);
         let lock = roots
             .get(root.path())
@@ -83,11 +89,14 @@ async fn acquire<T>(
     future: impl std::future::Future<Output = T>,
 ) -> Result<T, AcquireError> {
     tokio::select! { biased;
-        _ = cancel.cancelled() => Err(AcquireError::Cancelled),
+        () = cancel.cancelled() => Err(AcquireError::Cancelled),
         value = timeout_at(deadline, future) => value.map_err(|_| AcquireError::Unavailable),
     }
 }
 /// Acquire only capacity; readers never wait on writer locks.
+///
+/// # Errors
+/// Returns `Cancelled` on cancellation or `Unavailable` on expiry or a closed semaphore.
 pub async fn acquire_read(
     capacity: &Capacity,
     limits: &Limits,
@@ -101,6 +110,9 @@ pub async fn acquire_read(
         .map_err(|_| AcquireError::Unavailable)
 }
 /// Acquire root lock before capacity, sharing one deadline.
+///
+/// # Errors
+/// Returns `Cancelled` on cancellation or `Unavailable` on expiry or a closed semaphore.
 pub async fn acquire_mutating(
     lock: &RootLock,
     capacity: &Capacity,

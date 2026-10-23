@@ -1,12 +1,14 @@
-//! The file_write tool definition.
+//! The `file_write` tool definition.
 use crate::{FileTool, Kind, Options};
 use crabber::{ToolDefinition, core::ToolInfo};
 use std::sync::Arc;
 /// Deterministic model-facing schema and advisory safety metadata.
+#[must_use]
 pub fn info() -> ToolInfo {
     ToolInfo {name: "file_write".into(), description: "Write (create or overwrite) a workspace-relative file. Content is capped at 256 KiB. Optional create_dirs=true mkdir -p's the parent chain. Returns a structured error envelope on path_escape, not_found (missing parent), too_large, or io.".into(), parameters: serde_json::json!({"properties": {"path": {"minLength": 1, "description": "Workspace-relative target file.", "type": "string"}, "content": {"description": "File content. May be empty (truncates the target to 0 bytes).", "type": "string"}, "create_dirs": {"description": "If true, mkdir -p the parent chain. Default false.", "type": "boolean"}}, "additionalProperties": false, "required": ["path", "content"], "type": "object"}), retry_safe: false, required_permissions: vec![crabber_tools_core::permission::FS_WRITE.into()]}
 }
 /// Build a context-required executor sharing the mount's capacity.
+#[must_use]
 pub fn definition(options: Arc<Options>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: info(),

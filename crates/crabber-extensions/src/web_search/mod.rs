@@ -62,6 +62,10 @@ pub struct Limits {
 impl Limits {
     /// Upper bound on serialized result bytes, including worst-case escaping.
     /// Call with limits accepted by [`WebSearch::new`].
+    #[must_use]
+    ///
+    /// # Panics
+    /// Panics on arithmetic overflow if called with limits not validated by `WebSearch::new`.
     pub fn worst_case_result_bytes(&self) -> usize {
         let empty = serde_json::to_string(&Results { results: vec![] })
             .unwrap()
@@ -107,26 +111,32 @@ pub struct Request {
 }
 impl Request {
     /// Authoritative session identity.
+    #[must_use]
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
     /// Authoritative run identity.
+    #[must_use]
     pub fn run_id(&self) -> &RunId {
         &self.run_id
     }
     /// Authoritative call identity.
+    #[must_use]
     pub fn call_id(&self) -> &ToolCallId {
         &self.call_id
     }
     /// Host routing context, not authorization.
+    #[must_use]
     pub fn workspace(&self) -> &WorkspaceContext {
         &self.workspace
     }
     /// Trimmed, bounded, NUL-free query.
+    #[must_use]
     pub fn query(&self) -> &str {
         &self.query
     }
     /// Maximum wait for this call.
+    #[must_use]
     pub fn max_wait(&self) -> Duration {
         self.max_wait
     }
@@ -167,6 +177,9 @@ struct Policy {
 }
 impl WebSearch {
     /// Validate finite limits and freeze backend configuration.
+    ///
+    /// # Errors
+    /// Returns a plan error if the callback identity or search/result limits are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let l = &options.limits;
         if !(1..=MAX_QUERY_BYTES).contains(&l.max_query_bytes)
@@ -238,8 +251,8 @@ impl Policy {
         let mut future = SafeFuture::new(future, || failure("searcher"));
         let result = tokio::select! {
             biased;
-            _ = context.cancel.cancelled() => Err(failure("cancelled")),
-            _ = &mut deadline => Err(failure("timed_out")),
+            () = context.cancel.cancelled() => Err(failure("cancelled")),
+            () = &mut deadline => Err(failure("timed_out")),
             reply = future.wait() => {
                 if context.cancel.is_cancelled() {
                     Err(failure("cancelled"))
@@ -274,10 +287,10 @@ impl JsonToolExecutor for Policy {
 }
 #[async_trait]
 impl Extension for WebSearch {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/web-search"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

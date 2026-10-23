@@ -57,6 +57,9 @@ impl BackgroundJobs {
     ///
     /// Environment values do not enter the fingerprint: rotate the environment
     /// identity whenever effective values or host routing policy change.
+    ///
+    /// # Errors
+    /// Returns a plan error if the shell policy or background job bounds are invalid.
     pub fn new(options: Options) -> Result<Self, ExtensionError> {
         let (configuration, hash) = config::validate(options)?;
         Ok(Self {
@@ -66,7 +69,7 @@ impl BackgroundJobs {
     }
 
     fn from_configuration(
-        configuration: Arc<config::Configuration>,
+        configuration: &Arc<config::Configuration>,
         binding: crate::contextual::Binding,
         shared: Option<SharedCapacity>,
         hash: String,
@@ -80,12 +83,14 @@ impl BackgroundJobs {
         }
     }
     /// Observe local resources without exposing paths, output or process IDs.
+    #[must_use]
     pub fn owner_report(&self) -> OwnerReport {
         self.policy.owner_report()
     }
 
     /// Diagnostic snapshot of running, starting and hidden jobs. Finished
     /// tracked jobs do not count. A bounded close may leave live survivors.
+    #[must_use]
     pub fn live_jobs(&self) -> usize {
         self.policy.live_jobs()
     }
@@ -103,10 +108,10 @@ fn failure(code: &'static str) -> ExtensionError {
 
 #[async_trait::async_trait]
 impl crabber::extension::Extension for BackgroundJobs {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "crabber-extensions/background-jobs"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
     fn config_hash(&self) -> String {

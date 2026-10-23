@@ -79,7 +79,7 @@ async fn anchor_starts_with_an_empty_path() {
     }
     let f = Fixture::new();
     let mut group = f
-        .spawn("exit 0", &[("PATH".into(), "".into())])
+        .spawn("exit 0", &[("PATH".into(), String::new())])
         .release_gate()
         .await
         .unwrap();

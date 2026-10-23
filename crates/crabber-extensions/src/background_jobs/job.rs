@@ -174,25 +174,22 @@ pub(super) async fn coordinate(
             tokio::select! {
                 biased;
                 status = group.exited(), if observe_exit => {
-                    match status {
-                        Ok(status) => {
-                            observe_exit = false;
-                            natural_status = Some(status);
-                            job.set_cause_once(Cause::Natural);
-                            group.sweep_and_reap(status, policy.configuration.limits.kill_wait).await
-                        },
-                        Err(_) => {
-                            observe_exit = false;
-                            job.set_cause_once(Cause::Close);
-                            group.terminate(
-                                GroupSignal::Kill,
-                                policy.configuration.limits.terminate_grace,
-                                policy.configuration.limits.kill_wait,
-                            ).await
-                        },
+                    if let Ok(status) = status {
+                        observe_exit = false;
+                        natural_status = Some(status);
+                        job.set_cause_once(Cause::Natural);
+                        group.sweep_and_reap(status, policy.configuration.limits.kill_wait).await
+                    } else {
+                        observe_exit = false;
+                        job.set_cause_once(Cause::Close);
+                        group.terminate(
+                            GroupSignal::Kill,
+                            policy.configuration.limits.terminate_grace,
+                            policy.configuration.limits.kill_wait,
+                        ).await
                     }
                 }
-                _ = async {
+                () = async {
                     let _ = cause_rx.wait_for(|cause| {
                         matches!(cause, Some(cause) if *cause != Cause::Natural)
                     }).await;
@@ -232,7 +229,7 @@ pub(super) async fn coordinate(
         }
         let served = attempt_rx.borrow_and_update().completed;
         tokio::select! {
-            _ = async { let _ = attempt_rx.wait_for(|attempt| attempt.requested > served).await; } => {},
+            () = async { let _ = attempt_rx.wait_for(|attempt| attempt.requested > served).await; } => {},
             _ = group.exited(), if observe_exit => {},
         }
     }

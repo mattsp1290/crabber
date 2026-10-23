@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 struct Fixture {
     manager: Arc<Manager>,
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     root: PathBuf,
     temp: PathBuf,
     cleaned: AtomicBool,
@@ -37,7 +37,7 @@ impl Fixture {
         change(&mut options);
         Some(Self {
             manager: Arc::new(Manager::new(config::validate(options).unwrap().0)),
-            _directory: directory,
+            directory,
             root,
             temp,
             cleaned: AtomicBool::new(false),
@@ -88,7 +88,7 @@ fn key(id: &str) -> OwnerKey {
         workspace: "workspace".into(),
     }
 }
-fn code(error: ExtensionError, code: &str) {
+fn code(error: &ExtensionError, code: &str) {
     assert!(error.to_string().ends_with(code), "{error}");
 }
 struct Barrier {

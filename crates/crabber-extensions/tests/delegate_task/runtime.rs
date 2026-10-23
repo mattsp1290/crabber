@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt::Write as _;
 
 struct PollPanic;
 impl Future for PollPanic {
@@ -272,7 +273,7 @@ async fn runner_faults_are_one_sanitized_durable_failure_and_release_capacity() 
             run.done().await.unwrap();
             let mut event_text = String::new();
             while let Ok(Some(event)) = events.recv().await {
-                event_text.push_str(&format!("{event:?}"));
+                let _ = write!(&mut event_text, "{event:?}");
             }
             let call = snapshot_tool(&store, &session).await;
             assert_eq!(call.status, crabber::core::ToolCallStatus::Failed);

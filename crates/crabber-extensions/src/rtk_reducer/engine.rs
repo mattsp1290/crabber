@@ -122,7 +122,7 @@ impl Engine {
             hooks: Mutex::new(Hooks::default()),
         }
     }
-    fn unavailable(&self, state: &State, context: &ToolResultContext) -> Option<Reason> {
+    fn unavailable(state: &State, context: &ToolResultContext) -> Option<Reason> {
         if state.closing || state.closed || context.cleanup().is_closing() {
             Some(Reason::Closed)
         } else if state.quarantined {
@@ -135,7 +135,7 @@ impl Engine {
     }
     pub(super) fn acquire(self: &Arc<Self>, context: &ToolResultContext) -> Result<Lease, Reason> {
         let state = self.state.lock().unwrap();
-        if let Some(reason) = self.unavailable(&state, context) {
+        if let Some(reason) = Self::unavailable(&state, context) {
             self.count(reason);
             return Err(reason);
         }
@@ -227,14 +227,13 @@ impl Engine {
             state.closed = true;
             Ok(())
         };
-        match tokio::time::timeout(bound, close).await {
-            Ok(Ok(())) => Ok(()),
-            _ => {
-                self.state.lock().unwrap().quarantined = true;
-                Err(ExtensionError::Tool(
-                    "rtk reducer operation failed: cleanup-incomplete".into(),
-                ))
-            }
+        if let Ok(Ok(())) = tokio::time::timeout(bound, close).await {
+            Ok(())
+        } else {
+            self.state.lock().unwrap().quarantined = true;
+            Err(ExtensionError::Tool(
+                "rtk reducer operation failed: cleanup-incomplete".into(),
+            ))
         }
     }
 }
@@ -242,9 +241,7 @@ impl Lease {
     pub(super) async fn reduce(&self, filter: Filter, input: &str) -> Reduced {
         {
             let mut state = self.engine.state.lock().unwrap();
-            let reason = self
-                .engine
-                .unavailable(&state, &self.context)
+            let reason = Engine::unavailable(&state, &self.context)
                 .or_else(|| (Instant::now() >= self.deadline).then_some(Reason::Timeout));
             if let Some(reason) = reason {
                 self.engine.count(reason);
@@ -280,12 +277,11 @@ impl Lease {
             }
             super::child::run(&mut guard, context, filter, input, deadline, sender).await;
         });
-        match receiver.await {
-            Ok(result) => result,
-            Err(_) => {
-                self.engine.count(Reason::Quarantined);
-                Reduced::Unchanged(Reason::Quarantined)
-            }
+        if let Ok(result) = receiver.await {
+            result
+        } else {
+            self.engine.count(Reason::Quarantined);
+            Reduced::Unchanged(Reason::Quarantined)
         }
     }
 }
@@ -349,7 +345,11 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         if !self.finished {
-            let mut state = self.engine.state.lock().unwrap_or_else(|p| p.into_inner());
+            let mut state = self
+                .engine
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.quarantined = true;
             state.tasks -= 1;
             std::mem::forget(self.permit.take());

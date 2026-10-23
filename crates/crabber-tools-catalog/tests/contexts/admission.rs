@@ -10,12 +10,11 @@ async fn missing_identity_fails_closed() {
         ("", a.path(), "workspace"),
     ] {
         let ctx = execution(SessionId::new(), ws, dir);
-        let err = match agent
+        let Err(err) = agent
             .prompt_keyed_in(&ctx, "missing", admission_options(&agent, "missing"), None)
             .await
-        {
-            Err(error) => error,
-            Ok(_) => panic!("missing identity accepted"),
+        else {
+            panic!("missing identity accepted")
         };
         assert!(err.to_string().contains(expected), "{err}");
         assert!(
@@ -99,7 +98,7 @@ async fn drifted_identity_is_refused() {
         .unwrap();
     let good = calls(&store, good_context.session().session_id()).await;
     assert_eq!(good[0].status, ToolCallStatus::Completed);
-    let error = match agent
+    let Err(error) = agent
         .prompt_keyed_in(
             &drift,
             "drift-again",
@@ -107,9 +106,8 @@ async fn drifted_identity_is_refused() {
             None,
         )
         .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("cached owner accepted remapped directory"),
+    else {
+        panic!("cached owner accepted remapped directory")
     };
     assert!(
         error.to_string().contains("context identity changed"),

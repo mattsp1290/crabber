@@ -36,7 +36,7 @@ pub(super) fn execute(value: &Value, limits: &Limits) -> Result<Execute, Extensi
     })
 }
 pub(super) fn clear(value: &Value) -> Result<(), ExtensionError> {
-    if value.as_object().is_some_and(|o| o.is_empty()) {
+    if value.as_object().is_some_and(serde_json::Map::is_empty) {
         Ok(())
     } else {
         Err(input_error("shape"))

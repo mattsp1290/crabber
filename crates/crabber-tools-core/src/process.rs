@@ -39,6 +39,9 @@ impl EnvPolicy {
         }
     }
     /// Reject NULs, empty names, or equals signs in variable names before spawn.
+    ///
+    /// # Errors
+    /// Returns a plan error for invalid environment variable names or NUL-bearing values.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         let key_ok = |k: &str| !k.is_empty() && !k.contains(['\0', '=']);
         let valid = match self {
@@ -87,6 +90,9 @@ pub fn apply_policy(cmd: &mut Command, env: &EnvPolicy, run_as: Option<RunAs>) {
     cmd.process_group(0).kill_on_drop(true).stdin(Stdio::null());
 }
 /// Resolve an executable on the host PATH once. Does not consult the child environment.
+///
+/// # Errors
+/// Returns a plan error if PATH contains no valid executable or canonicalization fails.
 pub fn resolve_binary(name: &str) -> Result<PathBuf, ExtensionError> {
     for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let path = dir.join(name);
@@ -99,6 +105,9 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, ExtensionError> {
     Err(ExtensionError::Plan(format!("{name} executable required")))
 }
 /// Construction-time check for an absolute executable regular file.
+///
+/// # Errors
+/// Returns a plan error unless the path is an absolute, executable regular file.
 pub fn validate_binary(path: &Path) -> Result<(), ExtensionError> {
     use std::os::unix::fs::PermissionsExt;
     if path.is_absolute()
@@ -130,7 +139,14 @@ pub struct ProcessGroupGuard {
     armed: bool,
 }
 impl ProcessGroupGuard {
-    /// Spawn a command prepared by apply_policy, owning cleanup immediately.
+    /// Spawn a command prepared by `apply_policy`, owning cleanup immediately.
+    ///
+    /// # Errors
+    /// Returns an I/O error if spawning fails or the child process ID is unavailable.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "OS process IDs are positive pid_t values bounded by i32::MAX."
+    )]
     pub fn spawn(cmd: &mut Command) -> io::Result<Self> {
         let child = cmd.spawn()?;
         let pgid = child
@@ -147,6 +163,11 @@ impl ProcessGroupGuard {
         self.armed
     }
     /// The group's leader id, useful for lifecycle verification.
+    #[must_use]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "OS process IDs are positive pid_t values bounded by i32::MAX."
+    )]
     pub fn pid(&self) -> u32 {
         self.pgid.as_raw_nonzero().get() as u32
     }
@@ -168,6 +189,9 @@ impl ProcessGroupGuard {
         self.armed = false;
     }
     /// Wait for the leader without changing pipe ownership.
+    ///
+    /// # Errors
+    /// Returns the operating system error if waiting for the child fails.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         self.child.wait().await
     }

@@ -13,7 +13,7 @@ async fn no_workspace_or_unmatched_boundary_withholds_and_partial_context_fails_
         let agent = builder(
             provider.clone(),
             options(ReaderRoot::Boundary, vec!["/boundary".into()]),
-            fixed(reader.clone()),
+            Some(fixed(reader.clone())),
         )
         .build()
         .unwrap();
@@ -33,7 +33,7 @@ async fn forged_sibling_is_only_routing_and_wrong_host_rooting_can_silently_inje
     let agent = builder(
         provider.clone(),
         options(ReaderRoot::Boundary, vec!["/boundary".into()]),
-        fixed(reader.clone()),
+        Some(fixed(reader.clone())),
     )
     .build()
     .unwrap();
@@ -77,7 +77,7 @@ async fn resolver_and_read_failures_are_closed_and_missing_files_are_withheld() 
             let resolver = if at_resolution {
                 Some(Arc::new(FailedResolver(kind)) as Arc<dyn WorkspaceReaderResolver>)
             } else {
-                fixed(Arc::new(FailedReader(kind)))
+                Some(fixed(Arc::new(FailedReader(kind))))
             };
             let provider = Arc::new(FakeProvider::scripted(vec![done()]));
             let agent = builder(
@@ -108,7 +108,10 @@ async fn resolver_and_read_failures_are_closed_and_missing_files_are_withheld() 
     .build()
     .unwrap();
     assert!(run(&agent, "ws", "/admitted").await.is_err());
-    assert!(provider.requests().is_empty());
+    assert_eq!(
+        provider.requests(),
+        [] as [crabber::providers::ModelRequest; 0]
+    );
     agent.close_extensions().await.unwrap();
 }
 #[tokio::test]
@@ -176,7 +179,7 @@ async fn session_middleware_shadows_global_even_when_its_boundary_withholds() {
     let agent = builder(
         provider.clone(),
         options(ReaderRoot::Workspace, vec![]),
-        fixed(reader),
+        Some(fixed(reader)),
     )
     .shared_extension(
         Arc::new(

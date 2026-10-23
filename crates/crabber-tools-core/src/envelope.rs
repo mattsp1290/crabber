@@ -32,6 +32,7 @@ impl ToolError {
         }
     }
     /// Convert to the failure envelope.
+    #[must_use]
     pub fn value(&self) -> Value {
         failed(self.category, &self.message)
     }
@@ -84,6 +85,9 @@ pub fn failed(category: &'static str, message: impl Into<String>) -> Value {
 
 /// Convert an envelope to bounded typed output, preserving the failure status.
 /// Named text fields may be truncated to fit Crabber's serialized output bound.
+///
+/// # Panics
+/// Panics if an internal selected-string or bounded-envelope invariant is violated.
 pub fn to_output(mut value: Value, truncatable: &[&str]) -> crabber::core::ToolOutput {
     loop {
         if let Ok(output) = crabber::core::ToolOutput::from_json(&value) {
@@ -123,6 +127,9 @@ pub fn to_output(mut value: Value, truncatable: &[&str]) -> crabber::core::ToolO
 }
 
 /// Fail closed when an executor is called without its host context.
+///
+/// # Errors
+/// This helper returns a failed tool output rather than an executor error.
 pub fn context_required() -> Result<crabber::core::ToolOutput, crabber::ExtensionError> {
     Ok(to_output(
         failed(category::VALIDATION, "context required"),

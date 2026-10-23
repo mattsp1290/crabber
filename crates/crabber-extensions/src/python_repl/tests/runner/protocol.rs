@@ -76,9 +76,8 @@ async fn incompatible_malformed_and_slow_readiness() {
         else {
             return;
         };
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("unexpected ready"),
+        let Err(error) = result else {
+            panic!("unexpected ready")
         };
         assert_eq!(error.fault, fault);
         // Unconfirmed initial cleanup returns its owner for a bounded retry.

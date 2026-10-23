@@ -215,6 +215,10 @@ async fn idle_runner_death_is_reported_on_next_turn() {
     h.close().await;
 }
 #[tokio::test(flavor = "multi_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn queue_bound_is_a_fixed_durable_failure() {
     if !python_available() {
         return;

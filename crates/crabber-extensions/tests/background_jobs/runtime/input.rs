@@ -1,6 +1,10 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the public API scenario and its ordered assertions together."
+)]
 async fn input_validation_is_durable_and_spawns_nothing() {
     if !shell_available() {
         return;
@@ -113,7 +117,7 @@ async fn input_validation_is_durable_and_spawns_nothing() {
         assert_eq!(h.ext.live_jobs(), 0);
     }
     assert!(!h.dir.path().join("canary").exists());
-    assert!(pgids(h.dir.path()).is_empty());
+    assert_eq!(pgids(h.dir.path()), [] as [i32; 0]);
     for a in agents {
         a.close_extensions().await.unwrap();
     }
