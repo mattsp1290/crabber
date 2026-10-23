@@ -7,6 +7,15 @@ async fn committed_result_lost_after_send_resets_before_next_call() {
             return;
         };
         f.execute(key("one"), "x=1").await.unwrap();
+        // Receiving the result can precede the tracked task's after-send hook.
+        // Finish the seed task before installing the next call's barrier.
+        timeout(Duration::from_secs(5), async {
+            while f.manager.cleanup.tracker().pending() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("seed execution must finish before installing the next hook");
         let barrier = Barrier::new();
         f.manager.hooks.lock().unwrap().after_send = Some(barrier.hook());
         let cancel = CancellationToken::new();
