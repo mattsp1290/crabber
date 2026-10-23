@@ -69,6 +69,9 @@ pub fn body(request: &ModelRequest, token_mode: TokenMode) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if let Some(reasoning_effort) = request.reasoning_effort {
+        body["reasoning_effort"] = json!(reasoning_effort.as_str());
+    }
     if let Some(max_tokens) = request.max_tokens {
         match token_mode {
             TokenMode::MaxTokens => body["max_tokens"] = json!(max_tokens),

@@ -234,6 +234,38 @@ fn opencode_chat_fixture() {
 }
 
 #[test]
+fn chat_body_reasoning_effort_per_value() {
+    use crabber_core::ReasoningEffort::{High, Low, Medium};
+
+    for (effort, expected) in [
+        (None, None),
+        (Some(Low), Some("low")),
+        (Some(Medium), Some("medium")),
+        (Some(High), Some("high")),
+    ] {
+        let mut request = request(vec![], vec![], None);
+        request.reasoning_effort = effort;
+        let body = chat::body(&request, chat::TokenMode::MaxTokens);
+        assert_eq!(
+            body.get("reasoning_effort")
+                .and_then(|value| value.as_str()),
+            expected
+        );
+        if effort.is_none() {
+            assert_eq!(
+                body,
+                json!({
+                    "model": "model",
+                    "messages": [],
+                    "stream": true,
+                    "stream_options": {"include_usage": true}
+                })
+            );
+        }
+    }
+}
+
+#[test]
 fn responses_body_reasoning_effort_per_value() {
     use crabber_core::ReasoningEffort::{High, Low, Medium};
     for codex in [false, true] {
