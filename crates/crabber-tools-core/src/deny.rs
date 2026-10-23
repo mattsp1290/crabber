@@ -4,6 +4,8 @@ use crabber::ExtensionError;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer};
 use std::{
+    collections::VecDeque,
+    ffi::OsString,
     io,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -140,33 +142,81 @@ pub fn check(
         });
     }
     check_name(policy, relative)?;
+    let mut pending = path_components(relative, false)?;
     let mut resolved = PathBuf::new();
     let mut missing = false;
-    for component in relative.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::Normal(name) => resolved.push(name),
-            _ => {
-                return Err(ToolError::new(
-                    category::PATH_ESCAPE,
-                    "path must stay inside workspace",
-                ));
+    let mut followed = 0;
+    let mut frames = Vec::<RouteFrame>::new();
+    while let Some(step) = pending.pop_front() {
+        let Pending::Component(component, target) = step else {
+            if let Pending::Complete {
+                id,
+                names,
+                protected,
+            } = step
+            {
+                complete_route(&mut frames, &resolved, id, names, &protected)?;
+                checked_names(policy, &resolved, &frames)?;
+            }
+            continue;
+        };
+        // Screen full remaining spellings before a route resolves away. Target
+        // completion markers do not contribute path components.
+        let mut spelling = resolved.clone();
+        spelling.push(&component);
+        for step in &pending {
+            if let Pending::Component(component, _) = step {
+                spelling.push(component);
             }
         }
-        check_name(policy, &resolved)?;
+        checked_names(policy, &spelling, &frames)?;
+        if component == ".." {
+            if !resolved.pop() {
+                return Err(escape());
+            }
+            retire_frames(&mut frames, &resolved);
+            checked_names(policy, &resolved, &frames)?;
+            continue;
+        }
+        resolved.push(component);
+        let names = checked_names(policy, &resolved, &frames)?;
         if missing {
             continue;
         }
         match root.dir().symlink_metadata(&resolved) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                resolved = root
-                    .dir()
+                if followed == 40 {
+                    return Err(denied());
+                }
+                followed += 1;
+                // Preserve capability semantics for dangling targets, file/..,
+                // trailing slashes and escapes, but never jump over route names.
+                root.dir()
                     .canonicalize(&resolved)
                     .map_err(resolution_error)?;
-                check_name(policy, &resolved)?;
+                let link = root.dir().read_link(&resolved).map_err(resolution_error)?;
+                let mut target_components = path_components(&link, true)?;
+                // A child link is one navigation step for existing aliases.
+                // Its internal parent hops must not expire an outer frame if
+                // the completed target returns inside that frame's anchor.
+                let protected = frames
+                    .iter_mut()
+                    .map(|frame| {
+                        frame.protected += 1;
+                        frame.id
+                    })
+                    .collect();
+                target_components.push_back(Pending::Complete {
+                    id: followed,
+                    names,
+                    protected,
+                });
+                resolved.pop();
+                target_components.append(&mut pending);
+                pending = target_components;
             }
             Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => missing = true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !target => missing = true,
             Err(error) => return Err(resolution_error(error)),
         }
     }
@@ -177,6 +227,107 @@ pub fn check(
         requested,
         resolved,
     })
+}
+
+fn escape() -> ToolError {
+    ToolError::new(category::PATH_ESCAPE, "path must stay inside workspace")
+}
+
+// Bound simultaneously retained virtual names, not path depth or the number
+// of checkpoints. Each checkpoint has at most this many virtual names plus its
+// physical spelling; at most 40 pending completions retain bounded captures.
+const MAX_ROUTE_NAMES: usize = 256;
+
+struct RouteFrame {
+    id: usize,
+    anchor: PathBuf,
+    names: Vec<PathBuf>,
+    protected: usize,
+}
+
+enum Pending {
+    Component(OsString, bool),
+    Complete {
+        id: usize,
+        names: Vec<PathBuf>,
+        protected: Vec<usize>,
+    },
+}
+
+fn complete_route(
+    frames: &mut Vec<RouteFrame>,
+    resolved: &Path,
+    id: usize,
+    names: Vec<PathBuf>,
+    protected: &[usize],
+) -> Result<(), ToolError> {
+    for frame in frames.iter_mut() {
+        if protected.contains(&frame.id) {
+            frame.protected -= 1;
+        }
+    }
+    retire_frames(frames, resolved);
+    // Share no duplicate (anchor, alias) pairs across frames. This
+    // also keeps repeated root-return links within the name budget.
+    let names: Vec<_> = names
+        .into_iter()
+        .filter(|name| {
+            !frames
+                .iter()
+                .any(|frame| frame.anchor == resolved && frame.names.contains(name))
+        })
+        .collect();
+    if frames.iter().map(|frame| frame.names.len()).sum::<usize>() + names.len() > MAX_ROUTE_NAMES {
+        return Err(denied());
+    }
+    if !names.is_empty() {
+        frames.push(RouteFrame {
+            id,
+            anchor: resolved.to_path_buf(),
+            names,
+            protected: 0,
+        });
+    }
+    Ok(())
+}
+
+fn retire_frames(frames: &mut Vec<RouteFrame>, resolved: &Path) {
+    frames.retain(|frame| frame.protected > 0 || resolved.starts_with(&frame.anchor));
+}
+
+fn checked_names(
+    policy: &PathDenyPolicy,
+    path: &Path,
+    frames: &[RouteFrame],
+) -> Result<Vec<PathBuf>, ToolError> {
+    let mut names = vec![path.to_path_buf()];
+    for frame in frames {
+        if let Ok(suffix) = path.strip_prefix(&frame.anchor) {
+            for alias in &frame.names {
+                let name = alias.join(suffix);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    for name in &names {
+        check_name(policy, name)?;
+    }
+    Ok(names)
+}
+
+// Tag symlink-target components: unlike a caller's create destination, the
+// symlink target itself must exist, even if it disappears after validation.
+fn path_components(path: &Path, target: bool) -> Result<VecDeque<Pending>, ToolError> {
+    path.components()
+        .filter(|part| !matches!(part, Component::CurDir))
+        .map(|part| match part {
+            Component::Normal(name) => Ok(Pending::Component(name.to_owned(), target)),
+            Component::ParentDir if target => Ok(Pending::Component(OsString::from(".."), true)),
+            _ => Err(escape()),
+        })
+        .collect()
 }
 
 #[allow(

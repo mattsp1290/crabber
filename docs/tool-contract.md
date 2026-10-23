@@ -894,7 +894,7 @@ the configuration identity, independent of input order.
 
 | Tools | Enforcement |
 | --- | --- |
-| `file_read`, `file_list`, `glob`, `search`, file-URL `url_fetch` | Check the requested path and resolved symlink prefixes before access. Discovery omits denied entries, subtrees and denied-resolving aliases. Search filters raw path bytes before output limits and context retention. |
+| `file_read`, `file_list`, `glob`, `search`, file-URL `url_fetch` | Check the requested path and resolved symlink prefixes before access. Discovery omits denied entries, subtrees and denied-resolving aliases. Search checks each result’s raw path bytes and capability-resolved symlink prefixes before retained-output limits and context retention. |
 | `file_write`, `file_edit`, `multi_edit`, `file_delete` | The same checks run before reading anchors or applying effects. Atomic writers use the checked resolved target. |
 | `file_move` | Check both source and destination before installing a link or removing the source. |
 | `apply_patch` | Check every source and move destination before planning reads; one denied path rejects the whole patch with `partial: false`. |
@@ -903,14 +903,25 @@ Errors use category `path_denied` and the constant message
 `path denied by host policy`. They never include patterns, resolved targets or
 content. Existing caller-supplied path fields may still be echoed. Resolution
 errors fail closed, except capability escapes retain `path_escape` and
-non-directory ancestors retain `not_directory`. Missing tails are checked under
-the resolved existing prefix, allowing permitted creates and moves.
+non-directory ancestors retain `not_directory`. Each intermediate symlink route is checked with its remaining descendant suffix
+before that route resolves away. Normalized descendant names remain checked through
+encountered aliases while traversal stays within their targets, including parent
+hops and nested identity links. Alias views activate only after their targets
+resolve; leaving a target expires its views rather than imposing a global
+reverse-alias policy. Route screening follows at most 40 symlinks and retains at
+most 256 active virtual names per check; exhaustion fails closed as `path_denied`.
+The name budget is not a path-depth limit. Missing caller tails are
+checked under the resolved existing prefix, allowing permitted creates and moves.
+Dangling symlink targets remain rejected; they are not treated as missing caller tails.
 
 On Linux, content-returning file opens recheck `/proc/self/fd` before reading;
 unavailable descriptor links, deleted targets, outside-root targets and denied
 targets fail closed. Other Unix targets rely on pre-open capability resolution.
 Hosts must account for the remaining race between a check and a writer or
-ripgrep reopening a path. Writers retain existing atomic-rename semantics;
+ripgrep reopening a path, and between ripgrep reading content and per-result
+path screening. Per-result checks describe the filesystem at screening time;
+missing tails retain the checked existing prefix. Input-record, process and
+time bounds still apply before result filtering. Writers retain existing atomic-rename semantics;
 concurrent symlink swaps are not a filesystem sandbox. Hard links under allowed
 names are not detected. Shell commands are controlled by the host's
 `command_guard`; `shell`, `tracker_write` and `user_interact` do not consume path
