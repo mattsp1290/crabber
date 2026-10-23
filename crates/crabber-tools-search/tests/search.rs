@@ -413,3 +413,51 @@ fn deny_dialect_agrees_with_ripgrep_exclusions() {
         assert_eq!(actual, expected, "{pattern}");
     }
 }
+
+#[tokio::test]
+async fn public_agent_directory_alias_filters_resolved_denied_descendants() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("real/private")).unwrap();
+    std::fs::write(
+        tmp.path().join("real/secret.txt"),
+        "hidden before\nneedle secret\nhidden after\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("real/private/data.txt"), "needle private\n").unwrap();
+    std::fs::write(
+        tmp.path().join("real/visible.txt"),
+        "visible before\nneedle visible\nvisible after\n",
+    )
+    .unwrap();
+    symlink("real", tmp.path().join("alias")).unwrap();
+    symlink("alias", tmp.path().join("chain")).unwrap();
+    for path in ["real", "alias", "./alias", "chain"] {
+        for patterns in [
+            vec!["real/secret.txt", "real/private"],
+            vec!["real/sec*.txt", "real/pri*"],
+            vec!["real/**/secret.txt", "real/**/data.txt"],
+        ] {
+            let mut o = options(tmp.path());
+            o.deny = PathDenyPolicy::new(patterns.into_iter().map(str::to_owned)).unwrap();
+            let v = execute(
+                tmp.path(),
+                definition(Arc::new(o)).unwrap(),
+                json!({"pattern":"needle", "path":path, "context":1, "limit":10}),
+            )
+            .await;
+            assert_eq!(v["outcome"], "succeeded", "{path}: {v}");
+            assert_eq!(v["match_count"], 1, "{path}: {v}");
+            assert_eq!(v["matches"][0]["line"], "needle visible");
+            assert_eq!(v["matches"][0]["before"][0]["line"], "visible before");
+            assert_eq!(v["matches"][0]["after"][0]["line"], "visible after");
+            let serialized = v.to_string();
+            assert!(
+                !serialized.contains("secret")
+                    && !serialized.contains("private")
+                    && !serialized.contains("hidden"),
+                "{path}: {v}"
+            );
+        }
+    }
+}
