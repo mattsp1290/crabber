@@ -54,6 +54,10 @@ pub async fn run_fault_contract(
     clock: &ManualClock,
     inject: impl Fn(FaultPoint),
 ) {
+    fault_history(store, clock, inject).await;
+}
+
+async fn fault_history(store: &dyn Store, clock: &ManualClock, inject: impl Fn(FaultPoint)) {
     super::recovery::fault_contract(store, clock, &inject).await;
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
     for case in [

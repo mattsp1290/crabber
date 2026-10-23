@@ -4,11 +4,14 @@ async fn control_faults_keep_attempt_barrier_answers_and_receipts_atomic() {
         time::OffsetDateTime::UNIX_EPOCH,
     ));
     let store = super::MemoryStore::with_clock(clock.clone());
-    crate::approval_contract::run_fault_contract(&store, &clock, |point| {
-        store
-            .approval_fault
-            .store(point as u8, std::sync::atomic::Ordering::SeqCst);
-    })
+    crate::approval_contract::run_fault_contract(
+        &store,
+        &clock,
+        crate::binding_fault::setter(
+            &store.approval_fault,
+            |point: crate::public_state_contract::FaultPoint| point as u8,
+        ),
+    )
     .await;
 }
 
