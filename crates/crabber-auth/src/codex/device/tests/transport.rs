@@ -1,6 +1,55 @@
 use super::*;
 use tokio::sync::Notify;
 
+async fn abort_requests(idp: &Idp) {
+    let address = idp.endpoints.usercode_url.strip_prefix("http://").unwrap();
+    let address = address.split('/').next().unwrap();
+    for request in [
+        b"".as_slice(),
+        b"POST /usercode HTTP/1.1\r\n".as_slice(),
+        b"POST /usercode HTTP/1.1\r\nContent-Length: 100\r\n\r\n{".as_slice(),
+    ] {
+        let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+        socket.write_all(request).await.unwrap();
+        socket.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn aborted_requests_do_not_stop_regular_idp() {
+    let idp = idp(
+        vec![(
+            200,
+            json!({"authorization_code":"code","code_verifier":"verifier"}),
+        )],
+        usercode(),
+    )
+    .await;
+    abort_requests(&idp).await;
+    let store = Arc::new(MemoryCredentialStore::default());
+    login(store.clone(), &idp)
+        .run(|_| {}, std::future::pending())
+        .await
+        .unwrap();
+    assert!(store.load().unwrap().is_some());
+    assert!(!idp.task.is_finished());
+    assert_eq!(idp.requests.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn aborted_requests_do_not_stop_faulty_idp() {
+    let (idp, _) = faulty_idp(Fault::Truncated(200)).await;
+    abort_requests(&idp).await;
+    let store = Arc::new(MemoryCredentialStore::default());
+    let result = login(store.clone(), &idp)
+        .run(|_| {}, std::future::pending())
+        .await;
+    assert!(matches!(result, Err(AuthError::Transport)));
+    assert!(store.load().unwrap().is_none());
+    assert!(!idp.task.is_finished());
+    assert_eq!(idp.requests.lock().unwrap().len(), 2);
+}
+
 #[derive(Clone, Copy)]
 enum Fault {
     Truncated(u16),
@@ -18,7 +67,9 @@ async fn faulty_idp(fault: Fault) -> (Idp, Arc<Notify>) {
     let task = tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (path, body) = read_request(&mut socket).await;
+            let Some((path, body)) = read_request(&mut socket).await else {
+                continue;
+            };
             output.lock().unwrap().push((path.clone(), body));
             if matches!(fault,Fault::Stall(stage) if stage==path) {
                 seen.notify_one();
