@@ -60,6 +60,7 @@ fn redactor() -> Result<redactor::ToolResultRedactor, ExtensionError> {
 
 fn policies() -> Result<Policies, ExtensionError> {
     Ok(Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled: EnabledSet::only([ToolId::Shell, ToolId::Search]),
         restrict_to_enabled: false,
         shell: ShellPolicy {

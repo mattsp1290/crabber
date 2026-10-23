@@ -10,6 +10,8 @@ pub struct FileopsPolicy {
 }
 /// Resources shared by every file executor in a mount.
 pub struct Options {
+    /// Host path exclusions, shared across read and write tools.
+    pub deny: crabber_tools_core::PathDenyPolicy,
     /// Admitted capability directory.
     pub root: Arc<WorkspaceRoot>,
     /// Finite wait and concurrency bounds.

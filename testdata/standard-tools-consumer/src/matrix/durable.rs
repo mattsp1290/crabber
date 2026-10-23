@@ -51,6 +51,7 @@ fn host(
 ) -> Result<Agent, Error> {
     let root = WorkspaceRoot::open(root)?;
     let policies = Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled: EnabledSet::only([ToolId::FileWrite, ToolId::UserInteract]),
         restrict_to_enabled: false,
         shell: ShellPolicy {

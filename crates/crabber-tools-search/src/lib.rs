@@ -70,6 +70,8 @@ impl SearchPolicy {
 }
 /// Shared root, policy, and bounded mount resources.
 pub struct Options {
+    /// Host path exclusions, shared across read and write tools.
+    pub deny: crabber_tools_core::PathDenyPolicy,
     /// Admitted workspace.
     pub root: Arc<WorkspaceRoot>,
     /// Ripgrep process policy.
@@ -144,6 +146,13 @@ impl SearchTool {
                 return Ok(failed(category::UNAVAILABLE, "workspace busy"));
             }
         };
+        if let Err(error) = crabber_tools_core::deny::check(
+            &self.0.root,
+            &self.0.deny,
+            std::path::Path::new(&args.path),
+        ) {
+            return Ok(error.value());
+        }
         // Follow symlinks through the capability before passing a name to rg.
         // rg opens by path again: hosts must accept the documented race window.
         if let Err(e) = self.0.root.dir().canonicalize(&args.path) {

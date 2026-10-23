@@ -25,6 +25,8 @@ pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
 /// Host-owned workspace and resources shared across the mount.
 pub struct Options {
+    /// Host path exclusions, shared across read and write tools.
+    pub deny: crabber_tools_core::PathDenyPolicy,
     /// Admitted directory capability.
     pub root: Arc<WorkspaceRoot>,
     /// Finite acquisition and concurrency bounds.
@@ -108,7 +110,7 @@ impl PatchTool {
                 Ok(o) => o,
                 Err(e) => return fail(e),
             };
-            match preflight::plan(&options.root, operations, cancel) {
+            match preflight::plan(&options.root, &options.deny, operations, cancel) {
                 Ok(plan) => commit::apply(&options.root, plan, cancel),
                 Err((error, files)) => result::failure(&error, &files, false),
             }

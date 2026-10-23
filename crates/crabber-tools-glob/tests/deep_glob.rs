@@ -30,6 +30,7 @@ fn deep_glob_worker() {
     }
     let limits = support::limits();
     let tool = definition(Arc::new(Options {
+        deny: crabber_tools_core::PathDenyPolicy::none(),
         root: root.clone(),
         capacity: Capacity::new(&limits).unwrap(),
         limits,

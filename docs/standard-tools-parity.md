@@ -49,6 +49,7 @@ of exact runtime equivalence.
 | D15 | Interaction validation / bounds | Questions reject controls except newline/carriage return/tab. Answers reject NUL. Question caps are 8192 bytes on both surfaces; durable answers are at most 8192 bytes and relay answers at most 1 MiB. Recorded host Deny/Cancel/Expire yield denied/cancelled/timeout. Hosts explicitly expire overdue questions; no prompt-wait semaphore or process I/O remains. |
 | D16 | Pending relay | No approval or question/answer correlation: model-supplied answers succeed on Pending. Durable rejects them. Never interpret Pending success as human consent. |
 | D17 | JSON / result API | serde_json keeps the last duplicate top-level key rather than Go's rejection. Unknown fields are rejected. No RawJSON carrier or per-result IsRetryable API; metadata retry_safe is compared, while hosts own retry decisions. Optional zero/empty Rust keys may be omitted as documented below. |
+| D18 | Path deny policy | Host glob exclusions cover every path-taking file tool, including the six writing tools; discoveries omit denied entries and `path_denied` is an additional category. Shell control remains host-owned. |
 
 `Surface::Pending` is a relay, not a gate. A model can call with `answer` set and
 receive `succeeded` without any human involvement. Hosts must not treat this as

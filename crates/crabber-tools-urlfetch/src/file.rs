@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 pub(crate) fn read(
     root: &WorkspaceRoot,
+    deny: &crabber_tools_core::PathDenyPolicy,
     url: &Url,
     cancel: &CancellationToken,
     deadline: Instant,
@@ -33,6 +34,7 @@ pub(crate) fn read(
         .to_str()
         .ok_or_else(|| ToolError::new("validation", "file path must be UTF-8"))?;
     let path = RelPath::parse(relative, true)?;
+    crabber_tools_core::deny::check(root, deny, path.as_path())?;
     let io_error =
         |e: std::io::Error| ToolError::new(category_for_io(&e), "could not read workspace file");
     let mut file = root
@@ -42,6 +44,7 @@ pub(crate) fn read(
             OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK),
         )
         .map_err(io_error)?;
+    crabber_tools_core::deny::verify_open(root, deny, &file)?;
     if !file.metadata().map_err(io_error)?.is_file() {
         return Err(ToolError::new("io", "resource must be a regular file"));
     }

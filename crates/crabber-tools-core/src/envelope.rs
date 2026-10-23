@@ -47,6 +47,8 @@ pub mod category {
     pub const CONFLICT: &str = "conflict";
     /// The `validation` failure category.
     pub const VALIDATION: &str = "validation";
+    /// A path excluded by the host policy.
+    pub const PATH_DENIED: &str = "path_denied";
     /// The `path_escape` failure category.
     pub const PATH_ESCAPE: &str = "path_escape";
     /// The `not_found` failure category.

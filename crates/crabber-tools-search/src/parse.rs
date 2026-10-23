@@ -13,6 +13,58 @@ fn decode(v: &Value) -> String {
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
 }
+fn allowed_path(deny: &crabber_tools_core::PathDenyPolicy, value: &Value) -> bool {
+    use std::{
+        ffi::OsString,
+        os::unix::ffi::OsStringExt,
+        path::{Component, Path, PathBuf},
+    };
+    let path = if let Some(text) = value["text"].as_str() {
+        PathBuf::from(text)
+    } else if let Some(bytes) = value["bytes"]
+        .as_str()
+        .and_then(|bytes| STANDARD.decode(bytes).ok())
+    {
+        PathBuf::from(OsString::from_vec(bytes))
+    } else {
+        return false;
+    };
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return false;
+    }
+    !deny.matches(path.strip_prefix(Path::new(".")).unwrap_or(&path))
+}
+
+#[cfg(test)]
+mod deny_tests {
+    use super::*;
+
+    #[test]
+    fn denied_raw_paths_and_context_are_filtered_before_limits() {
+        let deny = crabber_tools_core::PathDenyPolicy::new([".env*".to_owned()]).unwrap();
+        let mut parser = Parser::new(1, 1, false).with_deny(deny);
+        for path in [
+            json!({"text":".env"}),
+            json!({"bytes":STANDARD.encode(b".env-\xff")}),
+            json!({"bytes":"%%%"}),
+        ] {
+            for kind in ["context", "match"] {
+                parser.feed(&serde_json::to_vec(&json!({"type":kind,"data":{"path":path,"lines":{"text":"hidden fixture\n"},"line_number":1,"submatches":[]}})).unwrap());
+            }
+        }
+        assert_eq!(parser.matches, [] as [Value; 0]);
+        assert!(parser.reason.is_none());
+        parser.feed(&serde_json::to_vec(&json!({"type":"match","data":{"path":{"text":"ok.txt"},"lines":{"text":"visible fixture\n"},"line_number":1,"submatches":[]}})).unwrap());
+        assert_eq!(parser.matches.len(), 1);
+        assert_eq!(parser.matches[0]["path"], "ok.txt");
+        assert!(parser.matches[0].get("before").is_none());
+        assert_eq!(parser.reason, Some("matches"));
+    }
+}
 fn cut(text: &str) -> (&str, bool) {
     let mut n = text.len().min(MAX_LINE_BYTES);
     while !text.is_char_boundary(n) {
@@ -31,6 +83,7 @@ fn line(data: &Value) -> Value {
 }
 pub(crate) struct Parser {
     pub matches: Vec<Value>,
+    deny: crabber_tools_core::PathDenyPolicy,
     pub reason: Option<&'static str>,
     pub malformed: bool,
     before: VecDeque<Value>,
@@ -42,6 +95,7 @@ impl Parser {
     pub fn new(context: usize, limit: usize, include_submatches: bool) -> Self {
         Self {
             matches: vec![],
+            deny: crabber_tools_core::PathDenyPolicy::none(),
             reason: None,
             malformed: false,
             before: VecDeque::new(),
@@ -49,6 +103,10 @@ impl Parser {
             limit,
             include_submatches,
         }
+    }
+    pub(crate) fn with_deny(mut self, deny: crabber_tools_core::PathDenyPolicy) -> Self {
+        self.deny = deny;
+        self
     }
     pub fn feed(&mut self, record: &[u8]) {
         let record: Value = if let Ok(v) = serde_json::from_slice(record) {
@@ -58,6 +116,13 @@ impl Parser {
             return;
         };
         let data = &record["data"];
+        if !self.deny.patterns().is_empty()
+            && matches!(record["type"].as_str(), Some("match" | "context"))
+            && !allowed_path(&self.deny, &data["path"])
+        {
+            self.before.clear();
+            return;
+        }
         match record["type"].as_str() {
             Some("begin" | "end") => {
                 self.before.clear();

@@ -16,6 +16,7 @@ fn options(_root: &Path, hub: &Path) -> Policies {
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$BEANS_HUB/argv\"\n",
     );
     Policies {
+        deny: crabber_tools_catalog::prelude::PathDenyPolicy::none(),
         enabled: EnabledSet::all(),
         restrict_to_enabled: false,
         shell: ShellPolicy {
@@ -332,3 +333,38 @@ async fn file_url_encodes_special_path_characters() {
 #[allow(dead_code)]
 #[path = "../../../examples/mount-standard/src/probe.rs"]
 mod probe;
+
+#[tokio::test]
+async fn denied_read_persists_failed_status() {
+    let root = tempfile::tempdir().unwrap();
+    let hub = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join(".env"), "private fixture").unwrap();
+    let mut policy = options(root.path(), hub.path());
+    policy.enabled = EnabledSet::only([ToolId::FileRead]);
+    policy.deny = PathDenyPolicy::new([".env".to_owned()]).unwrap();
+    let store = Arc::new(MemoryStore::new());
+    let agent = Agent::builder()
+        .behavior_version("deny-contract/1")
+        .store(store.clone())
+        .provider(Arc::new(FakeProvider::scripted(vec![
+            turn("file_read", json!({"path":".env"})),
+            done(),
+        ])))
+        .config(config(root.path()))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .shared_extension(
+            Arc::new(
+                StandardTools::new(WorkspaceRoot::open(root.path()).unwrap(), policy).unwrap(),
+            ),
+            Scope::Global,
+        )
+        .build()
+        .unwrap();
+    let run = agent.prompt(None, "denied read").await.unwrap();
+    let session = run.session_id().clone();
+    run.done().await.unwrap();
+    let records = calls(&store, &session).await;
+    assert_eq!(records[0].status, crabber::core::ToolCallStatus::Failed);
+    assert_eq!(value(&records[0])["error"]["category"], "path_denied");
+    agent.close_extensions().await.unwrap();
+}

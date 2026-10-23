@@ -27,6 +27,8 @@ pub const MAX_URL_BYTES: usize = 8192;
 pub const MAX_REDIRECTS: usize = 5;
 /// Host-owned workspace, network policy and shared capacity.
 pub struct Options {
+    /// Host path exclusions, shared across read and write tools.
+    pub deny: crabber_tools_core::PathDenyPolicy,
     /// Admitted workspace for file URLs and session routing.
     pub root: Arc<WorkspaceRoot>,
     /// Explicit network policy.
@@ -122,7 +124,13 @@ impl FetchTool {
                 let options = self.options.clone();
                 run_blocking_owned(&ctx, move |cancel| {
                     let _permit = permit;
-                    envelope(file::read(&options.root, &url, cancel, start + TIMEOUT))
+                    envelope(file::read(
+                        &options.root,
+                        &options.deny,
+                        &url,
+                        cancel,
+                        start + TIMEOUT,
+                    ))
                 })
                 .await
             } else {

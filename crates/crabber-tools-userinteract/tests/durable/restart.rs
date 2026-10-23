@@ -14,6 +14,7 @@ async fn restart_resume_does_not_repeat_completed_effects() {
         let limits = limits();
         let file =
             crabber_tools_fileops::write::definition(Arc::new(crabber_tools_fileops::Options {
+                deny: crabber_tools_core::PathDenyPolicy::none(),
                 root: crabber_tools_core::WorkspaceRoot::open(root.path()).unwrap(),
                 capacity: crabber_tools_core::Capacity::new(&limits).unwrap(),
                 limits,

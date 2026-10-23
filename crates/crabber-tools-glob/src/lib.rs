@@ -20,6 +20,8 @@ pub const MAX_LIMIT: usize = 5000;
 pub const DEFAULT_LIMIT: usize = 1000;
 /// Host resources, shared with the other tools in a mount.
 pub struct Options {
+    /// Host path exclusions, shared across read and write tools.
+    pub deny: crabber_tools_core::PathDenyPolicy,
     /// Admitted directory capability.
     pub root: Arc<WorkspaceRoot>,
     /// Finite concurrency and acquisition bounds.
@@ -132,8 +134,15 @@ impl GlobTool {
         run_blocking_owned(&ctx, move |cancel| {
             let _permit = permit;
             match pattern::compile(&args.1) {
-                Ok(pattern) => walk::discover(&options.root, &args.0, &pattern, args.2, cancel)
-                    .unwrap_or_else(|error| failure(&error)),
+                Ok(pattern) => walk::discover(
+                    &options.root,
+                    &options.deny,
+                    &args.0,
+                    &pattern,
+                    args.2,
+                    cancel,
+                )
+                .unwrap_or_else(|error| failure(&error)),
                 Err(error) => failure(&error),
             }
         })

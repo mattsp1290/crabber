@@ -82,6 +82,9 @@ from eino-tools. Search `limit: 0` selects 200 and is reflected in its schema.
 
 ## file_read
 
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
+
 Id: `standard.file-read`. retry_safe: `true`. Permissions: `workspace.fs.read`.
 
 Read a workspace-relative UTF-8 text file. Plain {path} calls return the leading content prefix capped at 256 KiB. Supplying offset and/or limit returns a line-window with raw and numbered content. Returns structured errors including path_escape, not_found, is_directory, binary, validation, and io.
@@ -118,9 +121,12 @@ Success keys: outcome, path, content, content_bytes (empty content omitted). Win
 
 Limits: Prefix 256 KiB; default window 2000, maximum 5000 lines; line cap 16 KiB. NUL/invalid UTF-8 is binary. Offset past EOF is validation.
 
-Failure categories: validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, binary, too_large.
+Failure categories: path_denied, validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, binary, too_large.
 
 ## file_write
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 Id: `standard.file-write`. retry_safe: `false`. Permissions: `workspace.fs.write`.
 
@@ -156,9 +162,12 @@ Success keys: outcome, path, bytes_written, created.
 
 Limits: Input 256 KiB. Atomic sibling rename, optional parent creation, preserved permissions/ownership.
 
-Failure categories: validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, too_large.
+Failure categories: path_denied, validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, too_large.
 
 ## file_edit
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 Id: `standard.file-edit`. retry_safe: `false`. Permissions: `workspace.fs.write`.
 
@@ -196,9 +205,12 @@ Success keys: outcome, path, bytes_written, anchor_occurrences (including zero o
 
 Limits: Input/output 256 KiB; anchor must occur exactly once (non-overlapping). Empty replacement deletes the anchor.
 
-Failure categories: validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, binary, too_large, anchor_not_found, anchor_ambiguous.
+Failure categories: path_denied, validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, binary, too_large, anchor_not_found, anchor_ambiguous.
 
 ## file_list
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 Id: `standard.file-list`. retry_safe: `true`. Permissions: `workspace.fs.read`.
 
@@ -226,9 +238,12 @@ Success keys: outcome, path, entries [{path, is_dir}]; truncated only when cappe
 
 Limits: 5000 entries; sorted pre-order traversal, includes VCS and hidden directories, does not descend symlink directories.
 
-Failure categories: validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable.
+Failure categories: path_denied, validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable.
 
 ## search
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 Id: `standard.search`. retry_safe: `true`. Permissions: `workspace.fs.read`, `workspace.process.exec`.
 
@@ -302,7 +317,7 @@ Success keys: outcome, matches, match_count, duration_ms; optional truncated, tr
 
 Limits: 60s default/600s maximum; 200 default/1000 maximum matches; context maximum 20; line cap 4 KiB, serialized matches 256 KiB, JSON record 8 MiB, stderr 4 KiB. Non-UTF-8 paths/lines decode lossily. Submatch offsets index UTF-8 bytes in the returned line; ranges beyond retained text are omitted, and literal mode returns no submatches. Limit or byte truncation succeeds; failed rg after matches yields partial success.
 
-Failure categories: validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, timeout, exec_failed, invalid_pattern.
+Failure categories: path_denied, validation, path_escape, not_found, is_directory, not_directory, io, unknown, workspace_mismatch, unavailable, timeout, exec_failed, invalid_pattern.
 
 ## shell
 
@@ -341,6 +356,9 @@ Failure categories: validation, path_escape, not_found, is_directory, not_direct
 
 ## glob
 
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
+
 Catalog id: `standard.glob`.
 Retry safe: true. Advisory permission: `workspace.fs.read`. Include hidden entries, skip
 `.git`, `.hg`, `.svn`, `.jj` directories, and never descend through directory
@@ -378,7 +396,7 @@ literal: `*` and `?` do not cross `/`, while `**` can.
 
 Success keys: `outcome`, `paths` (`path`, `is_dir`), `count`, `truncated`.
 Failures retain empty `paths`, zero `count`, false `truncated`, and `error`.
-Categories: `validation`, `path_escape`, `not_found`, `not_directory`, `io`,
+Categories: `path_denied`, `validation`, `path_escape`, `not_found`, `not_directory`, `io`,
 `unknown`, `workspace_mismatch`, `unavailable`. Default limit 1000, maximum
 5000; zero is rejected. Results sort by rendered workspace path and
 `truncated` means another matching entry was omitted. Retained results and
@@ -397,6 +415,9 @@ Compilation uses a fallible GlobSet builder on the blocking worker after capacit
 admission; overly complex patterns return `validation` instead of panicking.
 
 ## apply_patch
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 Catalog id: `standard.apply-patch`.
 Retry safe: false. Advisory permission: `workspace.fs.write`.
@@ -449,7 +470,7 @@ destination but could not remove its source. Patches are atomic per file, not
 transactional across files. The writer lock coordinates cooperating tools;
 external filesystem mutations can still invalidate a preflight snapshot.
 
-Categories: `validation`, `path_escape`, `not_found`, `not_directory`,
+Categories: `path_denied`, `validation`, `path_escape`, `not_found`, `not_directory`,
 `is_directory`, `too_large`, `unsupported`, `conflict`, `binary`, `io`,
 `unknown`, `workspace_mismatch`, `unavailable`. Error messages omit host paths
 and source contents. Failed results include `files`, `partial`, and `error`.
@@ -460,6 +481,9 @@ use component-aware ancestor lookup and ordered descendant lookup rather than
 scanning all earlier targets for every operation.
 
 ## url_fetch
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 TLS roots come from the host native certificate store through
 `rustls-tls-native-roots`; no certificate pinning is performed.
@@ -517,7 +541,7 @@ and keep shared capacity until the blocking task exits after cancellation or
 timeout. File operations do not take the workspace writer lock. The host owns
 admission and redaction; this crate does not parse or sanitize HTML.
 
-Errors include `validation`, `path_escape`, `not_found`, `not_directory`,
+Errors include `path_denied`, `validation`, `path_escape`, `not_found`, `not_directory`,
 forwarded `is_directory` filesystem errors, `io`, `network`,
 `too_large`, `binary`, `timeout`, `workspace_mismatch`, `unavailable` and `unknown`.
 A file URL whose ancestor is a regular file returns `not_directory`; a directory
@@ -697,6 +721,9 @@ grants no additional permission. This tool performs no stdin/stderr I/O.
 
 ## multi_edit
 
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
+
 Id: `standard.multi-edit`. Retry safe: false. Required permission: `workspace.fs.write`.
 
 Apply several anchored substring replacements to one workspace-relative file in a single atomic write. Edits apply in order against the running result; each anchor must occur exactly once at its turn. If any edit fails, nothing is written and the failing edit index is reported.
@@ -750,6 +777,9 @@ Success keys: `outcome`, `path`, `bytes_written`, `edits_applied`. Every failure
 
 ## file_delete
 
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
+
 Id: `standard.file-delete`. Retry safe: false. Required permission: `workspace.fs.write`.
 
 Delete one workspace-relative regular file. Directories, symlinks and missing files are rejected with structured errors (is_directory, validation, not_found). Not idempotent: deleting a missing file fails.
@@ -776,6 +806,9 @@ Deletes one regular file; never follows a final-component symlink. Root or a dir
 Success keys: `outcome`, `path`. Failure keys: `outcome`, `error`; run-stage failures also include `path`. Parse/pre-run failures have no `path` (`validation`, `workspace_mismatch`, `unavailable`). Cancellation returns an executor error.
 
 ## file_move
+
+Host path exclusions return `path_denied` with the constant message
+`path denied by host policy`; see [Path deny policy](#path-deny-policy).
 
 Id: `standard.file-move`. Retry safe: false. Required permission: `workspace.fs.write`.
 
@@ -841,6 +874,48 @@ operations, except `user_interact`, which has none. Hosts can retain a six-tool
 subset with all three optional policies `None`.
 
 `EnabledSet::all()` includes destructive `file_delete` and `file_move`; hosts can subtract `ToolId::BEYOND_PARITY` or select `EnabledSet::eino_parity()`.
+
+## Path deny policy
+
+`Policies::deny` is a host-supplied `PathDenyPolicy`. Use
+`PathDenyPolicy::new(["*.pem", ".env", ".env.*", ".netrc", "id_*", "**/.git/config"].map(String::from))?`
+for a starting set, then adapt it to the workspace. `PathDenyPolicy::none()`
+performs no filesystem checks and preserves ordinary tool behavior.
+
+Patterns are workspace-relative, with literal directory separators. A pattern
+without `/` matches a basename at any depth; a pattern containing `/` is rooted
+at the workspace. `**` crosses directories. A denied ancestor hides its entire
+subtree. `.git/config` covers the root repository only; `**/.git/config` also
+covers nested repositories. Root itself never matches. Patterns cannot be empty,
+absolute, start with `./`, contain NUL, `..` or empty components, end with `/`,
+or contain `[` or `!`. There are at most 256 input patterns, each at most 4096
+bytes and 16 nested brace levels. Sorted, deduplicated patterns serialize into
+the configuration identity, independent of input order.
+
+| Tools | Enforcement |
+| --- | --- |
+| `file_read`, `file_list`, `glob`, `search`, file-URL `url_fetch` | Check the requested path and resolved symlink prefixes before access. Discovery omits denied entries, subtrees and denied-resolving aliases. Search filters raw path bytes before output limits and context retention. |
+| `file_write`, `file_edit`, `multi_edit`, `file_delete` | The same checks run before reading anchors or applying effects. Atomic writers use the checked resolved target. |
+| `file_move` | Check both source and destination before installing a link or removing the source. |
+| `apply_patch` | Check every source and move destination before planning reads; one denied path rejects the whole patch with `partial: false`. |
+
+Errors use category `path_denied` and the constant message
+`path denied by host policy`. They never include patterns, resolved targets or
+content. Existing caller-supplied path fields may still be echoed. Resolution
+errors fail closed, except capability escapes retain `path_escape` and
+non-directory ancestors retain `not_directory`. Missing tails are checked under
+the resolved existing prefix, allowing permitted creates and moves.
+
+On Linux, content-returning file opens recheck `/proc/self/fd` before reading;
+unavailable descriptor links, deleted targets, outside-root targets and denied
+targets fail closed. Other Unix targets rely on pre-open capability resolution.
+Hosts must account for the remaining race between a check and a writer or
+ripgrep reopening a path. Writers retain existing atomic-rename semantics;
+concurrent symlink swaps are not a filesystem sandbox. Hard links under allowed
+names are not detected. Shell commands are controlled by the host's
+`command_guard`; `shell`, `tracker_write` and `user_interact` do not consume path
+globs. Mounting a shell permits content access and symlink changes outside these
+checks. Content redaction remains the host's `tool_result_redactor` policy.
 
 ## Typed output and call status
 
