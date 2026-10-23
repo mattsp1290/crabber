@@ -464,27 +464,29 @@ async fn public_agent_directory_alias_filters_resolved_denied_descendants() {
 
 #[tokio::test]
 async fn public_agent_search_filters_denied_intermediate_route_descendant() {
-    use std::os::unix::fs::symlink;
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(tmp.path().join("real")).unwrap();
-    std::fs::write(
-        tmp.path().join("real/secret"),
-        "hidden before\nneedle hidden\nhidden after",
-    )
-    .unwrap();
-    std::fs::write(tmp.path().join("real/visible"), "needle visible").unwrap();
-    symlink("real", tmp.path().join("route")).unwrap();
-    symlink("route", tmp.path().join("alias")).unwrap();
-    let mut o = options(tmp.path());
-    o.deny = PathDenyPolicy::new(["route/secret".to_owned()]).unwrap();
-    let result = execute(
-        tmp.path(),
-        definition(Arc::new(o)).unwrap(),
-        json!({"path":"alias","pattern":"needle","context":1}),
-    )
-    .await;
-    assert_eq!(result["outcome"], "succeeded", "{result}");
-    assert_eq!(result["match_count"], 1, "{result}");
-    assert_eq!(result["matches"][0]["path"], "alias/visible");
-    assert!(!result.to_string().contains("hidden") && !result.to_string().contains("secret"));
+    for target in ["route", "route/sub/.."] {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("real/sub")).unwrap();
+        std::fs::write(
+            tmp.path().join("real/secret"),
+            "hidden before\nneedle hidden\nhidden after",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("real/visible"), "needle visible").unwrap();
+        symlink("real", tmp.path().join("route")).unwrap();
+        symlink(target, tmp.path().join("alias")).unwrap();
+        let mut o = options(tmp.path());
+        o.deny = PathDenyPolicy::new(["route/secret".to_owned()]).unwrap();
+        let result = execute(
+            tmp.path(),
+            definition(Arc::new(o)).unwrap(),
+            json!({"path":"alias","pattern":"needle","context":1}),
+        )
+        .await;
+        assert_eq!(result["outcome"], "succeeded", "{result}");
+        assert_eq!(result["match_count"], 1, "{result}");
+        assert_eq!(result["matches"][0]["path"], "alias/visible");
+        assert!(!result.to_string().contains("hidden") && !result.to_string().contains("secret"));
+    }
 }

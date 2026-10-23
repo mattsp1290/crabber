@@ -86,66 +86,68 @@ async fn every_file_tool_denies_direct_and_aliased_paths_before_effects() {
 
 #[tokio::test]
 async fn intermediate_route_denies_every_file_tool_before_effects() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(temp.path().join("real")).unwrap();
-    std::fs::write(temp.path().join("real/file"), "private fixture").unwrap();
-    std::fs::write(temp.path().join("ok"), "public fixture").unwrap();
-    symlink("real", temp.path().join("route")).unwrap();
-    symlink("route", temp.path().join("alias")).unwrap();
-    let bounds = limits();
-    let options = Arc::new(Options {
-        deny: PathDenyPolicy::new(["route/file".to_owned()]).unwrap(),
-        root: WorkspaceRoot::open(temp.path()).unwrap(),
-        capacity: Capacity::new(&bounds).unwrap(),
-        limits: bounds,
-        pre_write: None,
-    });
-    for (tool, args) in [
-        (
-            read::definition(options.clone()),
-            json!({"path":"alias/file"}),
-        ),
-        (
-            list::definition(options.clone()),
-            json!({"path":"alias/file"}),
-        ),
-        (
-            write::definition(options.clone()),
-            json!({"path":"alias/file","content":"changed"}),
-        ),
-        (
-            edit::definition(options.clone()),
-            json!({"path":"alias/file","anchor":"fixture","replacement":"changed"}),
-        ),
-        (
-            multi_edit::definition(options.clone()),
-            json!({"path":"alias/file","edits":[{"anchor":"fixture","replacement":"changed"}]}),
-        ),
-        (
-            file_delete::definition(options.clone()),
-            json!({"path":"alias/file"}),
-        ),
-        (
-            file_move::definition(options.clone()),
-            json!({"path":"alias/file","new_path":"moved"}),
-        ),
-        (
-            file_move::definition(options),
-            json!({"path":"ok","new_path":"alias/file"}),
-        ),
-    ] {
-        let result = execute(temp.path(), tool, args).await;
-        assert_eq!(result["error"]["category"], "path_denied", "{result}");
+    for target in ["route", "route/sub/.."] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("real/sub")).unwrap();
+        std::fs::write(temp.path().join("real/file"), "private fixture").unwrap();
+        std::fs::write(temp.path().join("ok"), "public fixture").unwrap();
+        symlink("real", temp.path().join("route")).unwrap();
+        symlink(target, temp.path().join("alias")).unwrap();
+        let bounds = limits();
+        let options = Arc::new(Options {
+            deny: PathDenyPolicy::new(["route/file".to_owned()]).unwrap(),
+            root: WorkspaceRoot::open(temp.path()).unwrap(),
+            capacity: Capacity::new(&bounds).unwrap(),
+            limits: bounds,
+            pre_write: None,
+        });
+        for (tool, args) in [
+            (
+                read::definition(options.clone()),
+                json!({"path":"alias/file"}),
+            ),
+            (
+                list::definition(options.clone()),
+                json!({"path":"alias/file"}),
+            ),
+            (
+                write::definition(options.clone()),
+                json!({"path":"alias/file","content":"changed"}),
+            ),
+            (
+                edit::definition(options.clone()),
+                json!({"path":"alias/file","anchor":"fixture","replacement":"changed"}),
+            ),
+            (
+                multi_edit::definition(options.clone()),
+                json!({"path":"alias/file","edits":[{"anchor":"fixture","replacement":"changed"}]}),
+            ),
+            (
+                file_delete::definition(options.clone()),
+                json!({"path":"alias/file"}),
+            ),
+            (
+                file_move::definition(options.clone()),
+                json!({"path":"alias/file","new_path":"moved"}),
+            ),
+            (
+                file_move::definition(options),
+                json!({"path":"ok","new_path":"alias/file"}),
+            ),
+        ] {
+            let result = execute(temp.path(), tool, args).await;
+            assert_eq!(result["error"]["category"], "path_denied", "{result}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("real/file")).unwrap(),
+            "private fixture"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("ok")).unwrap(),
+            "public fixture"
+        );
+        assert!(!temp.path().join("moved").exists());
     }
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("real/file")).unwrap(),
-        "private fixture"
-    );
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("ok")).unwrap(),
-        "public fixture"
-    );
-    assert!(!temp.path().join("moved").exists());
 }
 
 #[tokio::test]

@@ -276,3 +276,181 @@ fn route_walk_has_a_bounded_total_symlink_budget() {
         category::PATH_DENIED
     );
 }
+
+#[test]
+fn normalized_intermediate_descendants_remain_denied() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("real/sub")).unwrap();
+    std::fs::create_dir(temp.path().join("safe")).unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    symlink("real", temp.path().join("route")).unwrap();
+    symlink("route/sub/..", temp.path().join("parent")).unwrap();
+    symlink("../safe", temp.path().join("real/blocked")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    for (name, pattern) in [
+        ("parent/file", "route/file"),
+        ("parent/new/file", "route/new/*"),
+        ("parent/blocked", "route/blocked"),
+    ] {
+        assert_eq!(
+            deny::check(&root, &policy(&[pattern]), Path::new(name))
+                .unwrap_err()
+                .category,
+            category::PATH_DENIED,
+            "{name}: {pattern}"
+        );
+    }
+    for (name, target) in [("identity-dot", "."), ("identity-parent", "../real")] {
+        symlink(target, temp.path().join("real").join(name)).unwrap();
+        let caller = format!("via-{name}");
+        symlink(format!("route/{name}/sub/.."), temp.path().join(&caller)).unwrap();
+        assert_eq!(
+            deny::check(
+                &root,
+                &policy(&["route/file"]),
+                Path::new(&format!("{caller}/file"))
+            )
+            .unwrap_err()
+            .category,
+            category::PATH_DENIED,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn route_frames_preserve_actual_navigation_not_lexical_parent_collapse() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("real/sub")).unwrap();
+    std::fs::create_dir_all(temp.path().join("other/nested")).unwrap();
+    std::fs::write(temp.path().join("other/file"), "fixture").unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    symlink("real", temp.path().join("route")).unwrap();
+    symlink("../other/nested", temp.path().join("real/link")).unwrap();
+    symlink("route/link/..", temp.path().join("different")).unwrap();
+    symlink("route/../real", temp.path().join("reenter")).unwrap();
+    symlink("real/sub/..", temp.path().join("target-parent")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    assert_eq!(
+        deny::check(&root, &policy(&["route/file"]), Path::new("different/file"))
+            .unwrap()
+            .resolved,
+        Path::new("other/file")
+    );
+    assert_eq!(
+        deny::check(&root, &policy(&["route/file"]), Path::new("reenter/file"))
+            .unwrap()
+            .resolved,
+        Path::new("real/file")
+    );
+    assert!(
+        deny::check(
+            &root,
+            &policy(&["target-parent/sub"]),
+            Path::new("target-parent/file")
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn normalized_route_names_compose_across_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("real/sub")).unwrap();
+    std::fs::create_dir(temp.path().join("base")).unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    symlink("base", temp.path().join("prefix")).unwrap();
+    symlink("../real", temp.path().join("base/route")).unwrap();
+    symlink("prefix/route/sub/..", temp.path().join("parent")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    for pattern in ["prefix/route/file", "base/route/file"] {
+        assert_eq!(
+            deny::check(&root, &policy(&[pattern]), Path::new("parent/file"))
+                .unwrap_err()
+                .category,
+            category::PATH_DENIED,
+            "{pattern}"
+        );
+    }
+    assert!(
+        deny::check(
+            &root,
+            &policy(&["unrelated/file"]),
+            Path::new("parent/file")
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn route_name_budget_is_bounded_but_not_a_depth_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    for index in 0..9 {
+        symlink(".", temp.path().join(format!("back{index}"))).unwrap();
+    }
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let deny = policy(&["unrelated"]);
+    let within_budget = (0..8)
+        .map(|index| format!("back{index}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    assert!(deny::check(&root, &deny, Path::new(&within_budget)).is_ok());
+    assert_eq!(
+        deny::check(&root, &deny, Path::new(&format!("{within_budget}/back8")))
+            .unwrap_err()
+            .category,
+        category::PATH_DENIED
+    );
+    let deep = format!(
+        "back0/{}",
+        std::iter::repeat_n("new", 300)
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    assert!(deny::check(&root, &deny, Path::new(&deep)).is_ok());
+}
+
+#[test]
+fn identity_route_compositions_preserve_denials_and_allowed_resolution() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("real/sub")).unwrap();
+    std::fs::write(temp.path().join("real/file"), "fixture").unwrap();
+    symlink("real", temp.path().join("route")).unwrap();
+    symlink(".", temp.path().join("real/dot")).unwrap();
+    symlink("../real", temp.path().join("real/up")).unwrap();
+    let root = WorkspaceRoot::open(temp.path()).unwrap();
+    let forms = ["sub/..", "dot", "up"];
+    for (i, first) in forms.iter().enumerate() {
+        for (j, second) in forms.iter().enumerate() {
+            for (k, third) in forms.iter().enumerate() {
+                let name = format!("alias-{i}-{j}-{k}");
+                symlink(
+                    format!("route/{first}/{second}/{third}"),
+                    temp.path().join(&name),
+                )
+                .unwrap();
+                for tail in ["file", "new/file"] {
+                    let path = format!("{name}/{tail}");
+                    assert_eq!(
+                        deny::check(
+                            &root,
+                            &policy(&["route/file", "route/new/*"]),
+                            Path::new(&path)
+                        )
+                        .unwrap_err()
+                        .category,
+                        category::PATH_DENIED,
+                        "{path}"
+                    );
+                    assert_eq!(
+                        deny::check(&root, &policy(&["unrelated"]), Path::new(&path))
+                            .unwrap()
+                            .resolved,
+                        Path::new(&format!("real/{tail}")),
+                        "{path}"
+                    );
+                }
+            }
+        }
+    }
+}
