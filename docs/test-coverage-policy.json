@@ -823,6 +823,38 @@
           "suffix": "sqlite::process_tests::multi_process_writers_serialize_and_keep_fences"
         }
       ]
+    },
+    {
+      "behavior": "Durable-control observation progresses independently of held original callbacks and joins its original Store future",
+      "primary_owner": "Runtime worker lease/control background resource scope",
+      "required_layer": "Runtime native units, deterministic held-callback observation and real Memory/SQLite/PostgreSQL histories",
+      "status": "implemented-unqualified",
+      "required_detectors": [
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::owned_tool_invocations::mixed_products::contracts::durable_control_progresses_while_original_guard_panic_payload_is_held"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::suspension_observation::worker_join_retains_original_control_observation_after_main_returns"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "orchestrator::heartbeat::control::tests::queued_results_cannot_supersede_quiescent_ack_or_cooperative_close"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::tracing_spans::run_span_is_child_of_caller_span_and_has_model_and_tool_children"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::owned_tool_invocations::mixed_products::contracts::sqlite_mixed_products_both_scope_orders"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::owned_tool_invocations::mixed_products::contracts::postgres_mixed_products_both_scope_orders"
+        }
+      ]
     }
   ]
 }

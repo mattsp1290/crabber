@@ -13,11 +13,15 @@ use std::{
 use tokio::sync::watch;
 use tracing::Instrument;
 
+mod control;
+
 pub(super) struct HeartbeatGuard {
     owner: crabber_extension::ToolResourceOwner,
     pub(super) lost: Arc<AtomicBool>,
     pub(super) signal: watch::Receiver<bool>,
     _signal_sender: watch::Sender<bool>,
+    control: Option<control::Receiver>,
+    observation_lifetime: Arc<ObservationLifetime>,
 }
 
 impl HeartbeatGuard {
@@ -42,8 +46,27 @@ impl HeartbeatGuard {
         let lost_in_task = Arc::clone(&lost);
         let (sender, signal) = watch::channel(false);
         let task_sender = sender.clone();
+        // Construct the close guard before registering either task. Any partial
+        // registration failure closes the shared owner and retains original joins.
+        let mut guard = Self {
+            owner,
+            lost,
+            signal,
+            _signal_sender: sender,
+            control: None,
+            observation_lifetime: Arc::clone(&observation_lifetime),
+        };
+        if store.supports_run_controls() {
+            guard.control = Some(control::spawn(
+                &guard.owner,
+                Arc::clone(&execution),
+                Arc::clone(&store),
+                fence.clone(),
+                Arc::clone(&observation_lifetime),
+            )?);
+        }
         let parent = tracing::Span::current();
-        owner
+        guard.owner
             .resources()
             .spawn(async move {
                 tokio::pin!(closing);
@@ -92,12 +115,11 @@ impl HeartbeatGuard {
                 Ok(())
             }.instrument(parent))
             .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
-        Ok(Self {
-            owner,
-            lost,
-            signal,
-            _signal_sender: sender,
-        })
+        Ok(guard)
+    }
+
+    pub(super) async fn durable_cancel(&mut self) -> Result<(), RuntimeError> {
+        control::receive(&mut self.control, &self.observation_lifetime, &self.owner).await
     }
 }
 

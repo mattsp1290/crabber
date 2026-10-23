@@ -838,3 +838,16 @@ history uses one private borrowed fixture-Store body across the three native
 backends and embedded Memory case. Assertions and case identities are unchanged.
 This code-sharing candidate is unqualified until the complete local and CI
 checks and rebuild qualification pass.
+
+Durable-control observation now has its own polled task in the worker's existing
+lease/control background resource scope. Original extension callback or panic
+payload disposal cannot stop polling an unrelated in-flight Store observation.
+Closing retains that original observation through its actual return and join.
+Cooperative retirement remains distinct from cancellation and leaves a pending
+original suspension acknowledgement intact. The existing LeaseHeartbeat
+resource class can consequently report both lease and control tasks in one
+scope. Thirteen focused Memory/SQLite cases and the unchanged real PostgreSQL
+mixed-products history passed. Restoring the exact old inline implementation
+failed the new held-payload progress assertion, and canonical source was restored.
+This lifecycle fix remains unqualified until the complete local/CI and rebuild
+protocols pass; focused evidence does not establish the timing target.

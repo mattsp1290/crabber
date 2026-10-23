@@ -223,6 +223,16 @@ async fn run_span_is_child_of_caller_span_and_has_model_and_tool_children() {
         .find(|s| s.name == "crabber.run")
         .unwrap();
     assert_eq!(run.parent, Some(host.id));
+    let control = capture
+        .spans
+        .iter()
+        .find(|s| s.name == "crabber.test.durable_cancel")
+        .expect("the retained durable-control task was joined");
+    assert_eq!(
+        control.parent,
+        Some(run.id),
+        "independent control observation must retain its original worker trace"
+    );
     let admission = capture
         .spans
         .iter()

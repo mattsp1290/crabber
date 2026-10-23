@@ -102,7 +102,7 @@ impl Orchestrator {
                 .collect(),
         ));
         let self_ = &worker;
-        let heartbeat = HeartbeatGuard::start(
+        let mut heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
             Arc::clone(&self.store),
             fence.clone(),
@@ -436,7 +436,7 @@ impl Orchestrator {
                 }
                 Ok(()) | Err(_) => resumed_work.as_mut().await,
             },
-            control = self_.wait_durable_cancel(failure_execution.as_ref(), &fence) => {
+            control = heartbeat.durable_cancel() => {
                 match control {
                     Ok(()) => { tracing::info!(target: crate::telemetry_targets::targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); resumed_work.as_mut().await }
                     Err(error) => {

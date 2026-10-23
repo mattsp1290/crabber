@@ -19,9 +19,9 @@ pub(super) struct ObservationGate {
     additional_observe: Notify,
     model_entered: Notify,
     release_model: Notify,
-    observer_entered: Notify,
-    release_observer: Notify,
-    observer_returned: Notify,
+    pub(super) observer_entered: Notify,
+    pub(super) release_observer: Notify,
+    pub(super) observer_returned: Notify,
     heartbeat_entered: Notify,
     release_heartbeat: Notify,
     heartbeat_returned: Notify,
@@ -521,4 +521,69 @@ async fn owner_read_finishing_after_quiescent_pause_waits_for_original_ack() {
         assert_ack_result(Boundary::Generic, lose_ack, result);
         assert_native_suspension(inner.as_ref(), &session, &run, Boundary::Generic).await;
     }
+}
+
+#[tokio::test]
+async fn worker_join_retains_original_control_observation_after_main_returns() {
+    let inner = Arc::new(MemoryStore::new());
+    let gate = Arc::new(ObservationGate::default());
+    let provider =
+        FakeProvider::scripted(vec![call_script(ToolCallId::new(), r#"{"text":"once"}"#)]);
+    let runtime = runtime(
+        Boundary::Generic,
+        inner,
+        gate.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        provider.clone(),
+    );
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    let run = handle.run_id().clone();
+    let done = handle.done();
+    tokio::pin!(done);
+    wait(&gate.model_entered, "model entered").await;
+    wait(
+        &gate.observer_entered,
+        "original control observation entered",
+    )
+    .await;
+    gate.release_model.notify_one();
+    wait(&gate.committed, "native pause committed").await;
+    gate.release_ack.notify_one();
+    let early = tokio::time::timeout(std::time::Duration::from_millis(50), done.as_mut()).await;
+    // Release even on an assertion failure so the fixture cannot strand its
+    // original Store future when an intentionally broken implementation runs.
+    if early.is_ok() {
+        gate.release_observer.notify_one();
+    }
+    assert!(
+        early.is_err(),
+        "worker joined while its original control observation was blocked: {early:?}"
+    );
+    let pending = runtime
+        .drain_session_execution_tasks(&session, std::time::Duration::from_millis(20))
+        .await;
+    gate.release_observer.notify_one();
+    assert_eq!(pending.pending, vec![run.clone()]);
+    assert!(pending.background_tasks.iter().any(|scope| {
+        scope.session_id == session
+            && scope.run_id == run
+            && scope.kind == crate::WorkerResourceKind::LeaseHeartbeat
+            && scope.resources.pending == 1
+    }));
+    wait(
+        &gate.observer_returned,
+        "same original control observation returned",
+    )
+    .await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), done)
+        .await
+        .unwrap();
+    assert_ack_result(Boundary::Generic, false, result);
+    let joined = runtime
+        .drain_session_execution_tasks(&session, std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(joined.pending, [] as [RunId; 0]);
+    assert_eq!(gate.stale_observations.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
 }

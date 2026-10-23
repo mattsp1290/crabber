@@ -66,3 +66,19 @@ was restored after each. Own-target Clippy, native compilation and the capacity
 case passed. One fixed-order comparison measured 3.790 seconds versus 46.596
 seconds previously; it does not establish a replicated speedup. Full local/CI
 and all six final qualification cases remain pending.
+
+
+### Durable control polling and original callback disposal (unqualified)
+
+Durable-control polling now runs independently inside the worker's existing
+lease/control resource owner. A synchronous original callback or panic-payload
+destructor cannot strand its sibling Store observation. The original Store
+future remains retained through cooperative close and actual join; queued
+control messages are revalidated against quiescence before delivery, preserving
+the genuine suspension ACK. No resource limit, test deadline or public enum
+changes. The deterministic held-payload progress and observer-retention tests,
+queued-result protocol tests, trace parent assertion and unchanged real
+Memory/SQLite/PostgreSQL mixed-products histories are required. Focused tests
+passed, and restoring the exact old inline implementation failed the new
+held-payload progress assertion. Full selected inventory and all final local/CI
+qualification cases remain pending.

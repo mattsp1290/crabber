@@ -2,8 +2,8 @@
 use super::{Orchestrator, RuntimeError};
 use crabber_core::{ControlId, SessionId};
 use crabber_session::{
-    ExecutionStore, RunControlError, RunControlOutcome, RunControlPage, RunControlReceipt,
-    RunControlRequest, RunControlTarget,
+    RunControlError, RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest,
+    RunControlTarget,
 };
 impl Orchestrator {
     /// Complete an original accepted cancellation after an authentic joined pause.
@@ -123,53 +123,5 @@ impl Orchestrator {
             }
         }
         Err(RunControlError::RevisionConflict.into())
-    }
-    #[cfg_attr(
-        test,
-        tracing::instrument(name = "crabber.test.durable_cancel", skip_all, level = "debug")
-    )]
-    pub(super) async fn wait_durable_cancel(
-        &self,
-        execution: &dyn ExecutionStore,
-        fence: &crabber_core::RunFence,
-    ) -> Result<(), RuntimeError> {
-        if !self.store.supports_run_controls() {
-            return std::future::pending().await;
-        }
-        let mut timer = tokio::time::interval(std::time::Duration::from_millis(100));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            timer.tick().await;
-            if !self.observation_lifetime.active() {
-                return std::future::pending().await;
-            }
-            let observed = execution.observe_run_controls(None).await;
-            if !self.observation_lifetime.active() {
-                return std::future::pending().await;
-            }
-            match observed {
-                Ok(boundary) if boundary.cancel_observed => return Ok(()),
-                Ok(_) => (),
-                Err(RunControlError::StaleOwner) => {
-                    // Our terminal commit can win the Store gate while its original
-                    // ACK is still pending. It revokes control polling too, but does
-                    // not supersede that retained completion future. A replacement
-                    // token must still report loss, including a terminal replacement.
-                    let settled = self.store.get_run(&fence.run_id).await;
-                    if !self.observation_lifetime.active() {
-                        return std::future::pending().await;
-                    }
-                    if settled.ok().flatten().is_some_and(|run| {
-                        run.id == fence.run_id
-                            && run.claim_token == fence.claim_token
-                            && run.status.is_terminal()
-                    }) {
-                        return std::future::pending().await;
-                    }
-                    return Err(RuntimeError::LeaseLost);
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
     }
 }

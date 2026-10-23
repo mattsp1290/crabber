@@ -206,7 +206,7 @@ impl Orchestrator {
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await?;
-        let heartbeat = HeartbeatGuard::start(
+        let mut heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
             Arc::clone(&self.store),
             fence.clone(),
@@ -267,7 +267,7 @@ impl Orchestrator {
                         Ok(()) => (),
                         Err(_) => break run_future.as_mut().await,
                     },
-                    control = self_.wait_durable_cancel(execution.as_ref(), &fence) => {
+                    control = heartbeat.durable_cancel() => {
                         match control {
                             Ok(()) => { tracing::info!(target: targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); break run_future.as_mut().await; }
                             Err(error) => {

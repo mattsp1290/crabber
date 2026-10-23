@@ -164,3 +164,68 @@ async fn postgres_mixed_products_both_scope_orders() {
     .await
     .unwrap();
 }
+
+// The original panic-payload destructor stays blocked throughout this check.
+// A pending control observation must make progress on its independently owned
+// task; another worker/connection alone cannot poll a sibling future for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn durable_control_progresses_while_original_guard_panic_payload_is_held() {
+    use crate::tests::{
+        DelayedTerminalStore, SettlementGate, suspension_observation::ObservationGate,
+    };
+    struct ReleaseObserver(Arc<ObservationGate>);
+    impl Drop for ReleaseObserver {
+        fn drop(&mut self) {
+            self.0.release_observer.notify_one();
+        }
+    }
+    let observation = Arc::new(ObservationGate::default());
+    let release_observer = ReleaseObserver(observation.clone());
+    let store = Arc::new(DelayedTerminalStore {
+        inner: Arc::new(MemoryStore::new()),
+        gate: Arc::new(SettlementGate {
+            observation: Some(observation.clone()),
+            ..Default::default()
+        }),
+    });
+    let seen = Seen::new(3);
+    let release_payload = Release(seen.gate.clone());
+    let (runtime, plans, _) = build(store, false, &seen);
+    let first = runtime.start(request()).await.unwrap();
+    tokio::time::timeout(BOUND, observation.observer_entered.notified())
+        .await
+        .expect("original control observation entered");
+    tokio::time::timeout(BOUND, seen.gate.entered.notified())
+        .await
+        .expect("original guard panic payload is held");
+    drop(release_observer);
+    tokio::time::timeout(BOUND, observation.observer_returned.notified())
+        .await
+        .expect("original control observation must return while panic payload remains held");
+    assert!(!*seen.gate.open.lock().unwrap());
+    let second = tokio::time::timeout(BOUND, runtime.start(request()))
+        .await
+        .expect("independent admission must progress while original payload remains held")
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(BOUND, second.done())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    assert!(!*seen.gate.open.lock().unwrap());
+    drop(release_payload);
+    assert!(
+        tokio::time::timeout(BOUND, first.done())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(
+        runtime.drain_execution_tasks(BOUND).await.pending,
+        [] as [RunId; 0]
+    );
+    let _closed = plans.close_all(BOUND).await;
+}
