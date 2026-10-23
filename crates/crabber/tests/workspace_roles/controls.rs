@@ -1,4 +1,4 @@
-use super::{fixture::*, provider::Gate};
+use super::{fixture::*, held_run::HeldRun, provider::Gate};
 use crabber::{core::*, session::*, *};
 use std::sync::Arc;
 #[tokio::test]
@@ -14,19 +14,18 @@ async fn foreign_controls_and_abandonment_are_hidden() {
     config.directory = "/roles".into();
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::now_utc()));
     let native = Arc::new(f.native.as_ref().clone().with_clock(clock.clone()));
-    let host = Agent::builder()
-        .behavior_version("workspace-roles.v1")
-        .store(native)
-        .provider(Arc::new(gate.clone()))
-        .config(config)
-        .build()
-        .unwrap();
-    let handle = host.prompt_in(&b, "held", None).await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), gate.entered.notified())
-        .await
-        .unwrap();
+    let host = Arc::new(
+        Agent::builder()
+            .behavior_version("workspace-roles.v1")
+            .store(native)
+            .provider(Arc::new(gate.clone()))
+            .config(config)
+            .build()
+            .unwrap(),
+    );
+    let held = HeldRun::start(f.host_url.clone(), b.clone(), gate).await;
     let target = host
-        .run_control_binding(id, handle.run_id())
+        .run_control_binding(id, &held.run_id)
         .await
         .unwrap()
         .target;
@@ -43,14 +42,9 @@ async fn foreign_controls_and_abandonment_are_hidden() {
             },
         },
     };
-    // Keep the host's legitimate lease heartbeat out of the integrity window.
-    // Worker queries still run normally and must be rejected by row visibility.
-    let mut lease_guard = f.admin.begin().await.unwrap();
-    sqlx::query("SELECT id FROM runs WHERE session_id=$1 FOR UPDATE")
-        .bind(&id.0)
-        .fetch_all(&mut *lease_guard)
-        .await
-        .unwrap();
+    // Exercise the integrity window beyond the normal heartbeat interval. The
+    // worker clock stays frozen while its SQL I/O remains fully driven.
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
     let before = f.snapshot(id).await;
     assert_eq!(
         f.worker.run_controls(&target).await.unwrap_err(),
@@ -65,13 +59,11 @@ async fn foreign_controls_and_abandonment_are_hidden() {
         "unexpected hidden control result: {denied_control:?}"
     );
     f.unchanged(id, before).await;
-    lease_guard.rollback().await.unwrap();
     assert!(matches!(
         host.control_run(request).await.unwrap(),
         RunControlOutcome::Applied(_)
     ));
-    gate.release.notify_one();
-    handle.done().await.unwrap();
+    assert_eq!(held.finish().await, RunStatus::Interrupted);
     host.close_extensions().await.unwrap();
     let admitted = legacy(&f.native, &f.workspace_b).await;
     let abandon = AbandonRequest {
