@@ -145,7 +145,7 @@ native_store_unit_tests! {
     #[tokio::test]
     async fn session_owner_shared_capacity() {
         let store = super::MemoryStore::new();
-        let (request, authority) = crate::session_owner_contract::capacity::fill(&store).await;
+        let (request, authority) = super::capacity_fixture::fill(&store).await;
         crate::session_owner_contract::capacity::joined_slot(&store, request, authority).await;
     }
 }

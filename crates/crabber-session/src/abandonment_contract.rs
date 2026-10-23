@@ -157,9 +157,13 @@ pub(crate) async fn assert_stale(execution: &dyn ExecutionStore, run: &Run, call
     );
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClock>) {
     native_guards::run(&store, &clock).await;
+    run_borrowed(&store, &clock).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_borrowed(store: &dyn FixtureStore, clock: &Arc<ManualClock>) {
     for status in [RunStatus::Pending, RunStatus::Running, RunStatus::Paused] {
         for authority in [
             AbandonAuthority::ExpiredLease,

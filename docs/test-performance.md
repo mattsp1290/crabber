@@ -786,9 +786,11 @@ actual Join and replacement use the public Store API. The 1,022 interior setup
 reservations use the existing native record and protected publication writers
 in one normally committed transaction. Fresh authenticated reads verify exact
 owner identities and source/revision continuity at 1,023 and 1,024 owners.
-Memory retains all 1,024 individual public reservations. This intentionally
-removes 1,022 repeated public preflights and separate commit/ACK boundaries per
-SQL fixture, including that repeated durability and fault exposure; it is not
+The native Memory follow-up uses the same interior-fixture strategy with
+physical immutable records and real public boundary checks, as recorded in
+test-coverage-policy.md. The SQL change intentionally removes 1,022 repeated
+public preflights and separate commit/ACK boundaries per SQL fixture, including
+that repeated durability and fault exposure; it is not
 equivalent stress. SQL fault and process-recovery tests remain required. No
 capacity, synchronization setting or deadline changes. Savings are unmeasured.
 
@@ -829,3 +831,10 @@ replace the thin process before supervision starts, so the enabled owner retains
 its original cleanup responsibility and absolute deadline. This arrangement is
 unqualified until the complete local and CI protocols pass; isolated ownership
 probes do not prove managed PostgreSQL cleanup or a timing improvement.
+
+The shared Abandonment acceptance history keeps its owned generic Store and
+clock wrapper, including the original native guard setup. Its remaining
+history uses one private borrowed fixture-Store body across the three native
+backends and embedded Memory case. Assertions and case identities are unchanged.
+This code-sharing candidate is unqualified until the complete local and CI
+checks and rebuild qualification pass.

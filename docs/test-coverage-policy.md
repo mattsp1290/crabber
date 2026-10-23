@@ -42,3 +42,27 @@ Native pending-tool histories now have separate success/replay, held-ACK, malfor
 The two `memory::abandon_tests` histories `pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox` and `facade_each_memory_candidate_boundary_rolls_back_including_private_commit` run in `crabber::fenced_abandon`. Their duplicate Session unit registrations are omitted. Both full bodies and the forwarding bridge remain unchanged. They exercise raw admission and legacy Pending fixture status through canonical source-journal and transaction code; genuine opaque Pending authority detectors remain native. Rollback of usage, fence, calls, messages, events and inbox; exactly-once replay; all seven candidate boundaries including private publication; zero provider requests; and panics for unexpected Store calls remain required. Other native Memory and SQL histories are unchanged.
 
 Session tests now depend directly on the owning providers type for Selection, and the existing Extension type for ToolResourceOwner. This removes their facade-to-Runtime development dependency cycle. Resolved workspace features remain identical; performance qualification is pending.
+
+### Native Memory owner capacity fixture (unqualified)
+
+The Memory capacity history now mirrors the existing SQL fixture strategy:
+a public first reservation establishes the real absent-session scope, 1,022
+interior reservations use the actual Record and immutable Ledger publication
+writers, and public calls accept owner 1,024 and refuse owner 1,025. The fixture
+independently checks every physical current record, immutable audit, protected
+publication ordinal, original context and absent revision at 1,023 and 1,024.
+No production limit or persistence implementation changes.
+
+This removes 1,022 repeated public setup calls, including their preflight,
+replay/capacity scans, State cloning, identity/deletion/archive/parent checks,
+and transaction fault boundaries. It no longer stresses every intermediate
+occupancy through the public API. Dedicated owner, replay, parent and fault
+contracts retain those branches; the original real Join and slot replacement
+remain unchanged. A new full-capacity counterfeit mutable Joined record must
+still receive Capacity while its immutable audit remains Reserved; the exact
+record is restored before the real Join. Both meaningful boundary and immutable-source
+fault controls failed at their intended public assertions, and canonical source
+was restored after each. Own-target Clippy, native compilation and the capacity
+case passed. One fixed-order comparison measured 3.790 seconds versus 46.596
+seconds previously; it does not establish a replicated speedup. Full local/CI
+and all six final qualification cases remain pending.

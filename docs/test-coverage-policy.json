@@ -389,7 +389,7 @@
       ],
       "before": "The same private Memory root-capacity history runs in the canonical session crate and source-embedded fenced-abandon adapter.",
       "after": "Only the exact embedded duplicate registration is omitted via native_store_unit_tests; canonical Memory, SQL immutable-capacity and adapter-specific parent/fault/fenced histories remain.",
-      "rationale": "Both wrappers compile identical MemoryStore, immutable owner ledger, record authentication and capacity helpers. Root Preparation reservations have parent=None and resource_contract=None, so they never enter the opaque attempt/phase adapter bridge or pending native transport. All 1024 insertions, overflow refusal and actual Join/slot reuse assertions remain unchanged in the canonical owner.",
+      "rationale": "Both wrappers compile identical MemoryStore, immutable owner ledger, record authentication and capacity helpers. Root Preparation reservations have parent=None and resource_contract=None, so they never enter the opaque attempt/phase adapter bridge or pending native transport. The canonical owner retains all1024 physical records, overflow refusal and actual Join/slot reuse. Its native Memory fixture population is now recorded separately in memory-owner-capacity-fixture-batch.",
       "validation": "All three affected canonical capacity and blocked-drop tests passed; actual complete native inventory differs by exactly the intended embedded test (3038 to3037). No full timing qualification claim."
     },
     {
@@ -452,7 +452,7 @@
         "postgres"
       ],
       "before": "Each SQL capacity fixture performs1024 individually committed public reservations before overflow, mutable-current corruption and genuine Join/slot-reuse assertions.",
-      "after": "First and1024th SQL reservations use the public API. Exactly1022 interior fixture reservations use the existing Record/revision/protected-source writers in one normally durable owned transaction. Fresh authenticated readback verifies exact committed1023 and1024 identities, native sources and sequential publication provenance. Overflow, corruption, actual Join and replacement assertions remain. Memory retains all1024 public reservations.",
+      "after": "First and1024th SQL reservations use the public API. Exactly1022 interior fixture reservations use the existing Record/revision/protected-source writers in one normally durable owned transaction. Fresh authenticated readback verifies exact committed1023 and1024 identities, native sources and sequential publication provenance. Overflow, corruption, actual Join and replacement assertions remain. The follow-up Memory fixture strategy is recorded separately in memory-owner-capacity-fixture-batch.",
       "rationale": "Repeated public preflight and independent transaction commits for known-valid root fixture interiors are removed. This explicitly loses1022 public preflight/commit/ACK/fault boundaries per SQL fixture, incremental near-capacity commit churn and repeated durability exposure; it is not equivalent stress. Limits, synchronization settings and actual public boundary checks are unchanged. Existing SQL owner faults and physical process histories remain required. No production API or schema is changed.",
       "validation": "Both independent actual source reviews approved. Clippy with PostgreSQL and SQLite passed. Each SQL owner contract passed serially, and all12 selected owner-family tests passed with four threads on each backend, with unchanged source. PostgreSQL fixture identity pairs and owned container cleanup were independently verified. These focused checks are not full budget qualification; selected full inventory and all final local/CI qualification cases remain pending."
     },
@@ -510,6 +510,26 @@
       "after": "Memory retains all32 histories. Each SQL backend retains both Complete ACK outcomes for all four origins and all four stages for ToolClaim:14 histories per SQL backend. All existing native entrypoint names and held() assertions remain.",
       "rationale": "Interposed pauses and substitutes UnknownStoreOutcome only after awaited native calls return; shared late-stage stop/no-main/drain branches do not vary by origin/backend. Distinct native source paths remain exercised by all four unchanged SQL success/exact-replay/malformed/cleanup families and explicit protected-source/native transaction fault detectors. This removes18 family-specific Inspect/Register/Activate by ACK combinations per SQL backend,36 total, losing their repeated native preparation/commit, payload-drop and interleaving exposure. It is not equal stress. No capacity, durability setting, deadline or production code changes. General successor/approval process cases do not provide an exact Tool/Frontend physical-death replacement.",
       "validation": "Both independent actual source reviews approved the exact matrix and detector partition. Focused runs passed45 Memory/SQLite cases,33 managed Memory/PostgreSQL pending-family cases and12 native PostgreSQL source/fault cases with unchanged source. All34 explicit retained detectors actually passed. PostgreSQL fixture identities matched16/16 and12/12, and both owned containers were independently absent. These are partial behavior checks; full selected inventory and all final local/CI budget qualification cases remain pending."
+    },
+    {
+      "id": "memory-owner-capacity-fixture-batch",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "The real Memory public API must admit owner1024, refuse1025, and free capacity only after actual Join; a forged mutable Joined label must not override immutable latest Reserved state.",
+      "owner": [
+        "crates/crabber-session/src/memory/session_owner/capacity_fixture.rs",
+        "crates/crabber-session/src/session_owner/ledger/capacity_fixture.rs"
+      ],
+      "required_backends": [
+        "memory"
+      ],
+      "retained_tests": [
+        "memory::session_owner::tests::session_owner_shared_capacity"
+      ],
+      "before": "1024 public reservations repeatedly clone and validate the same growing Memory fixture before overflow and actual Join/replacement.",
+      "after": "Public first reservation establishes context;1022 interior records use actual Record/grant/receipt/protected Ledger publication writers. Exact physical identities, immutable/current records, publication ordinals, original context and Absent revisions are independently verified at1023/1024. Public1024accept/1025refusal remain, with new full-capacity forged mutable Joined refusal, exact restore, unchanged actual Join/replacement. SQL fixtures unchanged.",
+      "rationale": "Removes1022 repeated public preflight/replay/capacity/identity/deletion/archive/parent checks, State clones and transaction fault boundaries from fixture population. Arbitrary intermediate-occupancy-only defects and per-reservation stress lose exposure. Existing owner, parent, replay and before/after fault contracts retain those branches; this is not equivalent stress. Real1024 physical owners, limits, production code and APIs remain unchanged.",
+      "validation": "Independent source reviews approved. Own-target Clippy and native compilation passed with Session0/Core1 and assertions/overflow checks. The actual capacity case passed3.790s wall/3.741userCPU versus a previous matched own-target baseline46.596s/46.375userCPU; this single fixed-order pair is not a replicated speedup estimate. Meaningful off-by-one and mutable-current-vs-immutable-audit faults each failed at the intended public capacity assertion; canonical source was restored and hash-verified after each. The initial cfg placement compile failure remains preserved. Full local/CI and all six final qualification cases remain pending."
     }
   ],
   "required_behaviors": [

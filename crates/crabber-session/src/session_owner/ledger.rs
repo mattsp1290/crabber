@@ -611,6 +611,12 @@ impl Ledger {
 }
 
 #[cfg(test)]
+native_store_unit_tests! {
+    #[path = "ledger/capacity_fixture.rs"]
+    mod capacity_fixture;
+}
+
+#[cfg(test)]
 #[path = "ledger_tests.rs"]
 mod tests;
 
