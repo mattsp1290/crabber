@@ -908,7 +908,8 @@ checked with its remaining descendant suffix before that route resolves away.
 Normalized descendant names remain checked through encountered aliases while
 traversal stays within their targets, including parent hops and nested identity
 links. Alias views activate after their targets resolve; leaving a target expires
-its views. Screening follows at most 40 symlinks and retains at most 256 active
+its views rather than imposing a global reverse-alias policy. Screening follows
+at most 40 symlinks and retains at most 256 active
 virtual names per check; exhaustion fails closed as `path_denied`. The name budget
 is not a path-depth limit. Missing caller tails are checked under the resolved
 existing prefix, allowing permitted creates and moves. Dangling symlink targets

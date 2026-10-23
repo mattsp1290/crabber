@@ -1,8 +1,9 @@
 //! Bounded rg JSON records including base64 paths and context attachment.
 use crate::{MAX_LINE_BYTES, MAX_RESULT_BYTES};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use crabber_tools_core::{PathDenyPolicy, WorkspaceRoot};
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 fn decode(v: &Value) -> String {
     if let Some(text) = v["text"].as_str() {
         return text.to_owned();
@@ -13,14 +14,10 @@ fn decode(v: &Value) -> String {
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
 }
-fn allowed_path(
-    root: &crabber_tools_core::WorkspaceRoot,
-    deny: &crabber_tools_core::PathDenyPolicy,
-    value: &Value,
-) -> bool {
+fn allowed_path(root: &WorkspaceRoot, deny: &PathDenyPolicy, value: &Value) -> bool {
     use std::{
         ffi::OsString,
-        os::unix::ffi::OsStringExt,
+        os::unix::ffi::{OsStrExt, OsStringExt},
         path::{Component, Path, PathBuf},
     };
     let path = if let Some(text) = value["text"].as_str() {
@@ -33,13 +30,18 @@ fn allowed_path(
     } else {
         return false;
     };
-    if path.as_os_str().is_empty()
+    if path.as_os_str().as_bytes().contains(&0)
+        || !path
+            .components()
+            .any(|part| matches!(part, Component::Normal(_)))
         || path
             .components()
             .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
     {
         return false;
     }
+    // Resolve each emitted name, not just the caller's search root: an allowed
+    // directory alias can contain descendants denied by their real spelling.
     crabber_tools_core::deny::check(
         root,
         deny,
@@ -49,33 +51,9 @@ fn allowed_path(
 }
 
 #[cfg(test)]
-mod deny_tests {
-    use super::*;
+#[path = "parse_deny_tests.rs"]
+mod deny_tests;
 
-    #[test]
-    fn denied_raw_paths_and_context_are_filtered_before_limits() {
-        let deny = crabber_tools_core::PathDenyPolicy::new([".env*".to_owned()]).unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let root = crabber_tools_core::WorkspaceRoot::open(temp.path()).unwrap();
-        let mut parser = Parser::new(1, 1, false).with_deny(root, deny);
-        for path in [
-            json!({"text":".env"}),
-            json!({"bytes":STANDARD.encode(b".env-\xff")}),
-            json!({"bytes":"%%%"}),
-        ] {
-            for kind in ["context", "match"] {
-                parser.feed(&serde_json::to_vec(&json!({"type":kind,"data":{"path":path,"lines":{"text":"hidden fixture\n"},"line_number":1,"submatches":[]}})).unwrap());
-            }
-        }
-        assert_eq!(parser.matches, [] as [Value; 0]);
-        assert!(parser.reason.is_none());
-        parser.feed(&serde_json::to_vec(&json!({"type":"match","data":{"path":{"text":"ok.txt"},"lines":{"text":"visible fixture\n"},"line_number":1,"submatches":[]}})).unwrap());
-        assert_eq!(parser.matches.len(), 1);
-        assert_eq!(parser.matches[0]["path"], "ok.txt");
-        assert!(parser.matches[0].get("before").is_none());
-        assert_eq!(parser.reason, Some("matches"));
-    }
-}
 fn cut(text: &str) -> (&str, bool) {
     let mut n = text.len().min(MAX_LINE_BYTES);
     while !text.is_char_boundary(n) {
@@ -94,10 +72,7 @@ fn line(data: &Value) -> Value {
 }
 pub(crate) struct Parser {
     pub matches: Vec<Value>,
-    deny: Option<(
-        std::sync::Arc<crabber_tools_core::WorkspaceRoot>,
-        crabber_tools_core::PathDenyPolicy,
-    )>,
+    deny: Option<(Arc<WorkspaceRoot>, PathDenyPolicy)>,
     pub reason: Option<&'static str>,
     pub malformed: bool,
     before: VecDeque<Value>,
@@ -118,11 +93,7 @@ impl Parser {
             include_submatches,
         }
     }
-    pub(crate) fn with_deny(
-        mut self,
-        root: std::sync::Arc<crabber_tools_core::WorkspaceRoot>,
-        deny: crabber_tools_core::PathDenyPolicy,
-    ) -> Self {
+    pub(crate) fn with_deny(mut self, root: Arc<WorkspaceRoot>, deny: PathDenyPolicy) -> Self {
         if !deny.patterns().is_empty() {
             self.deny = Some((root, deny));
         }
