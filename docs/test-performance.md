@@ -851,3 +851,17 @@ mixed-products history passed. Restoring the exact old inline implementation
 failed the new held-payload progress assertion, and canonical source was restored.
 This lifecycle fix remains unqualified until the complete local/CI and rebuild
 protocols pass; focused evidence does not establish the timing target.
+
+The private frontend acceptance journey and five borrowed preparation helpers
+now share their Store interface across backends. The generic factory still
+owns the same Store and clock and pins the same journey; all helper bodies,
+assertions and local drop scopes remain unchanged. This affects the three
+native frontend journeys and the existing preparation-helper callers, including
+the facade's embedded preparation contracts. It does not add a fourth frontend
+journey. Both Clippy variants, native/embedded compilation and 29 focused
+original histories passed, with seven PostgreSQL fixture identity pairs and
+owned container cleanup verified. The two affected compiled binaries retain all
+1,555 previous test names. In the Session unit, the six helpers emit six direct
+poll bodies instead of 18 in the earlier retained build (51,200 versus 152,040
+bytes). This is structural evidence, not a controlled compilation speedup.
+Full local/CI checks and all final rebuild qualification cases remain pending.

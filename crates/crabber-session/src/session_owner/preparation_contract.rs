@@ -42,7 +42,7 @@ fn reservation(bound: &crate::BoundKeyedAdmitRequest) -> ReservePreparation {
     ))
     .unwrap()
 }
-pub(crate) async fn begin(store: &impl Store, request: &ReservePreparation) -> PreparationGrant {
+pub(crate) async fn begin(store: &dyn Store, request: &ReservePreparation) -> PreparationGrant {
     let SessionOwnerOutcome::Applied {
         authority: Some(authority),
         ..

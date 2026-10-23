@@ -3,7 +3,7 @@ use super::super::preparation::{ExistingWorkTarget, PreparationKey, PreparationS
 use super::*;
 use crabber_core::{Clock, ManualClock};
 
-pub(crate) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(crate) async fn run(store: &dyn Store, clock: &ManualClock) {
     let fixture = crate::frontend_contract::fixture::fixture(store).await;
     fixture
         .execution
@@ -79,7 +79,7 @@ pub(crate) async fn run(store: &impl Store, clock: &ManualClock) {
 }
 
 async fn recover(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     run: &crabber_core::Run,
     original: crate::FrontendContinuationClaim,
