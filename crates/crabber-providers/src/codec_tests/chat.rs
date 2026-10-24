@@ -2,12 +2,13 @@ use super::*;
 
 #[test]
 fn finish_reason_is_preserved_without_ending_before_late_usage() {
+    use crabber_core::ModelFinishReason;
     for (wire, normalized) in [
-        ("stop", "Stop"),
-        ("tool_calls", "ToolCalls"),
-        ("length", "Length"),
-        ("content_filter", "ContentFilter"),
-        ("PRIVATE_VENDOR_REASON", "Other"),
+        ("stop", ModelFinishReason::Stop),
+        ("tool_calls", ModelFinishReason::ToolCalls),
+        ("length", ModelFinishReason::Length),
+        ("content_filter", ModelFinishReason::ContentFilter),
+        ("PRIVATE_VENDOR_REASON", ModelFinishReason::Other),
     ] {
         let mut codec = chat::Codec::default();
         let terminal = codec
@@ -16,10 +17,7 @@ fn finish_reason_is_preserved_without_ending_before_late_usage() {
                 &json!({"choices":[{"delta":{},"finish_reason":wire}]}),
             ))
             .unwrap();
-        assert_eq!(
-            format!("{terminal:?}"),
-            format!("[FinishReason({normalized})]")
-        );
+        assert_eq!(terminal, [StreamDelta::FinishReason(normalized)]);
         let usage = codec
             .event(&event(
                 "",

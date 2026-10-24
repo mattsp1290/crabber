@@ -809,6 +809,7 @@ impl Projector {
             }
             // Explicit source allowlist: these control/operational records have no public projection.
             EventKind::ToolCallPending
+            | EventKind::ModelResponseCompleted
             | EventKind::ToolCallRunning
             | EventKind::PermissionRequested
             | EventKind::PermissionDecided

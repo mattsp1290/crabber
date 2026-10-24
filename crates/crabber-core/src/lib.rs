@@ -336,6 +336,17 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
+/// Provider-independent terminal reason, separate from transport completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelFinishReason {
+    Stop,
+    ToolCalls,
+    Length,
+    ContentFilter,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextEpoch {
     pub id: EpochId,
@@ -378,6 +389,7 @@ pub enum EventKind {
     RunStarted,
     TurnStarted,
     TurnCompleted,
+    ModelResponseCompleted,
     MessageStarted,
     MessageStreamEnded,
     ToolCallStarted,
@@ -552,6 +564,19 @@ pub mod event_payload {
     use super::{ContentBlock, MessageId, Role, ToolCallId};
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
+
+    /// Safe durable metadata emitted before accepting or rejecting a completed response.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ModelResponseCompleted {
+        pub finish_reason: Option<super::ModelFinishReason>,
+        pub usage: super::Usage,
+        /// Whether assistant text contains a non-whitespace character.
+        pub has_visible_text: bool,
+        /// Started tool calls, including calls with unfinished arguments.
+        pub tool_call_count: usize,
+        pub stream_completed: bool,
+    }
 
     /// Persisted public result fields. Runtime diagnostics may accompany them.
     /// Borrow content when publishing; deserialization owns the result blocks.
