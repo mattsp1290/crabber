@@ -32,3 +32,6 @@ opt-level = 1
 # Keep Core validation fast while retaining development checks.
 [profile.dev.package.crabber-core]
 opt-level = 1
+
+[profile.dev.package.cranelift-codegen]
+opt-level = 1
