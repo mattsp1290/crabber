@@ -87,6 +87,10 @@ impl Drop for ControlObservation {
     }
 }
 
+#[cfg_attr(
+    test,
+    tracing::instrument(name = "crabber.test.durable_cancel", skip_all, level = "debug")
+)]
 async fn watch(
     store: Arc<dyn Store>,
     execution: Arc<dyn ExecutionStore>,
