@@ -1,5 +1,44 @@
 use super::*;
 
+#[test]
+fn finish_reason_is_preserved_without_ending_before_late_usage() {
+    for (wire, normalized) in [
+        ("stop", "Stop"),
+        ("tool_calls", "ToolCalls"),
+        ("length", "Length"),
+        ("content_filter", "ContentFilter"),
+        ("PRIVATE_VENDOR_REASON", "Other"),
+    ] {
+        let mut codec = chat::Codec::default();
+        let terminal = codec
+            .event(&event(
+                "",
+                &json!({"choices":[{"delta":{},"finish_reason":wire}]}),
+            ))
+            .unwrap();
+        assert_eq!(
+            format!("{terminal:?}"),
+            format!("[FinishReason({normalized})]")
+        );
+        let usage = codec
+            .event(&event(
+                "",
+                &json!({"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":32}}),
+            ))
+            .unwrap();
+        assert!(
+            matches!(usage.as_slice(), [StreamDelta::Usage(value)] if value.input_tokens == 4 && value.output_tokens == 32)
+        );
+        let done = codec
+            .event(&sse::Event {
+                name: String::new(),
+                data: "[DONE]".into(),
+            })
+            .unwrap();
+        assert_eq!(done, [StreamDelta::Completed]);
+    }
+}
+
 fn chat_error(event_name: &str, data: &str) -> ProviderError {
     let deltas = chat::Codec::default()
         .event(&sse::Event {
