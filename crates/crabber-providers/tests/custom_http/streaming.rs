@@ -63,12 +63,6 @@ async fn chat_error_fragmented_f1_suppresses_trailing_content_and_done() {
     let mut start = 0;
     for end in [1, 6, bytes.len() - 2, bytes.len() - 1] {
         controller.release(bytes[start..end].to_vec()).await;
-        assert!(
-            timeout(Duration::from_millis(25), stream.next())
-                .await
-                .is_err(),
-            "an incomplete SSE prefix produced a stream delta at byte {end}"
-        );
         start = end;
     }
     controller.release(bytes[start..].to_vec()).await;

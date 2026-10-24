@@ -112,6 +112,18 @@ mod tests {
                     vec![expected.clone()]
                 );
             }
+
+            let mut parser = Parser::default();
+            for (index, byte) in bytes[..bytes.len() - 1].iter().enumerate() {
+                assert!(
+                    parser.push(std::slice::from_ref(byte)).unwrap().is_empty(),
+                    "byte-at-a-time prefix emitted at index {index}"
+                );
+            }
+            assert_eq!(
+                parser.push(&bytes[bytes.len() - 1..]).unwrap(),
+                vec![expected]
+            );
         }
     }
 
