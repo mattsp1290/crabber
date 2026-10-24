@@ -190,7 +190,10 @@ async fn incomplete_transport_never_emits_model_response_completed() {
     let handle = runtime.start(request()).await.unwrap();
     let session = handle.session_id().clone();
     assert!(handle.done().await.is_err());
-    assert!(completion_events(&store, &session).await.is_empty());
+    assert_eq!(
+        completion_events(&store, &session).await,
+        [] as [EventRecord; 0]
+    );
 }
 
 #[tokio::test]
