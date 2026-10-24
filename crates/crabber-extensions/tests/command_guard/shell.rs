@@ -304,7 +304,7 @@ fn execution_canary_implies_deny() {
         }
     }
     assert!(positive_controls > 0);
-    assert!(!rows.is_empty());
+    assert_ne!(rows.len(), 0);
     let mut analyzed = 0;
     let mut denied_skipped = 0;
     let mut corpus_shell_executions = 0;
