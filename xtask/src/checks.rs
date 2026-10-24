@@ -152,6 +152,7 @@ impl Checks {
         }
     }
 
+    #[cfg(feature = "postgres-check")]
     pub(crate) fn required(environment: Vec<(String, String)>) -> Self {
         Self {
             required_environment: environment,

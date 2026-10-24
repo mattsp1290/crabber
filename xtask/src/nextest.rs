@@ -4,6 +4,7 @@ use std::{path::Path, process::Command};
 
 use crate::checks::Checks;
 
+#[cfg(feature = "postgres-check")]
 pub(crate) const CLUSTER_ROLE_TEST: &str =
     "postgres::isolation_tests::migration::migration_without_createrole_fails_clearly";
 
