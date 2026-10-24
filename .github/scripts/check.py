@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the complete required check within 600 seconds, including compilation."""
+"""Run the complete check with a supervised deadline, defaulting to 600 seconds."""
 import argparse
 import ctypes
 import json
@@ -234,9 +234,12 @@ def main():
     main_started_epoch = time.time()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--budget-seconds', type=int, default=600)
     parser.add_argument('--ci-start-time', type=float)
     parser.add_argument('--cache-state', choices=['unclassified', 'unchanged', 'runtime-rebuild', 'session-rebuild', 'bootstrap'], default='unclassified')
     args = parser.parse_args()
+    if args.budget_seconds <= 20:
+        parser.error('--budget-seconds must exceed the 20-second cleanup reserve')
     cwd = Path(__file__).resolve().parents[2]
     elapsed = 0.
     if args.ci_start_time is not None:
@@ -251,7 +254,7 @@ def main():
     # unnecessary for this gate; explicit caller settings remain authoritative.
     env.setdefault('CARGO_PROFILE_DEV_DEBUG', '0')
     env.setdefault('CARGO_PROFILE_TEST_DEBUG', '0')
-    code = supervise(['cargo', 'xtask', 'check', '--timings', str(inner)], cwd, report, elapsed=elapsed + time.monotonic() - main_started, env=env)
+    code = supervise(['cargo', 'xtask', 'check', '--timings', str(inner)], cwd, report, budget=args.budget_seconds, elapsed=elapsed + time.monotonic() - main_started, env=env)
     result = json.loads(report.read_text())
     result['cache_state'] = args.cache_state
     result['phases_report'] = str(inner)
@@ -268,13 +271,15 @@ def main():
     result['launcher_wall_seconds'] = time.monotonic() - main_started
     result['wall_seconds'] = elapsed + result['launcher_wall_seconds']
     result['ended_unix_seconds'] = time.time()
-    result['budget_breached'] = result['wall_seconds'] > 600
+    result['budget_breached'] = result['wall_seconds'] > args.budget_seconds
+    result['timing_target_seconds'] = 600
+    result['timing_target_met'] = result['wall_seconds'] <= 600
     if result['budget_breached']:
         result.update(status='failed', reason='budget-expired')
         code = 124
-    result['qualified'] = code == 0 and result['source_clean'] and result['end_clean'] and result['end_revision'] == result['source_revision'] and args.cache_state in {'unchanged', 'runtime-rebuild', 'session-rebuild'}
+    result['qualified'] = args.budget_seconds == 600 and code == 0 and result['source_clean'] and result['end_clean'] and result['end_revision'] == result['source_revision'] and args.cache_state in {'unchanged', 'runtime-rebuild', 'session-rebuild'}
     persist(report, result)
-    print(f"Complete check: {result['status']} in {result['wall_seconds']:.3f}s (600s budget; cache state {args.cache_state})", flush=True)
+    print(f"Complete check: {result['status']} in {result['wall_seconds']:.3f}s ({args.budget_seconds}s supervision budget; cache state {args.cache_state})", flush=True)
     return code
 
 

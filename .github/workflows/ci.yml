@@ -27,7 +27,7 @@ jobs:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,8 +131,33 @@ jobs:
           report['check_timing_scope'] = 'after setup, including compilation and cleanup'
           path.write_text(json.dumps(report, indent=2) + '\n')
           PY
-      - name: Diagnostic full workload including compilation and cleanup
-        run: python3 scripts/test-performance/measure.py --cwd "$PWD" --output "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -- cargo xtask check --timings "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check-phases.json"
+      - name: Diagnostic full check with 80-minute supervision, without timing qualification
+        env:
+          CHECK_STARTED: ${{ steps.budget.outputs.start }}
+          CACHE_STATE: ${{ steps.conditions.outputs.state }}
+        run: |
+          directory="target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$directory"
+          python3 -I -S .github/scripts/check.py --budget-seconds 4800 --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "$directory/check.json" 2>&1 | tee "$directory/raw.log"
+      - name: Preserve sanitized check, coverage and fixture reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostic-check-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/test-performance/cache-restore.json
+            target/test-performance/ci-*/**/*.json
+            target/test-performance/ci-*/raw.log
+            target/test-performance/complete-*/fixtures.jsonl
+            target/test-performance/complete-*/tests.json
+            target/test-performance/complete-*/binaries.json
+            target/test-performance/complete-*/cargo-metadata.json
+            target/test-performance/complete-*/native-artifacts.jsonl
+            target/test-performance/complete-*/boundary-features.json
+            target/test-performance/complete-*/resource-groups.json
+            target/test-performance/complete-*/*-version.txt
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Prune obsolete native test executables as CI maintenance
         if: always() && steps.cache.outcome == 'success'
         # Run only after the complete check or whole qualification protocol.
@@ -165,22 +190,3 @@ jobs:
             target/test-tools
             fixtures/wasm/target
           key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: Preserve sanitized check, coverage and fixture reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: diagnostic-check-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            target/test-performance/cache-restore.json
-            target/test-performance/ci-*/**/*.json
-            target/test-performance/ci-*/raw.log
-            target/test-performance/complete-*/fixtures.jsonl
-            target/test-performance/complete-*/tests.json
-            target/test-performance/complete-*/binaries.json
-            target/test-performance/complete-*/cargo-metadata.json
-            target/test-performance/complete-*/native-artifacts.jsonl
-            target/test-performance/complete-*/boundary-features.json
-            target/test-performance/complete-*/resource-groups.json
-            target/test-performance/complete-*/*-version.txt
-          if-no-files-found: ignore
-          retention-days: 7
