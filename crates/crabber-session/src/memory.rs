@@ -493,45 +493,7 @@ fn project_messages(
         .filter(|message| &message.session_id == id)
         .cloned()
         .collect();
-    let selected_messages =
-        if let Some(epoch) = selected_epoch.filter(|epoch| epoch.summary_message_id.is_some()) {
-            let summary_id = epoch.summary_message_id.as_ref().expect("filtered above");
-            let summary = all
-                .iter()
-                .find(|message| &message.id == summary_id)
-                .ok_or(StoreError::NotFound)?
-                .clone();
-            let tail = epoch
-                .tail_start_message_id
-                .as_ref()
-                .map(|tail_id| {
-                    all.iter()
-                        .position(|message| &message.id == tail_id)
-                        .ok_or(StoreError::NotFound)
-                })
-                .transpose()?;
-            let mut projected = vec![summary];
-            if let Some(start) = tail {
-                projected.extend(
-                    all[start..]
-                        .iter()
-                        .filter(|message| &message.id != summary_id)
-                        .cloned(),
-                );
-            }
-            projected
-        } else {
-            all
-        };
-    Ok(selected_messages
-        .into_iter()
-        .filter_map(|mut message| {
-            message
-                .parts
-                .retain(|part| !matches!(part.kind, PartKind::Custom { .. }));
-            (!message.parts.is_empty()).then_some(message)
-        })
-        .collect())
+    crate::context_projection::project(all, selected_epoch.cloned())
 }
 
 fn initial_epoch(
