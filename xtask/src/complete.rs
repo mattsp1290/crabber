@@ -105,29 +105,8 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     gates.internal("prepare-complete-manifests", workspace, move |_| {
         fs::create_dir_all(&create).expect("prepare complete-check manifests");
     });
-    gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
-    gates.internal(
-        "telemetry-messages",
-        workspace,
-        crate::telemetry_messages::check,
-    );
-    gates.internal("agui-pins", workspace, crate::agui::check);
-    gates.internal("wit-copies", workspace, crate::check_wit);
-    let mut wit = Command::new("wasm-tools");
-    wit.args(["component", "wit", "wit", "-o", "/dev/null"])
-        .current_dir(workspace);
-    gates.command(workspace, wit, "WIT contract validation");
-    gates.internal("minimal-embed-glue", workspace, crate::check_glue);
+    crate::check_workspace(workspace, gates);
     tool_versions(gates, directory);
-    crate::nextest::version_gate(workspace, gates);
-    gates.internal("standard-tool-prerequisites", workspace, |_| {
-        crate::standard_tools::check_tool_prerequisites()
-    });
-    gates.internal(
-        "live-tests-ignored",
-        workspace,
-        crate::check_live_tests_are_ignored,
-    );
     let mut supervisor_tests = Command::new("python3");
     supervisor_tests
         .args(["-I", "-S", ".github/scripts/test_check.py"])

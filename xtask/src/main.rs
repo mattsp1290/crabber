@@ -106,15 +106,10 @@ fn workspace() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
-fn check() -> checks::Checks {
-    let mut gates = checks::Checks::offline();
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask belongs directly under the workspace root");
-
+fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
     gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
     gates.internal("standard-tool-prerequisites", workspace, |_| {
-        standard_tools::check_tool_prerequisites()
+        standard_tools::check_tool_prerequisites();
     });
     gates.internal(
         "live-tests-ignored",
@@ -129,7 +124,16 @@ fn check() -> checks::Checks {
         .current_dir(workspace);
     gates.command(workspace, wit, "WIT contract validation");
     gates.internal("minimal-embed-glue", workspace, check_glue);
-    nextest::version_gate(workspace, &mut gates);
+    nextest::version_gate(workspace, gates);
+}
+
+fn check() -> checks::Checks {
+    let mut gates = checks::Checks::offline();
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask belongs directly under the workspace root");
+
+    check_workspace(workspace, &mut gates);
     probes::schedule(workspace, &mut gates);
     let fixture_lease = schedule_fixtures(workspace, &mut gates);
     check_server_host(workspace, &mut gates, true);

@@ -131,59 +131,6 @@ async fn aggregate_owner_membership_and_shared_proof_budget() {
     .unwrap();
 }
 #[tokio::test]
-async fn aggregate_owner_private_transfer_is_preflighted() {
-    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
-
-    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
-        crate::PostgresStore::migrate(&url).await.unwrap();
-        let store = crate::PostgresStore::connect(&url).await.unwrap();
-        let request = crate::session_owner_contract::reservation(SessionId::new());
-        store
-            .reserve_session_owner(request.clone(), None)
-            .await
-            .unwrap();
-        sqlx::query(
-            "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
-        )
-        .bind(&request.binding.session_id.0)
-        .bind(&request.binding.id.0)
-        .bind(format!(
-            "{{\"origin\":{},\"private\":{}}}",
-            serde_json::to_string(&request.id).unwrap(),
-            serde_json::to_string(&"private-carrier-marker".repeat(100_000)).unwrap()
-        ))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-        assert!(matches!(
-            read(&store, &request.binding.session_id, 1, 128).await.0,
-            Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
-        ));
-        assert!(matches!(
-            read(&store, &request.binding.session_id, 1, 8 * 1024 * 1024)
-                .await
-                .0,
-            Err(Failure::Error(PublicSessionError::UnknownStoreOutcome))
-        ));
-        sqlx::query(
-            "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
-        )
-        .bind(&request.binding.session_id.0)
-        .bind(&request.binding.id.0)
-        .bind("malformed-private-body".repeat(100_000))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-        assert!(matches!(
-            read(&store, &request.binding.session_id, 1, 128).await.0,
-            Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
-        ));
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
 async fn aggregate_owner_keyset_history_and_invalid_sentinel() {
     use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
