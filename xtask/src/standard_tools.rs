@@ -57,7 +57,7 @@ pub(crate) fn require_subprocess_tools(command: &mut Command) {
         .env("PYTHON_REPL_REQUIRE_PYTHON", "1");
 }
 
-pub(crate) fn schedule(workspace: &Path, gates: &mut Checks) {
+pub(crate) fn schedule_offline(workspace: &Path, gates: &mut Checks) {
     gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "mount-standard", "--", "--check"],
@@ -73,6 +73,10 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut Checks) {
             "protected_workspace",
         ],
     );
+    schedule(workspace, gates);
+}
+
+pub(crate) fn schedule(workspace: &Path, gates: &mut Checks) {
     gates.cargo(
         workspace,
         &[
