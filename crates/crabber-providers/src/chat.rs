@@ -1,5 +1,6 @@
 use crate::{ModelRequest, ProviderError, ProviderErrorKind, StreamDelta, sse::Event};
 use crabber_core::{ContentBlock, Role, ToolCallId, Usage};
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -96,29 +97,69 @@ fn invalid_stream_error() -> ProviderError {
     }
 }
 
-fn stream_error(value: &Value) -> ProviderError {
-    let Some(error) = value.as_object() else {
-        return invalid_stream_error();
-    };
-    let Some(code) = error.get("code") else {
-        return invalid_stream_error();
-    };
-    if code.as_i64().is_none() && code.as_u64().is_none() {
-        return invalid_stream_error();
+#[derive(Deserialize)]
+struct ChatStreamErrorEnvelope {
+    error: ChatStreamErrorWire,
+}
+
+#[derive(Deserialize)]
+struct ChatStreamErrorWire {
+    code: serde_json::Number,
+    #[serde(rename = "message")]
+    _message: String,
+    #[serde(default, deserialize_with = "deserialize_metadata")]
+    metadata: Option<ChatStreamErrorMetadata>,
+}
+
+#[derive(Deserialize)]
+struct ChatStreamErrorMetadata {
+    error_type: Option<String>,
+}
+
+fn deserialize_metadata<'de, D>(
+    deserializer: D,
+) -> Result<Option<ChatStreamErrorMetadata>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ChatStreamErrorMetadata::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Copy)]
+enum ChatStreamErrorCode {
+    Signed(i64),
+    Unsigned(u64),
+}
+
+impl ChatStreamErrorCode {
+    fn parse(number: &serde_json::Number) -> Option<Self> {
+        number
+            .as_u64()
+            .map(Self::Unsigned)
+            .or_else(|| number.as_i64().map(Self::Signed))
     }
-    if error.get("message").and_then(Value::as_str).is_none() {
-        return invalid_stream_error();
+
+    fn unsigned(self) -> Option<u64> {
+        match self {
+            Self::Unsigned(value) => Some(value),
+            Self::Signed(value) => u64::try_from(value).ok(),
+        }
     }
-    let error_type = match error.get("metadata") {
-        None => None,
-        Some(Value::Object(metadata)) => match metadata.get("error_type") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(value)) => Some(value.as_str()),
-            Some(_) => return invalid_stream_error(),
-        },
-        Some(_) => return invalid_stream_error(),
+}
+
+fn stream_error(value: Value) -> ProviderError {
+    let Ok(envelope) = serde_json::from_value::<ChatStreamErrorEnvelope>(value) else {
+        return invalid_stream_error();
     };
-    let (kind, retryable) = classify_stream_error(error_type, code.as_u64());
+    let Some(code) = ChatStreamErrorCode::parse(&envelope.error.code) else {
+        return invalid_stream_error();
+    };
+    let error_type = envelope
+        .error
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.error_type.as_deref());
+    let (kind, retryable) = classify_stream_error(error_type, code);
     ProviderError {
         kind,
         message: "Chat stream error".into(),
@@ -126,14 +167,17 @@ fn stream_error(value: &Value) -> ProviderError {
     }
 }
 
-fn classify_stream_error(error_type: Option<&str>, code: Option<u64>) -> (ProviderErrorKind, bool) {
+fn classify_stream_error(
+    error_type: Option<&str>,
+    code: ChatStreamErrorCode,
+) -> (ProviderErrorKind, bool) {
     match error_type {
         Some("rate_limit_exceeded") => (ProviderErrorKind::RateLimited, true),
         Some("authentication" | "permission_denied") => (ProviderErrorKind::Auth, false),
         Some("context_length_exceeded") => (ProviderErrorKind::ContextOverflow, false),
         Some("provider_overloaded" | "provider_unavailable") => (ProviderErrorKind::Server, true),
         Some("invalid_request") => (ProviderErrorKind::Invalid, false),
-        _ => match code {
+        _ => match code.unsigned() {
             Some(429) => (ProviderErrorKind::RateLimited, true),
             Some(401 | 403) => (ProviderErrorKind::Auth, false),
             Some(400 | 402 | 404 | 408 | 413 | 422) => (ProviderErrorKind::Invalid, false),
@@ -167,10 +211,7 @@ impl Codec {
         };
         let object = value.as_object();
         if named_error || object.is_some_and(|object| object.contains_key("error")) {
-            let error = object
-                .and_then(|object| object.get("error"))
-                .map_or_else(invalid_stream_error, stream_error);
-            return Ok(vec![StreamDelta::Error(error)]);
+            return Ok(vec![StreamDelta::Error(stream_error(value))]);
         }
         let mut out = Vec::new();
         if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {

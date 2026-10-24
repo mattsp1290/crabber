@@ -1,13 +1,6 @@
 //! Shared loopback HTTP server fixture for provider wire tests; no test cases live here.
 use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -51,42 +44,17 @@ async fn read_request(socket: &mut TcpStream, expected_path: &str) -> Captured {
 }
 
 /// Serves one scripted `text/event-stream` response per connection and captures each request.
-#[allow(
-    dead_code,
-    reason = "integration targets use one of the two server entry points"
-)]
 pub async fn server(
     responses: Vec<String>,
     expected_path: &'static str,
 ) -> (String, tokio::task::JoinHandle<Vec<Captured>>) {
-    let (url, task, _) =
-        counted_server(responses, expected_path, Arc::new(AtomicUsize::new(0))).await;
-    (url, task)
-}
-
-/// Serves scripted responses while exposing an independent request count.
-#[allow(
-    dead_code,
-    reason = "integration targets use one of the two server entry points"
-)]
-pub async fn counted_server(
-    responses: Vec<String>,
-    expected_path: &'static str,
-    requests: Arc<AtomicUsize>,
-) -> (
-    String,
-    tokio::task::JoinHandle<Vec<Captured>>,
-    Arc<AtomicUsize>,
-) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let observed = Arc::clone(&requests);
     let task = tokio::spawn(async move {
         timeout(LIMIT, async move {
             let mut captured = Vec::new();
             for body in responses {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                requests.fetch_add(1, Ordering::SeqCst);
                 captured.push(read_request(&mut socket, expected_path).await);
                 let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 socket.write_all(response.as_bytes()).await.unwrap();
@@ -96,5 +64,5 @@ pub async fn counted_server(
         .await
         .expect("loopback server timed out")
     });
-    (url, task, observed)
+    (url, task)
 }

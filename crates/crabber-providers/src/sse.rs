@@ -78,26 +78,25 @@ fn invalid(message: &str) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const UNNAMED_ERROR: &[u8] = b"data: {\"error\":{\"code\":429,\"message\":\"opaque upstream detail\",\"metadata\":{\"error_type\":\"rate_limit_exceeded\",\"provider_name\":\"opaque-provider\"}},\"provider_code\":\"opaque-provider-code\"}\n\n";
-    const NAMED_ERROR: &[u8] = b"event: error\ndata: {\"error\":{\"code\":503,\"message\":\"opaque upstream detail\",\"metadata\":{\"error_type\":\"provider_overloaded\",\"provider_name\":\"opaque-provider\"}},\"provider_code\":\"opaque-provider-code\"}\n\n";
+    const UNNAMED_DATA: &[u8] = b"data: x\n\n";
+    const NAMED_DATA: &[u8] = b"event: notice\ndata: y\n\n";
 
     #[test]
-    fn chat_error_fragment_split_boundary_matrix() {
+    fn data_fragment_split_boundary_matrix() {
         for (bytes, expected) in [
             (
-                UNNAMED_ERROR,
+                UNNAMED_DATA,
                 Event {
                     name: String::new(),
-                    data: String::from_utf8(UNNAMED_ERROR[6..UNNAMED_ERROR.len() - 2].to_vec())
+                    data: String::from_utf8(UNNAMED_DATA[6..UNNAMED_DATA.len() - 2].to_vec())
                         .unwrap(),
                 },
             ),
             (
-                NAMED_ERROR,
+                NAMED_DATA,
                 Event {
-                    name: "error".into(),
-                    data: String::from_utf8(NAMED_ERROR[19..NAMED_ERROR.len() - 2].to_vec())
-                        .unwrap(),
+                    name: "notice".into(),
+                    data: String::from_utf8(NAMED_DATA[20..NAMED_DATA.len() - 2].to_vec()).unwrap(),
                 },
             ),
         ] {
