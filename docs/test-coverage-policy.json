@@ -409,7 +409,7 @@
         "memory"
       ],
       "before": "Both exact facade-only histories registered in Session units and the facade source-embedding harness.",
-      "after": "Both unchanged histories register only in crabber::fenced_abandon; other native abandonment tests remain.",
+      "after": "Both unchanged histories register only in crabber::fenced_abandon_facade; other native abandonment tests remain.",
       "rationale": "Raw admission and legacy Pending fixture status use canonical source journal, Memory transaction and fault implementation in both registrations. Neither history enters genuine opaque Pending transport, preparation or phase authority paths. The facade bridge forwards only abandon_run and panics on every other Store method. Every rollback, replay, inbox and seven-boundary assertion and zero-provider-effects assertion is retained. Removing the redundant native registration permits removing the Session dev dependency on facade/Runtime.",
       "validation": "Source and graph validation in progress; no timing gain or final qualification claimed."
     },
@@ -828,7 +828,7 @@
     {
       "behavior": "Facade Memory abandonment rollback and replay",
       "primary_owner": "Canonical Memory transaction through facade source embedding",
-      "required_layer": "crabber::fenced_abandon",
+      "required_layer": "crabber::fenced_abandon_facade",
       "status": "implemented-unqualified",
       "required_detectors": [
         {
