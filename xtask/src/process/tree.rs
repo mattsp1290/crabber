@@ -3,9 +3,13 @@
 //! and descendants are considered; no command-name or machine-wide killing.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
-    sync::atomic::{AtomicBool, Ordering},
+    process::{Child, Command},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -19,6 +23,37 @@ use nix::{
 };
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static MANAGED: Mutex<BTreeMap<u32, usize>> = Mutex::new(BTreeMap::new());
+
+pub(super) struct ManagedChild(u32);
+
+impl ManagedChild {
+    pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
+        // Registration and orphan reaping share the lock so a fast child cannot
+        // be mistaken for an adopted zombie between spawn and registration.
+        let mut managed = MANAGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let child = command.spawn()?;
+        // A reaped Child can outlive PID reuse while its output readers drain.
+        *managed.entry(child.id()).or_default() += 1;
+        let registration = Self(child.id());
+        Ok((child, registration))
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        let mut managed = MANAGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = managed.get_mut(&self.0).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            managed.remove(&self.0);
+        }
+    }
+}
 
 pub(crate) fn enable() -> io::Result<()> {
     nix::sys::prctl::set_child_subreaper(true).map_err(io::Error::other)?;
@@ -28,19 +63,24 @@ pub(crate) fn enable() -> io::Result<()> {
 
 pub(super) struct Tree {
     owned: BTreeMap<i32, u64>,
+    leader: Option<u32>,
 }
 impl Tree {
-    pub(super) fn new() -> Option<Self> {
+    pub(super) fn new(leader: Option<u32>) -> Option<Self> {
         ENABLED.load(Ordering::SeqCst).then(|| Self {
             owned: BTreeMap::new(),
+            leader,
         })
     }
     pub(super) fn scan(&mut self) -> io::Result<()> {
         // Orphaned grandchildren are now direct children of this subreaper,
         // including helpers which started a separate Unix process group.
         let root = i32::try_from(std::process::id()).map_err(io::Error::other)?;
+        let managed = MANAGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut pending = vec![root];
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         while let Some(parent) = pending.pop() {
             if !seen.insert(parent) {
                 continue;
@@ -63,9 +103,19 @@ impl Tree {
                     Err(error) => return Err(error),
                 };
                 for child in children.split_whitespace() {
-                    let pid = child.parse::<i32>().map_err(io::Error::other)?;
-                    if let Some((start, _)) = identity(pid)? {
+                    let child = child.parse::<u32>().map_err(io::Error::other)?;
+                    if parent == root && managed.contains_key(&child) && self.leader != Some(child)
+                    {
+                        continue;
+                    }
+                    let pid = i32::try_from(child).map_err(io::Error::other)?;
+                    if let Some((start, state)) = identity(pid)? {
                         self.owned.insert(pid, start);
+                        if parent == root && state == "Z" && !managed.contains_key(&child) {
+                            reap_zombie(pid, start)?;
+                            self.owned.remove(&pid);
+                            continue;
+                        }
                         pending.push(pid);
                     }
                 }
@@ -92,17 +142,20 @@ impl Tree {
     }
     fn reap(&mut self) -> io::Result<bool> {
         self.scan()?;
+        let managed = MANAGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut active = false;
         for (&pid, &start) in &self.owned {
+            if managed.contains_key(&u32::try_from(pid).map_err(io::Error::other)?) {
+                continue;
+            }
             if let Some((current, state)) = identity(pid)? {
                 if current != start {
                     continue;
                 }
                 if state == "Z" {
-                    match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
-                        Ok(_) | Err(Errno::ECHILD | Errno::ESRCH) => {}
-                        Err(error) => return Err(io::Error::other(error)),
-                    }
+                    reap_zombie(pid, start)?;
                 } else {
                     active = true;
                 }
@@ -133,6 +186,16 @@ impl Tree {
     }
 }
 
+fn reap_zombie(pid: i32, start: u64) -> io::Result<()> {
+    if identity(pid)?.is_some_and(|(current, state)| current == start && state == "Z") {
+        match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
+            Ok(_) | Err(Errno::ECHILD | Errno::ESRCH) => {}
+            Err(error) => return Err(io::Error::other(error)),
+        }
+    }
+    Ok(())
+}
+
 fn identity(pid: i32) -> io::Result<Option<(u64, String)>> {
     let record = match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat,
@@ -153,7 +216,7 @@ fn identity(pid: i32) -> io::Result<Option<(u64, String)>> {
 
 pub(crate) fn verify_drained() -> io::Result<()> {
     let mut tree =
-        Tree::new().ok_or_else(|| io::Error::other("process supervision is not enabled"))?;
+        Tree::new(None).ok_or_else(|| io::Error::other("process supervision is not enabled"))?;
     tree.finish()
 }
 

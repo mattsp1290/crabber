@@ -13,6 +13,9 @@ use std::{
 
 mod environment;
 
+#[cfg(all(test, target_os = "linux"))]
+mod reaping_tests;
+
 #[cfg(target_os = "linux")]
 mod tree;
 #[cfg(target_os = "linux")]
@@ -68,7 +71,13 @@ pub(crate) fn replace_before_supervision(command: &mut Command) -> io::Error {
     command.exec()
 }
 
-fn spawn(command: &mut Command) -> io::Result<Child> {
+struct Spawned {
+    child: Child,
+    #[cfg(target_os = "linux")]
+    _registration: tree::ManagedChild,
+}
+
+fn spawn(command: &mut Command) -> io::Result<Spawned> {
     check_cancelled()?;
     environment::remove_parent_package(command);
     #[cfg(unix)]
@@ -76,12 +85,23 @@ fn spawn(command: &mut Command) -> io::Result<Child> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    command.spawn()
+    #[cfg(target_os = "linux")]
+    {
+        let (child, registration) = tree::ManagedChild::spawn(command)?;
+        Ok(Spawned {
+            child,
+            _registration: registration,
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(Spawned {
+        child: command.spawn()?,
+    })
 }
 
 fn wait(child: &mut Child, signal: &AtomicUsize) -> io::Result<ExitStatus> {
     #[cfg(target_os = "linux")]
-    let mut tree = tree::Tree::new();
+    let mut tree = tree::Tree::new(Some(child.id()));
     loop {
         #[cfg(target_os = "linux")]
         if let Some(tree) = &mut tree {
@@ -138,14 +158,15 @@ fn terminate(child: &mut Child) -> io::Result<()> {
 }
 
 pub(crate) fn status(command: &mut Command, signal: &AtomicUsize) -> io::Result<ExitStatus> {
-    let mut child = spawn(command)?;
-    let result = wait(&mut child, signal);
+    let mut spawned = spawn(command)?;
+    let child = &mut spawned.child;
+    let result = wait(child, signal);
     if result.is_err() && child.try_wait()?.is_none() {
-        terminate(&mut child)?;
+        terminate(child)?;
         child.wait()?;
     }
     #[cfg(target_os = "linux")]
-    if result.is_err() && tree::Tree::new().is_some() {
+    if result.is_err() && tree::Tree::new(None).is_some() {
         verify_drained()?;
     }
     result
@@ -173,7 +194,8 @@ fn output_impl(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = spawn(command)?;
+    let mut spawned = spawn(command)?;
+    let child = &mut spawned.child;
     // Drain both streams while the process runs, avoiding a full-pipe deadlock.
     let reader = |mut stream: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -188,13 +210,13 @@ fn output_impl(
         reader(Box::new(stream))
     };
     let stderr = reader(Box::new(child.stderr.take().unwrap()));
-    let status = wait(&mut child, signal);
+    let status = wait(child, signal);
     if status.is_err() && child.try_wait()?.is_none() {
-        terminate(&mut child)?;
+        terminate(child)?;
         child.wait()?;
     }
     #[cfg(target_os = "linux")]
-    if status.is_err() && tree::Tree::new().is_some() {
+    if status.is_err() && tree::Tree::new(None).is_some() {
         verify_drained()?;
     }
     let stdout = stdout
