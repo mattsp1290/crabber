@@ -16,6 +16,7 @@ Each costly family records the failure, production owner, required backend, reta
 | Narrow feature builds | MERGE | Real production library/CLI checks and standalone WASM-only consumer | Recompiling full private test crates in additional feature graphs |
 | Native pending approval scheduling | KEEP | Every existing keyed/unkeyed claim/recovery, held ACK, malformed/replay and blocked-main assertion; five fresh independent families per backend | Sequential coupling inside one76.7s PostgreSQL case |
 | Pending tool malformed ACK | MOVE-CHEAPER | Twelve corruptions through real shared pending execution on Memory; forged metadata and wrong outcome through each of four SQL origin paths; zero dispatch/register assertions retained | SQL corruption preparations fall from 48 to eight per backend |
+| Command-guard execution canaries | DELETE-REDUNDANT | Analyze every corpus row and dialect, execute every non-denied row in every interpreter variant, and verify real blocked-command controls | Shell launches for scripts whose denying outcome already satisfies the implication |
 
 The SQL fault histories call the original assertion helpers unchanged. Before/after-commit and activation uncertainty remain real SQL transactions. Current PostgreSQL fixtures already provide the migrated schema; dedicated migration tests continue using Blank/legacy fixtures. Every independent fault test receives fresh storage. Shared state between independently scheduled histories is forbidden.
 
@@ -101,3 +102,49 @@ This removes repeated facade fault and scenario combinations under the second
 login. Those ordinary behavior matrices remain required in the combined graph.
 The replacement is an integration candidate. Its full required run and timing
 qualification remain pending.
+
+### Command-guard execution canaries (full verification pending)
+
+The canary property requires denial whenever a real shell executes a guarded
+command. `Policy::analyze_script` is deterministic and accesses no processes,
+files, environment or credentials. A denied script already satisfies that
+property. The test now analyzes every generated and adversarial row for both
+dialects, then executes every non-denied row in every available interpreter.
+Every non-denied row still reaches the real shell and can fail the canary assertion.
+
+Explicit `blocked` and `git push` controls must execute their fixture canary and receive denial
+for each interpreter variant. The test resets markers before every execution
+and reports analyzed rows, denied rows skipped, corpus shell executions and
+positive controls. An empty corpus fails. A policy that denies every corpus
+row still satisfies this false-negative property; accepted-form tests retain
+their separate assertions. Corpus size, seed, unsafe lookup guards, interpreter
+discovery, watchdogs and deadlines remain unchanged. Full-check qualification remains pending.
+
+Skipping denied rows also removes their incidental filesystem changes and
+background process history. Marker resets do not reset that state. The retained
+pointwise property does not establish identical shell execution history across
+the entire corpus. No current corpus detector is known to depend on that history.
+
+Five alternating frozen-binary pairs on four pinned local ARM CPUs passed all
+ten exact test executions with zero failures or harness errors. Median wall time
+fell from 72.838 seconds (range 72.689–72.939) to 6.280 seconds
+(range 6.280–6.330), a 91.4% reduction for this test alone. Both binaries used
+the same combined features, debug profile and required Bash/Dash support. Every
+candidate run analyzed 6,332 row/dialect pairs, skipped 5,749 already-denied pairs,
+and completed 860 corpus shell invocations plus six positive controls. A temporary
+production mutation that abstained only for `echo ok && blocked` passed the
+controls and failed at the real-shell corpus assertion. The mutation was removed.
+
+The baseline consumed a median 57.725 seconds of system CPU and 13.042 seconds
+of user CPU. The candidate consumed 4.832 and 1.174 seconds respectively. A separate
+process-syscall profile confirmed repeated process creation and execution. Its
+traced duration is excluded from the comparison. Full-suite contention, compilation
+and cleanup are excluded from these isolated timings. The full-check result must
+be reported separately; warm build graphs can change it independently of this test.
+
+Use `scripts/test-performance/compare-binaries.py` with frozen baseline and
+candidate test binaries and `--test shell::execution_canary_implies_deny --runs 5`.
+Set `COMMAND_GUARD_REQUIRE_SHELLS=1` and use the same CPU affinity for both sides.
+The harness reports exact-test pass counts, errors, hashes, CPU usage and ranges.
+It rejects known missing-PostgreSQL and missing-shell messages. Inspect each test's
+work counters as well; a libtest pass alone does not prove its internal work ran.
