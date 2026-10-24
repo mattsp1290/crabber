@@ -409,7 +409,7 @@
         "memory"
       ],
       "before": "Both exact facade-only histories registered in Session units and the facade source-embedding harness.",
-      "after": "Both unchanged histories register only in crabber::fenced_abandon; other native abandonment tests remain.",
+      "after": "Both unchanged histories register only in crabber::fenced_abandon_facade; other native abandonment tests remain.",
       "rationale": "Raw admission and legacy Pending fixture status use canonical source journal, Memory transaction and fault implementation in both registrations. Neither history enters genuine opaque Pending transport, preparation or phase authority paths. The facade bridge forwards only abandon_run and panics on every other Store method. Every rollback, replay, inbox and seven-boundary assertion and zero-provider-effects assertion is retained. Removing the redundant native registration permits removing the Session dev dependency on facade/Runtime.",
       "validation": "Source and graph validation in progress; no timing gain or final qualification claimed."
     },
@@ -559,27 +559,6 @@
       "after": "The combined graph runs dedicated own-workspace positives and foreign-workspace denials, the native restricted-worker Store, public-state, typed-admission, session-owner, queue, fork and management contracts, the existing ordered-steer history, and one actual restricted-worker snapshot continuation in a cold process.",
       "rationale": "Each isolated role fixture owns its cloned database and unique LOGIN roles. Public positives retain prompt and keyed replay, queue claim, preparation, dispatch and recovery, cancellation, management, fork, deletion and V2 reads. Native restricted-role contracts retain storage and ordered-steer behavior. The cold snapshot history delegates only its owned database to the expected worker role, verifies the real login lacks superuser and BYPASSRLS, and retains exact continuation, cutoff, relation and event readback. Ordinary administrative child handoffs retain their exact credential check. The removed dimension is repeating every facade fault and scenario combination under a second login. Backend and facade behavior matrices remain in the ordinary combined run.",
       "validation": "Source integration candidate only. No new build, test run or timing qualification has completed."
-    },
-    {
-      "id": "command-guard-canary-executions",
-      "disposition": "DELETE-REDUNDANT",
-      "state": "implemented-unqualified",
-      "failure": "A script that executes a guarded canary in a real shell must receive a denying policy outcome.",
-      "owner": [
-        "crates/crabber-extensions/src/command_guard/mod.rs:Policy::analyze_script",
-        "crates/crabber-extensions/tests/command_guard/shell.rs:execution_canary_implies_deny"
-      ],
-      "required_dialects": [
-        "posix",
-        "bash"
-      ],
-      "retained_tests": [
-        "shell::execution_canary_implies_deny"
-      ],
-      "before": "Every generated and adversarial row executes in every available interpreter for both dialects. The policy outcome is checked when a canary executes.",
-      "after": "Every row and dialect is analyzed. Every non-denied row still executes in every available interpreter and must leave the guarded canaries untouched. Explicit blocked-command and git-push controls must execute their canaries and receive denial for every interpreter variant.",
-      "rationale": "Policy analysis is deterministic, retains no input and performs no process, file, environment or credential access. A denying outcome already satisfies the execution-implies-denial property. Every non-denied row remains eligible for real-shell execution. The corpus, seed, dialects, interpreter discovery, unsafe lookup guard, watchdog, deadline and fixture remain unchanged. Real-shell executions whose policy outcome already proves the required conclusion are removed, along with their incidental filesystem and background-process history. Marker resets do not reset that history; no current corpus detector is known to rely on it. Separate accepted-form tests continue owning false-positive behavior.",
-      "validation": "Five alternating frozen-binary pairs passed all ten exact tests with zero failures or harness errors. Isolated medians were 72.838s and 6.280s, with ranges 72.689 to 72.939s and 6.280 to 6.330s. Each candidate run completed 6,332 analyses, skipped 5,749 denied pairs, and ran 860 corpus shell invocations plus six positive controls. An exact-row production abstention mutation failed at the real-shell assertion after controls passed; the mutation was removed. Full required check and CI remain pending. These timings exclude compilation and full-suite contention."
     }
   ],
   "required_behaviors": [
@@ -849,7 +828,7 @@
     {
       "behavior": "Facade Memory abandonment rollback and replay",
       "primary_owner": "Canonical Memory transaction through facade source embedding",
-      "required_layer": "crabber::fenced_abandon",
+      "required_layer": "crabber::fenced_abandon_facade",
       "status": "implemented-unqualified",
       "required_detectors": [
         {

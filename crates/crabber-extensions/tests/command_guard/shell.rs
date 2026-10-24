@@ -288,44 +288,24 @@ fn execution_canary_implies_deny() {
     );
     rows.push(format!("echo {}\nblocked", "\\".repeat(2)));
     let p = policy();
-    let mut positive_controls = 0;
-    for d in [Dialect::Posix, Dialect::Bash] {
-        for (shell, args) in invocation(&shells, d) {
-            for script in ["blocked", "git push"] {
-                f.reset();
-                let _ = run(shell, &args, script, &f, &path, false);
-                assert!(
-                    f.matched(),
-                    "guarded canary did not execute: {d:?} {script}"
-                );
-                assert!(p.analyze_script(script, d).denies());
-                positive_controls += 1;
-            }
-        }
-    }
-    assert!(positive_controls > 0);
-    assert_ne!(rows.len(), 0);
-    let mut analyzed = 0;
-    let mut denied_skipped = 0;
-    let mut corpus_shell_executions = 0;
+    let mut written = 0;
     for s in rows {
         for d in [Dialect::Posix, Dialect::Bash] {
-            analyzed += 1;
-            if p.analyze_script(&s, d).denies() {
-                denied_skipped += 1;
-                continue;
-            }
             for (shell, args) in invocation(&shells, d) {
                 f.reset();
                 let _ = run(shell, &args, &s, &f, &path, false);
-                corpus_shell_executions += 1;
-                assert!(!f.matched(), "executed guarded command: {d:?} {s:?}");
+                if f.matched() {
+                    assert!(
+                        p.analyze_script(&s, d).denies(),
+                        "executed guarded command: {d:?} {s:?}"
+                    );
+                    written += 1;
+                }
             }
         }
     }
-    eprintln!(
-        "canary rows analyzed: {analyzed}, denied rows skipped: {denied_skipped}, corpus shell executions: {corpus_shell_executions}, positive controls: {positive_controls}"
-    );
+    eprintln!("execution canaries written: {written}");
+    assert!(written > 0);
 }
 #[test]
 fn implicit_execution_references() {

@@ -205,7 +205,7 @@ builds the local WASM fixtures required by the WASM test.
 ```sh
 cargo xtask check
 cargo test -p crabber-session --features sqlite
-cargo test -p crabber --features sqlite --test admission_receipts --test bounded_snapshots --test fenced_abandon --test result_transform_interrupt --test facade_contracts
+cargo test -p crabber --features sqlite --test admission_receipts --test bounded_snapshots --test fenced_abandon_facade --test result_transform_interrupt --test facade_contracts
 cargo test -p crabber --features datadog,sqlite --test trace_context
 cargo test -p crabber --features wasm,sqlite --test wasm_roles
 cargo test -p crabber-runtime --features sqlite

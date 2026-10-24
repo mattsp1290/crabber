@@ -16,8 +16,13 @@ async fn committed_result_lost_after_send_resets_before_next_call() {
         })
         .await
         .expect("seed execution must finish before installing the next hook");
-        let barrier = Barrier::new();
-        f.manager.hooks.lock().unwrap().after_send = Some(barrier.hook());
+        let before_send = Barrier::new();
+        let after_send = Barrier::new();
+        {
+            let mut hooks = f.manager.hooks.lock().unwrap();
+            hooks.before_send = Some(before_send.hook());
+            hooks.after_send = Some(after_send.hook());
+        }
         let cancel = CancellationToken::new();
         let mut call = Box::pin(f.manager.execute_owner(
             key("one"),
@@ -32,15 +37,21 @@ async fn committed_result_lost_after_send_resets_before_next_call() {
             Poll::Ready(())
         })
         .await;
-        barrier.entered().await;
+        before_send.entered().await;
+        before_send.release();
+        after_send.entered().await;
         if drop_caller {
             drop(call);
         } else {
             cancel.cancel();
             code(&call.await.unwrap_err(), "cancelled");
         }
-        f.manager.hooks.lock().unwrap().after_send = None;
-        barrier.release();
+        {
+            let mut hooks = f.manager.hooks.lock().unwrap();
+            hooks.before_send = None;
+            hooks.after_send = None;
+        }
+        after_send.release();
         let next = f.execute(key("one"), "'x' in globals()").await.unwrap();
         assert_eq!(next.result.text, "False");
         assert_eq!(next.generation, 1);
