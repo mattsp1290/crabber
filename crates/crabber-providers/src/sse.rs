@@ -25,10 +25,11 @@ impl Parser {
                 let line =
                     std::str::from_utf8(&self.line).map_err(|_| invalid("invalid SSE UTF-8"))?;
                 if line.is_empty() {
+                    let event = std::mem::take(&mut self.event);
                     if !self.data.is_empty() {
                         self.data.pop();
                         out.push(Event {
-                            name: std::mem::take(&mut self.event),
+                            name: event,
                             data: std::mem::take(&mut self.data),
                         });
                     }
@@ -77,6 +78,54 @@ fn invalid(message: &str) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const UNNAMED_DATA: &[u8] = b"data: x\n\n";
+    const NAMED_DATA: &[u8] = b"event: notice\ndata: y\n\n";
+
+    #[test]
+    fn data_fragment_split_boundary_matrix() {
+        for (bytes, expected) in [
+            (
+                UNNAMED_DATA,
+                Event {
+                    name: String::new(),
+                    data: String::from_utf8(UNNAMED_DATA[6..UNNAMED_DATA.len() - 2].to_vec())
+                        .unwrap(),
+                },
+            ),
+            (
+                NAMED_DATA,
+                Event {
+                    name: "notice".into(),
+                    data: String::from_utf8(NAMED_DATA[20..NAMED_DATA.len() - 2].to_vec()).unwrap(),
+                },
+            ),
+        ] {
+            for split in 1..bytes.len() {
+                let mut parser = Parser::default();
+                assert!(
+                    parser.push(&bytes[..split]).unwrap().is_empty(),
+                    "split={split}"
+                );
+                assert_eq!(
+                    parser.push(&bytes[split..]).unwrap(),
+                    vec![expected.clone()]
+                );
+            }
+
+            let mut parser = Parser::default();
+            for (index, byte) in bytes[..bytes.len() - 1].iter().enumerate() {
+                assert!(
+                    parser.push(std::slice::from_ref(byte)).unwrap().is_empty(),
+                    "byte-at-a-time prefix emitted at index {index}"
+                );
+            }
+            assert_eq!(
+                parser.push(&bytes[bytes.len() - 1..]).unwrap(),
+                vec![expected]
+            );
+        }
+    }
+
     #[test]
     fn framing_across_chunks() {
         let mut parser = Parser::default();
@@ -89,6 +138,18 @@ mod tests {
             vec![Event {
                 name: "foo".into(),
                 data: "a\nb".into()
+            }]
+        );
+    }
+    #[test]
+    fn empty_data_boundary_resets_event_name() {
+        let mut parser = Parser::default();
+        assert_eq!(parser.push(b"event: error\n\n").unwrap(), [] as [Event; 0]);
+        assert_eq!(
+            parser.push(b"data: normal\n\n").unwrap(),
+            vec![Event {
+                name: String::new(),
+                data: "normal".into(),
             }]
         );
     }

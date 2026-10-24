@@ -1,5 +1,5 @@
 //! Finite, content-free runtime span fields shared by attempt entry points.
-use super::{Orchestrator, RunResult, RuntimeError};
+use super::{AdmissionExecutionError, Orchestrator, RunResult, RuntimeError, StoreError};
 use crate::{TerminalReason, telemetry_targets::targets};
 impl Orchestrator {
     pub(super) fn attempt_span(
@@ -100,6 +100,31 @@ pub(super) fn record_result(
         span.record("error.kind", error.error_kind());
     }
     outcome
+}
+
+pub(super) fn record_admission_result(
+    span: &tracing::Span,
+    result: Result<&'static str, &RuntimeError>,
+) {
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(
+            RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
+            | RuntimeError::SessionBusy,
+        ) => "conflict",
+        Err(
+            RuntimeError::PreparationIncomplete { .. }
+            | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
+        ) => "unknown",
+        Err(_) => "rejected",
+    };
+    span.record("outcome", outcome).record(
+        "otel.status_code",
+        if outcome == "rejected" { "ERROR" } else { "OK" },
+    );
+    if let Err(error) = result {
+        span.record("error.kind", error.error_kind());
+    }
 }
 
 pub(super) fn record_model_error(span: &tracing::Span, error: &RuntimeError) {

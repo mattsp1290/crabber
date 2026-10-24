@@ -34,6 +34,7 @@ mod native_parent;
 #[path = "fenced_support/pending_initial_memory.rs"]
 mod pending_initial_memory;
 pub use crabber::session::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
+pub use crabber::session::{QueueHeadsPage, QueueHeadsRequest, WorkspaceRunsRequest};
 #[path = "../../crabber-session/src/fork/history.rs"]
 #[allow(dead_code)]
 pub(crate) mod fork_history;

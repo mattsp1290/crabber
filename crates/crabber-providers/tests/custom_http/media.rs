@@ -153,3 +153,76 @@ async fn chat_preserves_user_image_order_and_system_history_role() {
         );
     }
 }
+#[tokio::test]
+async fn messages_encodes_user_images_and_tool_result_images() {
+    for source in [
+        MediaSource::Data {
+            base64: "AQ==".into(),
+        },
+        MediaSource::Url {
+            url: "https://example.invalid/image".into(),
+        },
+        MediaSource::File {
+            file_id: "opaque-file".into(),
+        },
+    ] {
+        let expected = match &source {
+            MediaSource::Data { base64 } => {
+                json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":base64}})
+            }
+            MediaSource::Url { url } => json!({"type":"image","source":{"type":"url","url":url}}),
+            MediaSource::File { file_id } => {
+                json!({"type":"image","source":{"type":"file","file_id":file_id}})
+            }
+        };
+        let image = ContentBlock::MediaContent {
+            kind: MediaKind::Image,
+            mime_type: "image/png".into(),
+            source: source.clone(),
+        };
+        let result = |content| {
+            message(
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    call_id: ToolCallId::from("toolu_1"),
+                    content,
+                    is_error: false,
+                }],
+            )
+        };
+        let body = capture(
+            Protocol::Messages,
+            vec![
+                message(Role::User, mixed(source.clone())),
+                result(vec![
+                    ContentBlock::Text {
+                        text: "partial".into(),
+                    },
+                    image.clone(),
+                ]),
+                result(vec![
+                    ContentBlock::Text {
+                        text: String::new(),
+                    },
+                    image,
+                ]),
+            ],
+        )
+        .await;
+        let content = &body["messages"][0]["content"];
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(content.as_array().unwrap().len(), 3);
+        assert_eq!(content[0], json!({"type":"text","text":"caption"}));
+        assert_eq!(content[1], expected);
+        assert_eq!(content[2], json!({"type":"text","text":"tail"}));
+        assert_eq!(
+            body["messages"][1]["content"][0],
+            json!({"type":"tool_result","tool_use_id":"toolu_1","is_error":false,
+                "content":[{"type":"text","text":"partial"}, expected]})
+        );
+        assert_eq!(
+            body["messages"][2]["content"][0]["content"],
+            json!([expected])
+        );
+    }
+}

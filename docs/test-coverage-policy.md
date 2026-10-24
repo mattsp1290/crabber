@@ -70,8 +70,8 @@ and all six final qualification cases remain pending.
 
 ### Durable control polling and original callback disposal (unqualified)
 
-Durable-control polling now runs independently inside the worker's existing
-lease/control resource owner. A synchronous original callback or panic-payload
+Durable-control polling runs independently inside the worker's dedicated
+RunControlObservation resource owner. A synchronous original callback or panic-payload
 destructor cannot strand its sibling Store observation. The original Store
 future remains retained through cooperative close and actual join; queued
 control messages are revalidated against quiescence before delivery, preserving
@@ -82,3 +82,22 @@ Memory/SQLite/PostgreSQL mixed-products histories are required. Focused tests
 passed, and restoring the exact old inline implementation failed the new
 held-payload progress assertion. Full selected inventory and all final local/CI
 qualification cases remain pending.
+
+
+### Restricted worker roles (unqualified)
+
+Dedicated PostgreSQL LOGIN histories replace a second run of all seven facade
+binaries for future queues, session owners, controls, snapshots, management,
+durable interactions and server hosts. The dedicated public tests retain
+own-workspace operations and foreign-workspace denial without provider calls or
+row changes. Native restricted-role contracts retain Store, public-state,
+typed-admission, session-owner, queue, fork, management and ordered-steer checks.
+A separate eight-message snapshot journey resumes a real continuation in a cold
+child logged in as the worker. It checks the login has neither superuser nor
+BYPASSRLS. The child still verifies the owned database and expected login against
+the server. Administrative child handoffs keep their exact credential check.
+
+This removes repeated facade fault and scenario combinations under the second
+login. Those ordinary behavior matrices remain required in the combined graph.
+The replacement is an integration candidate. Its full required run and timing
+qualification remain pending.

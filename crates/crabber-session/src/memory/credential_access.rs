@@ -70,13 +70,29 @@ impl MemoryStore {
     }
 
     pub(super) fn raw_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
+        self.unfinished_runs(None)
+    }
+
+    pub(super) fn raw_workspace_unfinished_runs(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<Run>, StoreError> {
+        self.unfinished_runs(Some(workspace))
+    }
+
+    fn unfinished_runs(&self, workspace: Option<&str>) -> Result<Vec<Run>, StoreError> {
         let state = self.state.lock().expect("memory store poisoned");
+        let selected = |run: &&Run| {
+            !run.status.is_terminal()
+                && workspace.is_none_or(|workspace| {
+                    state
+                        .sessions
+                        .get(&run.session_id)
+                        .is_some_and(|session| session.workspace_id == workspace)
+                })
+        };
         let mut proof = Proof::bounded(32 << 20);
-        for (id, run) in state
-            .runs
-            .iter()
-            .filter(|(_, run)| !run.status.is_terminal())
-        {
+        for (id, run) in state.runs.iter().filter(|(_, run)| selected(run)) {
             if id != &run.id {
                 return Err(StoreError::Validation(
                     "stored run identity is invalid".into(),
@@ -84,12 +100,7 @@ impl MemoryStore {
             }
             check(&state, run, &mut proof)?;
         }
-        Ok(state
-            .runs
-            .values()
-            .filter(|run| !run.status.is_terminal())
-            .cloned()
-            .collect())
+        Ok(state.runs.values().filter(selected).cloned().collect())
     }
 }
 
@@ -129,6 +140,46 @@ mod tests {
                 .insert((session.clone(), run.clone()), saved);
         }
     }
+    #[tokio::test]
+    async fn workspace_discovery_excludes_foreign_credentials_before_proof() {
+        let store = crate::MemoryStore::new();
+        let first = contract::admit(&store).await;
+        let foreign = contract::admit(&store).await;
+        let scope = (foreign.session.id.clone(), foreign.run.id.clone());
+        let original = {
+            let mut state = store.state.lock().unwrap();
+            state
+                .sessions
+                .get_mut(&foreign.session.id)
+                .unwrap()
+                .workspace_id = "foreign".into();
+            state
+                .execution_enrollment_unclassified
+                .remove(&scope)
+                .unwrap()
+        };
+        let own = store
+            .list_workspace_unfinished_runs(crate::WorkspaceRunsRequest {
+                workspace_id: first.session.workspace_id.clone(),
+            })
+            .await;
+        let other = store
+            .list_workspace_unfinished_runs(crate::WorkspaceRunsRequest {
+                workspace_id: "foreign".into(),
+            })
+            .await;
+        let global = store.list_unfinished_runs().await;
+        store
+            .state
+            .lock()
+            .unwrap()
+            .execution_enrollment_unclassified
+            .insert(scope, original);
+        assert_eq!(own.unwrap(), vec![first.run]);
+        assert!(other.is_err());
+        assert!(global.is_err());
+    }
+
     #[tokio::test]
     async fn raw_driver_registration_and_activation_authenticate_birth() {
         let clock = std::sync::Arc::new(crabber_core::ManualClock::new(

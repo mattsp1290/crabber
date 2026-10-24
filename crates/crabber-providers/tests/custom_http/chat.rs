@@ -1,6 +1,24 @@
 use super::*;
 
 #[tokio::test]
+async fn chat_reasoning_effort_reaches_wire() {
+    let completed = b"data: [DONE]\n\n";
+    let server = RawServer::start(raw_response("200 OK", completed.len(), completed)).await;
+    let mut request = request("custom");
+    request.reasoning_effort = Some(crabber_core::ReasoningEffort::High);
+    let items: Vec<_> = HttpAdapter::custom("custom", &server.url, Protocol::ChatCompletions)
+        .with_api_key("key")
+        .stream(request)
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(matches!(items.as_slice(), [StreamDelta::Completed]));
+    let body: serde_json::Value = serde_json::from_slice(&server.body().await).unwrap();
+    assert_eq!(body["reasoning_effort"], "high");
+}
+
+#[tokio::test]
 async fn custom_chat_wire_body_omits_empty_tools_and_uses_completion_tokens() {
     let completed = b"data: [DONE]\n\n";
     let server = RawServer::start(raw_response("200 OK", completed.len(), completed)).await;

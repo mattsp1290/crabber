@@ -147,6 +147,7 @@ async fn active_execution_holds_original_implementation_and_limits_across_turns(
             },
             system_prompt: None,
             max_output_tokens: Some(32),
+            model_controls: crabber_core::ModelControls::default(),
         })
         .await
         .unwrap();
@@ -298,6 +299,7 @@ fn binding_request() -> Request {
         },
         system_prompt: None,
         max_output_tokens: Some(32),
+        model_controls: crabber_core::ModelControls::default(),
     }
 }
 

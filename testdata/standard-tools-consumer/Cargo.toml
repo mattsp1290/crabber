@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "standard-tools-consumer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "CRABBER_REV", features = ["sqlite"] }
+crabber-tools-catalog = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "CRABBER_REV" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+async-trait = "0.1"
+tempfile = "3"
+
+crabber-extensions = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "CRABBER_REV" }

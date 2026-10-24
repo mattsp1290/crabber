@@ -23,10 +23,14 @@ pub fn body(request: &ModelRequest) -> Value {
                         json!({"type":"thinking","thinking":text,"signature":state["signature"]}),
                     );
                 }
+                // The API rejects empty text blocks.
                 ContentBlock::Text { text }
-                    if matches!(message.role, Role::User | Role::Assistant) =>
+                    if matches!(message.role, Role::User | Role::Assistant) && !text.is_empty() =>
                 {
                     content.push(json!({"type":"text","text":text}))
+                }
+                block @ ContentBlock::MediaContent { .. } if message.role == Role::User => {
+                    content.extend(crate::real::outbound::messages_image(block));
                 }
                 ContentBlock::ToolCall {
                     call_id,
@@ -39,15 +43,8 @@ pub fn body(request: &ModelRequest) -> Value {
                     content: blocks,
                     is_error,
                 } => {
-                    let text = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    content.push(json!({"type":"tool_result","tool_use_id":call_id.0,"content":text,"is_error":is_error}));
+                    let result = tool_result_content(blocks);
+                    content.push(json!({"type":"tool_result","tool_use_id":call_id.0,"content":result,"is_error":is_error}));
                 }
                 ContentBlock::ProviderState { codec_id, payload }
                     if message.role == Role::Assistant
@@ -63,23 +60,40 @@ pub fn body(request: &ModelRequest) -> Value {
             messages.push(json!({"role":if message.role == Role::Assistant {"assistant"} else {"user"},"content":content}));
         }
     }
-    let tools: Vec<_> = request
-        .tools
-        .iter()
-        .map(|t| json!({"name":t.name,"description":t.description,"input_schema":t.parameters}))
-        .collect();
-    let mut body = json!({"model":request.selection.model_id,"messages":messages,"tools":tools,"max_tokens":4096,"stream":true});
+    let mut body = json!({"model":request.selection.model_id,"messages":messages,"max_tokens":4096,"stream":true});
+    // The API rejects replayed tool blocks without `tools`, so only a turn with
+    // no tools and no tool history is sent tool free.
+    let tool_history = request.messages.iter().any(|message| {
+        message.parts.iter().any(|part| {
+            matches!(
+                part.content,
+                ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. }
+            )
+        })
+    });
+    if !request.tools.is_empty() || tool_history {
+        let tools: Vec<_> = request
+            .tools
+            .iter()
+            .map(|t| json!({"name":t.name,"description":t.description,"input_schema":t.parameters}))
+            .collect();
+        body["tools"] = json!(tools);
+    }
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
     if let Some(max_tokens) = request.max_tokens {
         body["max_tokens"] = json!(max_tokens);
     }
-    if let Some(tool_choice) = &request.tool_choice {
-        body["tool_choice"] = if tool_choice == "auto" || tool_choice == "any" {
-            json!({"type":tool_choice})
-        } else {
-            json!({"type":"tool","name":tool_choice})
+    if let Some(tool_choice) = request
+        .tool_choice
+        .as_ref()
+        .filter(|_| !request.tools.is_empty())
+    {
+        body["tool_choice"] = match tool_choice.as_str() {
+            "auto" | "any" | "none" => json!({"type":tool_choice}),
+            "required" => json!({"type":"any"}),
+            name => json!({"type":"tool","name":name}),
         };
     }
     if let Some(system) = &request.system {
@@ -87,14 +101,49 @@ pub fn body(request: &ModelRequest) -> Value {
     }
     body
 }
+/// Text-only results keep the joined-string form; media needs a block array.
+fn tool_result_content(blocks: &[ContentBlock]) -> Value {
+    if !blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::MediaContent { .. }))
+    {
+        let text = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return json!(text);
+    }
+    // The API rejects empty text blocks inside content arrays.
+    let parts: Vec<_> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } if !text.is_empty() => {
+                Some(json!({"type":"text","text":text}))
+            }
+            block => crate::real::outbound::messages_image(block),
+        })
+        .collect();
+    json!(parts)
+}
 #[derive(Default)]
 pub struct Codec {
     calls: HashMap<u64, ToolCallId>,
     initial_input: HashMap<u64, Value>,
     streamed_input: HashSet<u64>,
     usage: Usage,
-    thinking: HashSet<u64>,
-    seen_thinking: HashSet<u64>,
+    thinking: HashMap<u64, Thinking>,
+    saw_tool_use: bool,
+    saw_text: bool,
+}
+/// One thinking block, kept for the whole message so a repeated index is
+/// rejected. An unsigned block fails outbound replay validation later.
+struct Thinking {
+    open: bool,
+    signed: bool,
 }
 impl Codec {
     pub fn event(&mut self, event: &Event) -> Result<Vec<StreamDelta>, ProviderError> {
@@ -111,20 +160,65 @@ impl Codec {
             "content_block_delta" => self.delta_block(&value, &mut out)?,
             "content_block_stop" => self.stop_block(&value, &mut out),
             "message_delta" => {
-                self.usage.output_tokens = value["usage"]["output_tokens"].as_u64().unwrap_or(0)
+                if let Some(output) = value["usage"]["output_tokens"].as_u64() {
+                    self.usage.output_tokens = output;
+                }
+                if let Some(error) = self.stop_reason_error(value["delta"]["stop_reason"].as_str())
+                {
+                    out.push(StreamDelta::Error(error));
+                }
             }
             "message_stop" => {
                 out.push(StreamDelta::Usage(self.usage.clone()));
                 out.push(StreamDelta::Completed);
             }
-            "error" => out.push(StreamDelta::Error(ProviderError {
-                kind: ProviderErrorKind::Server,
-                message: "Messages stream error".into(),
-                retryable: false,
-            })),
+            "error" => {
+                let kind = match value["error"]["type"].as_str() {
+                    Some("rate_limit_error") => ProviderErrorKind::RateLimited,
+                    Some("authentication_error" | "permission_error") => ProviderErrorKind::Auth,
+                    Some("billing_error" | "invalid_request_error" | "not_found_error") => {
+                        ProviderErrorKind::Invalid
+                    }
+                    Some("request_too_large") => ProviderErrorKind::ContextOverflow,
+                    _ => ProviderErrorKind::Server,
+                };
+                // The adapter stream withdraws retryability once observers
+                // have seen output or the message completed.
+                let retryable = matches!(
+                    kind,
+                    ProviderErrorKind::Server | ProviderErrorKind::RateLimited
+                );
+                out.push(StreamDelta::Error(ProviderError {
+                    kind,
+                    message: "Messages stream error".into(),
+                    retryable,
+                }));
+            }
             _ => {}
         }
         Ok(out)
+    }
+    fn stop_reason_error(&self, stop_reason: Option<&str>) -> Option<ProviderError> {
+        let (kind, message) = match stop_reason? {
+            "refusal" => (ProviderErrorKind::Invalid, "Messages refusal"),
+            "max_tokens"
+                if self.saw_tool_use
+                    || !self.saw_text
+                    || self.thinking.values().any(|thinking| !thinking.signed) =>
+            {
+                (ProviderErrorKind::Invalid, "Messages output truncated")
+            }
+            "model_context_window_exceeded" => (
+                ProviderErrorKind::ContextOverflow,
+                "Messages context window exceeded",
+            ),
+            _ => return None,
+        };
+        Some(ProviderError {
+            kind,
+            message: message.into(),
+            retryable: false,
+        })
     }
     fn start_block(
         &mut self,
@@ -136,10 +230,13 @@ impl Codec {
             let index = value["index"]
                 .as_u64()
                 .ok_or_else(|| invalid("missing thinking index"))?;
-            if !self.seen_thinking.insert(index) {
+            let started = Thinking {
+                open: true,
+                signed: false,
+            };
+            if self.thinking.insert(index, started).is_some() {
                 return Err(invalid("duplicate thinking block"));
             }
-            self.thinking.insert(index);
             out.push(StreamDelta::Reasoning {
                 item_id: thinking_id(index),
                 provenance: crabber_core::ReasoningProvenance::Private,
@@ -156,6 +253,7 @@ impl Codec {
                 .as_str()
                 .ok_or_else(|| invalid("missing tool id"))?;
             let index = value["index"].as_u64().unwrap_or(0);
+            self.saw_tool_use = true;
             self.calls.insert(index, ToolCallId(id.into()));
             self.initial_input.insert(index, block["input"].clone());
             out.push(StreamDelta::ToolCallStart {
@@ -172,9 +270,11 @@ impl Codec {
     ) -> Result<(), ProviderError> {
         let delta = &value["delta"];
         match delta["type"].as_str().unwrap_or_default() {
-            "text_delta" => out.push(StreamDelta::TextDelta(
-                delta["text"].as_str().unwrap_or_default().into(),
-            )),
+            "text_delta" => {
+                let text = delta["text"].as_str().unwrap_or_default();
+                self.saw_text |= !text.is_empty();
+                out.push(StreamDelta::TextDelta(text.into()));
+            }
             "thinking_delta" => {
                 let index = self.thinking_index(value)?;
                 out.push(StreamDelta::Reasoning {
@@ -195,20 +295,28 @@ impl Codec {
                     text: delta["partial_json"].as_str().unwrap_or_default().into(),
                 });
             }
-            "signature_delta" => out.push(StreamDelta::ReasoningSignature {
-                item_id: thinking_id(self.thinking_index(value)?),
-                signature: delta["signature"]
+            "signature_delta" => {
+                let index = self.thinking_index(value)?;
+                let signature = delta["signature"]
                     .as_str()
-                    .ok_or_else(|| invalid("invalid thinking signature"))?
-                    .into(),
-            }),
+                    .ok_or_else(|| invalid("invalid thinking signature"))?;
+                if let Some(thinking) = self.thinking.get_mut(&index) {
+                    thinking.signed |= !signature.is_empty();
+                }
+                out.push(StreamDelta::ReasoningSignature {
+                    item_id: thinking_id(index),
+                    signature: signature.into(),
+                });
+            }
             _ => {}
         }
         Ok(())
     }
     fn stop_block(&mut self, value: &Value, out: &mut Vec<StreamDelta>) {
         let index = value["index"].as_u64().unwrap_or(0);
-        self.thinking.remove(&index);
+        if let Some(thinking) = self.thinking.get_mut(&index) {
+            thinking.open = false;
+        }
         if let Some(id) = self.calls.remove(&index) {
             let initial = self
                 .initial_input
@@ -232,7 +340,8 @@ impl Codec {
             .as_u64()
             .ok_or_else(|| invalid("missing thinking index"))?;
         self.thinking
-            .contains(&index)
+            .get(&index)
+            .is_some_and(|thinking| thinking.open)
             .then_some(index)
             .ok_or_else(|| invalid("thinking delta without start"))
     }

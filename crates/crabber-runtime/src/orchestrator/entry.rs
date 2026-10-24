@@ -49,25 +49,7 @@ impl Orchestrator {
         let result = Box::pin(self.start_admission_inner(request, session_id, context))
             .instrument(span.clone())
             .await;
-        let outcome = match &result {
-            Ok(_) => "started",
-            Err(
-                RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
-                | RuntimeError::SessionBusy,
-            ) => "conflict",
-            Err(
-                RuntimeError::PreparationIncomplete { .. }
-                | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
-            ) => "unknown",
-            Err(_) => "rejected",
-        };
-        span.record("outcome", outcome).record(
-            "otel.status_code",
-            if outcome == "rejected" { "ERROR" } else { "OK" },
-        );
-        if let Err(error) = &result {
-            span.record("error.kind", error.error_kind());
-        }
+        super::telemetry::record_admission_result(&span, result.as_ref().map(|_| "started"));
         result
     }
     async fn start_admission_inner(
@@ -187,26 +169,13 @@ impl Orchestrator {
         let result = Box::pin(self.start_keyed_admission_inner(request, options, context))
             .instrument(span.clone())
             .await;
-        let outcome = match &result {
-            Ok(Admission::Replayed(_)) => "replayed",
-            Ok(_) => "started",
-            Err(
-                RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
-                | RuntimeError::SessionBusy,
-            ) => "conflict",
-            Err(
-                RuntimeError::PreparationIncomplete { .. }
-                | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
-            ) => "unknown",
-            Err(_) => "rejected",
-        };
-        span.record("outcome", outcome).record(
-            "otel.status_code",
-            if outcome == "rejected" { "ERROR" } else { "OK" },
+        super::telemetry::record_admission_result(
+            &span,
+            result.as_ref().map(|admission| match admission {
+                Admission::Replayed(_) => "replayed",
+                Admission::Started { .. } => "started",
+            }),
         );
-        if let Err(error) = &result {
-            span.record("error.kind", error.error_kind());
-        }
         result
     }
     async fn start_keyed_admission_inner(
@@ -360,26 +329,13 @@ impl Orchestrator {
         let result = Box::pin(self.recover_retained_admission_inner(request, options, context))
             .instrument(span.clone())
             .await;
-        let outcome = match &result {
-            Ok(Admission::Replayed(_)) => "replayed",
-            Ok(_) => "started",
-            Err(
-                RuntimeError::Store(StoreError::Conflict | StoreError::AdmissionConflict)
-                | RuntimeError::SessionBusy,
-            ) => "conflict",
-            Err(
-                RuntimeError::PreparationIncomplete { .. }
-                | RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure),
-            ) => "unknown",
-            Err(_) => "rejected",
-        };
-        span.record("outcome", outcome).record(
-            "otel.status_code",
-            if outcome == "rejected" { "ERROR" } else { "OK" },
+        super::telemetry::record_admission_result(
+            &span,
+            result.as_ref().map(|admission| match admission {
+                Admission::Replayed(_) => "replayed",
+                Admission::Started { .. } => "started",
+            }),
         );
-        if let Err(error) = &result {
-            span.record("error.kind", error.error_kind());
-        }
         result
     }
     pub(super) async fn recover_retained_admission_inner(
@@ -670,7 +626,8 @@ impl Orchestrator {
                     let info = provider.info();
                     (info.id, info.name)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            request.model_controls
         ]);
         let config = self.freeze_preparation_semantics(config)?;
         let config_hash = admission_config_hash(&config);

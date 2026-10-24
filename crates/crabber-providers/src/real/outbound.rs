@@ -17,6 +17,11 @@ const RESPONSE_MEDIA: &[super::HttpMediaSupport] = &[
     image(super::MediaInputSource::Url, true),
     image(super::MediaInputSource::OpaqueFile, true),
 ];
+const MESSAGES_MEDIA: &[super::HttpMediaSupport] = &[
+    image(super::MediaInputSource::Data, true),
+    image(super::MediaInputSource::Url, true),
+    image(super::MediaInputSource::OpaqueFile, true),
+];
 const CHAT_MEDIA: &[super::HttpMediaSupport] = &[
     image(super::MediaInputSource::Data, false),
     image(super::MediaInputSource::Url, false),
@@ -26,7 +31,7 @@ pub(super) fn media_support(protocol: super::Protocol) -> &'static [super::HttpM
     match protocol {
         Protocol::Responses => RESPONSE_MEDIA,
         Protocol::ChatCompletions => CHAT_MEDIA,
-        Protocol::Messages => &[],
+        Protocol::Messages => MESSAGES_MEDIA,
     }
 }
 fn invalid_media() -> ProviderError {
@@ -172,6 +177,26 @@ pub(crate) fn chat_image(block: &ContentBlock) -> Option<serde_json::Value> {
     let mut image = response_image(block)?;
     let url = image.as_object_mut()?.remove("image_url")?;
     Some(serde_json::json!({"type":"image_url","image_url":{"url":url}}))
+}
+
+pub(crate) fn messages_image(block: &ContentBlock) -> Option<serde_json::Value> {
+    let ContentBlock::MediaContent {
+        kind: crabber_core::MediaKind::Image,
+        mime_type,
+        source,
+    } = block
+    else {
+        return None;
+    };
+    use crabber_core::MediaSource;
+    let source = match source {
+        MediaSource::Data { base64 } => {
+            serde_json::json!({"type":"base64","media_type":mime_type,"data":base64})
+        }
+        MediaSource::Url { url } => serde_json::json!({"type":"url","url":url}),
+        MediaSource::File { file_id } => serde_json::json!({"type":"file","file_id":file_id}),
+    };
+    Some(serde_json::json!({"type":"image","source":source}))
 }
 
 /// Prepare every fallible representation before credential/header callbacks.

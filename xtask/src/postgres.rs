@@ -458,6 +458,7 @@ async fn execute_schedule_mode(
                 .env_remove("CRABBER_TEST_POSTGRES_URL")
                 .env_remove("CRABBER_POSTGRES_URL")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
+                .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD")
                 .env_remove(METRICS_FILE);
             crate::checks::remove_live_configuration(&mut command);

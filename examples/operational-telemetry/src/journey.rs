@@ -599,6 +599,7 @@ async fn lease() -> Vec<OperationalObservation> {
             selection: selection(),
             system_prompt: None,
             max_output_tokens: None,
+            model_controls: crabber::core::ModelControls::default(),
         })
         .await
         .unwrap();

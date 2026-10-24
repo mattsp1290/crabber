@@ -1,5 +1,6 @@
 use crate::{ModelRequest, ProviderError, ProviderErrorKind, StreamDelta, sse::Event};
 use crabber_core::{ContentBlock, Role, ToolCallId, Usage};
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -69,6 +70,9 @@ pub fn body(request: &ModelRequest, token_mode: TokenMode) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if let Some(reasoning_effort) = request.reasoning_effort {
+        body["reasoning_effort"] = json!(reasoning_effort.as_str());
+    }
     if let Some(max_tokens) = request.max_tokens {
         match token_mode {
             TokenMode::MaxTokens => body["max_tokens"] = json!(max_tokens),
@@ -84,16 +88,131 @@ pub fn body(request: &ModelRequest, token_mode: TokenMode) -> Value {
 pub struct Codec {
     ids: HashMap<u64, ToolCallId>,
 }
+
+fn invalid_stream_error() -> ProviderError {
+    ProviderError {
+        kind: ProviderErrorKind::Invalid,
+        message: "invalid Chat stream error".into(),
+        retryable: false,
+    }
+}
+
+#[derive(Deserialize)]
+struct ChatStreamErrorEnvelope {
+    error: ChatStreamErrorWire,
+}
+
+#[derive(Deserialize)]
+struct ChatStreamErrorWire {
+    code: serde_json::Number,
+    #[serde(rename = "message")]
+    _message: String,
+    #[serde(default, deserialize_with = "deserialize_metadata")]
+    metadata: Option<ChatStreamErrorMetadata>,
+}
+
+#[derive(Deserialize)]
+struct ChatStreamErrorMetadata {
+    error_type: Option<String>,
+}
+
+fn deserialize_metadata<'de, D>(
+    deserializer: D,
+) -> Result<Option<ChatStreamErrorMetadata>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ChatStreamErrorMetadata::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Copy)]
+enum ChatStreamErrorCode {
+    Signed(i64),
+    Unsigned(u64),
+}
+
+impl ChatStreamErrorCode {
+    fn parse(number: &serde_json::Number) -> Option<Self> {
+        number
+            .as_u64()
+            .map(Self::Unsigned)
+            .or_else(|| number.as_i64().map(Self::Signed))
+    }
+
+    fn unsigned(self) -> Option<u64> {
+        match self {
+            Self::Unsigned(value) => Some(value),
+            Self::Signed(value) => u64::try_from(value).ok(),
+        }
+    }
+}
+
+fn stream_error(value: Value) -> ProviderError {
+    let Ok(envelope) = serde_json::from_value::<ChatStreamErrorEnvelope>(value) else {
+        return invalid_stream_error();
+    };
+    let Some(code) = ChatStreamErrorCode::parse(&envelope.error.code) else {
+        return invalid_stream_error();
+    };
+    let error_type = envelope
+        .error
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.error_type.as_deref());
+    let (kind, retryable) = classify_stream_error(error_type, code);
+    ProviderError {
+        kind,
+        message: "Chat stream error".into(),
+        retryable,
+    }
+}
+
+fn classify_stream_error(
+    error_type: Option<&str>,
+    code: ChatStreamErrorCode,
+) -> (ProviderErrorKind, bool) {
+    match error_type {
+        Some("rate_limit_exceeded") => (ProviderErrorKind::RateLimited, true),
+        Some("authentication" | "permission_denied") => (ProviderErrorKind::Auth, false),
+        Some("context_length_exceeded") => (ProviderErrorKind::ContextOverflow, false),
+        Some("provider_overloaded" | "provider_unavailable") => (ProviderErrorKind::Server, true),
+        Some("invalid_request") => (ProviderErrorKind::Invalid, false),
+        _ => match code.unsigned() {
+            Some(429) => (ProviderErrorKind::RateLimited, true),
+            Some(401 | 403) => (ProviderErrorKind::Auth, false),
+            Some(400 | 402 | 404 | 408 | 413 | 422) => (ProviderErrorKind::Invalid, false),
+            _ => (ProviderErrorKind::Server, true),
+        },
+    }
+}
+
 impl Codec {
     pub fn event(&mut self, event: &Event) -> Result<Vec<StreamDelta>, ProviderError> {
+        let named_error = event.name == "error";
         if event.data == "[DONE]" {
-            return Ok(vec![StreamDelta::Completed]);
+            return if named_error {
+                Ok(vec![StreamDelta::Error(invalid_stream_error())])
+            } else {
+                Ok(vec![StreamDelta::Completed])
+            };
         }
-        let value: Value = serde_json::from_str(&event.data).map_err(|_| ProviderError {
-            kind: ProviderErrorKind::Invalid,
-            message: "invalid Chat event".into(),
-            retryable: false,
-        })?;
+        let value: Value = match serde_json::from_str(&event.data) {
+            Ok(value) => value,
+            Err(_) if named_error => {
+                return Ok(vec![StreamDelta::Error(invalid_stream_error())]);
+            }
+            Err(_) => {
+                return Err(ProviderError {
+                    kind: ProviderErrorKind::Invalid,
+                    message: "invalid Chat event".into(),
+                    retryable: false,
+                });
+            }
+        };
+        let object = value.as_object();
+        if named_error || object.is_some_and(|object| object.contains_key("error")) {
+            return Ok(vec![StreamDelta::Error(stream_error(value))]);
+        }
         let mut out = Vec::new();
         if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
             out.push(StreamDelta::Usage(Usage {
@@ -167,6 +286,7 @@ mod tests {
             tools: vec![],
             temperature: None,
             max_tokens: None,
+            reasoning_effort: None,
             tool_choice: Some("required".into()),
         }
     }

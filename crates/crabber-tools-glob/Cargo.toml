@@ -1,0 +1,26 @@
+[package]
+name = "crabber-tools-glob"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+
+
+[dependencies]
+crabber = { path = "../crabber" }
+crabber-tools-core = { path = "../crabber-tools-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio-util = "0.7"
+cap-std = "4"
+globset = "0.4"
+
+[dev-dependencies]
+crabber-tools-testkit = { path = "../crabber-tools-testkit" }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "fs"] }
+
+[lints]
+workspace = true

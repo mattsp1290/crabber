@@ -108,6 +108,8 @@ pub(crate) use limits::{domains_archive_and_reserved_keys, faults, lazy_empty_sc
 mod journey;
 #[path = "queue_contract/limits.rs"]
 mod limits;
+#[path = "queue_contract/model_controls.rs"]
+mod model_controls;
 
 #[path = "queue_contract/corruption.rs"]
 pub(crate) mod corruption;

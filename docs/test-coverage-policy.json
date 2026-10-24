@@ -530,6 +530,35 @@
       "after": "Public first reservation establishes context;1022 interior records use actual Record/grant/receipt/protected Ledger publication writers. Exact physical identities, immutable/current records, publication ordinals, original context and Absent revisions are independently verified at1023/1024. Public1024accept/1025refusal remain, with new full-capacity forged mutable Joined refusal, exact restore, unchanged actual Join/replacement. SQL fixtures unchanged.",
       "rationale": "Removes1022 repeated public preflight/replay/capacity/identity/deletion/archive/parent checks, State clones and transaction fault boundaries from fixture population. Arbitrary intermediate-occupancy-only defects and per-reservation stress lose exposure. Existing owner, parent, replay and before/after fault contracts retain those branches; this is not equivalent stress. Real1024 physical owners, limits, production code and APIs remain unchanged.",
       "validation": "Independent source reviews approved. Own-target Clippy and native compilation passed with Session0/Core1 and assertions/overflow checks. The actual capacity case passed3.790s wall/3.741userCPU versus a previous matched own-target baseline46.596s/46.375userCPU; this single fixed-order pair is not a replicated speedup estimate. Meaningful off-by-one and mutable-current-vs-immutable-audit faults each failed at the intended public capacity assertion; canonical source was restored and hash-verified after each. The initial cfg placement compile failure remains preserved. Full local/CI and all six final qualification cases remain pending."
+    },
+    {
+      "id": "restricted-worker-role-journeys",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A restricted LOGIN must complete authorized workspace operations and cold snapshot continuation without superuser or BYPASSRLS, while foreign reads, mutations, recovery and dispatch remain denied.",
+      "owner": [
+        "crates/crabber-session/src/postgres/isolation_tests/workload.rs",
+        "crates/crabber/tests/workspace_roles",
+        "crates/crabber-test-support/src/postgres/child.rs"
+      ],
+      "required_backends": [
+        "postgres"
+      ],
+      "retained_tests": [
+        "worker_role_workload_succeeds",
+        "foreign_reads_and_admissions_are_hidden_without_provider_calls",
+        "foreign_queue_claim_prepare_dispatch_and_recovery_are_denied",
+        "foreign_controls_and_abandonment_are_hidden",
+        "foreign_management_fork_and_delete_preserve_rows",
+        "scoped_recovery_has_a_real_foreign_candidate",
+        "worker_recovery_reports_own_expired_candidates",
+        "worker_snapshot_continuation_in_fresh_process",
+        "role_handoff_preserves_owned_server_database_and_exact_role"
+      ],
+      "before": "CI reruns the complete future_queue, session_owners, durable_controls, bounded_snapshots, session_management, durable_interactions and server_host facade binaries using one shared restricted-worker login.",
+      "after": "The combined graph runs dedicated own-workspace positives and foreign-workspace denials, the native restricted-worker Store, public-state, typed-admission, session-owner, queue, fork and management contracts, the existing ordered-steer history, and one actual restricted-worker snapshot continuation in a cold process.",
+      "rationale": "Each isolated role fixture owns its cloned database and unique LOGIN roles. Public positives retain prompt and keyed replay, queue claim, preparation, dispatch and recovery, cancellation, management, fork, deletion and V2 reads. Native restricted-role contracts retain storage and ordered-steer behavior. The cold snapshot history delegates only its owned database to the expected worker role, verifies the real login lacks superuser and BYPASSRLS, and retains exact continuation, cutoff, relation and event readback. Ordinary administrative child handoffs retain their exact credential check. The removed dimension is repeating every facade fault and scenario combination under a second login. Backend and facade behavior matrices remain in the ordinary combined run.",
+      "validation": "Source integration candidate only. No new build, test run or timing qualification has completed."
     }
   ],
   "required_behaviors": [
@@ -826,7 +855,7 @@
     },
     {
       "behavior": "Durable-control observation progresses independently of held original callbacks and joins its original Store future",
-      "primary_owner": "Runtime worker lease/control background resource scope",
+      "primary_owner": "Runtime worker RunControlObservation background resource scope",
       "required_layer": "Runtime native units, deterministic held-callback observation and real Memory/SQLite/PostgreSQL histories",
       "status": "implemented-unqualified",
       "required_detectors": [
@@ -840,7 +869,7 @@
         },
         {
           "package": "crabber-runtime",
-          "suffix": "orchestrator::heartbeat::control::tests::queued_results_cannot_supersede_quiescent_ack_or_cooperative_close"
+          "suffix": "orchestrator::run_control::observation::tests::queued_results_cannot_supersede_quiescent_ack_or_cooperative_close"
         },
         {
           "package": "crabber-runtime",

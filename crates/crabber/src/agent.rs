@@ -62,6 +62,7 @@ pub struct AgentConfig {
     pub title: String,
     pub system_prompt: Option<String>,
     pub max_output_tokens: Option<u32>,
+    pub model_controls: crabber_core::ModelControls,
 }
 
 impl AgentConfig {
@@ -74,7 +75,13 @@ impl AgentConfig {
             title: "Crabber session".into(),
             system_prompt: None,
             max_output_tokens: None,
+            model_controls: crabber_core::ModelControls::default(),
         }
+    }
+    #[must_use]
+    pub fn model_controls(mut self, controls: crabber_core::ModelControls) -> Self {
+        self.model_controls = controls;
+        self
     }
     /// Caps output tokens for every model turn; model-stream around hooks may override it.
     #[must_use]
@@ -102,6 +109,7 @@ pub struct AgentBuilder {
     monotonic_clock: Option<Arc<dyn crabber_runtime::MonotonicClock>>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
+    provider_env_error: bool,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     config: Option<AgentConfig>,
     tools: Vec<Arc<ToolDefinition>>,
@@ -117,6 +125,7 @@ pub struct AgentBuilder {
     extension_close_timeout: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
+    max_turns: usize,
 }
 
 impl AgentBuilder {
@@ -193,8 +202,14 @@ impl AgentBuilder {
         feature = "opencode-go"
     ))]
     #[must_use]
-    pub fn providers_from_env(self) -> Self {
-        self.provider(Arc::new(crabber_providers::HttpResolver::from_env()))
+    pub fn providers_from_env(mut self) -> Self {
+        if let Ok(resolver) = crabber_providers::HttpResolver::try_from_env() {
+            self.provider_env_error = false;
+            self.provider(Arc::new(resolver))
+        } else {
+            self.provider_env_error = true;
+            self
+        }
     }
     #[must_use]
     pub fn memory(mut self) -> Self {
@@ -280,6 +295,14 @@ impl AgentBuilder {
         self
     }
 
+    /// Caps model turns per run, including turns that request tools.
+    /// Defaults to the runtime's limit of 64. Zero is rejected by `build`.
+    #[must_use]
+    pub fn max_turns(mut self, max_turns: usize) -> Self {
+        self.max_turns = max_turns;
+        self
+    }
+
     #[must_use]
     /// Register one shared instance. Scope filters visibility; it does not isolate
     /// mutable state. The instance must support concurrent use in every context
@@ -336,6 +359,9 @@ impl AgentBuilder {
     ///
     /// Returns an error if the provider, config, or runtime dependencies are invalid.
     pub fn build(self) -> Result<Agent, BuildError> {
+        if self.provider_env_error {
+            return Err(BuildError::InvalidConfig("CRABBER_CODEX_PROFILE"));
+        }
         let resolver = self.resolver.ok_or(BuildError::NoProvider)?;
         let config = self.config.ok_or(BuildError::NoConfig)?;
         if config.max_output_tokens == Some(0) {
@@ -355,8 +381,8 @@ impl AgentBuilder {
             #[cfg(feature = "datadog")]
             datadog: datadog.clone(),
         });
-        let extensions = self.extensions;
-        let has_extensions = !extensions.is_empty() || !self.factories.is_empty();
+        let mut mounts = self.extensions;
+        let has_extensions = !mounts.is_empty() || !self.factories.is_empty();
         let registry = has_extensions.then(|| {
             let observer = Arc::clone(&observer);
             Registry::new()
@@ -365,7 +391,6 @@ impl AgentBuilder {
                     observer.mount_close_timed_out(timeout);
                 }))
         });
-        let mut mounts = extensions;
         if has_extensions && (!self.tools.is_empty() || !self.prompts.is_empty()) {
             mounts.insert(
                 0,
@@ -402,7 +427,8 @@ impl AgentBuilder {
             .resolver(resolver)
             .plan_provider(plan_provider)
             .execution_mode(self.execution_mode)
-            .compaction(self.compaction);
+            .compaction(self.compaction)
+            .max_turns(self.max_turns);
         if let Some(provider) = &contextual {
             runtime = runtime.contextual_plan_provider(provider.clone());
         }
@@ -577,6 +603,7 @@ impl Agent {
             monotonic_clock: None,
             store: None,
             resolver: None,
+            provider_env_error: false,
             workspace_reader_resolver: None,
             config: None,
             tools: Vec::new(),
@@ -592,6 +619,7 @@ impl Agent {
             extension_close_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             execution_mode: ExecutionMode::Sequential,
             compaction: CompactionPolicy::default(),
+            max_turns: crabber_runtime::ConfigSnapshot::default().max_turns,
         }
     }
 
@@ -720,13 +748,16 @@ impl Agent {
     }
 
     pub(crate) fn context_request(&self, context: &ExecutionContext, text: String) -> Request {
-        self.request_at(
+        let mut request = self.request_at(
             Some(context.session().session_id().clone()),
             text,
             context.session().workspace_id(),
             context.session().directory(),
             context.selection(),
-        )
+            context.model_controls(),
+        );
+        request.selection_policy = context.selection_policy().clone();
+        request
     }
 
     fn request(&self, session_id: Option<SessionId>, text: String) -> Request {
@@ -736,6 +767,7 @@ impl Agent {
             &self.config.workspace_id,
             &self.config.directory,
             &self.config.selection,
+            &self.config.model_controls,
         )
     }
 
@@ -746,6 +778,7 @@ impl Agent {
         workspace_id: &str,
         directory: &str,
         selection: &Selection,
+        controls: &crabber_core::ModelControls,
     ) -> Request {
         Request {
             selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
@@ -759,6 +792,7 @@ impl Agent {
             selection: selection.clone(),
             system_prompt: self.config.system_prompt.clone(),
             max_output_tokens: self.config.max_output_tokens,
+            model_controls: controls.clone(),
         }
     }
 
@@ -860,6 +894,32 @@ impl Agent {
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {
         self.runtime.recover_with_context(context_for).await
+    }
+
+    /// Recover expired unfinished runs discovered in one workspace.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<crabber_runtime::RecoverReport, RuntimeError> {
+        self.runtime.recover_workspace(workspace_id).await
+    }
+
+    /// Select fresh correlation per run during workspace recovery.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_workspace_with_context<F>(
+        &self,
+        workspace_id: &str,
+        context_for: F,
+    ) -> Result<crabber_runtime::RecoverReport, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
+        self.runtime
+            .recover_workspace_with_context(workspace_id, context_for)
+            .await
     }
 }
 
@@ -1015,6 +1075,33 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[cfg(feature = "codex")]
+    #[test]
+    fn providers_from_env_rejects_invalid_profile() {
+        const CHILD: &str = "CRABBER_TEST_INVALID_PROFILE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(matches!(
+                Agent::builder().providers_from_env().build(),
+                Err(BuildError::InvalidConfig("CRABBER_CODEX_PROFILE"))
+            ));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent::tests::providers_from_env_rejects_invalid_profile",
+            ])
+            .env(CHILD, "1")
+            .env("CRABBER_CODEX_PROFILE", "bogus")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     struct BuilderReader;
     #[async_trait]

@@ -306,3 +306,73 @@ async fn aggregate_history_profile_cannot_cross_raw_boundaries() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn aggregate_owner_private_transfer_is_preflighted() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let request = crate::session_owner_contract::reservation(SessionId::new());
+        store
+            .reserve_session_owner(request.clone(), None)
+            .await
+            .unwrap();
+        let original: String = sqlx::query_scalar(
+            "SELECT data_json FROM session_owner_current WHERE session_id=$1 AND owner_id=$2",
+        )
+        .bind(&request.binding.session_id.0)
+        .bind(&request.binding.id.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+        )
+        .bind(&request.binding.session_id.0)
+        .bind(&request.binding.id.0)
+        .bind(format!(
+            "{{\"origin\":{},\"private\":{}}}",
+            serde_json::to_string(&request.id).unwrap(),
+            serde_json::to_string(&"private-carrier-marker".repeat(100_000)).unwrap()
+        ))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            read(&store, &request.binding.session_id, 1, 128).await.0,
+            Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
+        ));
+        assert!(matches!(
+            read(&store, &request.binding.session_id, 1, 8 * 1024 * 1024)
+                .await
+                .0,
+            Err(Failure::Error(PublicSessionError::UnknownStoreOutcome))
+        ));
+        sqlx::query(
+            "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+        )
+        .bind(&request.binding.session_id.0)
+        .bind(&request.binding.id.0)
+        .bind("malformed-private-body".repeat(100_000))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            read(&store, &request.binding.session_id, 1, 128).await.0,
+            Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
+        ));
+        // Restore the exact private carrier so later tests and repeated full runs
+        // never inherit this deliberately malformed JSON fixture.
+        sqlx::query(
+            "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+        )
+        .bind(&request.binding.session_id.0)
+        .bind(&request.binding.id.0)
+        .bind(&original)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    })
+    .await
+    .unwrap();
+}

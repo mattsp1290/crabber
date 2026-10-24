@@ -84,6 +84,7 @@ pub(crate) fn schedule(
     let mut gates = Checks::required(environment);
     let fixture_lease = preflight(&mut gates, directory);
     feature_boundaries(&mut gates, directory);
+    crate::check_provider_features(workspace, &mut gates);
     behavior_graph(&mut gates, directory, migration);
     gates.script(
         workspace,
@@ -91,6 +92,7 @@ pub(crate) fn schedule(
         "testdata/external-consumer/check.sh",
     );
     cli_journeys(&mut gates);
+    crate::standard_tools::schedule(workspace, &mut gates);
     gates.internal("release-wasm-fixture-output", workspace, move |_| {
         fixture_lease.release();
     });
@@ -118,6 +120,14 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     gates.internal("minimal-embed-glue", workspace, crate::check_glue);
     tool_versions(gates, directory);
     crate::nextest::version_gate(workspace, gates);
+    gates.internal("standard-tool-prerequisites", workspace, |_| {
+        crate::standard_tools::check_tool_prerequisites()
+    });
+    gates.internal(
+        "live-tests-ignored",
+        workspace,
+        crate::check_live_tests_are_ignored,
+    );
     let mut supervisor_tests = Command::new("python3");
     supervisor_tests
         .args(["-I", "-S", ".github/scripts/test_check.py"])
@@ -287,27 +297,39 @@ fn behavior_graph(
         validate_manifest(root, &inspect_metadata, &inspect_manifest);
     });
     crate::nextest::complete_group_gate(workspace, gates, &cargo_metadata, &binaries, profile);
-    let mut behavior = Command::new("cargo");
-    behavior
-        .args([
-            "nextest",
-            "run",
-            "--cargo-metadata",
-            cargo_metadata.to_str().unwrap(),
-            "--binaries-metadata",
-            binaries.to_str().unwrap(),
-            "--profile",
-            profile,
-            "--retries",
-            "0",
-            "--no-fail-fast",
-        ])
-        .current_dir(workspace);
-    gates.command(
-        workspace,
-        behavior,
-        "all retained native behavior, including required real PostgreSQL",
-    );
+    let role_test = crate::nextest::CLUSTER_ROLE_TEST;
+    for (filter, expected) in [
+        (
+            format!("test(={role_test})"),
+            "isolated cluster-role migration; no other native histories run",
+        ),
+        (
+            format!("not test(={role_test})"),
+            "all remaining native behavior, including required real PostgreSQL",
+        ),
+    ] {
+        let mut behavior = Command::new("cargo");
+        behavior
+            .args([
+                "nextest",
+                "run",
+                "--cargo-metadata",
+                cargo_metadata.to_str().unwrap(),
+                "--binaries-metadata",
+                binaries.to_str().unwrap(),
+                "--profile",
+                profile,
+                "--retries",
+                "0",
+                "--no-fail-fast",
+                "--no-tests",
+                "fail",
+            ])
+            .args(["-E", &filter])
+            .current_dir(workspace);
+        crate::standard_tools::require_subprocess_tools(&mut behavior);
+        gates.command(workspace, behavior, expected);
+    }
     gates.cargo(
         workspace,
         &["test", "--workspace", "--features", FEATURES, "--doc"],

@@ -1,0 +1,18 @@
+{
+  "description": "Fetch the raw text content of a file:// or https:// URL and return it as a string. Supported schemes: file:// (local filesystem) and https://. Fails fast with a structured error if the resource does not exist or is not accessible. Does not follow redirects beyond the standard library's defaults. Does not parse HTML, strip CSS, or interpret JavaScript.",
+  "name": "url_fetch",
+  "parameters": {
+    "properties": {
+      "url": {
+        "minLength": 1,
+        "description": "URL to fetch. Supported schemes: file:// (local filesystem) and https://. Returns the raw text content of the resource.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "url"
+    ],
+    "type": "object"
+  }
+}

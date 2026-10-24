@@ -1,0 +1,79 @@
+[
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.file-read",
+    "name": "file_read",
+    "retry_safe": true
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.file-write",
+    "name": "file_write",
+    "retry_safe": false
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.file-edit",
+    "name": "file_edit",
+    "retry_safe": false
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.file-list",
+    "name": "file_list",
+    "retry_safe": true
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.glob",
+    "name": "glob",
+    "retry_safe": true
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.search",
+    "name": "search",
+    "retry_safe": true
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.apply-patch",
+    "name": "apply_patch",
+    "retry_safe": false
+  },
+  {
+    "binding": "workspace",
+    "concurrent": false,
+    "id": "standard.shell",
+    "name": "shell",
+    "retry_safe": false
+  },
+  {
+    "binding": "static",
+    "concurrent": true,
+    "id": "standard.url-fetch",
+    "name": "url_fetch",
+    "retry_safe": true
+  },
+  {
+    "binding": "static",
+    "concurrent": false,
+    "id": "standard.user-interact",
+    "name": "user_interact",
+    "retry_safe": false
+  },
+  {
+    "binding": "static",
+    "concurrent": false,
+    "id": "standard.tracker-write",
+    "name": "tracker_write",
+    "retry_safe": false
+  }
+]

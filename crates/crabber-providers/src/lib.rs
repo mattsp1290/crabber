@@ -81,7 +81,14 @@ pub use real::{
 pub use real::{
     HttpAdapter, HttpInputSupport, HttpMediaSupport, HttpResolver, MediaInputSource, Protocol,
 };
-#[cfg(all(test, feature = "all-providers"))]
+#[cfg(all(
+    test,
+    any(
+        feature = "all-providers",
+        feature = "anthropic",
+        feature = "custom-http"
+    )
+))]
 mod codec_tests;
 
 /// Retained for the workspace scaffold's smoke test.
@@ -124,6 +131,7 @@ pub struct ModelRequest {
     pub tools: Vec<ToolInfo>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
+    pub reasoning_effort: Option<crabber_core::ReasoningEffort>,
     pub tool_choice: Option<String>,
 }
 

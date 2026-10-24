@@ -62,6 +62,14 @@ async fn sqlite_storable_record_contract() {
     .await;
 }
 #[tokio::test]
+async fn sqlite_workspace_discovery_contract() {
+    let (store, _, _directory) = temp_store().await;
+    crate::storetest::run_workspace_discovery_contract(|clock: Arc<ManualClock>| {
+        store.clone().with_clock(clock)
+    })
+    .await;
+}
+#[tokio::test]
 async fn sqlite_workspace_identity_contract() {
     let (store, path, _directory) = temp_store().await;
     crate::storetest::run_workspace_identity_contract(|clock: Arc<ManualClock>| {

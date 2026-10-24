@@ -214,6 +214,7 @@ impl Checks {
                 .env_remove("CRABBER_TEST_POSTGRES_URL")
                 .env_remove("CRABBER_POSTGRES_URL")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
+                .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD");
         }
         if self.offline {
@@ -225,6 +226,7 @@ impl Checks {
                 "CRABBER_TEST_RUN_POSTGRES_ADMIN_URL",
                 "CRABBER_TEST_POSTGRES_RUN",
                 "CRABBER_TEST_POSTGRES_CHILD_DATABASE",
+                "CRABBER_TEST_POSTGRES_CHILD_ROLE",
                 "CRABBER_TEST_HISTORY_CHILD",
                 "CRABBER_TEST_POSTGRES_METRICS_FILE",
                 "CRABBER_TEST_POSTGRES_TEMPLATE_URL",
@@ -460,8 +462,8 @@ mod tests {
     fn offline_lane_strips_live_service_overrides_but_keeps_stderr_recipe() {
         let mut checks = Checks::offline();
         let mut command = Command::new("sh");
-        command.args(["-c", "test -z \"${CRABBER_REQUIRE_POSTGRES+x}\" && test -z \"${DD_API_KEY+x}\" && test \"$RUST_LOG\" = info"])
-            .env("CRABBER_REQUIRE_POSTGRES","1").env("DD_API_KEY","fixture-only-placeholder")
+        command.args(["-c", "test -z \"${CRABBER_REQUIRE_POSTGRES+x}\" && test -z \"${CRABBER_TEST_POSTGRES_CHILD_ROLE+x}\" && test -z \"${DD_API_KEY+x}\" && test \"$RUST_LOG\" = info"])
+            .env("CRABBER_REQUIRE_POSTGRES","1").env("CRABBER_TEST_POSTGRES_CHILD_ROLE","fixture-worker").env("DD_API_KEY","fixture-only-placeholder")
             .env("RUST_LOG","info");
         checks.command(Path::new("."), command, "offline service isolation");
         assert_eq!(checks.execute(&Options::default()), 0);

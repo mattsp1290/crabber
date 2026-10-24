@@ -244,7 +244,7 @@ execution capability. New runtime admissions retain binding capsule version 3,
 keyed execution capsule version 2 and canonical input digest version 2. The
 binding codec is bounded to 16 MiB encoded JSON and 64 levels of configuration
 nesting. Historically, PostgreSQL schema 7 and fresh SQLite schema 3 expanded
-the private codec carriers. Current storage requires PostgreSQL 24 / SQLite 20;
+the private codec carriers. Current storage requires PostgreSQL 25 / SQLite 20;
 retained older payloads are not rewritten or made executable. Custom
 adapters default to `HostUnsupported` and must implement the atomic capability.
 The runtime uses these atomic APIs for both ordinary and keyed admission. It
@@ -750,10 +750,80 @@ request before choosing another key. Changed semantics conflict; exact replay
 precedes current CAS. This is logical erasure, not cryptographic erasure of backups
 or proof that arbitrary native resource types have joined.
 
-Current bundled storage versions are PostgreSQL 24 and SQLite 20. PostgreSQL uses
+Current bundled storage versions are PostgreSQL 25 and SQLite 20. PostgreSQL uses
 its versioned migration roster; SQLite accepts fresh current files and rejects
 older schemas rather than silently upgrading. Always run explicit migration
 before read-only `connect`; see [SQLite storage](sqlite-store.md).
+
+## Workspace-scoped roles and row-level security
+
+PostgreSQL schema 25 enforces workspace isolation in the database. Run
+`PostgresStore::migrate` as the schema owner. It creates the NOLOGIN groups
+`crabber_worker` and `crabber_host`, tenant policies, and
+`crabber_workspace_grants`. Use one LOGIN role per worker. Policies consult
+`current_user`, so grant rows name the LOGIN role, rather than its group.
+Hosts see every workspace; workers see only explicitly granted workspaces.
+Memory and SQLite provide workspace-filtered discovery without database role
+isolation. A host must still admit filesystem roots and execution contexts.
+
+Provision roles as the owner, replacing these placeholders through your secret
+manager. Set `CRABBER_POSTGRES_URL` to a connection URL naming the worker LOGIN
+role; keep credential values outside documentation and source control.
+
+```sql
+CREATE ROLE <worker_role> LOGIN PASSWORD '<password-from-secret-manager>' IN ROLE crabber_worker;
+INSERT INTO crabber_workspace_grants(role_name, workspace_id)
+VALUES ('<worker_role>', '<workspace_id>');
+CREATE ROLE <host_role> LOGIN PASSWORD '<password-from-secret-manager>' IN ROLE crabber_host;
+-- Retire a worker after stopping its processes:
+DELETE FROM crabber_workspace_grants WHERE role_name = '<worker_role>';
+DROP OWNED BY <worker_role>;
+DROP ROLE <worker_role>;
+```
+
+| Operation | Agent/Store entry | Worker role needs | Host role needs |
+| --- | --- | --- | --- |
+| Connect and verify | `PostgresStore::connect` | SELECT `schema_version` | Same |
+| Claim, prepare, admit, dispatch future items | `mutate_queue`, `prepare_queue_in`, `admit_queue_in`, `dispatch_queue_in`, `recover_queue_in` | DML on `sessions`, `runs`, `future_queue*`, `queue_publication_*`, `operation_receipts`, `events`, `messages`, `parts`, `admission_*`, `execution_attempts`, `run_execution_bindings` within granted workspaces | Same, all workspaces |
+| Ordinary/keyed admission and execution | `prompt*`, `recover_admission*` | Tenant DML within granted workspaces; USAGE on identity sequences | Same, all workspaces |
+| Recovery discovery and sweep | `recover_workspace*`, `list_workspace_unfinished_runs` | SELECT `runs`, `sessions`, plus execution DML | Same, all workspaces |
+| Native enrollment and reconciliation | `reserve_session_owner`, `register_execution_driver`, `pending_initial_native` | DML on `session_owner_*`, `pending_initial_*`, `initial_consumer_*`, `native_*` | Same, all workspaces |
+| Controls observation | `run_controls`, `observe_run_controls` | SELECT/INSERT `run_controls`, `run_control_progress` | Same, all workspaces |
+| Public snapshots | `public_session_snapshot*` | Tenant SELECT; SELECT `snapshot_auth` | Same, all workspaces |
+| Session management, fork, delete | `manage_session`, `fork_session`, `delete_session` | Tenant DML, including INSERT `session_tombstones` | Same, all workspaces |
+| Grant administration | SQL | None | INSERT/DELETE `crabber_workspace_grants` |
+| Schema migration | `PostgresStore::migrate` | Denied for schema changes | Denied for schema changes; owner only |
+
+Calling `migrate` against an already current schema is read-only and can succeed
+as a runtime role. Upgrading remains an owner operation. Group roles are
+cluster-global: the owner needs `CREATEROLE`, or a DBA must create both groups
+before migration. Runtime roles cannot create objects in the Crabber schema.
+The RLS coverage test requires an explicit policy classification when a future
+migration adds a table. Existing trigger functions retain invoker privileges;
+`crabber_session_born(text)` is the sole SECURITY DEFINER helper, with a pinned
+search path and an existence-only result for pre-birth scoping.
+
+`Agent::recover_workspace` and `Store::list_workspace_unfinished_runs` scope
+recovery discovery. `Agent::list_queue_heads` returns the first Queued or Claimed
+item per session, ordered by session ID with limits 1–256 and a session-ID
+cursor. A Claimed head is reclaimable only through the existing expiry-checked
+claim operation. These filters aid discovery; PostgreSQL roles enforce access.
+Keep the PostgreSQL CI suites on both architectures and inspect
+`EXPLAIN (ANALYZE)` under a worker role for events, messages, tool calls, parts,
+and queue heads after changing policies. Compare identical worker/admin
+journeys on the same machine; a worker slowdown above 1.5× requires an owner
+stop/go decision.
+
+The isolation contract has these accepted residual risks:
+
+| Risk | Mitigation or acceptance |
+| --- | --- |
+| `session_tombstones` metadata is readable by every worker | Documented read-only exception; inserts remain scoped and mutation is denied |
+| `snapshot_auth` is one shared database secret | Accepted; per-worker keys are deferred |
+| Another session's advisory lock can be held to stall it | Accepted availability risk; roles isolate rows, not advisory locks |
+| Session IDs are global and pre-birth IDs can be squatted | Accepted: a worker learning a future ID may observe enrollment in its own reserved workspace until birth and make the ID unusable by the intended owner. Reservation and birth fail closed on identity drift; allocate unpredictable IDs |
+| Owner-installed functions are callable unless their grants restrict them | Keep the schema owner trusted and prohibit worker DDL; only the existence helper has definer privileges |
+
 
 ## Proof and recovery discovery limits
 
@@ -801,3 +871,12 @@ Docker supplies the PostgreSQL 14 server by default. An existing dedicated
 administrative test server can be selected with `CRABBER_TEST_POSTGRES_ADMIN_URL`.
 Raw URL-only required test configuration is unsupported; fixture URLs and opaque
 identities are passed explicitly to fresh workers by their parent.
+`ExecutionContext::with_model_controls` selects reasoning effort beside each
+provider/model selection. Stored session defaults (`SelectionFallback`) carry
+provider/model IDs only and never supply effort; admissions using defaults keep
+the configured host controls.
+
+`ExecutionContext::with_session_defaults()` resolves stored provider/model IDs
+atomically at admission, using `selection()` as fallback. The context's own
+`ModelControls` apply to the resolved model, allowing one Agent to select effort
+per admission even when the model comes from stored defaults.

@@ -1,7 +1,7 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 24;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 25;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
 pub const SQLITE_SCHEMA_VERSION: i64 = 20;
@@ -99,8 +99,9 @@ pub mod queue;
 #[cfg(test)]
 mod queue_contract;
 pub use queue::{
-    QueueAction, QueueAuthority, QueueInput, QueueMutation, QueueOutcome, QueuePage,
-    QueuePageRequest, QueueReceipt, QueueState, QueueSummary, RetainedQueue,
+    QueueAction, QueueAuthority, QueueHeadsPage, QueueHeadsRequest, QueueInput, QueueMutation,
+    QueueOutcome, QueuePage, QueuePageRequest, QueueReceipt, QueueState, QueueSummary,
+    RetainedQueue,
 };
 pub mod control_contract;
 pub mod run_control;
@@ -169,7 +170,7 @@ pub use sqlite::SqliteStore;
 pub use storable::{ensure_storable, ensure_storable_text};
 pub use store::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
-    Store, StoreError,
+    Store, StoreError, WorkspaceRunsRequest,
 };
 
 #[cfg(test)]
@@ -246,6 +247,14 @@ mod tests {
     #[tokio::test]
     async fn memory_contract() {
         crate::storetest::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+    }
+
+    #[tokio::test]
+    async fn memory_workspace_discovery_contract() {
+        crate::storetest::run_workspace_discovery_contract(|clock| {
+            crate::MemoryStore::with_clock(clock)
+        })
+        .await;
     }
 
     #[tokio::test]

@@ -101,74 +101,16 @@ async fn opencode_models_request_sends_user_agent() {
     }
 }
 
-#[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
-use crate::RequestIdentity;
-#[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
-use crabber_core::{RunId, SessionId, TurnId};
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-use std::time::Duration;
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-    time::timeout,
+mod loopback;
+use loopback::*;
+// Sibling test modules (`codex_tests`) reach the shared scaffolding here.
+#[cfg(feature = "codex")]
+pub(super) use loopback::{
+    LOOPBACK_TIMEOUT, accept_loopback_request, request, write_loopback_response,
 };
+#[cfg(feature = "anthropic")]
+mod anthropic;
 
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
-    let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
-        .await
-        .expect("timed out waiting for provider request")
-        .expect("failed to accept provider request");
-    let mut raw = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    let header_end = loop {
-        let n = timeout(LOOPBACK_TIMEOUT, socket.read(&mut buffer))
-            .await
-            .expect("timed out reading provider request")
-            .expect("failed to read provider request");
-        assert_ne!(n, 0, "request ended before its headers");
-        raw.extend_from_slice(&buffer[..n]);
-        if let Some(position) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
-            break position + 4;
-        }
-    };
-    let headers = String::from_utf8(raw[..header_end].to_vec())
-        .expect("provider request headers were not UTF-8");
-    let content_length = headers
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .map_or(0, |(_, value)| {
-            value
-                .trim()
-                .parse::<usize>()
-                .expect("invalid request Content-Length")
-        });
-    let request_end = header_end
-        .checked_add(content_length)
-        .expect("request length overflowed");
-    while raw.len() < request_end {
-        let n = timeout(LOOPBACK_TIMEOUT, socket.read(&mut buffer))
-            .await
-            .expect("timed out reading provider request body")
-            .expect("failed to read provider request body");
-        assert_ne!(n, 0, "request ended before its declared body");
-        raw.extend_from_slice(&buffer[..n]);
-    }
-    (socket, headers)
-}
-
-#[cfg(any(feature = "codex", feature = "opencode-go", feature = "custom-http"))]
-async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
-    timeout(LOOPBACK_TIMEOUT, socket.write_all(response))
-        .await
-        .expect("timed out writing provider response")
-        .expect("failed to write provider response");
-}
 #[cfg(feature = "custom-http")]
 #[test]
 fn error_excerpts_are_lossy_utf8_redacted_and_byte_bounded() {
@@ -233,28 +175,6 @@ fn default_status_taxonomy_is_stable() {
         (ProviderErrorKind::Invalid, false)
     );
 }
-
-#[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
-fn request(provider: &str) -> ModelRequest {
-    ModelRequest {
-        context: Vec::new(),
-        identity: RequestIdentity {
-            session_id: SessionId::from("session-1"),
-            run_id: RunId::from("run-1"),
-            turn_id: TurnId::from("turn-1"),
-        },
-        selection: Selection {
-            provider_id: provider.into(),
-            model_id: "model".into(),
-        },
-        system: None,
-        messages: vec![],
-        tools: vec![],
-        temperature: None,
-        max_tokens: None,
-        tool_choice: None,
-    }
-}
 #[cfg(feature = "codex")]
 #[test]
 fn real_codex_selects_privileged_responses_mode() {
@@ -267,7 +187,6 @@ fn real_codex_selects_privileged_responses_mode() {
 #[test]
 fn real_opencode_selects_special_models_and_session_behavior() {
     let adapter = HttpAdapter::opencode_go(Protocol::Responses);
-    assert!(adapter.uses_opencode_models());
     assert!(adapter.uses_opencode_session());
 }
 #[cfg(all(feature = "custom-http", feature = "codex"))]
@@ -285,8 +204,6 @@ fn real_and_custom_codex_ids_have_distinct_privilege() {
 fn real_and_custom_opencode_ids_have_distinct_privilege() {
     let real = HttpAdapter::opencode_go(Protocol::Responses);
     let impostor = HttpAdapter::custom("opencode-go", "https://example.test", Protocol::Responses);
-    assert!(real.uses_opencode_models());
-    assert!(!impostor.inner.uses_opencode_models());
     assert!(real.uses_opencode_session());
     assert!(!impostor.inner.uses_opencode_session());
 }
@@ -459,11 +376,12 @@ async fn real_codex_401_refreshes_once_against_loopback() {
     let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
     store
         .save(&OAuthCredentials {
+            profile: crabber_auth::CredentialProfile::Siwc,
             client_id: "client".into(),
             host_id: "host".into(),
             account_id: "account".into(),
             access_token: "stale".into(),
-            refresh_token: "refresh".into(),
+            refresh_token: Some("refresh".into()),
             id_token: "id".into(),
             scopes: vec!["chatgpt.tokens.use.direct".into()],
             expires_unix_ms: now_ms() + 3_600_000,
@@ -658,11 +576,12 @@ async fn codex_headers_have_exact_session_and_originator() {
     let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
     store
         .save(&OAuthCredentials {
+            profile: crabber_auth::CredentialProfile::Siwc,
             client_id: "client".into(),
             host_id: "host".into(),
             account_id: "account".into(),
             access_token: "test-token".into(),
-            refresh_token: "refresh".into(),
+            refresh_token: Some("refresh".into()),
             id_token: "id".into(),
             scopes: vec!["chatgpt.tokens.use.direct".into()],
             expires_unix_ms: now_ms() + 3_600_000,
@@ -800,4 +719,14 @@ async fn request_spans_record_retry_and_rejection_without_secrets() {
                 && !value.contains(&url)
         );
     }
+}
+
+// Media support is keyed by protocol, so every Messages backend advertises
+// the documented Anthropic image sources; hosts confirm backend support.
+#[cfg(feature = "opencode-go")]
+#[test]
+fn opencode_messages_input_support_matches_the_messages_protocol() {
+    let support = HttpAdapter::opencode_go(Protocol::Messages).input_support();
+    assert_eq!(support.media, outbound::media_support(Protocol::Messages));
+    assert_eq!(support.media.len(), 3);
 }

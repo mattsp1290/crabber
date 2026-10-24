@@ -117,6 +117,17 @@ impl PostgresStore {
     }
 
     pub(super) async fn raw_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
+        self.unfinished_runs(None).await
+    }
+
+    pub(super) async fn raw_workspace_unfinished_runs(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<Run>, StoreError> {
+        self.unfinished_runs(Some(workspace)).await
+    }
+
+    async fn unfinished_runs(&self, workspace: Option<&str>) -> Result<Vec<Run>, StoreError> {
         let mut tx = super::transaction::begin(&self.pool).await.map_err(db)?;
         // One captured set: a newly born Run cannot appear after the cost read.
         // Any unsupported birth in this snapshot refuses the entire list.
@@ -125,11 +136,33 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         let mut proof = Proof::bounded(32 << 20);
-        super::read_proof::charge(&mut tx, sqlx::query_scalar(
-            "SELECT CAST(SUM(octet_length(data::text)+octet_length(id)+octet_length(session_id)) AS BIGINT) FROM runs WHERE status IN ('pending','running','paused')"
-        ), &mut proof).await.map_err(failure)?;
-        let rows = sqlx::query("SELECT id,session_id,data::text AS data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq")
-            .fetch_all(&mut *tx).await.map_err(db)?;
+        let (cost_sql, runs_sql) = if workspace.is_some() {
+            (
+                "SELECT CAST(SUM(octet_length(r.data::text)+octet_length(r.id)+octet_length(r.session_id)) AS BIGINT) FROM runs r JOIN sessions s ON s.id=r.session_id WHERE s.workspace_id=$1 AND r.status IN ('pending','running','paused')",
+                "SELECT r.id,r.session_id,r.data::text AS data FROM runs r JOIN sessions s ON s.id=r.session_id WHERE s.workspace_id=$1 AND r.status IN ('pending','running','paused') ORDER BY r.seq",
+            )
+        } else {
+            (
+                "SELECT CAST(SUM(octet_length(data::text)+octet_length(id)+octet_length(session_id)) AS BIGINT) FROM runs WHERE status IN ('pending','running','paused')",
+                "SELECT id,session_id,data::text AS data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq",
+            )
+        };
+        let cost = sqlx::query_scalar(cost_sql);
+        let cost = if let Some(workspace) = workspace {
+            cost.bind(workspace)
+        } else {
+            cost
+        };
+        super::read_proof::charge(&mut tx, cost, &mut proof)
+            .await
+            .map_err(failure)?;
+        let query = sqlx::query(runs_sql);
+        let query = if let Some(workspace) = workspace {
+            query.bind(workspace)
+        } else {
+            query
+        };
+        let rows = query.fetch_all(&mut *tx).await.map_err(db)?;
         let mut runs = Vec::with_capacity(rows.len());
         for row in rows {
             let run = decode_run(&row)?;

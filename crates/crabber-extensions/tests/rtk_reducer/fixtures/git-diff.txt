@@ -1,0 +1,10 @@
+diff --git a/example.txt b/example.txt
+index 7df8137..d5501d2 100644
+--- a/example.txt
++++ b/example.txt
+@@ -48,4 +48,4 @@ line 46
+ line 47
+ line 48
+ line 49
+-REMOVED_SENTINEL
++replacement

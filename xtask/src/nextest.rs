@@ -4,6 +4,9 @@ use std::{path::Path, process::Command};
 
 use crate::checks::Checks;
 
+pub(crate) const CLUSTER_ROLE_TEST: &str =
+    "postgres::isolation_tests::migration::migration_without_createrole_fails_clearly";
+
 pub(crate) const WORKSPACE_FEATURES: &str =
     "server-host-probe/sqlite,server-host-probe/wasm,workspace-context-probe/sqlite";
 
@@ -190,6 +193,7 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut Checks, arguments: &[&str])
         ])
         .args(&arguments[1..])
         .current_dir(workspace);
+    crate::standard_tools::require_subprocess_tools(&mut command);
     gates.command(workspace, command, "nextest exit status; retries disabled");
     // Explicit target selectors suppress Cargo's default doctests. Preserve
     // exactly the invocations that previously included them.

@@ -35,6 +35,8 @@ use errors::{
 };
 
 const CRABBER_USER_AGENT: &str = "crabber/0.1";
+/// Sent on every Messages request and on the Anthropic model catalog.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 fn user_agent_product_is_valid(product: &str) -> bool {
     fn part_is_valid(part: &str) -> bool {
@@ -134,11 +136,20 @@ enum AdapterKind {
     #[cfg(feature = "openai")]
     OpenAi,
     #[cfg(feature = "codex")]
-    Codex,
+    Codex(crabber_auth::CredentialProfile),
     #[cfg(feature = "opencode-go")]
     OpenCode,
     #[cfg(feature = "custom-http")]
     Custom,
+}
+
+/// A built-in adapter's model catalog request; custom adapters have none.
+struct CatalogRequest {
+    request: reqwest::RequestBuilder,
+    /// Credential forms redacted from a failed response.
+    credentials: Vec<String>,
+    /// Entry field reporting the input context limit, if the catalog has one.
+    limit_field: Option<&'static str>,
 }
 
 #[derive(Clone)]
@@ -259,15 +270,29 @@ impl HttpAdapter {
     }
     #[cfg(feature = "codex")]
     pub fn codex(store: Arc<dyn crabber_auth::CredentialStore>) -> Self {
+        Self::codex_with_profile(store, crabber_auth::CredentialProfile::Siwc)
+    }
+    #[cfg(feature = "codex")]
+    #[must_use]
+    pub fn codex_cli(store: Arc<dyn crabber_auth::CredentialStore>) -> Self {
+        Self::codex_with_profile(store, crabber_auth::CredentialProfile::CodexCli)
+    }
+    #[cfg(feature = "codex")]
+    fn codex_with_profile(
+        store: Arc<dyn crabber_auth::CredentialStore>,
+        profile: crabber_auth::CredentialProfile,
+    ) -> Self {
         let mut adapter = Self::new(
             "codex",
-            "https://api.openai.com/v1",
+            profile.inference_base_url(),
             Protocol::Responses,
-            AdapterKind::Codex,
+            AdapterKind::Codex(profile),
             None,
             CredentialPlacement::Bearer,
         );
-        adapter.tokens = Some(Arc::new(crabber_auth::TokenManager::new(store)));
+        adapter.tokens = Some(Arc::new(
+            crabber_auth::TokenManager::new(store).with_profile(profile),
+        ));
         adapter
     }
     #[cfg(feature = "custom-http")]
@@ -327,7 +352,7 @@ impl HttpAdapter {
     }
     #[cfg(feature = "codex")]
     fn uses_codex_responses_mode(&self) -> bool {
-        self.kind == AdapterKind::Codex
+        matches!(self.kind, AdapterKind::Codex(_))
     }
     #[cfg(not(feature = "codex"))]
     fn uses_codex_responses_mode(&self) -> bool {
@@ -335,16 +360,66 @@ impl HttpAdapter {
         false
     }
     #[cfg(feature = "opencode-go")]
-    fn uses_opencode_models(&self) -> bool {
+    fn uses_opencode_session(&self) -> bool {
         self.kind == AdapterKind::OpenCode
     }
     #[cfg(not(feature = "opencode-go"))]
-    fn uses_opencode_models(&self) -> bool {
+    fn uses_opencode_session(&self) -> bool {
         let _ = self.kind;
         false
     }
-    fn uses_opencode_session(&self) -> bool {
-        self.uses_opencode_models()
+    #[cfg_attr(
+        not(any(feature = "opencode-go", feature = "anthropic")),
+        allow(clippy::unnecessary_wraps)
+    )]
+    fn catalog_request(&self) -> Result<Option<CatalogRequest>, ProviderError> {
+        #[allow(unreachable_patterns)]
+        match self.kind {
+            #[cfg(feature = "opencode-go")]
+            AdapterKind::OpenCode => {
+                let key = self.api_key()?;
+                Ok(Some(CatalogRequest {
+                    request: self
+                        .client
+                        .get(join_url(&self.base_url, "/models")?)
+                        .bearer_auth(&key),
+                    credentials: vec![key.clone(), format!("Bearer {key}")],
+                    limit_field: None,
+                }))
+            }
+            #[cfg(feature = "anthropic")]
+            AdapterKind::Anthropic => {
+                let key = self.api_key()?;
+                let mut value = HeaderValue::from_str(&key).map_err(|_| invalid())?;
+                value.set_sensitive(true);
+                let mut url = join_url(&self.base_url, "/models")?;
+                url.set_query(Some("limit=1000"));
+                Ok(Some(CatalogRequest {
+                    request: self
+                        .client
+                        .get(url)
+                        .header("x-api-key", value)
+                        .header("anthropic-version", ANTHROPIC_VERSION),
+                    credentials: vec![key],
+                    limit_field: Some("max_input_tokens"),
+                }))
+            }
+            // A new built-in kind gets no catalog until it opts in with an arm here.
+            _ => Ok(None),
+        }
+    }
+    /// Classifier for non-success responses; `None` means status-only.
+    fn rejection_classifier(&self) -> Option<&dyn errors::ErrorClassifier> {
+        #[allow(unreachable_patterns)]
+        match self.kind {
+            #[cfg(feature = "custom-http")]
+            AdapterKind::Custom => self.error_classifier.as_deref(),
+            #[cfg(feature = "anthropic")]
+            AdapterKind::Anthropic => Some(&errors::AnthropicClassifier),
+            // A new built-in kind keeps status-only classification unless it
+            // opts in with an arm here.
+            _ => None,
+        }
     }
     fn api_key(&self) -> Result<String, ProviderError> {
         if let Some(key) = &self.key_override {
@@ -378,6 +453,15 @@ impl HttpAdapter {
             {
                 let tokens = self.tokens.as_ref().ok_or_else(auth)?;
                 let creds = tokens.credentials().await.map_err(|_| auth())?;
+                if !matches!(self.kind, AdapterKind::Codex(profile) if profile == creds.profile) {
+                    return Err(auth());
+                }
+                if creds.profile == crabber_auth::CredentialProfile::CodexCli {
+                    if creds.account_id.is_empty() {
+                        return Err(auth());
+                    }
+                    insert(&mut headers, "chatgpt-account-id", &creds.account_id)?;
+                }
                 insert(
                     &mut headers,
                     "authorization",
@@ -411,7 +495,10 @@ impl HttpAdapter {
             }
         }
         if self.protocol == Protocol::Messages {
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert(
+                "anthropic-version",
+                HeaderValue::from_static(ANTHROPIC_VERSION),
+            );
         }
         if self.uses_opencode_session() {
             let session = &request.identity.session_id.0;
@@ -446,109 +533,101 @@ impl HttpAdapter {
             http.response.status_code = tracing::field::Empty, retry.attempt = 0u32,
             outcome = tracing::field::Empty, error.kind = tracing::field::Empty,
             otel.kind = "client", otel.status_code = tracing::field::Empty);
-        async {
-            let mut http_rejected = false;
-            let result = async {
-        let body = outbound::prepare(self, &request)?;
-        let url = endpoint_url(&self.base_url, self.protocol)?;
-        #[cfg(feature = "custom-http")]
-        let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
-            let (headers, credential) = self.custom_headers(&request).await?;
-            (headers, Some(credential))
-        } else {
-            (self.headers(&request).await?, None)
-        };
-        #[cfg(not(feature = "custom-http"))]
-        let headers = self.headers(&request).await?;
-        #[allow(unused_mut)]
-        let mut attempt_credentials = credentials_from_headers(&headers);
-        #[cfg(feature = "custom-http")]
-        if let Some(credential) = &custom_credential {
-            attempt_credentials.push(credential.clone());
-        }
-        #[allow(unused_mut)]
-        let mut response = self.post(&url, headers.clone(), &body, &span).await?;
-        #[cfg(feature = "custom-http")]
-        if self.kind == AdapterKind::Custom {
-            if let Some(observer) = &self.response_observer {
-                observer.observe(response.status(), response.headers());
+        let mut http_rejected = false;
+        let result = async {
+            let body = outbound::prepare(self, &request)?;
+            let url = endpoint_url(&self.base_url, self.protocol)?;
+            #[cfg(feature = "custom-http")]
+            let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
+                let (headers, credential) = self.custom_headers(&request).await?;
+                (headers, Some(credential))
+            } else {
+                (self.headers(&request).await?, None)
+            };
+            #[cfg(not(feature = "custom-http"))]
+            let headers = self.headers(&request).await?;
+            #[allow(unused_mut)]
+            let mut attempt_credentials = credentials_from_headers(&headers);
+            #[cfg(feature = "custom-http")]
+            if let Some(credential) = &custom_credential {
+                attempt_credentials.push(credential.clone());
             }
-            if response.status() == reqwest::StatusCode::UNAUTHORIZED
-                && self.credential_source.is_some()
-            {
-                let stale = custom_credential.as_deref().ok_or_else(auth)?;
-                let source = self.credential_source.as_ref().ok_or_else(auth)?;
-                drop(response);
-                source.invalidate(stale).await;
-                let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
-                attempt_credentials.extend(credentials_from_headers(&retry_headers));
-                attempt_credentials.push(retry_credential);
-                span.record("retry.attempt", 1u32);
-            tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
-            response = self.post(&url, retry_headers, &body, &span).await?;
+            #[allow(unused_mut)]
+            let mut response = self.post(&url, headers.clone(), &body, &span).await?;
+            #[cfg(feature = "custom-http")]
+            if self.kind == AdapterKind::Custom {
                 if let Some(observer) = &self.response_observer {
                     observer.observe(response.status(), response.headers());
                 }
-                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                    http_rejected = true;
-                    return Err(rejected_response(response, None, true, &attempt_credentials).await);
-                }
-            }
-        }
-        #[cfg(feature = "codex")]
-        if self.uses_codex_responses_mode()
-            && response.status() == reqwest::StatusCode::UNAUTHORIZED
-        {
-            let previous = headers
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .ok_or_else(auth)?;
-            self.tokens
-                .as_ref()
-                .ok_or_else(auth)?
-                .force_refresh(previous)
-                .await
-                .map_err(|_| auth())?;
-            let retry_headers = self.headers(&request).await?;
-            attempt_credentials.extend(credentials_from_headers(&retry_headers));
-            span.record("retry.attempt", 1u32);
-            tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
-            response = self.post(&url, retry_headers, &body, &span).await?;
-        }
-        if !response.status().is_success() {
-            #[cfg(feature = "custom-http")]
-            let classifier = (self.kind == AdapterKind::Custom)
-                .then_some(self.error_classifier.as_deref())
-                .flatten();
-            #[cfg(not(feature = "custom-http"))]
-            let classifier = None;
-            http_rejected = true;
-                    return Err(rejected_response(response, classifier, false, &attempt_credentials).await);
-        }
-        Ok(self.response_stream(response))
-            }.await;
-            match &result {
-                Ok(_) => {
-                    span.record("outcome", "response_started");
-                    span.record("otel.status_code", "OK");
-                }
-                Err(error) => {
-                    span.record("error.kind", error.error_kind());
-                    span.record("otel.status_code", "ERROR");
-                    // A host classifier may call an HTTP rejection a transport failure.
-                    // Keep the observed request outcome independent of that category.
-                    if !http_rejected && error.kind == crate::ProviderErrorKind::Transport {
-                        span.record("outcome", "transport_error");
-                    } else {
-                        span.record("outcome", "rejected");
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                    && self.credential_source.is_some()
+                {
+                    let stale = custom_credential.as_deref().ok_or_else(auth)?;
+                    let source = self.credential_source.as_ref().ok_or_else(auth)?;
+                    drop(response);
+                    source.invalidate(stale).await;
+                    let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
+                    attempt_credentials.extend(credentials_from_headers(&retry_headers));
+                    attempt_credentials.push(retry_credential);
+                    span.record("retry.attempt", 1u32);
+                    tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
+                    response = self.post(&url, retry_headers, &body, &span).await?;
+                    if let Some(observer) = &self.response_observer {
+                        observer.observe(response.status(), response.headers());
+                    }
+                    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                        http_rejected = true;
+                        return Err(rejected_response(response, None, true, &attempt_credentials).await);
                     }
                 }
             }
-            result
+            #[cfg(feature = "codex")]
+            if self.uses_codex_responses_mode()
+                && response.status() == reqwest::StatusCode::UNAUTHORIZED
+            {
+                let previous = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .ok_or_else(auth)?;
+                self.tokens
+                    .as_ref()
+                    .ok_or_else(auth)?
+                    .force_refresh(previous)
+                    .await
+                    .map_err(|_| auth())?;
+                let retry_headers = self.headers(&request).await?;
+                attempt_credentials.extend(credentials_from_headers(&retry_headers));
+                span.record("retry.attempt", 1u32);
+                tracing::info!(target: crate::targets::PROVIDERS, "credential refreshed, retrying");
+                response = self.post(&url, retry_headers, &body, &span).await?;
+            }
+            if !response.status().is_success() {
+                http_rejected = true;
+                return Err(rejected_response(response, self.rejection_classifier(), false, &attempt_credentials).await);
+            }
+            Ok(self.response_stream(response))
         }
         .instrument(span.clone())
-        .await
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "response_started");
+                span.record("otel.status_code", "OK");
+            }
+            Err(error) => {
+                span.record("error.kind", error.error_kind());
+                span.record("otel.status_code", "ERROR");
+                // A host classifier may call an HTTP rejection a transport failure.
+                // Keep the observed request outcome independent of that category.
+                if !http_rejected && error.kind == crate::ProviderErrorKind::Transport {
+                    span.record("outcome", "transport_error");
+                } else {
+                    span.record("outcome", "rejected");
+                }
+            }
+        }
+        result
     }
 }
 fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), ProviderError> {
@@ -570,6 +649,10 @@ fn is_protected_static_header(name: &HeaderName) -> bool {
     .contains(name)
 }
 fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, ProviderError> {
+    join_url(base_url, protocol.path())
+}
+/// Appends `path` to a validated http(s) base URL without query or fragment.
+fn join_url(base_url: &str, path: &str) -> Result<reqwest::Url, ProviderError> {
     fn validate(url: &str) -> Result<reqwest::Url, ProviderError> {
         let url = reqwest::Url::parse(url).map_err(|_| invalid())?;
         if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
@@ -582,11 +665,7 @@ fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, Prov
     if base.query().is_some() || base.fragment().is_some() {
         return Err(invalid());
     }
-    let assembled = format!(
-        "{}{path}",
-        base_url.trim_end_matches('/'),
-        path = protocol.path()
-    );
+    let assembled = format!("{}{path}", base_url.trim_end_matches('/'));
     validate(&assembled)
 }
 #[async_trait]
@@ -612,57 +691,55 @@ impl ProviderAdapter for HttpAdapter {
     }
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
         let span = tracing::info_span!(target: crate::targets::PROVIDERS, "crabber.provider.models", provider.id = %self.id, outcome = tracing::field::Empty, error.kind = tracing::field::Empty, otel.kind = "client", otel.status_code = tracing::field::Empty);
-        async {
-            let result = async {
-                if !self.uses_opencode_models() {
-                    return Ok(Vec::new());
-                }
-                let key = self.api_key()?;
-                let credentials = vec![key.clone(), format!("Bearer {key}")];
-                let response = self
-                    .client
-                    .get(format!("{}/models", self.base_url.trim_end_matches('/')))
-                    .bearer_auth(key)
-                    .header("user-agent", self.user_agent.clone())
-                    .send()
-                    .await
-                    .map_err(|error| transport_from_reqwest(&error))?;
-                if !response.status().is_success() {
-                    return Err(response_error(response, None, false, &credentials).await);
-                }
-                let bytes = response
-                    .bytes()
-                    .await
-                    .map_err(|error| transport_from_reqwest(&error))?;
-                let envelope: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-                Ok(envelope["data"]
-                    .as_array()
-                    .ok_or_else(invalid)?
-                    .iter()
-                    .filter_map(|m| m["id"].as_str())
-                    .map(|id| ModelDescriptor {
-                        provider_id: self.id.clone(),
-                        id: id.into(),
-                        context_limit: 0,
-                    })
-                    .collect())
+        let result = async {
+            let Some(CatalogRequest {
+                request,
+                credentials,
+                limit_field,
+            }) = self.catalog_request()?
+            else {
+                return Ok(Vec::new());
+            };
+            let response = request
+                .header("user-agent", self.user_agent.clone())
+                .send()
+                .await
+                .map_err(|error| transport_from_reqwest(&error))?;
+            if !response.status().is_success() {
+                return Err(response_error(response, None, false, &credentials).await);
             }
-            .await;
-            match &result {
-                Ok(_) => {
-                    span.record("outcome", "ok");
-                    span.record("otel.status_code", "OK");
-                }
-                Err(error) => {
-                    span.record("outcome", "failed");
-                    span.record("error.kind", error.error_kind());
-                    span.record("otel.status_code", "ERROR");
-                }
-            }
-            result
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| transport_from_reqwest(&error))?;
+            let envelope: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+            Ok(envelope["data"]
+                .as_array()
+                .ok_or_else(invalid)?
+                .iter()
+                .filter_map(|m| Some((m["id"].as_str()?, m)))
+                .map(|(id, m)| ModelDescriptor {
+                    provider_id: self.id.clone(),
+                    id: id.into(),
+                    // 0 means unknown, as when the catalog reports no limit.
+                    context_limit: limit_field.and_then(|field| m[field].as_u64()).unwrap_or(0),
+                })
+                .collect())
         }
         .instrument(span.clone())
-        .await
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "ok");
+                span.record("otel.status_code", "OK");
+            }
+            Err(error) => {
+                span.record("outcome", "failed");
+                span.record("error.kind", error.error_kind());
+                span.record("otel.status_code", "ERROR");
+            }
+        }
+        result
     }
     async fn build(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         if selection.provider_id != self.id {
@@ -691,6 +768,25 @@ impl HttpResolver {
     }
     #[must_use]
     pub fn from_env() -> Self {
+        Self::from_env_profile(Self::configured_codex_profile().ok().flatten())
+    }
+    /// Registers compiled adapters, rejecting an invalid Codex profile.
+    ///
+    /// # Errors
+    /// Returns a sanitized invalid-request error when `CRABBER_CODEX_PROFILE`
+    /// is neither empty, `siwc`, nor `codex-cli`.
+    pub fn try_from_env() -> Result<Self, ProviderError> {
+        Ok(Self::from_env_profile(Self::configured_codex_profile()?))
+    }
+    fn configured_codex_profile() -> Result<Option<bool>, ProviderError> {
+        match std::env::var("CRABBER_CODEX_PROFILE") {
+            Err(std::env::VarError::NotPresent) => Ok(Some(false)),
+            Ok(value) if value.is_empty() || value == "siwc" => Ok(Some(false)),
+            Ok(value) if value == "codex-cli" => Ok(Some(true)),
+            _ => Err(invalid()),
+        }
+    }
+    fn from_env_profile(#[allow(unused_variables)] cli: Option<bool>) -> Self {
         #[allow(unused_mut)]
         let mut resolver = Self::new();
         #[cfg(feature = "anthropic")]
@@ -707,9 +803,14 @@ impl HttpResolver {
         }
         #[cfg(feature = "codex")]
         {
-            resolver = resolver.with_adapter(HttpAdapter::codex(Arc::new(
-                crabber_auth::FileCredentialStore::default_crabber(),
-            )));
+            if let Some(cli) = cli {
+                let store = Arc::new(crabber_auth::FileCredentialStore::default_crabber());
+                resolver = resolver.with_adapter(if cli {
+                    HttpAdapter::codex_cli(store)
+                } else {
+                    HttpAdapter::codex(store)
+                });
+            }
         }
         resolver
     }
@@ -740,6 +841,14 @@ impl Resolver for HttpResolver {
 
 #[cfg(all(
     test,
-    any(feature = "custom-http", feature = "codex", feature = "opencode-go")
+    any(
+        feature = "custom-http",
+        feature = "anthropic",
+        feature = "codex",
+        feature = "opencode-go"
+    )
 ))]
 mod tests;
+
+#[cfg(all(test, feature = "codex"))]
+mod codex_tests;

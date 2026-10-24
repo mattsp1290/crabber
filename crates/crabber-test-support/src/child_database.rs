@@ -21,7 +21,8 @@ impl ChildDatabase<'_> {
                 command
                     .env(sqlite_key, path)
                     .env_remove("CRABBER_TEST_POSTGRES_URL")
-                    .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE");
+                    .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
+                    .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE");
             }
             #[cfg(feature = "postgres")]
             Self::Postgres(url) => {

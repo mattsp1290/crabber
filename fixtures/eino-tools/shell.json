@@ -1,0 +1,24 @@
+{
+  "description": "Run a command with host-configured shell policy in the agent's workspace cwd. Captures stdout, stderr, exit code, and duration. Per-call timeout defaults to 60s and is capped at 600s. Stdout/stderr use host-configured per-stream caps (default 256 KiB); oversize output sets truncated=true.",
+  "name": "shell",
+  "parameters": {
+    "properties": {
+      "cmd": {
+        "minLength": 1,
+        "description": "Shell command body. Executed with host-configured shell policy in the agent's workspace cwd.",
+        "type": "string"
+      },
+      "timeout_seconds": {
+        "maximum": 600,
+        "minimum": 0,
+        "description": "Per-call timeout in seconds. 0 or omitted applies the default (60s). Cap is 600s.",
+        "type": "integer"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "cmd"
+    ],
+    "type": "object"
+  }
+}

@@ -72,3 +72,63 @@ async fn raw_execution_keeps_existing_current_issuer_fence_guard() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn workspace_discovery_excludes_foreign_corrupt_runs_before_decode() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut runs = Vec::new();
+        for workspace in ["discovery-own", "discovery-foreign"] {
+            let mut request = crate::execution_binding_contract::fixture(
+                &crabber_core::SessionId::new(),
+                time::OffsetDateTime::UNIX_EPOCH,
+                "discovery-backend",
+                'b',
+            )
+            .keyed
+            .request;
+            request.session_id = None;
+            request.workspace_id = workspace.into();
+            runs.push(store.admit_run(request).await.unwrap().run);
+        }
+        let foreign = &runs[1];
+        let saved: String = sqlx::query_scalar("SELECT data::text FROM runs WHERE id=$1")
+            .bind(&foreign.id.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE runs SET data='{}'::jsonb WHERE id=$1")
+            .bind(&foreign.id.0)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let own = store
+            .list_workspace_unfinished_runs(crate::WorkspaceRunsRequest {
+                workspace_id: "discovery-own".into(),
+            })
+            .await;
+        let other = store
+            .list_workspace_unfinished_runs(crate::WorkspaceRunsRequest {
+                workspace_id: "discovery-foreign".into(),
+            })
+            .await;
+        let global = store.list_unfinished_runs().await;
+        sqlx::query("UPDATE runs SET data=$2::jsonb WHERE id=$1")
+            .bind(&foreign.id.0)
+            .bind(saved)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(own.unwrap(), vec![runs[0].clone()]);
+        assert!(other.is_err());
+        assert!(global.is_err());
+    })
+    .await
+    .unwrap();
+}

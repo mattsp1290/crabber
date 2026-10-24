@@ -31,7 +31,10 @@ pub(super) async fn load_run(
 ) -> Result<Run, Error> {
     let run = super::super::load_run(tx, &target.run_id, false)
         .await
-        .map_err(unknown)?;
+        .map_err(|error| match error {
+            crate::StoreError::NotFound => Error::NotFound,
+            other => unknown(other),
+        })?;
     verify_target(target, &run)?;
     Ok(run)
 }

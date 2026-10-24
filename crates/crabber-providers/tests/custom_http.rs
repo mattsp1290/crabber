@@ -234,6 +234,35 @@ impl RawServer {
         Self { url, body, task }
     }
 
+    async fn start_staged(declared_length: usize) -> (Self, StagedResponseController) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (writes, mut fragments) =
+            tokio::sync::mpsc::channel::<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>(8);
+        let (sender, body) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
+                .await
+                .expect("timed out accepting raw request")
+                .expect("failed to accept raw request");
+            let captured = read_request(&mut socket).await;
+            let _ = sender.send(captured);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            while let Some((fragment, ack)) = fragments.recv().await {
+                socket.write_all(&fragment).await.unwrap();
+                socket.flush().await.unwrap();
+                let _ = ack.send(());
+            }
+        });
+        (
+            Self { url, body, task },
+            StagedResponseController { writes },
+        )
+    }
+
     async fn body(self) -> Vec<u8> {
         self.headers_and_body().await.1
     }
@@ -248,6 +277,27 @@ impl RawServer {
             .expect("raw server task timed out")
             .expect("raw server task failed");
         body
+    }
+}
+
+/// Releases fragments of a staged `RawServer` response and acknowledges each
+/// completed socket write. Client consumption must be asserted independently.
+struct StagedResponseController {
+    writes: tokio::sync::mpsc::Sender<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>,
+}
+impl StagedResponseController {
+    async fn release(&self, fragment: impl Into<Vec<u8>>) {
+        let (ack, written) = tokio::sync::oneshot::channel();
+        self.writes.send((fragment.into(), ack)).await.unwrap();
+        timeout(LOOPBACK_TIMEOUT, written)
+            .await
+            .expect("timed out awaiting staged write")
+            .expect("staged writer dropped acknowledgement");
+    }
+
+    async fn finish(self, server: RawServer) -> (Headers, Vec<u8>) {
+        drop(self.writes);
+        server.headers_and_body().await
     }
 }
 
@@ -316,6 +366,7 @@ fn request(provider: &str) -> ModelRequest {
         tools: vec![],
         temperature: None,
         max_tokens: Some(8),
+        reasoning_effort: None,
         tool_choice: None,
     }
 }
@@ -465,10 +516,12 @@ async fn all_protocols_put_canonical_context_on_the_wire_as_user_data() {
         let adapter = HttpAdapter::custom("context-fixture", endpoint, protocol)
             .with_api_key("fixture-context");
         assert!(adapter.input_support().context_data);
-        assert_eq!(
-            adapter.input_support().media.is_empty(),
-            protocol == Protocol::Messages
-        );
+        let expected_media = if protocol == Protocol::ChatCompletions {
+            2
+        } else {
+            3
+        };
+        assert_eq!(adapter.input_support().media.len(), expected_media);
         let mut request = request("context-fixture");
         request.system = Some("host policy".into());
         request.context = vec![crabber_core::InputContext {
@@ -502,3 +555,16 @@ async fn all_protocols_put_canonical_context_on_the_wire_as_user_data() {
 
 #[path = "custom_http/media.rs"]
 mod media;
+
+#[tokio::test]
+async fn responses_reasoning_effort_reaches_socket() {
+    let response = raw_response("200 OK", 14, b"data: [DONE]\n\n");
+    let server = RawServer::start(response).await;
+    let adapter =
+        HttpAdapter::custom("effort", &server.url, Protocol::Responses).with_api_key("fixture");
+    let mut request = request("effort");
+    request.reasoning_effort = Some(crabber_core::ReasoningEffort::Medium);
+    drop(adapter.stream(request).await.unwrap());
+    let body: serde_json::Value = serde_json::from_slice(&server.body().await).unwrap();
+    assert_eq!(body["reasoning"], serde_json::json!({"effort":"medium"}));
+}

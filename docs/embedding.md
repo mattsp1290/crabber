@@ -13,7 +13,7 @@ Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for cu
 | Memory + fake provider | [minimal embedding](../examples/minimal-embed/src/main.rs) | `cargo run -p minimal-embed` |
 | PostgreSQL persistence | [session store](../crates/crabber-session/README.md) | `cargo run -p minimal-embed -- --store postgres`; set `CRABBER_POSTGRES_URL`, dedicated PostgreSQL 14+; facade `postgres` |
 | SQLite persistence | [SQLite operations](sqlite-store.md) | `cargo run -p minimal-embed -- --store sqlite`; set `CRABBER_SQLITE_PATH`; facade `sqlite`; restart proof `sqlite_interrupt_then_fresh_process_continues_session` |
-| Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration |
+| Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration; Anthropic facade proof `cargo test -p crabber --features anthropic --test anthropic_messages`; live acceptance is manual and ignored by default |
 | Host-owned HTTP provider | [custom HTTP contract](../crates/crabber-providers/README.md#host-owned-custom-http-providers) | independent facade `custom-http`; `HttpAdapter::custom` + `HttpResolver::with_adapter`; construction-only external probe is offline |
 | Fenced abandonment | [host protocol](fenced-abandon.md) | `cargo run -p fenced-abandon`; memory default, manual PostgreSQL mode |
 | Native extensions | [native guide](../examples/native-extension/README.md) | `cargo run -p native-extension` |
@@ -48,10 +48,9 @@ fetching a credential, opening a stream, or contacting the network.
 
 Migration notes for the named downstream consumers:
 
-- **crabber-extensions:** its inspected immutable Crabber pin uses only generic
-  provider contracts, so its existing source needs no change and remains
-  unaffected. To adopt this adapter, advance to an immutable Crabber pin that
-  includes it, enable `custom-http`, and configure/register the custom adapter.
+- **crabber-extensions:** now a workspace crate using the public Crabber API.
+  Enable `custom-http` on its `crabber` path dependency to use the custom
+  adapter, then configure and register that adapter on the host.
 - **Agentcraft:** inspected checkout `fe08b03d3847690f641a3d2380d973819ac0d8ec`.
   Its `rust-proof`, `rust-migration-proof`, and `rust-telemetry-proof` manifests
   all pin Crabber `5e3046a8f959184fd237969705ce922a67252c1f`; the first two enable only
@@ -73,7 +72,9 @@ offline host journeys, the external public-API consumer and local static probe
 API checks (described below),
 and enforces minimal-embed's 60-line marked glue limit. It requires no credentials
 or external accounts. Real PostgreSQL/provider setup, login/logout and live
-Datadog ingestion are manual external-service steps. Do not run Codex credential
+Datadog ingestion are manual external-service steps. Live Anthropic acceptance
+requires `CRABBER_ANTHROPIC_API_KEY` and runs only with `-- --ignored`;
+`cargo xtask check` builds that binary with `--no-run`. Do not run Codex credential
 commands in CI against a user's real store. Never let inherited Datadog keys
 turn an offline example check into an external write. Generated WASM stays local.
 

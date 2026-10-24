@@ -1,0 +1,222 @@
+[
+  {
+    "upstream_sha256": "a2f1dafaa82d7696a638daf2d8dad72cf0a638380964d419a8bf0bd1de621146",
+    "durable_mapping": "CLI stdin lines become a scripted host answer with trailing newlines trimmed; stdin errors become recorded host Deny (denied). No process IO or implicit consent."
+  },
+  {
+    "name": "answer provided cli",
+    "surface": "mcp",
+    "args": {
+      "question": "What is 2+2?",
+      "answer": "4"
+    },
+    "expected": {
+      "outcome": "succeeded",
+      "answer_key_present": true,
+      "answer": "4"
+    }
+  },
+  {
+    "name": "answer provided mcp",
+    "surface": "mcp",
+    "args": {
+      "question": "What is 2+2?",
+      "answer": "4"
+    },
+    "expected": {
+      "outcome": "succeeded",
+      "answer_key_present": true,
+      "answer": "4"
+    }
+  },
+  {
+    "name": "single-line answer terminated by blank line",
+    "surface": "cli",
+    "args": {
+      "question": "Say hello"
+    },
+    "expected": {
+      "outcome": "succeeded",
+      "answer_key_present": true,
+      "answer": "hello"
+    },
+    "stdin_lines": [
+      "hello",
+      "",
+      ""
+    ],
+    "durable": {
+      "reply": "answer",
+      "value": "hello\n\n"
+    }
+  },
+  {
+    "name": "multi-line answer joined correctly",
+    "surface": "cli",
+    "args": {
+      "question": "Tell me"
+    },
+    "expected": {
+      "outcome": "succeeded",
+      "answer_key_present": true,
+      "answer": "line one\nline two\nline three"
+    },
+    "stdin_lines": [
+      "line one",
+      "line two",
+      "line three",
+      "",
+      ""
+    ],
+    "durable": {
+      "reply": "answer",
+      "value": "line one\nline two\nline three\n\n"
+    }
+  },
+  {
+    "name": "answer terminated by EOF",
+    "surface": "cli",
+    "args": {
+      "question": "Q?"
+    },
+    "expected": {
+      "outcome": "succeeded",
+      "answer_key_present": true,
+      "answer": "eof answer"
+    },
+    "stdin_lines": [
+      "eof answer"
+    ],
+    "durable": {
+      "reply": "answer",
+      "value": "eof answer"
+    }
+  },
+  {
+    "name": "question printed to injected stderr",
+    "surface": "cli",
+    "args": {
+      "question": "Are you there?"
+    },
+    "expected": {
+      "outcome": "succeeded",
+      "answer_key_present": false
+    },
+    "stdin_lines": [
+      "",
+      ""
+    ],
+    "durable": {
+      "reply": "answer",
+      "value": "\n"
+    }
+  },
+  {
+    "name": "stdin read error returns io error",
+    "surface": "cli",
+    "args": {
+      "question": "Q?"
+    },
+    "expected": {
+      "outcome": "failed",
+      "category": "io",
+      "answer_key_present": false
+    },
+    "stdin_error": true,
+    "durable": {
+      "reply": "deny",
+      "value": ""
+    },
+    "durable_expected": {
+      "outcome": "failed",
+      "category": "denied",
+      "answer_key_present": false
+    }
+  },
+  {
+    "name": "returns OutcomePending immediately",
+    "surface": "mcp",
+    "args": {
+      "question": "Hello?"
+    },
+    "expected": {
+      "outcome": "pending",
+      "question": "Hello?",
+      "answer_key_present": false
+    }
+  },
+  {
+    "name": "Question field echoed in result",
+    "surface": "mcp",
+    "args": {
+      "question": "What time is it?"
+    },
+    "expected": {
+      "outcome": "pending",
+      "question": "What time is it?",
+      "answer_key_present": false
+    }
+  },
+  {
+    "name": "stdin is NEVER read in MCP mode",
+    "surface": "mcp",
+    "args": {
+      "question": "Q?"
+    },
+    "expected": {
+      "outcome": "pending",
+      "question": "Q?",
+      "answer_key_present": false
+    }
+  },
+  {
+    "name": "no write to stderr in MCP mode",
+    "surface": "mcp",
+    "args": {
+      "question": "Q?"
+    },
+    "expected": {
+      "outcome": "pending",
+      "question": "Q?",
+      "answer_key_present": false
+    }
+  },
+  {
+    "name": "empty question returns validation error",
+    "surface": "cli",
+    "args": {
+      "question": ""
+    },
+    "expected": {
+      "outcome": "failed",
+      "category": "validation",
+      "answer_key_present": false
+    },
+    "stdin_lines": [
+      ""
+    ],
+    "durable": {
+      "reply": "answer",
+      "value": ""
+    }
+  },
+  {
+    "name": "whitespace-only question returns validation error",
+    "surface": "cli",
+    "args": {
+      "question": "   "
+    },
+    "expected": {
+      "outcome": "failed",
+      "category": "validation",
+      "answer_key_present": false
+    },
+    "stdin_lines": [
+      ""
+    ],
+    "durable": {
+      "reply": "answer",
+      "value": ""
+    }
+  }
+]

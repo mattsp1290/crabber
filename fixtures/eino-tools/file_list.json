@@ -1,0 +1,19 @@
+{
+  "description": "List directory entries under a workspace-relative path (empty or \".\" lists the workspace root). Output is sorted and capped at 5000 entries; oversize results set truncated=true.",
+  "name": "file_list",
+  "parameters": {
+    "properties": {
+      "path": {
+        "minLength": 1,
+        "description": "Workspace-relative directory. Use '.' for the workspace root. Omit the field entirely to default to '.'.",
+        "type": "string"
+      },
+      "recursive": {
+        "description": "If true, walk descendants. Default false (immediate children only).",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false,
+    "type": "object"
+  }
+}

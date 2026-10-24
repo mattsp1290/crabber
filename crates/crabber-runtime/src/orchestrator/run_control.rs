@@ -1,10 +1,12 @@
 //! Worker-owned durable control observation. No detached control dispatcher.
+mod observation;
 use super::{Orchestrator, RuntimeError};
 use crabber_core::{ControlId, SessionId};
 use crabber_session::{
     RunControlError, RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest,
     RunControlTarget,
 };
+pub(super) use observation::ControlObservation;
 impl Orchestrator {
     /// Complete an original accepted cancellation after an authentic joined pause.
     /// Available after close; neither metadata reconciliation nor progress grants dispatch.

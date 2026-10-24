@@ -1,0 +1,17 @@
+[package]
+name = "mount-standard"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+
+[dependencies]
+crabber = { path = "../../crates/crabber" }
+crabber-tools-catalog = { path = "../../crates/crabber-tools-catalog" }
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "fs"] }
+tempfile = "3"
+
+[lints]
+workspace = true

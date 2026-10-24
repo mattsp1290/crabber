@@ -58,6 +58,7 @@ async fn full_retained_capacity_refuses_before_reserve_and_reuses_actual_release
         },
         system_prompt: None,
         max_output_tokens: None,
+        model_controls: crabber_core::ModelControls::default(),
     };
     let options = AdmissionOptions {
         key: AdmissionKey::new("bounded-local-capacity").unwrap(),

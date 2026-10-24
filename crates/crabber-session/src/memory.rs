@@ -1508,6 +1508,20 @@ impl Store for MemoryStore {
             .collect())
     }
 
+    async fn list_workspace_unfinished_runs(
+        &self,
+        request: crate::WorkspaceRunsRequest,
+    ) -> Result<Vec<Run>, StoreError> {
+        self.raw_workspace_unfinished_runs(&request.workspace_id)
+    }
+
+    async fn list_queue_heads(
+        &self,
+        request: crate::QueueHeadsRequest,
+    ) -> Result<crate::QueueHeadsPage, StoreError> {
+        self.queue_heads(&request)
+    }
+
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
         self.raw_unfinished_runs()
     }

@@ -102,7 +102,7 @@ impl Orchestrator {
                 .collect(),
         ));
         let self_ = &worker;
-        let mut heartbeat = HeartbeatGuard::start(
+        let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
             Arc::clone(&self.store),
             fence.clone(),
@@ -426,7 +426,13 @@ impl Orchestrator {
             crabber_extension::with_state_sink(state_sink, resumed_work),
         );
         tokio::pin!(resumed_work);
-        let result = tokio::select! {
+        let result = {
+            let mut control = super::super::run_control::ControlObservation::start(
+                self_,
+                failure_execution.clone(),
+                fence.clone(),
+            )?;
+            tokio::select! {
             biased;
             update = signal.changed() => match update {
                 Ok(()) if *signal.borrow_and_update() => {
@@ -436,7 +442,7 @@ impl Orchestrator {
                 }
                 Ok(()) | Err(_) => resumed_work.as_mut().await,
             },
-            control = heartbeat.durable_cancel() => {
+            control = control.wait() => {
                 match control {
                     Ok(()) => { tracing::info!(target: crate::telemetry_targets::targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); resumed_work.as_mut().await }
                     Err(error) => {
@@ -446,6 +452,7 @@ impl Orchestrator {
                 }
             },
             result = &mut resumed_work => result,
+            }
         };
         drop(heartbeat);
         let result = match result {

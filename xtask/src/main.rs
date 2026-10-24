@@ -18,6 +18,7 @@ mod nextest;
 mod postgres;
 mod probes;
 mod process;
+mod standard_tools;
 mod telemetry_messages;
 mod timings;
 
@@ -112,6 +113,14 @@ fn check() -> checks::Checks {
         .expect("xtask belongs directly under the workspace root");
 
     gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
+    gates.internal("standard-tool-prerequisites", workspace, |_| {
+        standard_tools::check_tool_prerequisites()
+    });
+    gates.internal(
+        "live-tests-ignored",
+        workspace,
+        check_live_tests_are_ignored,
+    );
     gates.internal("telemetry-messages", workspace, telemetry_messages::check);
     gates.internal("agui-pins", workspace, agui::check);
     gates.internal("wit-copies", workspace, check_wit);
@@ -197,6 +206,8 @@ fn check() -> checks::Checks {
             "opencode_go_chat",
         ],
     );
+    standard_tools::schedule(workspace, &mut gates);
+    check_provider_features(workspace, &mut gates);
     check_observability(workspace, &mut gates);
     check_journeys(workspace, &mut gates);
     gates.script(
@@ -354,6 +365,101 @@ fn check_custom_http(workspace: &Path, gates: &mut checks::Checks) {
             "all-providers,custom-http",
         ],
     );
+}
+
+fn check_provider_features(workspace: &Path, gates: &mut checks::Checks) {
+    for feature in ["anthropic", "openai", "codex", "opencode-go"] {
+        gates.cargo(
+            workspace,
+            &[
+                "clippy",
+                "-p",
+                "crabber-providers",
+                "--all-targets",
+                "--no-default-features",
+                "--features",
+                feature,
+                "--",
+                "-D",
+                "warnings",
+            ],
+        );
+    }
+    gates.cargo(
+        workspace,
+        &[
+            "clippy",
+            "-p",
+            "crabber",
+            "--all-targets",
+            "--features",
+            "anthropic",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+}
+
+fn check_live_tests_are_ignored(workspace: &Path) {
+    let mut files = Vec::new();
+    for krate in fs::read_dir(workspace.join("crates")).expect("failed to read crates") {
+        let tests = krate
+            .expect("failed to read crate entry")
+            .path()
+            .join("tests");
+        let Ok(entries) = fs::read_dir(&tests) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.expect("failed to read test entry").path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_live.rs"))
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    assert!(!files.is_empty(), "no live test files found");
+    for file in files {
+        let source = fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", file.display()));
+        if let Err(problem) = live_tests_are_ignored(&source) {
+            panic!("{}: {problem}", file.display());
+        }
+    }
+}
+
+/// Checks that each test's own attribute block carries `#[ignore`.
+fn live_tests_are_ignored(source: &str) -> Result<(), String> {
+    let mut attributes: Vec<&str> = Vec::new();
+    let mut tests = 0;
+    for line in source.lines().map(str::trim) {
+        if line.starts_with("#[") {
+            attributes.push(line);
+            continue;
+        }
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let is_test = attributes
+            .iter()
+            .any(|attr| attr.starts_with("#[test]") || attr.starts_with("#[tokio::test"));
+        if is_test {
+            tests += 1;
+            if !attributes.iter().any(|attr| attr.starts_with("#[ignore")) {
+                return Err(format!("live test without #[ignore] before `{line}`"));
+            }
+        }
+        attributes.clear();
+    }
+    if tests == 0 {
+        return Err("no live tests found".into());
+    }
+    Ok(())
 }
 
 fn check_journeys(workspace: &Path, gates: &mut checks::Checks) {
@@ -671,4 +777,23 @@ fn check_observability(workspace: &Path, gates: &mut checks::Checks) {
         "Completed; retry diagnostic on stderr; no fixture secrets",
         check_datadog_offline,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::live_tests_are_ignored;
+
+    #[test]
+    fn live_test_guard_requires_ignore_on_each_test() {
+        let ignored = "#[tokio::test]\n#[ignore = \"live\"]\nasync fn a() {}\n#[ignore]\n#[test]\nfn b() {}\n";
+        assert!(live_tests_are_ignored(ignored).is_ok());
+        for source in [
+            "#[tokio::test]\n#[ignore]\nasync fn a() {}\n#[tokio::test]\nasync fn b() {}\n",
+            "#[tokio::test]\n// #[ignore]\nasync fn a() {}\n",
+            "#[test]\nfn a() {}\n#[ignore]\nfn helper() {}\n",
+            "fn helper() {}\n",
+        ] {
+            assert!(live_tests_are_ignored(source).is_err(), "{source}");
+        }
+    }
 }

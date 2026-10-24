@@ -9,6 +9,8 @@ use std::{future::Future, sync::Arc, time::Duration};
 pub enum WorkerResourceKind {
     /// Lease renewal and durable-control observations, retained through original joins.
     LeaseHeartbeat,
+    /// Durable control I/O progresses independently of synchronous callbacks.
+    RunControlObservation,
     /// Original extension callback joins retained independently of waiter results.
     ExtensionCallbackInvocations,
     /// Model middleware joined before a native attempt can conclude.

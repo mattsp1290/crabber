@@ -29,6 +29,7 @@ sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 
 [dev-dependencies]
 crabber-test-support = { path = "../crabber-test-support", default-features = false }
+url = "2"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 tempfile = "3"
 allocation-counter = "0.8.1"

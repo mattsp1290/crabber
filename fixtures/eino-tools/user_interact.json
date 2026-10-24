@@ -1,0 +1,22 @@
+{
+  "description": "Ask the user a question and return their answer as a string. In CLI mode, prints the question to stderr and reads a multi-line answer from stdin (terminated by a blank line or EOF). In MCP mode, returns immediately with a pending result — provide the user's answer in a follow-up call by populating the answer field. Does not format questions, validate answers, or offer multiple-choice options.",
+  "name": "user_interact",
+  "parameters": {
+    "properties": {
+      "question": {
+        "minLength": 1,
+        "description": "The question to present to the user.",
+        "type": "string"
+      },
+      "answer": {
+        "description": "Reserved for the agent loop. Do not populate this field — it will be set by the loop after the user responds. When non-empty, the tool returns this value as the answer immediately.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "question"
+    ],
+    "type": "object"
+  }
+}

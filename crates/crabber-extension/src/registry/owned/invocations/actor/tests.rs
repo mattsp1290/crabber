@@ -257,6 +257,7 @@ async fn retained_lease(panic: bool) {
         tools: vec![],
         temperature: None,
         max_tokens: None,
+        reasoning_effort: None,
         tool_choice: None,
     };
     super::super::super::with_callback_invocations(owner.capability(), async {

@@ -12,6 +12,15 @@ use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 use sqlx::{Postgres, Row};
 const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN octet_length(data_json)<=33554432 AND octet_length(data_json)<=$3 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
 pub(super) const SUMMARY: &str = "SELECT CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN octet_length(q.summary_json)<=16384 THEN q.summary_json END AS summary, CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN octet_length(a.operation_id)<=128 THEN a.operation_id END AS latest_operation,CASE WHEN octet_length(CAST(ar.data AS TEXT))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
+
+// Workspace discovery uses its own bounded SQL shape and the canonical summary decoder.
+const HEADS: &str = r#"WITH entries AS (SELECT q.session_id,q.queue_id,q.sequence,q.state,q.prepared,q.summary_json,q.admission_key FROM future_queue q JOIN sessions s ON s.id=q.session_id WHERE s.workspace_id=$1 AND q.state IN ('Queued','Claimed') AND q.sequence=(SELECT MIN(h.sequence) FROM future_queue h WHERE h.session_id=q.session_id AND h.state IN ('Queued','Claimed')) AND ($2::text IS NULL OR q.session_id COLLATE "C">$2)
+ORDER BY q.session_id COLLATE "C" LIMIT $3)
+SELECT CASE WHEN octet_length(q.session_id)<=512 THEN q.session_id END AS session_id, CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN octet_length(q.summary_json)<=16384 AND SUM(octet_length(q.summary_json)+COALESCE(octet_length(r.data_json),0)) OVER ()<=262144 THEN q.summary_json END AS summary, CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN octet_length(a.operation_id)<=128 THEN a.operation_id END AS latest_operation,CASE WHEN octet_length(CAST(ar.data AS TEXT))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM entries q
+LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id)
+LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL
+LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key
+ORDER BY q.session_id COLLATE "C""#;
 pub(super) async fn record_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -227,6 +236,43 @@ pub(super) async fn head(
     row.as_ref().map(|row| summary(row, session)).transpose()
 }
 impl PostgresStore {
+    pub(in crate::postgres) async fn queue_heads(
+        &self,
+        request: crate::QueueHeadsRequest,
+    ) -> Result<crate::QueueHeadsPage, StoreError> {
+        crate::queue::validate_heads(&request)?;
+        let mut tx =
+            crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Queue)
+                .await
+                .map_err(db)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        // Restrict the candidate page before transferring or validating summaries.
+        // Reuse the exact item decoder and its receipt/identity checks.
+        let rows = sqlx::query(HEADS)
+            .bind(&request.workspace_id)
+            .bind(request.cursor.as_ref().map(|id| &id.0))
+            .bind(i64::from(request.limit) + 1)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(db)?;
+        let heads = rows
+            .iter()
+            .map(|row| {
+                let session = SessionId(
+                    row.try_get::<Option<String>, _>("session_id")
+                        .map_err(db)?
+                        .ok_or_else(corrupt)?,
+                );
+                summary(row, &session)
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        tx.commit().await.map_err(db)?;
+        Ok(crate::queue::heads_page(&request, heads))
+    }
+
     pub(in crate::postgres) async fn queue_session_snapshot(
         &self,
         id: &SessionId,

@@ -197,6 +197,37 @@ checks persisted identity and rejects directory drift. `cargo xtask check` runs
 all these SQLite paths. The standalone pinned probes under `testdata/` retain
 their published revisions and have no SQLite variant.
 
+## Supported targets
+
+| Target | CI | Notes |
+| --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | full `cargo xtask check`, PostgreSQL suite; standard tools and native extensions, rustdoc, Git consumers on every push | reference platform |
+| `aarch64-unknown-linux-gnu` | workspace build and tests including standard tools and native extensions, PostgreSQL suite (matrix), embedding smoke, `mount-standard --check` | Raspberry Pi 4/5 and other arm64 Linux hosts |
+| `aarch64-unknown-linux-musl` | workspace build (excluding `agui-sse`); catalog, fileops, glob, search tests and `mount-standard --check` executed as static binaries | static images; `agui-sse` needs OpenSSL via `native-tls` and is excluded |
+
+From `x86_64` Linux, cross-compile with
+`cross build --target aarch64-unknown-linux-musl --workspace --exclude agui-sse`
+or `cargo zigbuild`. When using a local musl cross toolchain, set
+`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` to its linker. PostgreSQL
+feature tests must run on the target architecture with access to the PostgreSQL
+service; cross-compilation alone does not run those tests. WASM fixtures use
+`wasm32-wasip2`, are architecture-independent, and are built on the host.
+macOS and Windows are untested in this repository. The previous satellite macOS
+coverage is dropped by owner decision; the timing defect recorded as
+`crabber-extensions-6tg5` remains follow-up work.
+
+### Provisioning ripgrep for `search`
+
+`search` requires ripgrep >= 14 on the worker's PATH; `shell` also requires `sh`.
+Verify the installed version with `rg --version`. Ubuntu 24.04 workers can use
+`sudo apt-get update` followed by `sudo apt-get install -y ripgrep`; check that
+the resulting major version is at least 14. Other workers can install a suitable
+architecture's asset from the [ripgrep releases](https://github.com/BurntSushi/ripgrep/releases)
+or use `cargo install ripgrep --locked`, then verify its version. Both arm jobs
+provision ripgrep explicitly, and the workspace gate fails early if it is missing
+or too old. Native extensions additionally need Python 3.11 through 3.14.
+
+
 ## Bounded embedding history
 
 Use `Store::snapshot(SnapshotRequest)` to page a large session with explicit message,
@@ -306,11 +337,26 @@ run/event IDs and measured zero provider/tool/mount counters.
 
 ## Adoption examples
 
+The workspace includes [standard tools](docs/standard-tools.md), with a
+[tool contract](docs/tool-contract.md), [parity map](docs/standard-tools-parity.md),
+and [lifecycle guide](docs/standard-tools-lifecycle.md), plus
+[native extensions](docs/native-extensions.md) and their
+[parity evidence](docs/extension-parity.md).
+`crabber-extension` is the extension API; `crabber-extensions` supplies native
+implementations. Use one immutable revision for the entire tuple:
+
+```toml
+crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<sha>", features = ["sqlite"] }
+crabber-tools-catalog = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<sha>" }
+crabber-extensions = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<sha>" }
+```
+
 The [embedding capability matrix](docs/embedding.md) links runnable memory,
 PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
 [native extensions](examples/native-extension/README.md),
 [WASM extensions](examples/wasm-extension/README.md),
-[manual Codex login](examples/codex-login/README.md), and
+[manual Codex login](examples/codex-login/README.md),
+[provider stacks and credentials](crates/crabber-providers/README.md), and
 [Datadog export](examples/datadog-export/README.md) explain their actual commands
 and credential requirements.
 
@@ -357,7 +403,7 @@ envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
 Result-transform contract version 3 carries typed `ToolOutput`; WASM extensions
 use `crabber:extensions@0.2.0`. Old frozen plans fail with `PlanChanged`. Typed
 completion itself adds no storage migration. Current bundled storage requires
-PostgreSQL 24 / SQLite 20; see the constants in
+PostgreSQL 25 / SQLite 20; see the constants in
 [crabber-session](crates/crabber-session/src/lib.rs).
 Finish or settle unfinished runs before upgrading or rolling back; rollback
 pins the previous host revision and compatible guests. Await
@@ -371,3 +417,6 @@ and follow the [AG-UI contract](docs/ag-ui.md). Run
 `cargo run -p agui-sse -- --check` for the [credential-free SSE example](examples/agui-sse/README.md),
 including pinned Rust-client ASCII interoperability and independently decoded
 fragmented Unicode. The default facade remains independent of AG-UI/HTTP.
+
+PostgreSQL workers can use database-enforced workspace roles and scoped discovery.
+See the [role matrix and provisioning SQL](docs/server-host.md#workspace-scoped-roles-and-row-level-security) for worker and host permissions.

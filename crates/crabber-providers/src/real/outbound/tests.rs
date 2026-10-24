@@ -68,6 +68,7 @@ pub(super) fn request(content: ContentBlock, nested: bool) -> ModelRequest {
         tools: vec![],
         temperature: None,
         max_tokens: None,
+        reasoning_effort: None,
         tool_choice: None,
     }
 }
@@ -142,7 +143,7 @@ async fn unsupported_media_is_rejected_before_credentials_or_network() {
                         ..
                     }
                 ) && match protocol {
-                    Protocol::Responses => true,
+                    Protocol::Responses | Protocol::Messages => true,
                     Protocol::ChatCompletions => {
                         !nested
                             && !matches!(
@@ -153,7 +154,6 @@ async fn unsupported_media_is_rejected_before_credentials_or_network() {
                                 }
                             )
                     }
-                    Protocol::Messages => false,
                 };
                 if supported {
                     continue;

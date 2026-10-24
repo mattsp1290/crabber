@@ -81,18 +81,7 @@ pub(super) fn build(
     }
     let first = messages.remove(0);
     carriers::request(&input, &profile, proof)?;
-    let request_data = AdmissionRequestData {
-        selection_policy: crate::AdmissionSelectionPolicy::Explicit,
-        session_id: input.context.session_id().clone(),
-        workspace_id: input.context.workspace_id().into(),
-        directory: input.context.directory().into(),
-        title: input.title,
-        text: String::new(),
-        provider_id: profile.provider.provider_id().into(),
-        model_id: profile.provider.model_id().into(),
-        system_prompt: None,
-        max_output_tokens: None,
-    };
+    let request_data = request_data(&input.context, input.title, &profile.provider);
     proof
         .measure(&input.input)
         .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
@@ -160,6 +149,26 @@ pub(super) fn build(
         resource_contract: contract,
         behavior,
     })
+}
+
+fn request_data(
+    context: &crabber_core::SessionContext,
+    title: String,
+    provider: &crabber_core::ProviderBindingDescriptor,
+) -> AdmissionRequestData {
+    AdmissionRequestData {
+        selection_policy: crate::AdmissionSelectionPolicy::Explicit,
+        session_id: context.session_id().clone(),
+        workspace_id: context.workspace_id().into(),
+        directory: context.directory().into(),
+        title,
+        text: String::new(),
+        provider_id: provider.provider_id().into(),
+        model_id: provider.model_id().into(),
+        system_prompt: None,
+        max_output_tokens: None,
+        model_controls: crabber_core::ModelControls::default(),
+    }
 }
 
 fn keyed(

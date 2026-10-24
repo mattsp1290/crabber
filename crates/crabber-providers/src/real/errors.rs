@@ -10,11 +10,33 @@ pub(super) const ERROR_MESSAGE_PREFIX_BYTES: usize = 19;
 /// sanitized, opaque, at-most-4096-byte excerpt.
 ///
 /// The terminal second 401 after a dynamic credential refresh bypasses this
-/// callback and is always a non-retryable authentication error. This callback
-/// is never applied to built-in provider adapters. Hosts should still redact
-/// the resulting error according to their own logging policy.
+/// callback and is always a non-retryable authentication error. Host-supplied
+/// classifiers apply only to custom adapters; built-in adapters use fixed
+/// status classification or a crate-private classifier (currently Anthropic).
+/// Hosts should still redact the resulting error according to their own
+/// logging policy.
 pub trait ErrorClassifier: Send + Sync {
     fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool);
+}
+
+/// Built-in Anthropic classification: overflow is reported as 413 or as a 400
+/// whose text names the prompt or context limit (best effort). Billing (402)
+/// already falls through to `Invalid` in the status taxonomy.
+#[cfg(feature = "anthropic")]
+pub(super) struct AnthropicClassifier;
+#[cfg(feature = "anthropic")]
+impl ErrorClassifier for AnthropicClassifier {
+    fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool) {
+        const OVERFLOW: [&str; 3] = ["prompt is too long", "context limit", "context window"];
+        let text = excerpt.to_lowercase();
+        if status.as_u16() == 413
+            || (status.as_u16() == 400 && OVERFLOW.iter().any(|phrase| text.contains(phrase)))
+        {
+            (ProviderErrorKind::ContextOverflow, false)
+        } else {
+            status_classification(status)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

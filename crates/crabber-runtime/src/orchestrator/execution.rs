@@ -206,7 +206,7 @@ impl Orchestrator {
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await?;
-        let mut heartbeat = HeartbeatGuard::start(
+        let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
             Arc::clone(&self.store),
             fence.clone(),
@@ -259,6 +259,11 @@ impl Orchestrator {
             });
             let run_future = crabber_extension::with_public_source(public_source, run_future);
             tokio::pin!(run_future);
+            let mut control = super::run_control::ControlObservation::start(
+                self_,
+                Arc::clone(&execution),
+                fence.clone(),
+            )?;
             loop {
                 tokio::select! {
                     biased;
@@ -267,7 +272,7 @@ impl Orchestrator {
                         Ok(()) => (),
                         Err(_) => break run_future.as_mut().await,
                     },
-                    control = heartbeat.durable_cancel() => {
+                    control = control.wait() => {
                         match control {
                             Ok(()) => { tracing::info!(target: targets::RUNTIME, "durable cancel accepted"); cancellation.cancel(); break run_future.as_mut().await; }
                             Err(error) => {
@@ -621,6 +626,7 @@ impl Orchestrator {
             messages,
             system: (!system.is_empty()).then_some(system),
             max_output_tokens: request.max_output_tokens,
+            model_controls: request.model_controls.clone(),
             tools: frontend::model_tools(plan)?,
         })
     }

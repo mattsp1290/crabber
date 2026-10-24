@@ -568,7 +568,7 @@ async fn worker_join_retains_original_control_observation_after_main_returns() {
     assert!(pending.background_tasks.iter().any(|scope| {
         scope.session_id == session
             && scope.run_id == run
-            && scope.kind == crate::WorkerResourceKind::LeaseHeartbeat
+            && scope.kind == crate::WorkerResourceKind::RunControlObservation
             && scope.resources.pending == 1
     }));
     wait(
@@ -587,3 +587,5 @@ async fn worker_join_retains_original_control_observation_after_main_returns() {
     assert_eq!(gate.stale_observations.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
 }
+#[path = "suspension_observation/blocked_callback.rs"]
+mod blocked_callback;

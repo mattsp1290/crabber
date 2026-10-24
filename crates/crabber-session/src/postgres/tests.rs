@@ -111,6 +111,24 @@ async fn postgres_storable_record_contract() {
     .unwrap();
 }
 #[tokio::test]
+async fn postgres_workspace_discovery_contract() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_workspace_discovery_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
+    })
+    .await
+    .unwrap();
+}
+#[tokio::test]
 async fn postgres_workspace_identity_contract() {
     use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 

@@ -1,5 +1,204 @@
 use super::*;
 
+const CHAT_F1: &str = "data: {\"error\":{\"code\":429,\"message\":\"SECRET_MESSAGE\",\"metadata\":{\"error_type\":\"rate_limit_exceeded\",\"provider_name\":\"SECRET_PROVIDER\"}},\"provider_code\":\"SECRET_CODE\"}\n\n";
+const CHAT_F2: &str = "event: error\ndata: {\"error\":{\"code\":503,\"message\":\"SECRET_MESSAGE\",\"metadata\":{\"error_type\":\"provider_overloaded\",\"provider_name\":\"SECRET_PROVIDER\"}},\"provider_code\":\"SECRET_CODE\"}\n\n";
+
+fn assert_chat_terminal(
+    items: &[StreamDelta],
+    kind: ProviderErrorKind,
+    retryable: bool,
+    message: &str,
+) {
+    let errors = stream_errors(items);
+    assert_eq!(errors.len(), 1, "unexpected output: {items:?}");
+    assert_eq!(
+        (errors[0].kind.clone(), errors[0].retryable),
+        (kind, retryable)
+    );
+    assert_eq!(errors[0].message, message);
+    assert!(
+        !items
+            .iter()
+            .any(|item| matches!(item, StreamDelta::Completed))
+    );
+    let diagnostic = format!("{} {:?}", errors[0], errors[0]);
+    for secret in [
+        "SECRET_MESSAGE",
+        "SECRET_PROVIDER",
+        "SECRET_CODE",
+        "SECRET_AFTER",
+    ] {
+        assert!(!diagnostic.contains(secret), "secret leaked: {diagnostic}");
+    }
+}
+
+async fn chat_items(body: &str) -> (Vec<StreamDelta>, usize) {
+    let server = Server::start(vec![Reply::status(200).with_body(body)]).await;
+    let items = HttpAdapter::custom("custom", &server.url, Protocol::ChatCompletions)
+        .with_api_key("key")
+        .stream(request("custom"))
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    let requests = server.count();
+    (items, requests)
+}
+
+#[tokio::test]
+async fn chat_error_fragmented_f1_suppresses_trailing_content_and_done() {
+    let trailing = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"SECRET_AFTER\"}}]}\n\n",
+        "data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":11},\"choices\":[]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let full = format!("{CHAT_F1}{trailing}");
+    let (server, controller) = RawServer::start_staged(full.len()).await;
+    let mut stream = HttpAdapter::custom("custom", &server.url, Protocol::ChatCompletions)
+        .with_api_key("key")
+        .stream(request("custom"))
+        .await
+        .unwrap();
+    let bytes = CHAT_F1.as_bytes();
+    let mut start = 0;
+    for end in [1, 6, bytes.len() - 2, bytes.len() - 1] {
+        controller.release(bytes[start..end].to_vec()).await;
+        start = end;
+    }
+    controller.release(bytes[start..].to_vec()).await;
+    let terminal = timeout(LOOPBACK_TIMEOUT, stream.next())
+        .await
+        .expect("timed out awaiting Chat stream error")
+        .expect("stream ended before Chat stream error");
+    let items = vec![terminal];
+    assert_chat_terminal(
+        &items,
+        ProviderErrorKind::RateLimited,
+        true,
+        "Chat stream error",
+    );
+    assert_eq!(items.len(), 1);
+    controller.release(trailing.as_bytes().to_vec()).await;
+    assert!(
+        timeout(LOOPBACK_TIMEOUT, stream.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|item| matches!(item, StreamDelta::Usage(_))),
+        "trailing usage leaked after terminal error: {items:?}"
+    );
+    let _ = controller.finish(server).await;
+}
+
+#[tokio::test]
+async fn chat_error_normal_http_stream_preserves_text_usage_tools_and_done() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"hi\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3},\"choices\":[]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (items, requests) = chat_items(body).await;
+    assert_eq!(requests, 1);
+    assert!(matches!(items.first(), Some(StreamDelta::TextDelta(text)) if text == "hello"));
+    assert!(matches!(
+        items.get(1),
+        Some(StreamDelta::ToolCallStart { call_id, name }) if call_id.0 == "call" && name == "echo"
+    ));
+    assert!(matches!(
+        items.get(2),
+        Some(StreamDelta::ToolCallArgsDelta { call_id, text }) if call_id.0 == "call" && text == "{\"text\":"
+    ));
+    assert!(matches!(
+        items.get(3),
+        Some(StreamDelta::ToolCallArgsDelta { call_id, text }) if call_id.0 == "call" && text == "\"hi\"}"
+    ));
+    assert!(matches!(
+        items.get(4),
+        Some(StreamDelta::ToolCallDone { call_id }) if call_id.0 == "call"
+    ));
+    assert!(matches!(
+        items.get(5),
+        Some(StreamDelta::Usage(usage)) if usage.input_tokens == 2 && usage.output_tokens == 3
+    ));
+    assert!(matches!(items.get(6), Some(StreamDelta::Completed)));
+    assert_eq!(items.len(), 7, "unexpected normal Chat output: {items:?}");
+}
+
+#[tokio::test]
+async fn chat_error_empty_data_boundary_does_not_carry_event_name() {
+    let body = concat!(
+        "event: error\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (items, requests) = chat_items(body).await;
+    assert_eq!(requests, 1);
+    assert!(matches!(
+        items.as_slice(),
+        [StreamDelta::TextDelta(text), StreamDelta::Completed] if text == "hello"
+    ));
+    assert_eq!(stream_errors(&items), Vec::<&ProviderError>::new());
+}
+
+#[tokio::test]
+async fn chat_error_f1_eof_and_named_f2_are_terminal() {
+    for (body, kind, retryable) in [
+        (CHAT_F1, ProviderErrorKind::RateLimited, true),
+        (CHAT_F2, ProviderErrorKind::Server, true),
+    ] {
+        let (items, requests) = chat_items(body).await;
+        assert_eq!(requests, 1);
+        assert_chat_terminal(&items, kind, retryable, "Chat stream error");
+    }
+}
+
+#[tokio::test]
+async fn chat_error_after_text_or_partial_tool_is_not_retryable_and_not_retried() {
+    let prefixes = [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"before\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\"}}]}}]}\n\n",
+    ];
+    for prefix in prefixes {
+        let body = format!("{prefix}{CHAT_F2}data: [DONE]\n\n");
+        let (items, requests) = chat_items(&body).await;
+        assert_eq!(requests, 1);
+        assert_chat_terminal(
+            &items,
+            ProviderErrorKind::Server,
+            false,
+            "Chat stream error",
+        );
+        assert_eq!(
+            items.len(),
+            if prefix.contains("tool_calls") { 3 } else { 2 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn chat_error_malformed_named_and_unnamed_are_sanitized() {
+    for body in [
+        "event: error\ndata: [DONE]\n\n",
+        "event: error\ndata: SECRET_MESSAGE\n\n",
+        "data: {\"error\":null,\"SECRET_CODE\":\"SECRET_PROVIDER\"}\n\n",
+        "data: {\"error\":{\"code\":429,\"message\":\"SECRET_MESSAGE\",\"metadata\":[]}}\n\n",
+    ] {
+        let (items, _) = chat_items(body).await;
+        assert_chat_terminal(
+            &items,
+            ProviderErrorKind::Invalid,
+            false,
+            "invalid Chat stream error",
+        );
+    }
+}
+
 #[tokio::test]
 async fn w3_review_completed_is_emitted_once_only_after_clean_finalization() {
     let completed = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";

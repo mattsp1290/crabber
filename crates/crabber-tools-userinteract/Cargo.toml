@@ -1,0 +1,26 @@
+[package]
+name = "crabber-tools-userinteract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+
+
+[dependencies]
+crabber = { path = "../crabber" }
+crabber-tools-core = { path = "../crabber-tools-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+crabber-tools-testkit = { path = "../crabber-tools-testkit" }
+tempfile = "3"
+sha2 = "0.10"
+crabber-tools-fileops = { path = "../crabber-tools-fileops" }
+
+[lints]
+workspace = true

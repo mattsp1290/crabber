@@ -1,5 +1,6 @@
 use super::*;
 pub(crate) async fn run(store: &dyn Store, clock: Arc<ManualClock>) {
+    model_controls::reject_drift(store).await;
     let (first, second, authority, prepare, prepared_receipt) = seeded(store, &clock).await;
     let receipt = reclaimed(store, &clock, &first, authority, prepare, prepared_receipt).await;
     finalized(store, &first, &second, receipt).await;
