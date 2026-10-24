@@ -220,6 +220,59 @@ Set `OPENCODE_GO_API_KEY` in the environment before the OpenCode Go command. `CR
 `max_tokens`. `max_completion_tokens` remains a custom HTTP option through
 `CustomHttpAdapter::with_chat_token_field`.
 
+## Chat reasoning and stream errors
+
+An admitted reasoning effort is serialized by both Responses and Chat
+Completions. Chat sends it as the top-level `reasoning_effort` field, using the
+canonical lowercase API values `low`, `medium`, or `high`, and omits the field
+when the control is `None`. Messages continues to ignore this control. See
+[Reasoning controls and admission](#reasoning-controls-and-admission) for how
+the control is selected and retained.
+
+Chat recognizes an explicit stream failure in either of these SSE forms:
+
+- a data-only event whose JSON object has a top-level `error`; this is the
+  pinned OpenRouter-compatible fixture;
+- a named `event: error` whose data is also a JSON object with a top-level
+  `error`; this is Crabber compatibility required by `crabber-r-3l5m`, not a
+  claim about the OpenRouter wire format.
+
+The `error` value must be an object with an integer `code` and string
+`message`. It may have a `metadata` object, whose optional `error_type` may be
+absent, null, or a string. Any violation of that schema produces a
+non-retryable `Invalid` error with the fixed message
+`invalid Chat stream error`. A valid error produces only the fixed message
+`Chat stream error`: Crabber never copies the raw provider message, code, type,
+metadata, or unrelated fields into the returned error message or diagnostics.
+
+Classification is exact and case-sensitive. A recognized `error_type` wins
+over the numeric code:
+
+| `metadata.error_type` | Kind | Initially retryable |
+| --- | --- | --- |
+| `rate_limit_exceeded` | `RateLimited` | Yes |
+| `authentication`, `permission_denied` | `Auth` | No |
+| `context_length_exceeded` | `ContextOverflow` | No |
+| `provider_overloaded`, `provider_unavailable` | `Server` | Yes |
+| `invalid_request` | `Invalid` | No |
+
+When the type is absent, unknown, or has the wrong case, the integer code is
+the fallback: 429 is `RateLimited`; 401 and 403 are `Auth`; 400, 402, 404, 408,
+413, and 422 are `Invalid`; 500 through 599 are `Server`; every other integer
+is also `Server`. `RateLimited` and `Server` are initially retryable; the other
+kinds are not.
+
+An explicit error is terminal. The stream emits exactly one error and
+suppresses trailing deltas, usage, `[DONE]`, and completion. Once any
+observable output has occurred, including a partial tool call, Crabber removes
+retryability to prevent a retry from duplicating effects. A failed Chat attempt
+does not commit a successful assistant message or turn, and a partial tool call
+is not dispatched or executed.
+
+Opaque Chat provider-state round trips remain unsupported and are tracked
+separately from this contract. This contract does not support arbitrary
+provider string or scalar envelopes.
+
 ## Messages stop reasons and stream errors
 
 These rules apply to every `Protocol::Messages` adapter: built-in Anthropic,
@@ -336,10 +389,13 @@ resource ownership or arbitrary provider effects. See the current
 
 Provider HTTP boundaries emit `crabber.provider.request` and `crabber.provider.models` spans under `crabber::providers`. Request spans end when response headers arrive and record finite status/error categories; URLs, headers and response bodies are excluded. See the [observability guide](../../docs/observability.md).
 
+## Reasoning controls and admission
+
 Reasoning effort is selected through `ModelControls` on `AgentConfig` or
-`ExecutionContext::with_model_controls`: `low`, `medium`, or `high`. It applies
-to OpenAI and Codex Responses; other protocols ignore it. The default preserves
-Codex `"reasoning": null` and omits `reasoning` for OpenAI. No summary is requested.
+`ExecutionContext::with_model_controls`: `low`, `medium`, or `high`. Responses
+serializes an admitted value as `reasoning.effort`; the default preserves Codex
+`"reasoning": null` and omits `reasoning` for OpenAI. Chat serialization is
+described above; Messages ignores the control. No summary is requested.
 Controls occupy index 15 of admission semantics, so changing effort conflicts
 with a retained keyed admission. Older 15-element admissions cannot replay.
 

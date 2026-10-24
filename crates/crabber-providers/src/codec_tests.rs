@@ -6,6 +6,8 @@ use crabber_core::{
 use serde_json::json;
 #[path = "codec_tests/anthropic.rs"]
 mod anthropic;
+#[path = "codec_tests/chat.rs"]
+mod chat_tests;
 #[path = "codec_tests/reasoning.rs"]
 mod reasoning;
 
@@ -71,6 +73,7 @@ fn fixture(text: &str, decode: impl FnMut(&sse::Event) -> Vec<StreamDelta>) -> V
         .flat_map(decode)
         .collect()
 }
+
 #[test]
 fn responses_fixture() {
     let mut codec = responses::Codec::new(false);
@@ -231,6 +234,38 @@ fn opencode_chat_fixture() {
         |d| matches!(d, StreamDelta::Usage(u) if u.input_tokens == 18 && u.output_tokens == 6)
     ));
     assert!(matches!(deltas.last(), Some(StreamDelta::Completed)));
+}
+
+#[test]
+fn chat_body_reasoning_effort_per_value() {
+    use crabber_core::ReasoningEffort::{High, Low, Medium};
+
+    for (effort, expected) in [
+        (None, None),
+        (Some(Low), Some("low")),
+        (Some(Medium), Some("medium")),
+        (Some(High), Some("high")),
+    ] {
+        let mut request = request(vec![], vec![], None);
+        request.reasoning_effort = effort;
+        let body = chat::body(&request, chat::TokenMode::MaxTokens);
+        assert_eq!(
+            body.get("reasoning_effort")
+                .and_then(|value| value.as_str()),
+            expected
+        );
+        if effort.is_none() {
+            assert_eq!(
+                body,
+                json!({
+                    "model": "model",
+                    "messages": [],
+                    "stream": true,
+                    "stream_options": {"include_usage": true}
+                })
+            );
+        }
+    }
 }
 
 #[test]
