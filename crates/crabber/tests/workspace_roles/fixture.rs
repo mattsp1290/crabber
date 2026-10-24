@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 pub(super) struct Fixture {
     pub admin: sqlx::PgPool,
+    pub host_url: String,
     pub host: Agent,
     pub worker: Agent,
     pub native: Arc<PostgresStore>,
@@ -63,6 +64,7 @@ impl Fixture {
         let worker_provider = provider(64);
         Some(Self {
             admin,
+            host_url: urls[0].clone(),
             host: agent(native.clone(), host_provider, &workspace_b),
             worker: agent(worker_native.clone(), worker_provider.clone(), &workspace_a),
             native,

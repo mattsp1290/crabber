@@ -74,7 +74,7 @@ impl ExtensionFactory for Factory {
     async fn create(&self, context: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError> {
         let binding = Binding::from_factory(&context)?;
         let instance = Arc::new(PythonRepl::from_configuration(
-            &self.configuration.clone(),
+            &self.configuration,
             binding.clone(),
             self.shared.clone(),
             self.instance_hash.clone(),

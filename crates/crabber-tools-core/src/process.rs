@@ -97,9 +97,11 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, ExtensionError> {
     for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let path = dir.join(name);
         if validate_binary(&path).is_ok() {
-            return path
+            let resolved = path
                 .canonicalize()
-                .map_err(|_| ExtensionError::Plan("binary".into()));
+                .map_err(|_| ExtensionError::Plan("binary".into()))?;
+            validate_binary(&resolved)?;
+            return Ok(resolved);
         }
     }
     Err(ExtensionError::Plan(format!("{name} executable required")))
@@ -107,10 +109,11 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, ExtensionError> {
 /// Construction-time check for an absolute executable regular file.
 ///
 /// # Errors
-/// Returns a plan error unless the path is an absolute, executable regular file.
+/// Returns a plan error unless the path is an absolute UTF-8 executable regular file.
 pub fn validate_binary(path: &Path) -> Result<(), ExtensionError> {
     use std::os::unix::fs::PermissionsExt;
     if path.is_absolute()
+        && path.to_str().is_some()
         && path
             .metadata()
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)

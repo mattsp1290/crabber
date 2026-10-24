@@ -68,5 +68,6 @@ pauses. Interruption may hide an already completed blocking effect, so reconcile
 the durable phase and observed effects rather than blindly retrying.
 
 SQLite reopen qualification lives in the standalone consumer to avoid adding
-SQLite features to every workspace test. CI runs it on push only when the
-CONSUMER_PROBE repository variable is true; local qualification must run it too.
+SQLite features to every workspace test. CI runs the consumer on every push
+after the workspace check. Local qualification uses `CRABBER_REV` with
+[`check.sh`](../testdata/standard-tools-consumer/check.sh).

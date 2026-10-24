@@ -171,3 +171,27 @@ fn base64_non_utf8_alias_names_resolve_without_lossy_conversion() {
     assert_eq!(parser.matches.len(), 1);
     assert_eq!(parser.matches[0]["path"], "alias-\u{fffd}/visible.txt");
 }
+
+#[test]
+fn denied_raw_records_preserve_empty_context_and_match_limits() {
+    let deny = crabber_tools_core::PathDenyPolicy::new([".env*".to_owned()]).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = crabber_tools_core::WorkspaceRoot::open(temp.path()).unwrap();
+    let mut parser = Parser::new(1, 1, false).with_deny(root, deny);
+    for path in [
+        json!({"text":".env"}),
+        json!({"bytes":STANDARD.encode(b".env-\xff")}),
+        json!({"bytes":"%%%"}),
+    ] {
+        for kind in ["context", "match"] {
+            parser.feed(&serde_json::to_vec(&json!({"type":kind,"data":{"path":path,"lines":{"text":"hidden fixture\n"},"line_number":1,"submatches":[]}})).unwrap());
+        }
+    }
+    assert_eq!(parser.matches, [] as [Value; 0]);
+    assert!(parser.reason.is_none());
+    parser.feed(&serde_json::to_vec(&json!({"type":"match","data":{"path":{"text":"ok.txt"},"lines":{"text":"visible fixture\n"},"line_number":1,"submatches":[]}})).unwrap());
+    assert_eq!(parser.matches.len(), 1);
+    assert_eq!(parser.matches[0]["path"], "ok.txt");
+    assert!(parser.matches[0].get("before").is_none());
+    assert_eq!(parser.reason, Some("matches"));
+}

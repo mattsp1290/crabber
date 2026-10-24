@@ -415,6 +415,84 @@ fn deny_dialect_agrees_with_ripgrep_exclusions() {
 }
 
 #[tokio::test]
+async fn directory_alias_cannot_expose_a_denied_descendant() {
+    for (directory, leaf, patterns) in [
+        ("real", "password", ["real/password", "**/password"]),
+        (".git", "config", [".git/config", "**/.git/config"]),
+        (
+            "nested/.git",
+            "config",
+            ["nested/.git/config", "**/.git/config"],
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(directory)).unwrap();
+        std::fs::write(
+            temp.path().join(directory).join(leaf),
+            "before\nhidden-fixture-needle\nafter\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join(directory).join("zz-allowed.txt"),
+            "public-before\nvisible-fixture-needle\npublic-after\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(directory, temp.path().join("d")).unwrap();
+        for pattern in patterns {
+            for path in ["d", directory, "."] {
+                let mut configured = options(temp.path());
+                configured.deny = PathDenyPolicy::new([pattern.to_owned()]).unwrap();
+                let result = support::execute(temp.path(), definition(Arc::new(configured)).unwrap(), json!({"pattern":"fixture-needle","path":path,"glob":["**"],"context":1,"limit":1})).await;
+                assert_eq!(result["match_count"], 1, "{pattern}: {path}: {result}");
+                assert_eq!(result["matches"][0]["line"], "visible-fixture-needle");
+                assert!(!result.to_string().contains("hidden-fixture-needle"));
+                assert!(!result.to_string().contains(&format!("/{leaf}")));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn fake_rg_denied_raw_records_do_not_consume_result_budget() {
+    use base64::Engine as _;
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("ok.txt"), "visible needle").unwrap();
+    let binary = temp.path().join("fake-rg");
+    let record = |kind: &str, path: Value, line: &str| json!({"type":kind,"data":{"path":path,"lines":{"text":line},"line_number":1,"submatches":[]}});
+    let frames = [
+        record("context", json!({"text":".env"}), "hidden context"),
+        record("match", json!({"text":".env"}), "hidden text needle"),
+        record(
+            "match",
+            json!({"bytes":base64::engine::general_purpose::STANDARD.encode(b"key-\xff.pem")}),
+            "hidden byte needle",
+        ),
+        record("match", json!({"bytes":"%%%"}), "hidden malformed needle"),
+        record("match", json!({"text":"ok.txt"}), "visible needle"),
+    ];
+    let output = frames
+        .iter()
+        .map(|frame| format!("'{frame}'"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    script(&binary, &format!("#!/bin/sh\nprintf '%s\\n' {output}\n"));
+    let mut configured = options(temp.path());
+    configured.policy.rg_binary = binary;
+    configured.policy.env = EnvPolicy::Replace(vec![]);
+    configured.deny = PathDenyPolicy::new([".env", "*.pem"].map(String::from)).unwrap();
+    let result = support::execute(
+        temp.path(),
+        definition(Arc::new(configured)).unwrap(),
+        json!({"pattern":"needle","context":1,"limit":1}),
+    )
+    .await;
+    assert_eq!(result["match_count"], 1, "{result}");
+    assert_eq!(result["matches"][0]["path"], "ok.txt");
+    assert_eq!(result["matches"][0]["line"], "visible needle");
+    assert!(!result.to_string().contains("hidden"));
+}
+
+#[tokio::test]
 async fn public_agent_directory_alias_filters_resolved_denied_descendants() {
     use std::os::unix::fs::symlink;
     let tmp = tempfile::tempdir().unwrap();

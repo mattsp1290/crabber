@@ -358,8 +358,8 @@ can orphan commands and anchors, so hosts own external supervision.
 
 Tests use synthetic commands in temporary directories. Set
 `BACKGROUND_JOBS_REQUIRE_SHELL=1` to require `/bin/sh`, `ps` and `python3` instead
-of allowing explicit fixture skips. CI requires these fixtures on Linux and
-macOS. Non-Unix targets compile but reject construction as unsupported.
+of allowing explicit fixture skips. CI requires these fixtures on Linux.
+Non-Unix targets compile but reject construction as unsupported.
 See [background-job parity differences](extension-parity.md#background-jobs).
 
 ## Python REPL
@@ -512,10 +512,11 @@ let reducer = RtkReducer::new(Options {
 # Ok::<(), crabber::ExtensionError>(())
 ```
 
-The illustrated host `shell` tool must return a top-level string `stdout`; this
-repository ships no such shell tool. `Selection::Text(Filter)` accepts one JSON
-string. `JsonFields` accepts named top-level string members, processed in sorted
-name order, and moves unselected members unchanged. Background jobs and Python
+The illustrated `shell` tool must return a top-level string `stdout`, as the
+standard-tools shell does. Compatible host tools can use the same binding.
+`Selection::Text(Filter)` accepts one JSON string. `JsonFields` accepts named
+top-level string members, processed in sorted name order, and moves unselected
+members unchanged. Background jobs and Python
 return object-valued `stdout`/`stderr` members (`{"text", "truncated"}`), so these
 results cannot be selected without future nested-path support. `InputMatch` compares
 one normalized top-level input string byte for byte. Hosts assert the format.

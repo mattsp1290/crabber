@@ -260,6 +260,7 @@ pub(super) fn fingerprint(
 #[cfg(all(test, not(unix)))]
 mod unsupported_tests {
     use super::*;
+    use crate::background_jobs::BackgroundJobs;
     #[test]
     fn unsupported_platform_rejects_construction_before_host_validation() {
         let options = Options {

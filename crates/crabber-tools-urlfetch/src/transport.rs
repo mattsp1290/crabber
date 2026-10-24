@@ -47,8 +47,11 @@ impl Transport for Https {
     ) -> Result<Box<dyn Body>, ToolError> {
         // A new client per hop prevents pooled connections or cached DNS from
         // bypassing this hop's checked, pinned addresses. Preserve URL host/SNI.
+        // Other crates may enable bundled roots on the shared reqwest package.
         let client = reqwest::Client::builder()
             .use_rustls_tls()
+            .tls_built_in_root_certs(false)
+            .tls_built_in_native_certs(true)
             .https_only(true)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
