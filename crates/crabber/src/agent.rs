@@ -125,6 +125,7 @@ pub struct AgentBuilder {
     extension_close_timeout: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
+    max_turns: usize,
 }
 
 impl AgentBuilder {
@@ -294,6 +295,14 @@ impl AgentBuilder {
         self
     }
 
+    /// Caps model turns per run, including turns that request tools.
+    /// Defaults to the runtime's limit of 64. Zero is rejected by `build`.
+    #[must_use]
+    pub fn max_turns(mut self, max_turns: usize) -> Self {
+        self.max_turns = max_turns;
+        self
+    }
+
     #[must_use]
     /// Register one shared instance. Scope filters visibility; it does not isolate
     /// mutable state. The instance must support concurrent use in every context
@@ -372,8 +381,8 @@ impl AgentBuilder {
             #[cfg(feature = "datadog")]
             datadog: datadog.clone(),
         });
-        let extensions = self.extensions;
-        let has_extensions = !extensions.is_empty() || !self.factories.is_empty();
+        let mut mounts = self.extensions;
+        let has_extensions = !mounts.is_empty() || !self.factories.is_empty();
         let registry = has_extensions.then(|| {
             let observer = Arc::clone(&observer);
             Registry::new()
@@ -382,7 +391,6 @@ impl AgentBuilder {
                     observer.mount_close_timed_out(timeout);
                 }))
         });
-        let mut mounts = extensions;
         if has_extensions && (!self.tools.is_empty() || !self.prompts.is_empty()) {
             mounts.insert(
                 0,
@@ -419,7 +427,8 @@ impl AgentBuilder {
             .resolver(resolver)
             .plan_provider(plan_provider)
             .execution_mode(self.execution_mode)
-            .compaction(self.compaction);
+            .compaction(self.compaction)
+            .max_turns(self.max_turns);
         if let Some(provider) = &contextual {
             runtime = runtime.contextual_plan_provider(provider.clone());
         }
@@ -610,6 +619,7 @@ impl Agent {
             extension_close_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             execution_mode: ExecutionMode::Sequential,
             compaction: CompactionPolicy::default(),
+            max_turns: crabber_runtime::ConfigSnapshot::default().max_turns,
         }
     }
 
