@@ -240,13 +240,18 @@ fn behavior_graph(
         cargo_metadata.clone(),
     );
     capture_native_binaries(gates, directory, binaries.clone());
-    // Compile tests first so Cargo can schedule library and test targets
-    // together. Building every normal CLI first would serialize those builds
-    // unnecessarily when a workspace library changed. CLI-only outputs still
-    // use the identical graph and are ready before the retained journeys run.
+    // Keep dev dependencies selected for normal CLIs so their transitive
+    // feature unions match the native test graph.
     gates.cargo(
         workspace,
-        &["build", "--workspace", "--bins", "--features", FEATURES],
+        &[
+            "build",
+            "--workspace",
+            "--bins",
+            "--tests",
+            "--features",
+            FEATURES,
+        ],
     );
     crate::postgres::session::TemplateMigration::schedule(gates, migration);
     let profile = if std::env::var("CI").as_deref() == Ok("true") {
