@@ -42,8 +42,8 @@ pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
             "unpartitioned library cases, including ignored cases",
             move |result| {
                 let value: Value = serde_json::from_slice(&result.stdout).unwrap();
-                crate::native_library_evidence::admit_manifest(&output, &value);
                 fs::write(&inventory, serde_json::to_vec(&value).unwrap()).unwrap();
+                crate::native_library_evidence::admit_manifest(&output, &value);
             },
         );
         crate::nextest::scoped_group_gate(
@@ -117,12 +117,12 @@ impl Selection {
             "real selected library partition, bound to unpartitioned inventory",
             move |result| {
                 let value: Value = serde_json::from_slice(&result.stdout).unwrap();
+                fs::write(&destination, serde_json::to_vec(&value).unwrap()).unwrap();
                 crate::native_library_evidence::admit_selection(
                     &read(&full),
                     &value,
                     matches!(self, Self::Role),
                 );
-                fs::write(&destination, serde_json::to_vec(&value).unwrap()).unwrap();
             },
         );
         let mut run = base("run", directory, profile);
