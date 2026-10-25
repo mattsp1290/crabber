@@ -22,7 +22,73 @@ spec.loader.exec_module(check)
 spec = importlib.util.spec_from_file_location('qualify_check', MODULE.with_name('qualify-check.py'))
 qualify = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualify)
+spec = importlib.util.spec_from_file_location('prepare_rebuild', MODULE.with_name('prepare-rebuild.py'))
+rebuild = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rebuild)
 ROOT = Path.cwd()
+
+
+class RebuildInventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name) / 'checkout'
+        self.root.mkdir()
+        (self.root / 'Cargo.toml').write_text('[workspace]\n')
+        self.source = self.root / 'crates/crabber-session/src/lib.rs'
+        self.source.parent.mkdir(parents=True)
+        self.source.write_text('')
+
+    def cached_session(self, target):
+        debug = target / 'debug'
+        affected = debug / '.fingerprint/crabber-session-0123456789abcdef/lib-crabber_session.json'
+        dependent = debug / '.fingerprint/crabber-runtime-123456789abcdef0/lib-crabber_runtime.json'
+        dependency = debug / '.fingerprint/serde-23456789abcdef01/lib-serde.json'
+        for path, deps in [(affected, []), (dependent, [[0, 'crabber_session', False, 0]]),
+                           (dependency, [])]:
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({'deps': deps}))
+        depfile = debug / 'deps/crabber_session-0123456789abcdef.d'
+        depfile.parent.mkdir()
+        depfile.write_text(f'{depfile}: {self.source}\n')
+        return affected, dependent, dependency
+
+    def test_main_cache_without_compiler_marker_and_discovered_probe_are_retained(self):
+        main = self.root / 'target'
+        main_files = self.cached_session(main)
+        probe = main / 'local-probes/api/target'
+        probe_files = self.cached_session(probe)
+        (probe / '.rustc_info.json').write_text('{}')
+        manifest = probe.parent / 'source/Cargo.toml'
+        manifest.parent.mkdir()
+        manifest.write_text('[package]\nname="probe"\nversion="0.1.0"\n')
+        self.assertFalse((main / '.rustc_info.json').exists())
+
+        rows = rebuild.inventory(self.root, main, 'crabber-session')
+
+        self.assertEqual({row['target'] for row in rows}, {str(main), str(probe)})
+        by_target = {row['target']: row for row in rows}
+        for target, files, expected_manifest in [(main, main_files, self.root / 'Cargo.toml'),
+                                                 (probe, probe_files, manifest)]:
+            affected, dependent, dependency = files
+            row = by_target[str(target)]
+            self.assertEqual(row['manifest'], str(expected_manifest))
+            self.assertEqual(set(row['affected_before']), {str(affected)})
+            self.assertEqual(set(row['dependents_before']), {str(dependent)})
+            self.assertEqual(set(row['dependency_before']), {str(dependency)})
+            self.assertTrue(all(path.exists() for path in files))
+
+    def test_known_main_must_be_owned_without_symlinks(self):
+        foreign = Path(self.directory.name) / 'foreign'
+        foreign.mkdir()
+        with self.assertRaisesRegex(ValueError, 'outside this checkout'):
+            rebuild.inventory(self.root, foreign, 'crabber-session')
+        actual = self.root / 'target'
+        actual.mkdir()
+        alias = self.root / 'linked-target'
+        alias.symlink_to(actual, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'must not traverse a symlink'):
+            rebuild.inventory(self.root, alias, 'crabber-session')
 
 
 class DeadlineTests(unittest.TestCase):
