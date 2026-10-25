@@ -147,7 +147,7 @@ fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
                     standard_tools::check_tool_prerequisites();
                 });
             });
-        })
+        });
     });
     gates.internal(
         "live-tests-ignored",
@@ -167,7 +167,7 @@ fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
             gates.prepares_for(parts::PartFamily::QualityArtifacts, |gates| {
                 nextest::version_gate(workspace, gates);
             });
-        })
+        });
     });
 }
 

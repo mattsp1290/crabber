@@ -24,7 +24,7 @@ pub(crate) fn compile(gates: &mut Checks, directory: &Path, features: &str) {
 
 pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
     gates.native_contribution(crate::parts::PartFamily::NativeLibraries, |gates| {
-        crate::normal_outputs::migration_owner(gates, directory, "native-library", "library")
+        crate::normal_outputs::migration_owner(gates, directory, "native-library", "library");
     });
 }
 

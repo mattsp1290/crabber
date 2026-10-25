@@ -122,7 +122,7 @@ pub(crate) fn schedule(
                 gates.internal("release-wasm-fixture-output", workspace, move |_| {
                     fixture_lease.release();
                 });
-            })
+            });
         });
     });
     gates.select_part()
@@ -138,7 +138,7 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
                     fs::create_dir_all(&create).expect("prepare complete-check manifests");
                 });
             });
-        })
+        });
     });
     crate::check_workspace(workspace, gates);
     gates.prepares_for(crate::parts::PartFamily::NativeRemaining, |gates| {
@@ -146,7 +146,7 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
             gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
                 tool_versions(gates, directory);
             });
-        })
+        });
     });
     let mut supervisor_tests = Command::new("python3");
     supervisor_tests
@@ -295,7 +295,7 @@ fn behavior_graph(
                         cargo_metadata.clone(),
                     );
                 });
-            })
+            });
         });
         compile_native_artifacts(gates, directory, binaries.clone());
         crate::native_libraries::compile(gates, directory, FEATURES);
@@ -306,7 +306,7 @@ fn behavior_graph(
                 gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
                     crate::postgres::session::TemplateMigration::schedule(gates, migration);
                 });
-            })
+            });
         });
         let profile = if std::env::var("CI").as_deref() == Ok("true") {
             "complete-ci"

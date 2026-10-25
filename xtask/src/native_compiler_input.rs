@@ -113,18 +113,16 @@ impl Input {
                     input.reject(index, "missing-executable-field");
                     break;
                 }
-                match serde_json::from_value(value) {
-                    Ok(artifact) => input.records.push(Record { index, artifact }),
-                    Err(_) => {
-                        input.reject(index, "invalid-artifact-fields");
-                        break;
-                    }
-                }
-            } else if value.get("rust-binaries").is_some() {
-                if input.summary.replace(value).is_some() {
-                    input.reject(index, "duplicate-nextest-summary");
+                if let Ok(artifact) = serde_json::from_value(value) {
+                    input.records.push(Record { index, artifact });
+                } else {
+                    input.reject(index, "invalid-artifact-fields");
                     break;
                 }
+            } else if value.get("rust-binaries").is_some() && input.summary.replace(value).is_some()
+            {
+                input.reject(index, "duplicate-nextest-summary");
+                break;
             }
         }
         if input.error.is_none() && input.summary.is_none() {
