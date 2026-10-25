@@ -31,11 +31,21 @@ pub(crate) fn schedule(gates: &mut Checks, directory: &Path, features: &str) {
             command.args(["--message-format", "json-render-diagnostics"]);
             let journal = directory.join("normal-output-artifacts.jsonl");
             let output = directory.to_owned();
-            gates.named_captured("normal-output-build", crate::workspace(), command,
+            gates.named_captured(
+                "normal-output-build",
+                crate::workspace(),
+                command,
                 "actual normal programs and the protected example",
-                journal.clone(), move |_| finish(&output, &journal));
+                journal.clone(),
+                move |_| finish(&output, &journal),
+            );
         } else {
-            gates.named_command("normal-output-build", crate::workspace(), command, "Cargo exit status");
+            gates.named_command(
+                "normal-output-build",
+                crate::workspace(),
+                command,
+                "Cargo exit status",
+            );
         }
     });
 }
