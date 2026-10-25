@@ -1,10 +1,10 @@
 //! Library contributions retain their own inventories and never satisfy Native gates.
-use crate::{checks::Checks, parts::LibraryQuarter};
+use crate::{checks::Checks, parts::Quarter};
 use serde_json::Value;
 use std::{fs, path::Path, process::Command};
 
 pub(crate) fn compile(gates: &mut Checks, directory: &Path, features: &str) {
-    gates.native_contribution(|gates| {
+    gates.native_contribution(crate::parts::PartFamily::NativeLibraries, |gates| {
         let mut command = Command::new("cargo");
         command.current_dir(crate::workspace()).args([
             "nextest", "list", "--workspace", "--lib", "--features", features,
@@ -23,14 +23,16 @@ pub(crate) fn compile(gates: &mut Checks, directory: &Path, features: &str) {
 }
 
 pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
-    gates.native_contribution(|gates| crate::normal_outputs::migration_owner(gates, directory));
+    gates.native_contribution(crate::parts::PartFamily::NativeLibraries, |gates| {
+        crate::normal_outputs::migration_owner(gates, directory, "native-library", "library");
+    });
 }
 
 pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
     let Some(quarter) = gates.library_quarter() else {
         return;
     };
-    gates.native_contribution(|gates| {
+    gates.native_contribution(crate::parts::PartFamily::NativeLibraries, |gates| {
         let inventory = directory.join("library-tests.json");
         let output = directory.to_owned();
         let mut command = base("list", directory, profile);
@@ -55,7 +57,7 @@ pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
             "native-library-resource-groups",
             directory.join("library-resource-groups.json"),
         );
-        if quarter == LibraryQuarter::One {
+        if quarter == Quarter::One {
             Selection::Role.schedule(gates, directory, profile);
         }
         Selection::Quarter(quarter).schedule(gates, directory, profile);
@@ -77,7 +79,7 @@ fn base(action: &str, directory: &Path, profile: &str) -> Command {
 #[derive(Clone, Copy)]
 enum Selection {
     Role,
-    Quarter(LibraryQuarter),
+    Quarter(Quarter),
 }
 
 impl Selection {
@@ -143,9 +145,9 @@ impl Selection {
         crate::standard_tools::require_subprocess_tools(&mut run);
         let evidence = directory.join(self.name());
         let verdict = directory.join(format!("{}-execution.json", self.name()));
-        gates.recorded(self.name(), run, evidence, move |result| {
-            let expected = crate::native_library_evidence::selected(&read(&selected));
-            let actual = crate::native_library_evidence::passing(&result.stdout, &result.stderr);
+        gates.recorded(self.name(), run, evidence, "exact observed library case execution", move |result| {
+            let expected = crate::native_test_evidence::selected(&read(&selected));
+            let actual = crate::native_test_evidence::passing(&result.stdout, &result.stderr);
             assert_eq!(actual, expected, "executed passing cases differ from admitted selection");
             fs::write(&verdict, serde_json::to_vec_pretty(&serde_json::json!({
                 "exact_equal": true, "actual_cases": actual.into_iter().map(|((binary, case), count)| serde_json::json!([binary, case, count])).collect::<Vec<_>>(),

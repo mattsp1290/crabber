@@ -228,7 +228,7 @@ fn finish(directory: &Path, path: &Path) {
     })).unwrap()).unwrap();
 }
 
-pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
+pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path, id: &str, prefix: &str) {
     let mut command = Command::new("cargo");
     command.current_dir(crate::workspace()).args([
         "build",
@@ -240,8 +240,9 @@ pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
         "json-render-diagnostics",
     ]);
     let output = directory.to_owned();
-    let path = directory.join("library-migration-owner-artifacts.jsonl");
-    gates.named_captured("native-library-migration-owner", crate::workspace(), command,
+    let path = directory.join(format!("{prefix}-migration-owner-artifacts.jsonl"));
+    let verdict = output.join(format!("{prefix}-migration-owner.json"));
+    gates.named_captured(&format!("{id}-migration-owner"), crate::workspace(), command,
         "timed normal enabled xtask producer immediately before owned template migration",
         path.clone(), move |_| {
             let rows = journal(&output, &path);
@@ -258,7 +259,7 @@ pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
             crate::native_artifacts::validate_debuginfo(&owner["profile"]["debuginfo"]);
             let features: std::collections::BTreeSet<_> = owner["features"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
             assert_eq!(features, ["postgres-check", "session-fixtures"].into());
-            fs::write(output.join("library-migration-owner.json"), serde_json::to_vec_pretty(&json!({
+            fs::write(&verdict, serde_json::to_vec_pretty(&json!({
                 "source": rows[0]["source"], "metadata_sha256": rows[0]["metadata_sha256"],
                 "argv": rows[0]["argv"], "artifact": owner,
                 "scope": "normal enabled xtask preparation; no full dependency-context equivalence claim",

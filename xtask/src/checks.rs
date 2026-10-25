@@ -66,20 +66,32 @@ impl Options {
                         Some("quality-contracts") => crate::parts::Part::QualityContracts,
                         Some("quality-artifacts") => crate::parts::Part::QualityArtifacts,
                         Some("native-library-1") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::One)
+                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::One)
                         }
                         Some("native-library-2") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::Two)
+                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::Two)
                         }
                         Some("native-library-3") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::Three)
+                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::Three)
                         }
                         Some("native-library-4") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::Four)
+                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::Four)
+                        }
+                        Some("native-remaining-1") => {
+                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::One)
+                        }
+                        Some("native-remaining-2") => {
+                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::Two)
+                        }
+                        Some("native-remaining-3") => {
+                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::Three)
+                        }
+                        Some("native-remaining-4") => {
+                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::Four)
                         }
                         _ => {
                             return Err(
-                                "--part accepts quality-contracts, quality-artifacts or native-library-1 through native-library-4".into()
+                                "--part accepts quality-contracts, quality-artifacts or native-library-1 through native-library-4 or native-remaining-1 through native-remaining-4".into()
                             );
                         }
                     });
@@ -102,6 +114,8 @@ impl Options {
 }
 
 enum Action {
+    #[cfg(feature = "postgres-check")]
+    RemainingBuild(Command, crate::native_remaining::RemainingBuild),
     Command(Command),
     Internal(Box<dyn Fn(&Path)>),
     Captured(
@@ -123,6 +137,8 @@ pub(crate) struct GateCommand {
 impl GateCommand {
     pub(crate) fn execute(&mut self, signal: &std::sync::atomic::AtomicUsize) -> Result<(), i32> {
         match &mut self.action {
+            #[cfg(feature = "postgres-check")]
+            Action::RemainingBuild(command, request) => request.execute(command, signal),
             Action::Command(command) => {
                 println!("$ {}", self.inventory["argv"]);
                 crate::process::status(command, signal).map_or_else(
@@ -143,18 +159,14 @@ impl GateCommand {
                 )
             }
             Action::Captured(command, validate, journal, evidence) => {
-                let output = if let Some(path) = journal {
-                    crate::process::native_output(command, signal, path)
-                } else {
-                    crate::process::output(command, signal)
-                }
-                .map_err(|error| {
-                    eprintln!(
-                        "command {} could not start or be reaped: {error}",
-                        self.inventory["id"]
-                    );
-                    1
-                })?;
+                let output =
+                    captured_output(command, signal, journal.as_deref()).map_err(|error| {
+                        eprintln!(
+                            "command {} could not start or be reaped: {error}",
+                            self.inventory["id"]
+                        );
+                        1
+                    })?;
                 if let Some(path) = evidence {
                     std::fs::write(path.with_extension("stdout.log"), &output.stdout)
                         .expect("persist actual stdout");
@@ -177,6 +189,17 @@ impl GateCommand {
                 Ok(())
             }
         }
+    }
+}
+
+pub(crate) fn captured_output(
+    command: &mut Command,
+    signal: &std::sync::atomic::AtomicUsize,
+    journal: Option<&Path>,
+) -> std::io::Result<Output> {
+    match journal {
+        Some(path) => crate::process::native_output(command, signal, path),
+        None => crate::process::output(command, signal),
     }
 }
 
@@ -247,7 +270,7 @@ impl Checks {
     }
 
     #[cfg(feature = "postgres-check")]
-    pub(crate) fn library_quarter(&self) -> Option<crate::parts::LibraryQuarter> {
+    pub(crate) fn library_quarter(&self) -> Option<crate::parts::Quarter> {
         match self.part {
             Some(crate::parts::Part::NativeLibraries(quarter)) => Some(quarter),
             _ => None,
@@ -255,10 +278,24 @@ impl Checks {
     }
 
     #[cfg(feature = "postgres-check")]
-    pub(crate) fn native_contribution(&mut self, schedule: impl FnOnce(&mut Self)) {
-        if self.library_quarter().is_some() {
-            let previous =
-                std::mem::replace(&mut self.role, crate::parts::GateRole::NativeContribution);
+    pub(crate) fn remaining_quarter(&self) -> Option<crate::parts::Quarter> {
+        match self.part {
+            Some(crate::parts::Part::NativeRemaining(q)) => Some(q),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn native_contribution(
+        &mut self,
+        family: crate::parts::PartFamily,
+        schedule: impl FnOnce(&mut Self),
+    ) {
+        if self.part.is_some_and(|part| part.family() == family) {
+            let previous = std::mem::replace(
+                &mut self.role,
+                crate::parts::GateRole::NativeContribution(family),
+            );
             schedule(self);
             self.role = previous;
         }
@@ -300,7 +337,7 @@ impl Checks {
                         "preparation"
                     }
                     GateRole::Preparation(prepared) if *prepared == part => "preparation",
-                    GateRole::NativeContribution if matches!(part, Part::NativeLibraries(_)) => {
+                    GateRole::NativeContribution(family) if *family == part.family() => {
                         "contribution"
                     }
                     _ => return false,
@@ -523,15 +560,10 @@ impl Checks {
         id: &str,
         command: Command,
         evidence: PathBuf,
+        expected: &str,
         validate: impl Fn(&Output) + 'static,
     ) {
-        self.captured(
-            Some(id),
-            crate::workspace(),
-            command,
-            "exact observed library case execution",
-            validate,
-        );
+        self.captured(Some(id), crate::workspace(), command, expected, validate);
         let gate = self.gates.last_mut().unwrap();
         gate.inventory["execution_evidence"] = json!(evidence);
         if let Action::Captured(_, _, _, path) = &mut gate.action {
@@ -581,6 +613,32 @@ impl Checks {
         }
     }
 
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn remaining_target_build(
+        &mut self,
+        request: crate::native_remaining::RemainingBuild,
+    ) {
+        let directory = request.directory().to_owned();
+        self.register_command(
+            Some("native-remaining-build"),
+            crate::workspace(),
+            request.template(),
+            "exact metadata-derived remaining target closure with observed normal prerequisites",
+        );
+        let gate = self.gates.last_mut().unwrap();
+        gate.inventory["kind"] = json!("native-build-operation");
+        gate.inventory["command_template"] = gate.inventory["argv"].clone();
+        gate.inventory["argv"] = json!([]);
+        gate.inventory["resolved_plan"] = json!(directory.join("remaining-target-plan.json"));
+        gate.inventory["cargo_artifacts"] = json!(directory.join("remaining-artifacts.jsonl"));
+        gate.inventory["compiler_input"] = json!(directory.join("remaining-compiler-input.json"));
+        if let Action::Command(command) =
+            std::mem::replace(&mut gate.action, Action::Internal(Box::new(|_| {})))
+        {
+            gate.action = Action::RemainingBuild(command, request);
+        }
+    }
+
     pub(crate) fn internal(&mut self, id: &str, directory: &Path, check: impl Fn(&Path) + 'static) {
         self.push(
             directory,
@@ -611,7 +669,7 @@ impl Checks {
                     inventory["owner"] = json!(owner.name());
                 }
                 #[cfg(feature = "postgres-check")]
-                crate::parts::GateRole::NativeContribution => {
+                crate::parts::GateRole::NativeContribution(_) => {
                     inventory["owner"] = json!("native");
                 }
                 #[cfg(feature = "postgres-check")]
@@ -867,15 +925,15 @@ mod tests {
     #[cfg(feature = "postgres-check")]
     #[test]
     fn library_parts_project_closed_preparation_without_whole_native_credit() {
-        use crate::parts::{LibraryQuarter, Part};
+        use crate::parts::{Part, Quarter};
         let directory =
             crate::workspace().join("target/test-performance/library-list-purity-unused");
         let full = crate::complete::schedule(Vec::new(), &directory, None, None);
         for (label, quarter) in [
-            ("native-library-1", LibraryQuarter::One),
-            ("native-library-2", LibraryQuarter::Two),
-            ("native-library-3", LibraryQuarter::Three),
-            ("native-library-4", LibraryQuarter::Four),
+            ("native-library-1", Quarter::One),
+            ("native-library-2", Quarter::Two),
+            ("native-library-3", Quarter::Three),
+            ("native-library-4", Quarter::Four),
         ] {
             assert_eq!(
                 Options::parse(&["--part".into(), label.into()])
@@ -945,8 +1003,87 @@ mod tests {
     }
 
     #[cfg(feature = "postgres-check")]
-    fn assert_library_gate_selection(partial: &Checks, quarter: crate::parts::LibraryQuarter) {
-        use crate::parts::LibraryQuarter;
+    #[test]
+    fn remaining_parts_project_closed_preparation_without_library_or_whole_native_credit() {
+        use crate::parts::{Part, Quarter};
+        let directory =
+            crate::workspace().join("target/test-performance/remaining-list-purity-unused");
+        let full = crate::complete::schedule(Vec::new(), &directory, None, None);
+        assert_eq!(full.gates.len(), 72);
+        for (label, quarter) in [
+            ("native-remaining-1", Quarter::One),
+            ("native-remaining-2", Quarter::Two),
+            ("native-remaining-3", Quarter::Three),
+            ("native-remaining-4", Quarter::Four),
+        ] {
+            assert_eq!(
+                Options::parse(&["--part".into(), label.into()])
+                    .unwrap()
+                    .part,
+                Some(Part::NativeRemaining(quarter))
+            );
+            let partial = crate::complete::schedule(
+                Vec::new(),
+                &directory,
+                None,
+                Some(Part::NativeRemaining(quarter)),
+            );
+            let metadata = partial.scope.as_ref().unwrap().metadata();
+            assert_eq!(metadata["target_quarter"], quarter.index());
+            assert_eq!(metadata["qualified"], false);
+            assert_eq!(metadata["full_coverage_policy_executed"], false);
+            assert_eq!(metadata["postgres_demos"], json!([]));
+            assert!(
+                partial
+                    .gates
+                    .iter()
+                    .all(|g| g.inventory["semantic_credit"] == false)
+            );
+            assert!(partial.gates.iter().all(|g| {
+                !g.inventory["id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("native-library")
+            }));
+            let build = partial
+                .gates
+                .iter()
+                .find(|g| g.inventory["id"] == "native-remaining-build")
+                .unwrap();
+            assert_eq!(build.inventory["kind"], "native-build-operation");
+            assert_eq!(build.inventory["argv"], json!([]));
+            assert!(build.inventory["command_template"].is_array());
+            let owner = partial
+                .gates
+                .iter()
+                .position(|g| g.inventory["id"] == "native-remaining-migration-owner")
+                .unwrap();
+            assert_eq!(
+                partial.gates[owner + 1].inventory["argv"][1],
+                "postgres-template-migrate"
+            );
+            assert_eq!(
+                partial.execute(&Options {
+                    list: true,
+                    part: Some(Part::NativeRemaining(quarter)),
+                    ..Options::default()
+                }),
+                0
+            );
+        }
+        assert!(!directory.exists());
+        for invalid in [
+            "native-remaining-0",
+            "native-remaining-5",
+            "native-remaining-01",
+        ] {
+            assert!(Options::parse(&["--part".into(), invalid.into()]).is_err());
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    fn assert_library_gate_selection(partial: &Checks, quarter: crate::parts::Quarter) {
+        use crate::parts::Quarter;
         let ids: std::collections::BTreeSet<_> = partial
             .gates
             .iter()
@@ -978,13 +1115,10 @@ mod tests {
         ] {
             assert!(!ids.contains(id), "selected full obligation {id}");
         }
-        assert_eq!(
-            ids.contains("native-library-role"),
-            quarter == LibraryQuarter::One
-        );
+        assert_eq!(ids.contains("native-library-role"), quarter == Quarter::One);
         assert_eq!(
             ids.contains("native-library-role-manifest"),
-            quarter == LibraryQuarter::One
+            quarter == Quarter::One
         );
     }
 

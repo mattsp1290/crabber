@@ -197,14 +197,10 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
         report["owned_postgres_run"] = serde_json::json!(observed_owned_run(&metrics));
     }
     report["coverage_scope"] = serde_json::json!(part.map_or("complete", crate::parts::Part::name));
-    if let Some(crate::parts::Part::NativeLibraries(quarter)) = part {
-        report["part_family"] = serde_json::json!("native-libraries");
-        report["library_quarter"] = serde_json::json!(quarter.index());
-        report["library_quarter_count"] = serde_json::json!(4);
-        report["full_coverage_policy_executed"] = serde_json::json!(false);
-        report["requires_owned_postgres"] = serde_json::json!(true);
-        report["postgres_demos"] = serde_json::json!([]);
+    if let Some(part) = part {
+        part.native_metadata(&mut report);
     }
+
     report["status"] = serde_json::json!(if code == 0 { "passed" } else { "failed" });
     report["exit_code"] = serde_json::json!(code);
     report["wall_seconds_including_fixture_lifecycle"] =

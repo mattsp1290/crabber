@@ -234,7 +234,7 @@ def main():
     main_started_epoch = time.time()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
-    parser.add_argument('--part', choices=['quality-contracts', 'quality-artifacts', 'native-library-1', 'native-library-2', 'native-library-3', 'native-library-4'])
+    parser.add_argument('--part', choices=['quality-contracts', 'quality-artifacts', 'native-library-1', 'native-library-2', 'native-library-3', 'native-library-4', 'native-remaining-1', 'native-remaining-2', 'native-remaining-3', 'native-remaining-4'])
     parser.add_argument('--budget-seconds', type=int, default=600)
     parser.add_argument('--ci-start-time', type=float)
     parser.add_argument('--cache-state', choices=['unclassified', 'unchanged', 'runtime-rebuild', 'session-rebuild', 'bootstrap'], default='unclassified')
@@ -276,7 +276,14 @@ def main():
             and phases.get('library_quarter_count') == 4
             and phases.get('full_coverage_policy_executed') is False)
 
-        if (not library_admitted or phases.get('coverage_scope') != expected_scope or phases.get('status') != 'passed'
+        remaining_quarter = int(args.part.rsplit('-', 1)[1]) if args.part and args.part.startswith('native-remaining-') else None
+        remaining_admitted = remaining_quarter is None or (
+            phases.get('part_family') == 'native-remaining'
+            and phases.get('target_quarter') == remaining_quarter
+            and phases.get('target_quarter_count') == 4
+            and phases.get('full_coverage_policy_executed') is False)
+
+        if (not library_admitted or not remaining_admitted or phases.get('coverage_scope') != expected_scope or phases.get('status') != 'passed'
                 or (args.part and (phases.get('qualified') is not False
                                   or phases.get('processes_drained') is not True
                                   or phases.get('full_native_suite_executed') is not False

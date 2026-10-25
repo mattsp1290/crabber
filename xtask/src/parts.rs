@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 pub(crate) enum Part {
     QualityContracts,
     QualityArtifacts,
-    NativeLibraries(LibraryQuarter),
+    NativeLibraries(Quarter),
+    NativeRemaining(Quarter),
 }
 
 impl Part {
@@ -14,7 +15,8 @@ impl Part {
         match self {
             Self::QualityContracts => "quality-contracts",
             Self::QualityArtifacts => "quality-artifacts",
-            Self::NativeLibraries(quarter) => quarter.name(),
+            Self::NativeLibraries(quarter) => quarter.library_name(),
+            Self::NativeRemaining(quarter) => quarter.remaining_name(),
         }
     }
 }
@@ -25,17 +27,18 @@ pub(crate) enum PartFamily {
     QualityContracts,
     QualityArtifacts,
     NativeLibraries,
+    NativeRemaining,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LibraryQuarter {
+pub(crate) enum Quarter {
     One,
     Two,
     Three,
     Four,
 }
 
-impl LibraryQuarter {
+impl Quarter {
     pub(crate) fn index(self) -> usize {
         match self {
             Self::One => 1,
@@ -44,12 +47,20 @@ impl LibraryQuarter {
             Self::Four => 4,
         }
     }
-    fn name(self) -> &'static str {
+    fn library_name(self) -> &'static str {
         match self {
             Self::One => "native-library-1",
             Self::Two => "native-library-2",
             Self::Three => "native-library-3",
             Self::Four => "native-library-4",
+        }
+    }
+    fn remaining_name(self) -> &'static str {
+        match self {
+            Self::One => "native-remaining-1",
+            Self::Two => "native-remaining-2",
+            Self::Three => "native-remaining-3",
+            Self::Four => "native-remaining-4",
         }
     }
 }
@@ -62,19 +73,34 @@ pub(crate) enum ResourcePolicy {
 }
 
 impl Part {
+    pub(crate) fn native_metadata(self, value: &mut Value) {
+        let (family, field, quarter) = match self {
+            Self::NativeLibraries(q) => ("native-libraries", "library_quarter", q),
+            Self::NativeRemaining(q) => ("native-remaining", "target_quarter", q),
+            _ => return,
+        };
+        value["part_family"] = json!(family);
+        value[field] = json!(quarter.index());
+        value[format!("{field}_count")] = json!(4);
+        value["full_coverage_policy_executed"] = json!(false);
+        value["requires_owned_postgres"] = json!(true);
+        value["postgres_demos"] = json!([]);
+    }
+
     #[cfg(feature = "postgres-check")]
     pub(crate) fn family(self) -> PartFamily {
         match self {
             Self::QualityContracts => PartFamily::QualityContracts,
             Self::QualityArtifacts => PartFamily::QualityArtifacts,
             Self::NativeLibraries(_) => PartFamily::NativeLibraries,
+            Self::NativeRemaining(_) => PartFamily::NativeRemaining,
         }
     }
     pub(crate) fn resources(self) -> ResourcePolicy {
         match self {
             Self::QualityContracts => ResourcePolicy::Direct,
             Self::QualityArtifacts => ResourcePolicy::OwnedPostgresWithDemos,
-            Self::NativeLibraries(_) => ResourcePolicy::OwnedPostgres,
+            Self::NativeLibraries(_) | Self::NativeRemaining(_) => ResourcePolicy::OwnedPostgres,
         }
     }
     pub(crate) fn owns_postgres(self) -> bool {
@@ -119,7 +145,7 @@ pub(crate) enum GateRole {
     #[cfg(feature = "postgres-check")]
     Preparation(Part),
     #[cfg(feature = "postgres-check")]
-    NativeContribution,
+    NativeContribution(PartFamily),
 }
 
 pub(crate) struct Scope {
@@ -137,12 +163,7 @@ impl Scope {
             "owned_postgres_run": if self.part.owns_postgres() { Value::Null } else { json!(false) },
             "ownership": self.ownership, "postgres_demos": self.demos,
         });
-        if let Part::NativeLibraries(quarter) = self.part {
-            value["part_family"] = json!("native-libraries");
-            value["library_quarter"] = json!(quarter.index());
-            value["library_quarter_count"] = json!(4);
-            value["full_coverage_policy_executed"] = json!(false);
-        }
+        self.part.native_metadata(&mut value);
         value
     }
 }
