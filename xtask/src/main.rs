@@ -800,6 +800,7 @@ fn check_observability(workspace: &Path, gates: &mut checks::Checks) {
         .env("CRABBER_LOG_STDERR", "1")
         .env("RUST_LOG", "info");
     gates.captured(
+        None,
         workspace,
         command,
         "Completed; retry diagnostic on stderr; no fixture secrets",

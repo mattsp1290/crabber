@@ -461,12 +461,13 @@ impl Checks {
 
     pub(crate) fn captured(
         &mut self,
+        name: Option<&str>,
         directory: &Path,
         command: Command,
         expected: &str,
         validate: impl Fn(&Output) + 'static,
     ) {
-        self.command(directory, command, expected);
+        self.register_command(name, directory, command, expected);
         let gate = self.gates.last_mut().unwrap();
         gate.inventory["kind"] = json!("captured-command");
         if let Action::Command(command) =
@@ -485,6 +486,7 @@ impl Checks {
         validate: impl Fn(&Output) + 'static,
     ) {
         self.captured(
+            None,
             directory,
             command,
             "successful canonical native build metadata",
@@ -884,6 +886,14 @@ mod tests {
         };
         let examples = position("prepare-normal-examples");
         let bins = position("normal-output-build");
+        for index in [examples, bins] {
+            let gate = &partial.gates[index];
+            let super::Action::Captured(_, _, Some(journal)) = &gate.action else {
+                panic!("normal-output capture must retain its Cargo journal");
+            };
+            assert_eq!(gate.inventory["cargo_artifacts"], json!(journal));
+            assert!(gate.inventory["native_artifacts"].is_null());
+        }
         let migration = partial
             .gates
             .iter()
@@ -907,6 +917,72 @@ mod tests {
     }
 
     #[cfg(feature = "postgres-check")]
+    fn assert_stable_gate_ids(checks: &Checks, directory: &Path) {
+        let other_directory = directory.with_extension("other");
+        let other = crate::complete::schedule(Vec::new(), &other_directory, None, None);
+        let commands = |checks: &Checks| {
+            checks
+                .gates
+                .iter()
+                .map(|gate| gate.inventory["argv"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            commands(checks),
+            commands(&other),
+            "output paths must really differ"
+        );
+        let identities = |checks: &Checks| {
+            checks
+                .gates
+                .iter()
+                .map(|gate| {
+                    json!({
+                        "id": gate.inventory["id"],
+                        "prerequisites": gate.inventory["prerequisites"],
+                        "owner": gate.inventory["owner"],
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            identities(checks),
+            identities(&other),
+            "obligation identity must not depend on output paths"
+        );
+        let ids: std::collections::BTreeSet<_> = checks
+            .gates
+            .iter()
+            .map(|gate| gate.inventory["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), checks.gates.len());
+        for id in [
+            "native-test-manifest",
+            "native-resource-groups",
+            "native-cluster-role",
+            "native-complement",
+        ] {
+            let gate = checks
+                .gates
+                .iter()
+                .find(|gate| gate.inventory["id"] == id)
+                .unwrap();
+            assert_eq!(gate.inventory["owner"], "native");
+        }
+        for id in ["native-test-manifest", "native-resource-groups"] {
+            let gate = checks
+                .gates
+                .iter()
+                .find(|gate| gate.inventory["id"] == id)
+                .unwrap();
+            assert!(matches!(&gate.action, super::Action::Captured(_, _, None)));
+            assert!(gate.inventory["cargo_artifacts"].is_null());
+            assert!(gate.inventory["native_artifacts"].is_null());
+        }
+        assert!(!other_directory.exists());
+    }
+
+    #[cfg(feature = "postgres-check")]
     #[test]
     fn complete_migrates_the_owned_template_after_builds_before_native_execution() {
         let directory = std::env::temp_dir().join(format!(
@@ -919,6 +995,7 @@ mod tests {
         ));
         assert!(!directory.exists());
         let checks = crate::complete::schedule(Vec::new(), &directory, None, None);
+        assert_stable_gate_ids(&checks, &directory);
         let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
         assert_eq!(checks.gates.len(), 72);
         assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 41);
