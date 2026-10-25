@@ -78,8 +78,13 @@ jobs:
           echo "$GITHUB_WORKSPACE/target/test-tools/bin" >> "$GITHUB_PATH"
       - name: Verify cached pinned tools and PostgreSQL image
         run: |
-          nextest_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["nextest"]["version"])')"
-          test "$(cargo-nextest nextest --version | cut -d' ' -f2)" = "$nextest_version"
+          python3 -I -S - <<'PY'
+          import json, subprocess
+          pins = json.load(open('.config/test-tools.json'))
+          version = subprocess.check_output(['cargo-nextest', 'nextest', '--version'], text=True).split()
+          assert version[:2] == ['cargo-nextest', pins['nextest']['version']]
+          print('Pinned nextest version verified:', version[1])
+          PY
           wasm_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["wasm-tools"]["version"])')"
           test "$(wasm-tools --version)" = "wasm-tools $wasm_version"
           test -f target/test-tools/postgres-14.tar
