@@ -83,7 +83,11 @@ class DeadlineTests(unittest.TestCase):
         cases = [('strict', 600, None, 0), ('bootstrap', 4800, None, 0),
                  ('dirty', 4800, 'dirty', 0), ('revision', 4800, 'revision', 0),
                  ('initially-dirty', 4800, 'initially-dirty', 0),
-                 ('failed-child', 4800, 'dirty', 7)]
+                 ('failed-child', 4800, 'dirty', 7),
+                 ('partial', 600, None, 0), ('partial-report-only', 4800, None, 0),
+                 ('partial-wrong-scope', 600, None, 0),
+                 ('partial-claims-qualified', 600, None, 0),
+                 ('partial-not-drained', 600, None, 0)]
         for name, budget, change, child_code in cases:
             with self.subTest(name=name):
                 repo = self.root / name
@@ -118,11 +122,21 @@ class DeadlineTests(unittest.TestCase):
                     elif change == 'revision':
                         git(*commit, '--allow-empty', '-m', 'changed head')
                     path.write_text(json.dumps(value))
-                    Path(command[-1]).write_text(json.dumps({'coverage_scope': 'complete',
+                    partial = name.startswith('partial')
+                    self.assertEqual(command[3:5] if partial else command[3:4],
+                                     ['--part', 'quality-contracts'] if partial else ['--timings'])
+                    scope = ('quality-contracts' if partial and name != 'partial-wrong-scope'
+                             else 'complete')
+                    Path(command[-1]).write_text(json.dumps({'coverage_scope': scope,
+                                                            'qualified': name == 'partial-claims-qualified',
+                                                            'processes_drained': name != 'partial-not-drained',
                                                             'status': 'passed'}))
                     return child_code
 
                 argv = ['check.py', '--report', str(report), '--cache-state', 'unchanged']
+                partial = name.startswith('partial')
+                if partial:
+                    argv += ['--part', 'quality-contracts']
                 if budget != 600:
                     argv += ['--budget-seconds', str(budget)]
                 with mock.patch.object(check, '__file__', str(repo / '.github/scripts/check.py')), \
@@ -130,11 +144,12 @@ class DeadlineTests(unittest.TestCase):
                         mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
                     code = check.main()
                 value = json.loads(report.read_text())
-                expected = child_code or (1 if change else 0)
+                bad_partial = name in {'partial-wrong-scope', 'partial-claims-qualified', 'partial-not-drained'}
+                expected = child_code or (1 if change or bad_partial else 0)
                 self.assertEqual(code, expected)
                 self.assertEqual(value['status'], 'failed' if expected else 'passed')
-                self.assertEqual(value['timing_target_met'], expected == 0)
-                self.assertEqual(value['qualified'], expected == 0 and budget == 600)
+                self.assertEqual(value['timing_target_met'], expected == 0 and not partial)
+                self.assertEqual(value['qualified'], expected == 0 and budget == 600 and not partial)
                 if change:
                     self.assertEqual(value['reason'], 'child-failed' if child_code else 'source-changed-or-dirty')
 

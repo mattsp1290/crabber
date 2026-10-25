@@ -1,5 +1,8 @@
 //! One required behavior graph; feature absence remains a narrow build boundary.
-use crate::checks::Checks;
+use crate::{
+    checks::Checks,
+    parts::{Owner, Part},
+};
 use serde_json::Value;
 use std::{
     fs,
@@ -80,23 +83,51 @@ pub(crate) fn schedule(
     directory: &Path,
     migration: Option<crate::postgres::session::TemplateMigration>,
 ) -> Checks {
+    schedule_scope(environment, directory, migration, None)
+}
+
+pub(crate) fn contracts(mut options: crate::checks::Options) -> i32 {
+    if !options.list && !cfg!(target_os = "linux") {
+        eprintln!("quality-contracts requires Linux process supervision");
+        return 2;
+    }
+    let directory = output_directory();
+    if options.timings.is_none() && !options.list {
+        options.timings = Some(directory.join("phases.json"));
+    }
+    let environment = vec![("CRABBER_REQUIRE_POSTGRES".into(), "1".into())];
+    schedule_scope(environment, &directory, None, Some(Part::QualityContracts)).execute(&options)
+}
+
+fn schedule_scope(
+    environment: Vec<(String, String)>,
+    directory: &Path,
+    migration: Option<crate::postgres::session::TemplateMigration>,
+    part: Option<Part>,
+) -> Checks {
     let workspace = crate::workspace();
-    let mut gates = Checks::required(environment);
-    let fixture_lease = preflight(&mut gates, directory);
-    feature_boundaries(&mut gates, directory);
-    crate::check_provider_features(workspace, &mut gates);
-    behavior_graph(&mut gates, directory, migration);
-    gates.script(
-        workspace,
-        "external embedding consumer",
-        "testdata/external-consumer/check.sh",
-    );
-    cli_journeys(&mut gates);
-    crate::standard_tools::schedule(workspace, &mut gates);
-    gates.internal("release-wasm-fixture-output", workspace, move |_| {
-        fixture_lease.release();
+    let mut gates = Checks::partitioned(environment, part);
+    let fixture_lease = gates.owned(Owner::QualityContracts, |gates| preflight(gates, directory));
+    gates.owned(Owner::QualityContracts, |gates| {
+        feature_boundaries(gates, directory);
+        crate::check_provider_features(workspace, gates);
     });
-    gates
+    behavior_graph(&mut gates, directory, migration);
+    gates.owned(Owner::QualityContracts, |gates| {
+        gates.script(
+            workspace,
+            "external embedding consumer",
+            "testdata/external-consumer/check.sh",
+        );
+    });
+    gates.owned(Owner::QualityArtifacts, |gates| {
+        cli_journeys(gates);
+        crate::standard_tools::schedule(workspace, gates);
+        gates.internal("release-wasm-fixture-output", workspace, move |_| {
+            fixture_lease.release();
+        });
+    });
+    gates.select_part()
 }
 
 fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
@@ -135,7 +166,9 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
         "cache maintenance retains current executables and rejects incomplete provenance",
     );
     crate::probes::schedule(workspace, gates);
-    crate::schedule_fixtures(workspace, gates)
+    gates.owned(Owner::QualityArtifacts, |gates| {
+        crate::schedule_fixtures(workspace, gates)
+    })
 }
 
 fn feature_boundaries(gates: &mut Checks, directory: &Path) {
@@ -216,103 +249,111 @@ fn behavior_graph(
     migration: Option<crate::postgres::session::TemplateMigration>,
 ) {
     let workspace = crate::workspace();
-    gates.cargo(
-        workspace,
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--features",
-            FEATURES,
-            "--",
-            "-D",
-            "warnings",
-        ],
-    );
+    gates.owned(Owner::QualityArtifacts, |gates| {
+        gates.cargo(
+            workspace,
+            &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--features",
+                FEATURES,
+                "--",
+                "-D",
+                "warnings",
+            ],
+        );
+    });
     // The same features own binaries, tests and docs; there are no per-package
     // behavior reruns merely to enable PostgreSQL or another provider/exporter.
-    let cargo_metadata = directory.join("cargo-metadata.json");
-    let binaries = directory.join("binaries.json");
-    let manifest = directory.join("tests.json");
-    capture_json(
-        gates,
-        &["metadata", "--format-version", "1", "--features", FEATURES],
-        cargo_metadata.clone(),
-    );
-    capture_native_binaries(gates, directory, binaries.clone());
-    // Compile tests first so Cargo can schedule library and test targets
-    // together. Building every normal CLI first would serialize those builds
-    // unnecessarily when a workspace library changed. CLI-only outputs still
-    // use the identical graph and are ready before the retained journeys run.
-    gates.cargo(
-        workspace,
-        &["build", "--workspace", "--bins", "--features", FEATURES],
-    );
-    crate::postgres::session::TemplateMigration::schedule(gates, migration);
-    let profile = if std::env::var("CI").as_deref() == Ok("true") {
-        "complete-ci"
-    } else {
-        "complete"
-    };
-    capture_json(
-        gates,
-        &[
-            "nextest",
-            "list",
-            "--cargo-metadata",
-            cargo_metadata.to_str().unwrap(),
-            "--binaries-metadata",
-            binaries.to_str().unwrap(),
-            "--profile",
-            profile,
-            "--message-format",
-            "json",
-        ],
-        manifest.clone(),
-    );
-    let inspect_metadata = cargo_metadata.clone();
-    let inspect_manifest = manifest.clone();
-    gates.internal("required-coverage-and-features", workspace, move |root| {
-        validate_manifest(root, &inspect_metadata, &inspect_manifest);
-    });
-    crate::nextest::complete_group_gate(workspace, gates, &cargo_metadata, &binaries, profile);
-    let role_test = crate::nextest::CLUSTER_ROLE_TEST;
-    for (filter, expected) in [
-        (
-            format!("test(={role_test})"),
-            "isolated cluster-role migration; no other native histories run",
-        ),
-        (
-            format!("not test(={role_test})"),
-            "all remaining native behavior, including required real PostgreSQL",
-        ),
-    ] {
-        let mut behavior = Command::new("cargo");
-        behavior
-            .args([
+    gates.owned(Owner::Native, |gates| {
+        let cargo_metadata = directory.join("cargo-metadata.json");
+        let binaries = directory.join("binaries.json");
+        let manifest = directory.join("tests.json");
+        capture_json(
+            gates,
+            &["metadata", "--format-version", "1", "--features", FEATURES],
+            cargo_metadata.clone(),
+        );
+        capture_native_binaries(gates, directory, binaries.clone());
+        // Compile tests first so Cargo can schedule library and test targets
+        // together. Building every normal CLI first would serialize those builds
+        // unnecessarily when a workspace library changed. CLI-only outputs still
+        // use the identical graph and are ready before the retained journeys run.
+        gates.owned(Owner::QualityArtifacts, |gates| {
+            gates.cargo(
+                workspace,
+                &["build", "--workspace", "--bins", "--features", FEATURES],
+            );
+        });
+        crate::postgres::session::TemplateMigration::schedule(gates, migration);
+        let profile = if std::env::var("CI").as_deref() == Ok("true") {
+            "complete-ci"
+        } else {
+            "complete"
+        };
+        capture_json(
+            gates,
+            &[
                 "nextest",
-                "run",
+                "list",
                 "--cargo-metadata",
                 cargo_metadata.to_str().unwrap(),
                 "--binaries-metadata",
                 binaries.to_str().unwrap(),
                 "--profile",
                 profile,
-                "--retries",
-                "0",
-                "--no-fail-fast",
-                "--no-tests",
-                "fail",
-            ])
-            .args(["-E", &filter])
-            .current_dir(workspace);
-        crate::standard_tools::require_subprocess_tools(&mut behavior);
-        gates.command(workspace, behavior, expected);
-    }
-    gates.cargo(
-        workspace,
-        &["test", "--workspace", "--features", FEATURES, "--doc"],
-    );
+                "--message-format",
+                "json",
+            ],
+            manifest.clone(),
+        );
+        let inspect_metadata = cargo_metadata.clone();
+        let inspect_manifest = manifest.clone();
+        gates.internal("required-coverage-and-features", workspace, move |root| {
+            validate_manifest(root, &inspect_metadata, &inspect_manifest);
+        });
+        crate::nextest::complete_group_gate(workspace, gates, &cargo_metadata, &binaries, profile);
+        let role_test = crate::nextest::CLUSTER_ROLE_TEST;
+        for (filter, expected) in [
+            (
+                format!("test(={role_test})"),
+                "isolated cluster-role migration; no other native histories run",
+            ),
+            (
+                format!("not test(={role_test})"),
+                "all remaining native behavior, including required real PostgreSQL",
+            ),
+        ] {
+            let mut behavior = Command::new("cargo");
+            behavior
+                .args([
+                    "nextest",
+                    "run",
+                    "--cargo-metadata",
+                    cargo_metadata.to_str().unwrap(),
+                    "--binaries-metadata",
+                    binaries.to_str().unwrap(),
+                    "--profile",
+                    profile,
+                    "--retries",
+                    "0",
+                    "--no-fail-fast",
+                    "--no-tests",
+                    "fail",
+                ])
+                .args(["-E", &filter])
+                .current_dir(workspace);
+            crate::standard_tools::require_subprocess_tools(&mut behavior);
+            gates.command(workspace, behavior, expected);
+        }
+    });
+    gates.owned(Owner::QualityArtifacts, |gates| {
+        gates.cargo(
+            workspace,
+            &["test", "--workspace", "--features", FEATURES, "--doc"],
+        );
+    });
 }
 
 fn cli_journeys(gates: &mut Checks) {

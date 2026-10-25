@@ -14,7 +14,11 @@ use crate::checks::GateCommand;
 pub(crate) struct Report;
 
 impl Report {
-    pub(crate) fn run(mut gates: Vec<GateCommand>, path: Option<&Path>) -> i32 {
+    pub(crate) fn run(
+        mut gates: Vec<GateCommand>,
+        path: Option<&Path>,
+        scope: Option<Value>,
+    ) -> i32 {
         let signal = match crate::process::cancellation() {
             Ok(signal) => signal,
             Err(error) => {
@@ -35,6 +39,13 @@ impl Report {
                 record
             }).collect::<Vec<_>>(),
         });
+        let partial = scope.is_some();
+        if let Some(scope) = scope {
+            report
+                .as_object_mut()
+                .unwrap()
+                .extend(scope.as_object().unwrap().clone());
+        }
         if let Err(error) = persist(path, &report) {
             eprintln!("cannot create timing report: {error}");
             return 1;
@@ -79,6 +90,20 @@ impl Report {
             if let Err(error) = persist(path, &report) {
                 eprintln!("cannot update timing report: {error}");
                 exit = 1;
+            }
+        }
+        if partial {
+            drop(gates);
+            #[cfg(target_os = "linux")]
+            {
+                let drained = crate::process::verify_drained();
+                report["processes_drained"] = json!(drained.is_ok());
+                if let Err(error) = drained {
+                    eprintln!("partial check cleanup failed: {error}");
+                    if exit == 0 {
+                        exit = 1;
+                    }
+                }
             }
         }
         report["status"] = json!(if signal.load(std::sync::atomic::Ordering::SeqCst) != 0 {

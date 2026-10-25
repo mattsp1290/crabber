@@ -72,6 +72,20 @@ That implementation lived on `feat/test-suite-performance` in its own checkout. 
 pre-existing provider and orchestrator edits are excluded. This document records
 coverage ownership; it is not a claim that performance qualification has passed.
 
+## Partial contract cost probe
+
+`cargo xtask check --part quality-contracts` runs the contract checks selected from the same source-owned schedule as the full check. Its `--list` output includes the selected gates and the complete gate ownership partition. The ordinary full check keeps its existing order. The partial mode excludes native suite compilation/execution, root WASM fixture generation, PostgreSQL template migration and CLI demos. The external consumer still builds its own guest and controls, and local consumer probes retain their leases.
+
+Use the existing supervisor to measure compilation, selected checks and process cleanup after setup:
+
+```sh
+python3 -I -S .github/scripts/check.py --part quality-contracts \
+  --budget-seconds 4800 --cache-state unclassified \
+  --report target/test-performance/contracts-cost/check.json
+```
+
+The larger supervision budget lets the first cost probe finish. Partial reports always have `coverage_scope=quality-contracts`, `qualified=false` and `timing_target_met=false`, including a passing run below600 seconds. They cannot replace the required full check. This mode preserves required tool flags, clears inherited PostgreSQL fixture handoffs and does not create an owned PostgreSQL run. Its passing phase report requires terminal process drain. Artifact and native partition runners and a hosted matrix are separate work.
+
 ## Historical: Commands and reports
 
 ```sh
