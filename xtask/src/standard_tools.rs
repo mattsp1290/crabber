@@ -107,22 +107,24 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut Checks) {
     .current_dir(workspace)
     .env_remove("OPENCODE_GO_API_KEY")
     .env_remove("DELEGATE_TASK_REQUIRE_OPENCODE_GO");
-    gates.captured(
-        workspace,
-        live,
-        "both live suites prove credential-free skip",
-        |output| {
-            let message = "skipping live OpenCode Go suite";
-            let skips = String::from_utf8_lossy(&output.stdout)
-                .matches(message)
-                .count()
-                + String::from_utf8_lossy(&output.stderr)
+    gates.owned(crate::parts::Owner::QualityContracts, |gates| {
+        gates.captured(
+            workspace,
+            live,
+            "both live suites prove credential-free skip",
+            |output| {
+                let message = "skipping live OpenCode Go suite";
+                let skips = String::from_utf8_lossy(&output.stdout)
                     .matches(message)
-                    .count();
-            assert_eq!(
-                skips, 2,
-                "both live suites must prove their credential-free skip path"
-            );
-        },
-    );
+                    .count()
+                    + String::from_utf8_lossy(&output.stderr)
+                        .matches(message)
+                        .count();
+                assert_eq!(
+                    skips, 2,
+                    "both live suites must prove their credential-free skip path"
+                );
+            },
+        );
+    });
 }
