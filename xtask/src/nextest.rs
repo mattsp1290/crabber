@@ -79,6 +79,27 @@ pub(crate) fn complete_group_gate(
     binaries: &Path,
     profile: &str,
 ) {
+    scoped_group_gate(
+        workspace,
+        gates,
+        metadata,
+        binaries,
+        profile,
+        "native-resource-groups",
+        metadata.with_file_name("resource-groups.json"),
+    );
+}
+
+#[cfg(feature = "postgres-check")]
+pub(crate) fn scoped_group_gate(
+    workspace: &Path,
+    gates: &mut Checks,
+    metadata: &Path,
+    binaries: &Path,
+    profile: &str,
+    id: &str,
+    destination: std::path::PathBuf,
+) {
     let postgres = if profile == "complete-ci" {
         "postgres-ci"
     } else {
@@ -97,7 +118,6 @@ pub(crate) fn complete_group_gate(
          (group(wasm) & ({non_double})) | \
          (not group(@global) & not group({postgres}) & not group(sqlite) & not group(wasm))"
     );
-    let destination = metadata.with_file_name("resource-groups.json");
     let mut command = Command::new("cargo");
     command
         .args(["nextest", "list", "--cargo-metadata"])
@@ -114,7 +134,7 @@ pub(crate) fn complete_group_gate(
         ])
         .current_dir(workspace);
     gates.captured(
-        Some("native-resource-groups"),
+        Some(id),
         workspace,
         command,
         "backend cases retain service limits and each custom group has uniform worker weights",
