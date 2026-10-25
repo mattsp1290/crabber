@@ -182,6 +182,10 @@ impl Fixture {
                     .unwrap();
             }
             admin.close().await;
+            while admin.size() != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                admin.close().await;
+            }
             database.finish().await.unwrap();
         })
         .await
