@@ -43,6 +43,18 @@ impl Store for Interposed<'_> {
         self.mutate(1, &session).await;
         result
     }
+    async fn public_newest_history_v2(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<PublicNewestHistoryOutcome, StoreError> {
+        if self.boundary == 4 {
+            return Err(StoreError::HostUnsupported);
+        }
+        let session = request.session_id.clone();
+        let result = self.inner.public_newest_history_v2(request).await;
+        self.mutate(2, &session).await;
+        result
+    }
     async fn public_history_v2(
         &self,
         request: SnapshotRequest,
@@ -197,7 +209,7 @@ pub(crate) async fn run(store: &impl Store) {
 
 pub(crate) async fn run_v2(store: &impl Store) {
     let (f, _, _) = crate::frontend_contract::fixture::paused(store).await;
-    for boundary in 0..6 {
+    for (boundary, newest) in (0..6).flat_map(|boundary| [(boundary, false), (boundary, true)]) {
         let session = &f.request.session_id;
         let revision = store.session_revision(session).await.unwrap();
         let events = store.list_events(session, None, 1000).await.unwrap();
@@ -206,13 +218,16 @@ pub(crate) async fn run_v2(store: &impl Store) {
             boundary,
             fired: AtomicBool::new(false),
         };
-        let result = reader
-            .public_session_snapshot_v2(PublicSessionRequestV2 {
-                session_id: session.clone(),
-                limits: crate::public_session::v2::tests::limits(),
-                continuation: None,
-            })
-            .await;
+        let request = PublicSessionRequestV2 {
+            session_id: session.clone(),
+            limits: crate::public_session::v2::tests::limits(),
+            continuation: None,
+        };
+        let result = if newest {
+            reader.public_session_newest_snapshot_v2(request).await
+        } else {
+            reader.public_session_snapshot_v2(request).await
+        };
         if boundary < 3 {
             assert!(
                 matches!(result, Ok(PublicSessionOutcomeV2::Invalidated)),

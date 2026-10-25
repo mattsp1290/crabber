@@ -30,6 +30,7 @@ pub struct PublicSessionSubscriptionV2 {
     completed: Option<(SessionRevision, EventCursor)>,
     assembling: Option<SessionRevision>,
     overflow: bool,
+    newest: bool,
 }
 impl PublicSessionSubscriptionV2 {
     #[must_use]
@@ -43,6 +44,16 @@ impl PublicSessionSubscriptionV2 {
             completed: None,
             assembling: None,
             overflow: false,
+            newest: false,
+        }
+    }
+    /// Subscribe to bounded newest replacement windows. Every Page has reset=true;
+    /// omitted older history does not cause pagination or prevent Unchanged.
+    #[must_use]
+    pub fn newest(session_id: SessionId, limits: PublicSessionLimitsV2) -> Self {
+        Self {
+            newest: true,
+            ..Self::new(session_id, limits)
         }
     }
     /// A notification channel overflow invalidates any partially assembled snapshot.
@@ -90,10 +101,16 @@ impl PublicSessionSubscriptionV2 {
             });
         }
         let reset = self.request.continuation.is_none();
-        match store
-            .public_session_snapshot_v2(self.request.clone())
-            .await?
-        {
+        let outcome = if self.newest {
+            store
+                .public_session_newest_snapshot_v2(self.request.clone())
+                .await?
+        } else {
+            store
+                .public_session_snapshot_v2(self.request.clone())
+                .await?
+        };
+        match outcome {
             PublicSessionOutcomeV2::Page(page) => {
                 self.request
                     .continuation

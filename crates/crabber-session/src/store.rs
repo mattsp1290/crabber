@@ -237,6 +237,25 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::PublicHistoryOutcome, StoreError> {
         Err(StoreError::HostUnsupported)
     }
+    /// Newest bounded replacement history, with associated call and provenance records.
+    /// No continuation is accepted. Custom adapters must explicitly opt in.
+    async fn public_newest_history_v2(
+        &self,
+        _request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicNewestHistoryOutcome, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// A complete replacement window at one revision, never a pagination fragment.
+    /// Continuations are invalid; increase limits after a typed Limited outcome.
+    async fn public_session_newest_snapshot_v2(
+        &self,
+        request: crate::PublicSessionRequestV2,
+    ) -> Result<crate::PublicSessionOutcomeV2, crate::PublicSessionError> {
+        if request.continuation.is_some() {
+            return Err(crate::PublicSessionError::InvalidRequest);
+        }
+        crate::public_session::v2::compose::snapshot_window(self, request, true).await
+    }
     /// Coherent fixed aggregate V2 metadata and history; no execution authority.
     async fn public_session_snapshot_v2(
         &self,

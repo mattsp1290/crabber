@@ -52,6 +52,7 @@ pub(super) async fn check(
     assert_eq!(provenance.len(), count);
     assert_eq!(messages.len(), count);
     aggregate(store, target, &calls, &provenance, &messages).await;
+    newest(store, target, &calls, &provenance, &messages).await;
     for origin in provenance {
         assert_eq!(origin.session_id, *target);
         let message = messages
@@ -110,4 +111,58 @@ async fn aggregate(
     assert_eq!(provenance, expected_provenance);
     assert_eq!(messages, expected_messages);
     assert_eq!(store.session_revision(target).await.unwrap(), revision);
+}
+
+async fn newest(
+    store: &dyn Store,
+    target: &SessionId,
+    expected_calls: &[crabber::core::ImportedToolCall],
+    expected_provenance: &[crabber::core::ImportedMessageProvenance],
+    expected_messages: &[crabber::core::Message],
+) {
+    let mut limits = crate::aggregate_limits();
+    limits.history = SnapshotLimits {
+        messages: 100,
+        tool_calls: 100,
+        parts: 1024,
+        text_bytes: 1024 * 1024,
+        encoded_bytes: 2 * 1024 * 1024,
+    };
+    let request = crabber::PublicSessionRequestV2 {
+        session_id: target.clone(),
+        limits,
+        continuation: None,
+    };
+    let crabber::PublicSessionOutcomeV2::Page(page) = store
+        .public_session_newest_snapshot_v2(request.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("complete imported replacement")
+    };
+    assert_eq!(page.history.messages, expected_messages);
+    assert_eq!(page.history.imported_calls, expected_calls);
+    assert_eq!(page.history.imported_provenance, expected_provenance);
+    assert!(!page.history.omitted_older_messages);
+    assert!(page.history.continuation.is_none());
+    let mut bounded = request;
+    let first = expected_messages
+        .iter()
+        .position(|message| message.id == expected_calls[0].result_message_id)
+        .unwrap();
+    bounded.limits.history.messages = expected_messages.len() - first;
+    let crabber::PublicSessionOutcomeV2::Page(page) = store
+        .public_session_newest_snapshot_v2(bounded)
+        .await
+        .unwrap()
+    else {
+        panic!("bounded imported replacement")
+    };
+    assert_eq!(page.history.messages, expected_messages[first..]);
+    assert_eq!(page.history.imported_calls, expected_calls);
+    assert_eq!(
+        page.history.imported_provenance,
+        expected_provenance[first..]
+    );
+    assert_eq!(page.history.omitted_older_messages, first > 0);
 }
