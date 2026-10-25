@@ -42,6 +42,7 @@ pub(crate) struct Options {
     pub(crate) list: bool,
     pub(crate) offline: bool,
     pub(crate) timings: Option<PathBuf>,
+    pub(crate) part: Option<crate::parts::Part>,
 }
 
 impl Options {
@@ -60,12 +61,24 @@ impl Options {
                     }
                     options.offline = true;
                 }
+                "--part" if options.part.is_none() => {
+                    if args.next().map(String::as_str) != Some("quality-contracts") {
+                        return Err("--part accepts quality-contracts".into());
+                    }
+                    options.part = Some(crate::parts::Part::QualityContracts);
+                }
                 "--timings" if options.timings.is_none() => {
                     options.timings =
                         Some(PathBuf::from(args.next().ok_or("--timings needs a path")?));
                 }
                 _ => return Err(format!("unexpected check argument: {argument}")),
             }
+        }
+        if options.part.is_some() && options.offline {
+            return Err("--part cannot be combined with --lane".into());
+        }
+        if options.part.is_some() && !cfg!(feature = "postgres-check") {
+            return Err("--part requires cargo xtask check".into());
         }
         Ok(options)
     }
@@ -142,6 +155,10 @@ pub(crate) struct Checks {
     gates: Vec<GateCommand>,
     offline: bool,
     required_environment: Vec<(String, String)>,
+    owner: Option<crate::parts::Owner>,
+    partitioned: bool,
+    part: Option<crate::parts::Part>,
+    scope: Option<Value>,
 }
 
 impl Checks {
@@ -158,6 +175,49 @@ impl Checks {
             required_environment: environment,
             ..Self::default()
         }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn partitioned(
+        environment: Vec<(String, String)>,
+        part: Option<crate::parts::Part>,
+    ) -> Self {
+        Self {
+            partitioned: true,
+            part,
+            ..Self::required(environment)
+        }
+    }
+
+    pub(crate) fn owned<T>(
+        &mut self,
+        owner: crate::parts::Owner,
+        schedule: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.owner.replace(owner);
+        let result = schedule(self);
+        self.owner = previous;
+        result
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn select_part(mut self) -> Self {
+        let ownership = crate::parts::ownership(self.gates.iter().map(|gate| &gate.inventory));
+        if let Some(part) = self.part {
+            self.scope = Some(json!({
+                "coverage_scope": part.name(), "qualified": false,
+                "full_native_suite_executed": false, "owned_postgres_run": false,
+                "ownership": ownership,
+            }));
+            self.gates
+                .retain(|gate| gate.inventory["owner"] == part.name());
+            let mut previous = None;
+            for gate in &mut self.gates {
+                gate.inventory["prerequisites"] = json!(previous.into_iter().collect::<Vec<_>>());
+                previous = Some(gate.inventory["id"].clone());
+            }
+        }
+        self
     }
 
     pub(crate) fn cargo(&mut self, directory: &Path, args: &[&str]) {
@@ -217,6 +277,35 @@ impl Checks {
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD");
+        }
+        if self.part.is_some() {
+            for name in [
+                "CRABBER_TEST_POSTGRES_ADMIN_URL",
+                "CRABBER_TEST_RUN_POSTGRES_ADMIN_URL",
+                "CRABBER_TEST_POSTGRES_RUN",
+                "CRABBER_TEST_POSTGRES_TEMPLATE_URL",
+                "CRABBER_TEST_POSTGRES_METRICS_FILE",
+                "CRABBER_TEST_POSTGRES_URL",
+                "CRABBER_POSTGRES_URL",
+                "CRABBER_TEST_POSTGRES_CHILD_DATABASE",
+                "CRABBER_TEST_POSTGRES_CHILD_ROLE",
+                "CRABBER_TEST_HISTORY_CHILD",
+                "CRABBER_TEST_POSTGRES_TRANSPORT",
+                "PGAPPNAME",
+                "PGDATABASE",
+                "PGHOST",
+                "PGPORT",
+                "PGUSER",
+                "PGPASSWORD",
+                "PGSERVICE",
+                "PGSERVICEFILE",
+                "PGPASSFILE",
+                "DATABASE_URL",
+            ] {
+                command.env_remove(name);
+            }
+            crate::standard_tools::require_subprocess_tools(command);
+            command.env("CRABBER_REQUIRE_POSTGRES", "1");
         }
         if self.offline {
             for name in [
@@ -363,6 +452,13 @@ impl Checks {
     }
 
     fn push(&mut self, directory: &Path, mut inventory: Value, action: Action) {
+        if self.partitioned {
+            inventory["owner"] = json!(
+                self.owner
+                    .expect("required gate needs a source owner")
+                    .name()
+            );
+        }
         let prerequisite = self.gates.last().map(|gate| gate.inventory["id"].clone());
         inventory["working_directory"] = json!(
             directory
@@ -387,20 +483,17 @@ impl Checks {
 
     pub(crate) fn execute(self, options: &Options) -> i32 {
         if options.list {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &self
-                        .gates
-                        .iter()
-                        .map(|gate| &gate.inventory)
-                        .collect::<Vec<_>>()
-                )
-                .unwrap()
-            );
+            let gates: Vec<_> = self.gates.iter().map(|gate| &gate.inventory).collect();
+            let inventory = if let Some(mut scope) = self.scope {
+                scope["gates"] = json!(gates);
+                scope
+            } else {
+                json!(gates)
+            };
+            println!("{}", serde_json::to_string_pretty(&inventory).unwrap());
             return 0;
         }
-        Report::run(self.gates, options.timings.as_deref())
+        Report::run(self.gates, options.timings.as_deref(), self.scope)
     }
 }
 
@@ -420,6 +513,11 @@ mod tests {
             vec!["--list", "--list"],
             vec!["--lane"],
             vec!["--lane", "postgres"],
+            vec!["--part"],
+            vec!["--part", "typo"],
+            vec!["--part", "quality-contracts", "--part", "quality-contracts"],
+            vec!["--part", "quality-contracts", "--lane", "offline"],
+            vec!["--lane", "offline", "--part", "quality-contracts"],
         ] {
             assert!(
                 Options::parse(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
@@ -468,6 +566,36 @@ mod tests {
             .env("RUST_LOG","info");
         checks.command(Path::new("."), command, "offline service isolation");
         assert_eq!(checks.execute(&Options::default()), 0);
+        let mut contracts = Checks {
+            part: Some(crate::parts::Part::QualityContracts),
+            ..Checks::default()
+        };
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                concat!(
+                    "test -z \"${CRABBER_TEST_POSTGRES_RUN+x}\" && ",
+                    "test -z \"${CRABBER_TEST_RUN_POSTGRES_ADMIN_URL+x}\" && ",
+                    "test -z \"${CRABBER_TEST_POSTGRES_TEMPLATE_URL+x}\" && ",
+                    "test -z \"${CRABBER_TEST_POSTGRES_METRICS_FILE+x}\" && ",
+                    "test -z \"${PGAPPNAME+x}\" && ",
+                    "test \"$BACKGROUND_JOBS_REQUIRE_SHELL\" = 1 && ",
+                    "test \"$PYTHON_REPL_REQUIRE_PYTHON\" = 1 && ",
+                    "test \"$CRABBER_REQUIRE_POSTGRES\" = 1"
+                ),
+            ])
+            .env("CRABBER_TEST_POSTGRES_RUN", "foreign-run")
+            .env("CRABBER_TEST_RUN_POSTGRES_ADMIN_URL", "foreign-admin")
+            .env("CRABBER_TEST_POSTGRES_TEMPLATE_URL", "foreign-template")
+            .env("CRABBER_TEST_POSTGRES_METRICS_FILE", "foreign-ledger")
+            .env("PGAPPNAME", "foreign-application");
+        contracts.command(
+            Path::new("."),
+            command,
+            "contracts rejects inherited fixture context",
+        );
+        assert_eq!(contracts.execute(&Options::default()), 0);
     }
 
     #[test]
@@ -514,6 +642,50 @@ mod tests {
         ));
         assert!(!directory.exists());
         let checks = crate::complete::schedule(Vec::new(), &directory, None);
+        let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
+        assert_eq!(checks.gates.len(), 72);
+        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 41);
+        assert_eq!(ownership["quality-artifacts"].as_array().unwrap().len(), 23);
+        assert_eq!(ownership["native"].as_array().unwrap().len(), 8);
+        let expected: Vec<_> = checks
+            .gates
+            .iter()
+            .filter(|gate| gate.inventory["owner"] == "quality-contracts")
+            .map(|gate| gate.inventory["id"].clone())
+            .collect();
+        let mut partial = crate::complete::schedule(Vec::new(), &directory, None);
+        partial.part = Some(crate::parts::Part::QualityContracts);
+        let partial = partial.select_part();
+        assert_eq!(
+            partial
+                .gates
+                .iter()
+                .map(|gate| gate.inventory["id"].clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(partial.scope.as_ref().unwrap()["qualified"], false);
+        let mut previous = None;
+        for gate in &partial.gates {
+            assert_eq!(
+                gate.inventory["prerequisites"],
+                json!(previous.into_iter().collect::<Vec<_>>())
+            );
+            previous = Some(gate.inventory["id"].clone());
+        }
+        for invalid in [
+            json!({"id": "lost"}),
+            json!({"id": "lost", "owner": "typo"}),
+            json!({"id": "contracts", "owner": "native"}),
+        ] {
+            let records = [
+                json!({"id": "contracts", "owner": "quality-contracts"}),
+                json!({"id": "artifacts", "owner": "quality-artifacts"}),
+                json!({"id": "native", "owner": "native"}),
+                invalid,
+            ];
+            assert!(std::panic::catch_unwind(|| crate::parts::ownership(&records)).is_err());
+        }
         let position = |prefix: &[&str]| {
             let prefix: Vec<Value> = prefix.iter().map(|arg| json!(arg)).collect();
             checks
