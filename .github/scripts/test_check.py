@@ -1,5 +1,7 @@
 """Focused ownership and failure tests for the outer check deadline."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -76,6 +78,65 @@ class DeadlineTests(unittest.TestCase):
                     'CARGO_PROFILE_DEV_DEBUG': '0', 'CARGO_PROFILE_TEST_DEBUG': '0'}
         self.assertEqual(qualify.profile_differences(previous,
                          {'CARGO_BUILD_JOBS': '8', 'CARGO_INCREMENTAL': '1'}), [])
+
+    def test_main_requires_stable_source_for_success(self):
+        cases = [('strict', 600, None, 0), ('bootstrap', 4800, None, 0),
+                 ('dirty', 4800, 'dirty', 0), ('revision', 4800, 'revision', 0),
+                 ('initially-dirty', 4800, 'initially-dirty', 0),
+                 ('failed-child', 4800, 'dirty', 7)]
+        for name, budget, change, child_code in cases:
+            with self.subTest(name=name):
+                repo = self.root / name
+                repo.mkdir()
+
+                def git(*args):
+                    return subprocess.check_output(['git', *args], cwd=repo,
+                                                   text=True, stderr=subprocess.DEVNULL).strip()
+
+                git('init', '--quiet')
+                tracked = repo / 'tracked'
+                tracked.write_text('original\n')
+                git('add', 'tracked')
+                commit = ['-c', 'user.name=Policy test', '-c', 'user.email=policy@example.invalid',
+                          '-c', 'commit.gpgsign=false', 'commit', '--quiet']
+                git(*commit, '-m', 'initial')
+                if change == 'initially-dirty':
+                    tracked.write_text('changed\n')
+                report = self.root / (name + '.json')
+
+                def completed_child(command, cwd, path, **kwargs):
+                    self.assertEqual(cwd, repo)
+                    self.assertEqual(kwargs['budget'], budget)
+                    value = {'status': 'passed' if child_code == 0 else 'failed',
+                             'reason': None if child_code == 0 else 'child-failed',
+                             'source_revision': git('rev-parse', 'HEAD'),
+                             'source_clean': not git('status', '--porcelain')}
+                    if change == 'dirty':
+                        tracked.write_text('changed\n')
+                    elif change == 'initially-dirty':
+                        tracked.write_text('original\n')
+                    elif change == 'revision':
+                        git(*commit, '--allow-empty', '-m', 'changed head')
+                    path.write_text(json.dumps(value))
+                    Path(command[-1]).write_text(json.dumps({'coverage_scope': 'complete',
+                                                            'status': 'passed'}))
+                    return child_code
+
+                argv = ['check.py', '--report', str(report), '--cache-state', 'unchanged']
+                if budget != 600:
+                    argv += ['--budget-seconds', str(budget)]
+                with mock.patch.object(check, '__file__', str(repo / '.github/scripts/check.py')), \
+                        mock.patch.object(check, 'supervise', side_effect=completed_child), \
+                        mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+                    code = check.main()
+                value = json.loads(report.read_text())
+                expected = child_code or (1 if change else 0)
+                self.assertEqual(code, expected)
+                self.assertEqual(value['status'], 'failed' if expected else 'passed')
+                self.assertEqual(value['timing_target_met'], expected == 0)
+                self.assertEqual(value['qualified'], expected == 0 and budget == 600)
+                if change:
+                    self.assertEqual(value['reason'], 'child-failed' if child_code else 'source-changed-or-dirty')
 
     def test_deadline_before_xtask_reaps_escaped_compiler_helper(self):
         marker = self.root / 'compiler-helper.pid'

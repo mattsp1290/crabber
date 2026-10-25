@@ -32,9 +32,9 @@ jobs:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Qualification runs three separately enforced 600s cases; provisioning and
-    # post-result cache maintenance also need room within the job lifetime.
-    timeout-minutes: 35
+    # Bootstrap correctness runs report the 600s target separately.
+    # Qualification still enforces 600s for each of its three cases.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -143,7 +143,7 @@ jobs:
         env:
           CHECK_STARTED: ${{ steps.budget.outputs.start }}
           CACHE_STATE: ${{ steps.conditions.outputs.state }}
-        run: python3 -I -S .github/scripts/check.py --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check.json"
+        run: python3 -I -S .github/scripts/check.py --budget-seconds 4800 --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check.json"
       - name: Qualify no-op and affected workspace rebuilds
         if: ${{ (github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha }}
         env:
