@@ -133,7 +133,7 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     });
     crate::check_workspace(workspace, gates);
     gates.prepares_for(Part::QualityArtifacts, |gates| {
-        tool_versions(gates, directory)
+        tool_versions(gates, directory);
     });
     let mut supervisor_tests = Command::new("python3");
     supervisor_tests

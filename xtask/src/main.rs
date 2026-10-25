@@ -147,7 +147,7 @@ fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
     gates.command(workspace, wit, "WIT contract validation");
     gates.internal("minimal-embed-glue", workspace, check_glue);
     gates.prepares_for(parts::Part::QualityArtifacts, |gates| {
-        nextest::version_gate(workspace, gates)
+        nextest::version_gate(workspace, gates);
     });
 }
 

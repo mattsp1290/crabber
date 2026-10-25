@@ -544,11 +544,11 @@ impl Checks {
         if self.partitioned {
             match self.role {
                 crate::parts::GateRole::Required(owner, _) => {
-                    inventory["owner"] = json!(owner.name())
+                    inventory["owner"] = json!(owner.name());
                 }
                 #[cfg(feature = "postgres-check")]
                 crate::parts::GateRole::Preparation(part) => {
-                    inventory["preparation_for"] = json!(part.name())
+                    inventory["preparation_for"] = json!(part.name());
                 }
                 crate::parts::GateRole::Unpartitioned => {
                     panic!("required gate needs a source owner")

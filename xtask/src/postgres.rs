@@ -575,16 +575,14 @@ async fn execute_schedule_mode(
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD")
-                .env_remove(METRICS_FILE);
+                .env_remove(METRICS_FILE)
+                .envs(metrics_path.map(|path| (METRICS_FILE, path)));
             if options.complete.as_ref().and_then(|complete| complete.part)
                 == Some(crate::parts::Part::QualityArtifacts)
             {
                 crate::standard_tools::require_subprocess_tools(&mut command);
             }
             crate::checks::remove_live_configuration(&mut command);
-            if let Some(path) = metrics_path {
-                command.env(METRICS_FILE, path);
-            }
             if let Some(database) = &database {
                 command
                     .env("CRABBER_TEST_POSTGRES_URL", database.url())

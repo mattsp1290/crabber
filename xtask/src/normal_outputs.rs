@@ -15,7 +15,7 @@ use std::{
 
 pub(crate) fn schedule(gates: &mut Checks, directory: &Path, features: &str) {
     gates.preparation(Part::QualityArtifacts, |gates| {
-        examples(gates, directory, features)
+        examples(gates, directory, features);
     });
     gates.owned(Owner::QualityArtifacts, |gates| {
         let mut command = Command::new("cargo");
@@ -169,7 +169,7 @@ fn observed(directory: &Path, path: &Path, kind: &str) -> BTreeMap<String, Value
 fn hash(path: &Path) -> String {
     let mut input = fs::File::open(path).unwrap();
     let mut digest = sha2::Sha256::new();
-    let mut buffer = [0; 65_536];
+    let mut buffer = vec![0; 65_536];
     loop {
         let count = input.read(&mut buffer).unwrap();
         if count == 0 {
