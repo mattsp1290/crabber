@@ -124,10 +124,16 @@ async fn chat_error_normal_http_stream_preserves_text_usage_tools_and_done() {
     ));
     assert!(matches!(
         items.get(5),
+        Some(StreamDelta::FinishReason(
+            crabber_core::ModelFinishReason::ToolCalls
+        ))
+    ));
+    assert!(matches!(
+        items.get(6),
         Some(StreamDelta::Usage(usage)) if usage.input_tokens == 2 && usage.output_tokens == 3
     ));
-    assert!(matches!(items.get(6), Some(StreamDelta::Completed)));
-    assert_eq!(items.len(), 7, "unexpected normal Chat output: {items:?}");
+    assert!(matches!(items.get(7), Some(StreamDelta::Completed)));
+    assert_eq!(items.len(), 8, "unexpected normal Chat output: {items:?}");
 }
 
 #[tokio::test]

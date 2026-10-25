@@ -337,6 +337,7 @@ impl Orchestrator {
             };
             let mut next_text = String::new();
             let mut completed = false;
+            let mut finish_reason = None;
             loop {
                 let delta = tokio::select! {
                     () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
@@ -354,6 +355,12 @@ impl Orchestrator {
                         span.record("tokens.input", usage.input_tokens);
                         span.record("tokens.output", usage.output_tokens);
                     }
+                    StreamDelta::FinishReason(reason) => {
+                        finish_reason = Some(match finish_reason {
+                            Some(previous) if previous != reason => crabber_core::ModelFinishReason::Other,
+                            _ => reason,
+                        });
+                    }
                     StreamDelta::Completed => {
                         completed = true;
                         break;
@@ -369,10 +376,26 @@ impl Orchestrator {
                 observe_summary("error");
                 return Err(RuntimeError::Interrupted);
             }
-            observe_summary(if completed { "ok" } else { "error" });
-            if !completed || next_text.is_empty() {
+            if !completed {
+                observe_summary("error");
                 return Err(invalid_provider("compaction summary was empty").into());
             }
+            match finish_reason {
+                Some(crabber_core::ModelFinishReason::Length) => {
+                    observe_summary("error");
+                    return Err(RuntimeError::OutputLimit { tool_call_count: 0 });
+                }
+                Some(reason @ (crabber_core::ModelFinishReason::ContentFilter | crabber_core::ModelFinishReason::Other)) => {
+                    observe_summary("error");
+                    return Err(RuntimeError::ModelResponseRejected(reason));
+                }
+                _ => {}
+            }
+            if next_text.is_empty() {
+                observe_summary("error");
+                return Err(invalid_provider("compaction summary was empty").into());
+            }
+            observe_summary("ok");
             measurement.observation.reason = TerminalReason::Success;
             drop(measurement);
             Ok::<_, RuntimeError>(next_text)

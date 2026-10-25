@@ -486,7 +486,10 @@ fn non_utf8_identity_paths_fail_fallible_validation() {
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join(OsString::from_vec(b"root-\xff".to_vec()));
-    std::fs::create_dir(&root).unwrap();
+    // APFS rejects non-UTF-8 fixture names before product validation.
+    if let Err(error) = std::fs::create_dir(&root) {
+        assert_eq!(error.raw_os_error(), Some(libc::EILSEQ), "{error}");
+    }
     assert!(matches!(
         WorkspaceRoot::open(&root),
         Err(crabber::ExtensionError::Plan(_))
@@ -494,8 +497,12 @@ fn non_utf8_identity_paths_fail_fallible_validation() {
     let executable = temp
         .path()
         .join(OsString::from_vec(b"binary-\xff".to_vec()));
-    std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    match std::fs::write(&executable, "#!/bin/sh\nexit 0\n") {
+        Ok(()) => {
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        Err(error) => assert_eq!(error.raw_os_error(), Some(libc::EILSEQ), "{error}"),
+    }
     assert!(matches!(
         validate_binary(&executable),
         Err(crabber::ExtensionError::Plan(_))
