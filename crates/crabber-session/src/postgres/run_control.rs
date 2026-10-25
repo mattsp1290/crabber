@@ -1,5 +1,7 @@
 //! Native exact-target acceptance and fenced worker boundaries.
+mod pristine;
 use crate::public_session::v2::proof::{Proof, ReadError};
+pub(super) use pristine::accepted_event_count;
 pub(super) mod public;
 mod reads;
 pub(super) mod suspension;

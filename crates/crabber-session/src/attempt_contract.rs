@@ -1,6 +1,6 @@
 //! Experimental adapter conformance for attempt transitions and dispatch authority.
 #[path = "attempt_contract/bound.rs"]
-mod bound;
+pub(crate) mod bound;
 #[path = "attempt_contract/cleanup.rs"]
 mod cleanup;
 #[path = "attempt_contract/conclusion.rs"]

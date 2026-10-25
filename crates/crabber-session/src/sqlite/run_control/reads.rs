@@ -126,9 +126,26 @@ pub(super) async fn records(
     tx: &mut Transaction<'_, Sqlite>,
     target: &RunControlTarget,
 ) -> Result<Vec<Record>, Error> {
+    let summaries = summaries(tx, target).await?;
+    records_from_summaries(
+        tx,
+        target,
+        summaries,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+pub(super) async fn records_from_summaries(
+    tx: &mut Transaction<'_, Sqlite>,
+    target: &RunControlTarget,
+    summaries: Vec<RunControlSummary>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Vec<Record>, Error> {
     let mut result = Vec::new();
     let mut bytes = 0;
-    for summary in summaries(tx, target).await? {
+    for summary in summaries {
+        super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(request_json AS BLOB)) AS BIGINT) FROM run_controls WHERE session_id=$1 AND operation_id=$2")
+            .bind(&target.session_id.0).bind(&summary.receipt.operation_id.0), proof).await.map_err(unknown)?;
         let data: Option<String> = sqlx::query_scalar("SELECT CASE WHEN length(CAST(request_json AS BLOB))<=65536 THEN request_json END FROM run_controls WHERE session_id=$1 AND operation_id=$2")
             .bind(&target.session_id.0).bind(&summary.receipt.operation_id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
         bytes += data.as_ref().ok_or(Error::UnknownStoreOutcome)?.len();

@@ -18,7 +18,7 @@ pub(super) fn guard_with_proof(
         .values()
         .filter(|record| record.snapshot.run_id == run.id);
     let Some(record) = records.next() else {
-        super::super::attempt::pristine_for_driver(state, run, binding)
+        super::super::attempt::pristine_for_driver(state, run, binding, proof)
             .map_err(|_| Error::Unsupported)?;
         return Ok(initial);
     };

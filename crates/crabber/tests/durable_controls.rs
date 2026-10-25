@@ -50,3 +50,44 @@ async fn postgres_durable_controls() {
     .await
     .unwrap();
 }
+
+#[path = "run_controls/unstarted.rs"]
+mod unstarted;
+#[tokio::test(flavor = "current_thread")]
+async fn memory_cancel_before_first_attempt() {
+    unstarted::cancel_before_first_attempt(Arc::new(crabber::session::MemoryStore::new())).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_cancel_before_first_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unstarted.db");
+    crabber::session::SqliteStore::migrate(&path).await.unwrap();
+    unstarted::cancel_before_first_attempt(Arc::new(
+        crabber::session::SqliteStore::connect(path).await.unwrap(),
+    ))
+    .await;
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_cancel_before_first_attempt() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    TestDatabase::run_with_runtime(
+        DatabaseMode::Current,
+        tokio::runtime::Builder::new_current_thread(),
+        async move |url| {
+            crabber::session::PostgresStore::migrate(&url)
+                .await
+                .unwrap();
+            unstarted::cancel_before_first_attempt(Arc::new(
+                crabber::session::PostgresStore::connect(&url)
+                    .await
+                    .unwrap(),
+            ))
+            .await;
+        },
+    )
+    .unwrap();
+}

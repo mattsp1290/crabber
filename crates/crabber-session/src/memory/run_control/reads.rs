@@ -169,9 +169,22 @@ pub(super) fn summaries(
     Ok(summaries)
 }
 pub(super) fn records(state: &State, target: &RunControlTarget) -> Result<Vec<Record>, Error> {
+    records_from_summaries(
+        state,
+        target,
+        summaries(state, target)?,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(super) fn records_from_summaries(
+    state: &State,
+    target: &RunControlTarget,
+    summaries: Vec<RunControlSummary>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Vec<Record>, Error> {
     let mut records = Vec::new();
     let mut bytes = 0;
-    for summary in summaries(state, target)? {
+    for summary in summaries {
         let record = state
             .run_controls
             .get(&(target.session_id.clone(), summary.receipt.operation_id))
@@ -181,8 +194,62 @@ pub(super) fn records(state: &State, target: &RunControlTarget) -> Result<Vec<Re
         if bytes > MAX_RUN_CONTROL_BYTES {
             return Err(Error::UnknownStoreOutcome);
         }
+        charge_record(state, record, proof)?;
         validate(state, record)?;
         records.push(record.clone());
     }
     Ok(records)
+}
+
+fn charge_record(
+    state: &State,
+    record: &Record,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let charge = |_: crate::public_session::v2::proof::Failure| Error::UnknownStoreOutcome;
+    proof.measure(&record.request).map_err(charge)?;
+    proof.measure(&record.summary).map_err(charge)?;
+    let saved = &record.summary.receipt;
+    let Some(OperationReceipt::RunControl(receipt)) = state
+        .operation_receipts
+        .get(&(saved.target.session_id.clone(), saved.operation_id.clone()))
+    else {
+        return Err(Error::UnknownStoreOutcome);
+    };
+    proof.measure(receipt).map_err(charge)?;
+    proof
+        .measure(
+            state
+                .events
+                .get(receipt.event_cursor)
+                .ok_or(Error::UnknownStoreOutcome)?,
+        )
+        .map_err(charge)?;
+    let latest = state
+        .run_control_audits
+        .range(
+            (
+                saved.target.session_id.clone(),
+                saved.operation_id.clone(),
+                0,
+            )
+                ..=(
+                    saved.target.session_id.clone(),
+                    saved.operation_id.clone(),
+                    u64::MAX,
+                ),
+        )
+        .next_back()
+        .map(|(_, summary)| summary)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    proof.measure(latest).map_err(charge)?;
+    proof
+        .measure(
+            state
+                .events
+                .get(latest.event_cursor)
+                .ok_or(Error::UnknownStoreOutcome)?,
+        )
+        .map_err(charge)?;
+    Ok(())
 }

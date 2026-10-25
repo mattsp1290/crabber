@@ -1,3 +1,6 @@
+#[path = "run_control/pristine.rs"]
+mod pristine;
+pub(super) use pristine::accepted_event_count;
 #[path = "run_control/reads.rs"]
 mod reads;
 use reads::{receipt, records, revision, summaries};

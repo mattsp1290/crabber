@@ -151,7 +151,7 @@ fn fresh_inner(
         super::super::execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
             .map_err(|_| Error::UnknownStoreOutcome)?
             .ok_or(Error::Unsupported)?;
-    super::super::attempt::pristine_for_driver(state, run, &binding)
+    super::super::attempt::pristine_for_driver(state, run, &binding, proof)
         .map_err(|_| Error::InvalidTransition)?;
     let (session, initial, witness, sources) = sources(state, &run.id, proof)?;
     witness.verify_sources(session, initial, &sources)?;

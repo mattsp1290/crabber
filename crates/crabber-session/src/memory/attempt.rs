@@ -597,8 +597,9 @@ pub(super) fn pristine_for_driver(
     state: &super::State,
     run: &crabber_core::Run,
     binding: &crate::RetainedExecutionBinding,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::AttemptError> {
-    pristine::check_with_binding(state, run, binding)
+    pristine::check_with_binding(state, run, binding, proof)
 }
 
 native_pending_initial_items! {
