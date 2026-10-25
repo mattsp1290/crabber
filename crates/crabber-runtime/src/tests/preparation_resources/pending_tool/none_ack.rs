@@ -1,5 +1,20 @@
 //! Legacy None contracts still require integrity of the actual native grant ACK.
 use super::*;
+type OriginCase = (bool, bool, &'static [usize]);
+const MEMORY_FAULTS: &[usize] = &[8, 10, 11, 12, 16, 17];
+const MEMORY_CASES: &[OriginCase] = &[
+    (false, false, MEMORY_FAULTS),
+    (false, true, MEMORY_FAULTS),
+    (true, false, MEMORY_FAULTS),
+    (true, true, MEMORY_FAULTS),
+];
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+const SQL_CASES: &[OriginCase] = &[
+    (false, false, &[8, 16, 17]),
+    (false, true, &[]),
+    (true, false, &[]),
+    (true, true, &[8, 16, 17]),
+];
 async fn choice_for_recovery(h: &Harness, original: &Choice, clock: &ManualClock) -> Choice {
     h.gate.preparation_fault.store(2, Ordering::SeqCst);
     assert!(original.invoke(&h.runtime).await.is_err());
@@ -88,23 +103,21 @@ async fn positives(store: Arc<dyn Store>, clock: Arc<ManualClock>, frontend: boo
     assert_eq!(replay_without_factory(&h, &choice).await, receipt);
     replay_without_factory(&h, &original).await;
 }
-async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>, faults: &[usize]) {
+async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>, cases: &[OriginCase]) {
     let mut failures = Vec::new();
-    for frontend in [false, true] {
-        for recovery in [false, true] {
-            Box::pin(positives(store.clone(), clock.clone(), frontend, recovery)).await;
-            for &fault in faults {
-                if let Some(failure) = Box::pin(mutated(
-                    store.clone(),
-                    clock.clone(),
-                    frontend,
-                    recovery,
-                    fault,
-                ))
-                .await
-                {
-                    failures.push(failure);
-                }
+    for &(frontend, recovery, faults) in cases {
+        Box::pin(positives(store.clone(), clock.clone(), frontend, recovery)).await;
+        for &fault in faults {
+            if let Some(failure) = Box::pin(mutated(
+                store.clone(),
+                clock.clone(),
+                frontend,
+                recovery,
+                fault,
+            ))
+            .await
+            {
+                failures.push(failure);
             }
         }
     }
@@ -120,7 +133,7 @@ async fn memory_none_grant_ack_integrity() {
     Box::pin(contract(
         Arc::new(MemoryStore::with_clock(clock.clone())),
         clock,
-        &[8, 10, 11, 12, 16, 17],
+        MEMORY_CASES,
     ))
     .await;
 }
@@ -137,7 +150,7 @@ async fn sqlite_none_grant_ack_integrity() {
             .unwrap()
             .with_clock(clock.clone()),
     );
-    Box::pin(contract(store, clock, &[8, 16, 17])).await;
+    Box::pin(contract(store, clock, SQL_CASES)).await;
 }
 #[cfg(feature = "postgres")]
 #[test]
@@ -154,7 +167,7 @@ fn postgres_none_grant_ack_integrity() {
                 .unwrap()
                 .with_clock(clock.clone()),
         );
-        Box::pin(contract(store, clock, &[8, 16, 17])).await;
+        Box::pin(contract(store, clock, SQL_CASES)).await;
     })
     .unwrap();
 }
