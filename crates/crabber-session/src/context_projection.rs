@@ -9,24 +9,24 @@ pub(crate) fn project(
     let selected = if let Some(epoch) = selected.filter(|epoch| epoch.summary_message_id.is_some())
     {
         let summary_id = epoch.summary_message_id.as_ref().expect("checked");
-        let summary = all
+        let summary_index = all
             .iter()
-            .find(|message| &message.id == summary_id)
-            .ok_or(StoreError::NotFound)?
-            .clone();
-        let mut selected = vec![summary];
-        if let Some(tail) = epoch.tail_start_message_id {
-            let index = all
-                .iter()
+            .position(|message| &message.id == summary_id)
+            .ok_or(StoreError::NotFound)?;
+        let tail_index = if let Some(tail) = epoch.tail_start_message_id {
+            all.iter()
                 .position(|message| message.id == tail)
-                .ok_or(StoreError::NotFound)?;
-            selected.extend(
-                all[index..]
-                    .iter()
-                    .filter(|message| &message.id != summary_id)
-                    .cloned(),
-            );
-        }
+                .ok_or(StoreError::NotFound)?
+        } else {
+            summary_index + 1
+        };
+        let mut selected = vec![all[summary_index].clone()];
+        selected.extend(
+            all[tail_index..]
+                .iter()
+                .filter(|message| &message.id != summary_id)
+                .cloned(),
+        );
         selected
     } else {
         all

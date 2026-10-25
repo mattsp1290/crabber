@@ -200,6 +200,7 @@ impl Orchestrator {
         let mut reasoning = reasoning::ReasoningBuffer::default();
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
+        let mut finish_reason = None;
         let observe_model = |status: &str, usage: &Usage| {
             let mut event = self.event(
                 session_id,
@@ -331,6 +332,14 @@ impl Orchestrator {
                         usage.input_tokens += delta.input_tokens;
                         usage.output_tokens += delta.output_tokens;
                     }
+                    StreamDelta::FinishReason(reason) => {
+                        finish_reason = Some(match finish_reason {
+                            Some(previous) if previous != reason => {
+                                crabber_core::ModelFinishReason::Other
+                            }
+                            _ => reason,
+                        });
+                    }
                     StreamDelta::Completed => {
                         completed = true;
                         break;
@@ -342,6 +351,34 @@ impl Orchestrator {
             }
             if !completed {
                 return Err(invalid_provider("model stream ended without completion").into());
+            }
+            let mut event = self.turn_event(
+                session_id,
+                run_id,
+                &snapshot.identity.turn_id,
+                EventKind::ModelResponseCompleted,
+            );
+            event.payload = serde_json::to_value(event_payload::ModelResponseCompleted {
+                finish_reason,
+                usage: usage.clone(),
+                has_visible_text: !text.trim().is_empty(),
+                tool_call_count: calls.len(),
+                stream_completed: true,
+            })
+            .expect("event payload serializes");
+            ensure_lease(lease_lost)?;
+            self.publish_event(execution, plan, event).await?;
+            match finish_reason {
+                Some(crabber_core::ModelFinishReason::Length) => {
+                    return Err(RuntimeError::OutputLimit {
+                        tool_call_count: calls.len(),
+                    });
+                }
+                Some(
+                    reason @ (crabber_core::ModelFinishReason::ContentFilter
+                    | crabber_core::ModelFinishReason::Other),
+                ) => return Err(RuntimeError::ModelResponseRejected(reason)),
+                _ => {}
             }
             if text.is_empty() && reasoning.is_empty() && calls.is_empty() {
                 return Err(invalid_provider("empty model response").into());
@@ -435,7 +472,7 @@ impl Orchestrator {
         self.committed_message(execution, plan, snapshot, &id)
             .await?;
         plan.dispatcher
-            .notify::<ModelCompleted>(json!({"usage":usage}))
+            .notify::<ModelCompleted>(json!({"usage":usage,"finish_reason":finish_reason}))
             .await;
         Ok((calls, usage))
     }
