@@ -1232,6 +1232,8 @@ mod tests {
             .find(|g| g.inventory["id"] == "normal-output-build")
             .unwrap();
         let mut expected = full_bins.inventory["argv"].as_array().unwrap().clone();
+        let tests = expected.iter().position(|arg| arg == "--tests").unwrap();
+        expected.remove(tests);
         expected.extend([json!("--message-format"), json!("json-render-diagnostics")]);
         assert_eq!(partial.gates[bins].inventory["argv"], json!(expected));
         assert_eq!(

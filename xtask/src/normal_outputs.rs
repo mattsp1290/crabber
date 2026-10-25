@@ -18,20 +18,34 @@ pub(crate) fn schedule(gates: &mut Checks, directory: &Path, features: &str) {
         examples(gates, directory, features);
     });
     gates.owned(Owner::QualityArtifacts, |gates| {
+        let artifacts_only = gates.is_part(Part::QualityArtifacts);
         let mut command = Command::new("cargo");
-        command.current_dir(crate::workspace()).args([
-            "build", "--workspace", "--bins", "--tests", "--example",
-            "protected_workspace", "--features", features,
-        ]);
-        if gates.is_part(Part::QualityArtifacts) {
+        command
+            .current_dir(crate::workspace())
+            .args(["build", "--workspace", "--bins"]);
+        if !artifacts_only {
+            command.arg("--tests");
+        }
+        command.args(["--example", "protected_workspace", "--features", features]);
+        if artifacts_only {
             command.args(["--message-format", "json-render-diagnostics"]);
             let journal = directory.join("normal-output-artifacts.jsonl");
             let output = directory.to_owned();
-            gates.named_captured("normal-output-build", crate::workspace(), command,
-                "actual normal programs and the protected example; native harnesses compile without Nextest execution",
-                journal.clone(), move |_| finish(&output, &journal));
+            gates.named_captured(
+                "normal-output-build",
+                crate::workspace(),
+                command,
+                "actual normal programs and the protected example",
+                journal.clone(),
+                move |_| finish(&output, &journal),
+            );
         } else {
-            gates.named_command("normal-output-build", crate::workspace(), command, "Cargo exit status");
+            gates.named_command(
+                "normal-output-build",
+                crate::workspace(),
+                command,
+                "Cargo exit status",
+            );
         }
     });
 }
