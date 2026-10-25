@@ -156,11 +156,13 @@ pub(crate) fn admit_manifest(directory: &Path, manifest: &Value) {
             assert_eq!(suite[field], declared[id][field]);
         }
         for case in suite["testcases"].as_object().unwrap().values() {
-            assert_eq!(
-                case["filter-match"]["status"], "matches",
-                "unpartitioned case excluded"
-            );
-            assert!(case["ignored"].is_boolean());
+            if !ignored(case) {
+                assert_eq!(
+                    case["filter-match"],
+                    json!({"status": "matches"}),
+                    "active unpartitioned case excluded"
+                );
+            }
         }
     }
     assert!(!selected(manifest).is_empty());
@@ -199,12 +201,24 @@ fn admit_role(metadata: &Value, manifest: &Value) {
     assert_eq!(suite["kind"], "lib");
 }
 
+fn ignored(case: &Value) -> bool {
+    let ignored = case["ignored"].as_bool().expect("case ignored flag");
+    if ignored {
+        assert_eq!(
+            case["filter-match"],
+            json!({"status": "mismatch", "reason": "ignored"}),
+            "ignored case must retain runner exclusion evidence"
+        );
+    }
+    ignored
+}
+
 pub(crate) fn selected(manifest: &Value) -> Cases {
     let mut cases = BTreeMap::new();
     for (id, suite) in manifest["rust-suites"].as_object().unwrap() {
         assert_eq!(suite["binary-id"], id.as_str());
         for (name, case) in suite["testcases"].as_object().unwrap() {
-            assert!(case["ignored"].is_boolean());
+            let ignored = ignored(case);
             let status = case["filter-match"]["status"]
                 .as_str()
                 .expect("case filter status");
@@ -212,7 +226,7 @@ pub(crate) fn selected(manifest: &Value) -> Cases {
                 ["matches", "mismatch"].contains(&status),
                 "unknown case filter status"
             );
-            if status == "matches" && case["ignored"] == false {
+            if status == "matches" && !ignored {
                 assert!(cases.insert((id.clone(), name.clone()), 1).is_none());
             }
         }
@@ -249,6 +263,9 @@ pub(crate) fn admit_selection(full: &Value, selection: &Value, role: bool) {
         );
         for (name, case) in cases {
             assert_eq!(case["ignored"], original[name]["ignored"]);
+            if ignored(case) {
+                assert_eq!(case, &original[name], "ignored case evidence changed");
+            }
         }
     }
     let cases = selected(selection);
@@ -318,7 +335,7 @@ mod tests {
     fn manifest() -> Value {
         json!({"rust-suites": {"crate": {"binary-id": "crate", "testcases": {
             "active": {"ignored": false, "filter-match": {"status": "matches"}},
-            "ignored": {"ignored": true, "filter-match": {"status": "matches"}},
+            "ignored": {"ignored": true, "filter-match": {"status": "mismatch", "reason": "ignored"}},
             "excluded": {"ignored": false, "filter-match": {"status": "mismatch"}}
         }}}})
     }
@@ -381,6 +398,15 @@ mod tests {
             [("crate".into(), "active".into())]
         );
         admit_selection(&full, &full, false);
+        for filter in [
+            json!({"status": "matches"}),
+            json!({"status": "mismatch", "reason": "expression"}),
+            json!({"status": "unknown", "reason": "ignored"}),
+        ] {
+            let mut altered = full.clone();
+            altered["rust-suites"]["crate"]["testcases"]["ignored"]["filter-match"] = filter;
+            assert!(std::panic::catch_unwind(|| selected(&altered)).is_err());
+        }
         for field in ["ignored", "missing", "foreign", "binary"] {
             let mut altered = full.clone();
             let suite = &mut altered["rust-suites"]["crate"];
