@@ -84,7 +84,7 @@ python3 -I -S .github/scripts/check.py --part quality-contracts \
   --report target/test-performance/contracts-cost/check.json
 ```
 
-The larger supervision budget lets the first cost probe finish. Partial reports always have `coverage_scope=quality-contracts`, `qualified=false` and `timing_target_met=false`, including a passing run below600 seconds. They cannot replace the required full check. This mode preserves required tool flags, clears inherited PostgreSQL fixture handoffs and does not create an owned PostgreSQL run. Its passing phase report requires terminal process drain. Artifact and native partition runners and a hosted matrix are separate work.
+The larger supervision budget lets the first cost probe finish. The supervisor report always has `coverage_scope=quality-contracts`, `qualified=false` and `timing_target_met=false`, including a passing run below600 seconds. The phase report records the partial scope, `qualified=false` and terminal process drain. They cannot replace the required full check. This mode preserves required tool flags, clears inherited PostgreSQL fixture handoffs and does not create an owned PostgreSQL run. Its passing phase report requires terminal process drain. Artifact and native partition runners and a hosted matrix are separate work.
 
 ## Historical: Commands and reports
 
