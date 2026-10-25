@@ -254,6 +254,9 @@ async fn generic_joined_registry_does_not_upgrade_creation_coverage() {
     TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
         crate::PostgresStore::migrate(&url).await.unwrap();
         let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        )));
         let created = store
             .manage_session(crate::management_contract::create())
             .await
