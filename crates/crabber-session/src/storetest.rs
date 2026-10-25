@@ -596,7 +596,7 @@ async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>, now: OffsetDa
             entry.id != user.id && entry.id != old.id && entry.id != custom_message.id
         }));
     }
-    context_projection::run(&store, now).await;
+    context_projection::run(store, now).await;
 }
 
 /// Proves that workspace identity is immutable on unkeyed admission.

@@ -4,7 +4,7 @@ use super::{
 };
 
 async fn projected(
-    store: &impl Store,
+    store: &dyn Store,
     session: &SessionId,
     epoch: &EpochId,
     expected: &[MessageId],
@@ -22,7 +22,7 @@ async fn projected(
 }
 
 #[allow(clippy::too_many_lines)] // One history scenario crosses compaction and fresh admission.
-pub(super) async fn run(store: &impl Store, now: OffsetDateTime) {
+pub(super) async fn run(store: &dyn Store, now: OffsetDateTime) {
     let session = SessionId::new();
     let user = message(
         &session,
