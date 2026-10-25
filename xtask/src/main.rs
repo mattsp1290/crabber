@@ -228,7 +228,7 @@ fn check() -> checks::Checks {
             "opencode_go_chat",
         ],
     );
-    standard_tools::schedule(workspace, &mut gates);
+    standard_tools::schedule_offline(workspace, &mut gates);
     check_provider_features(workspace, &mut gates);
     check_observability(workspace, &mut gates);
     check_journeys(workspace, &mut gates);
