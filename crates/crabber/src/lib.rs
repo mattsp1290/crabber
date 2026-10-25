@@ -3,7 +3,7 @@
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
 pub use crabber_core::{ModelControls, ReasoningEffort};
-pub use crabber_runtime::QueueControl;
+pub use crabber_runtime::{QueueAdmissionLease, QueueControl};
 pub use crabber_session::{QueueHeadsPage, QueueHeadsRequest, WorkspaceRunsRequest};
 mod agent;
 mod host;

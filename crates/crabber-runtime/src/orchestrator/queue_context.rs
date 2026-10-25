@@ -49,7 +49,7 @@ impl Orchestrator {
             let (request, _) = runtime
                 .request_from_queue(fallback, &context, &control.authority.queue_id)
                 .await?;
-            runtime.prepare_queue_owned(request, control).await
+            Box::pin(runtime.prepare_queue_owned(request, control)).await
         })
         .await
     }

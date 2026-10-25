@@ -58,7 +58,7 @@ mod queue_context;
 mod run_control;
 #[path = "orchestrator/session_owner.rs"]
 mod session_owner;
-pub use queue::QueueControl;
+pub use queue::{QueueAdmissionLease, QueueControl};
 #[path = "orchestrator/phase_control.rs"]
 mod phase_control;
 mod public_session;

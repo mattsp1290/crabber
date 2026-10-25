@@ -48,6 +48,7 @@ pub(super) async fn retained(native: Arc<dyn Store>) {
             id: ControlId::new(),
             expected_revision: native.session_revision(&session).await.unwrap(),
             authority,
+            admission_lease: crabber::QueueAdmissionLease::default(),
         };
         let prepared = preparing
             .prepare_queue_in(&scope, prepare.clone())
@@ -112,6 +113,7 @@ async fn dispatch_and_replay(
                 id: admission_id,
                 expected_revision: revision,
                 authority: prepare.authority,
+                admission_lease: crabber::QueueAdmissionLease::default(),
             },
             None,
         )

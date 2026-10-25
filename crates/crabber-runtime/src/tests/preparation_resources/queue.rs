@@ -57,6 +57,7 @@ async fn prepared(h: &mut Harness) -> (QueueControl, crabber_core::MessageId) {
                 id: ControlId::new(),
                 authority: authority.clone(),
                 expected_revision: h.memory.session_revision(&session).await.unwrap(),
+                admission_lease: crate::QueueAdmissionLease::default(),
             },
         )
         .await
@@ -84,6 +85,7 @@ async fn prepared(h: &mut Harness) -> (QueueControl, crabber_core::MessageId) {
             id: ControlId::new(),
             authority,
             expected_revision: h.memory.session_revision(&session).await.unwrap(),
+            admission_lease: crate::QueueAdmissionLease::default(),
         },
         original.keyed.request.user_message.id,
     )

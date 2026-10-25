@@ -51,6 +51,7 @@ async fn foreign_queue_claim_prepare_dispatch_and_recovery_are_denied() {
         id: ControlId::new(),
         expected_revision: receipt.revision,
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     let prepared = f
         .host
@@ -73,6 +74,7 @@ async fn foreign_queue_claim_prepare_dispatch_and_recovery_are_denied() {
         id: ControlId::new(),
         expected_revision: prepared.revision,
         authority: control.authority.clone(),
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     let Admission::Started { handle, .. } = f
         .host
