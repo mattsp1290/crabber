@@ -114,7 +114,7 @@ credentials. A manually launched abandonment demo still accepts
 ## Request-to-assertion map
 
 Names below are Rust test names; `facade` means `cargo run -p xtask --features postgres-check -- check-postgres
---package crabber --test fenced_abandon`, and `session` means the same runner with
+--package crabber --test fenced_abandon_facade`, and `session` means the same runner with
 `--package crabber-session`. The facade target privately compiles the Memory fixture
 module to seed Pending and inject candidate failures; no product fault API exists.
 All acceptance clauses remain in scope.
@@ -137,7 +137,7 @@ Required final gates, all from repository root:
 ```sh
 cargo xtask check
 cargo run -p xtask --features postgres-check -- check-postgres --package crabber-session
-cargo run -p xtask --features postgres-check -- check-postgres --package crabber --test fenced_abandon
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber --test fenced_abandon_facade
 cargo run --quiet -p fenced-abandon
 cargo run -p xtask --features postgres-check -- check-postgres --package fenced-abandon
 cargo clippy -p crabber -p crabber-session -p fenced-abandon --all-targets --features postgres -- -D warnings
@@ -174,5 +174,5 @@ The earlier request map above retains its original evidence. SQLite parity adds:
   reply and original-outcome readback in another process.
 - `public_cross_join_crash_barrier_rolls_back`: physical writer kill before commit.
 
-Run `cargo test -p crabber --features sqlite --test fenced_abandon` and
+Run `cargo test -p crabber --features sqlite --test fenced_abandon_facade` and
 `cargo test -p crabber-session --features sqlite`. See [SQLite operations](sqlite-store.md).

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Avoid Cargo clean -p fenced-abandon deleting this facade test artifact.
+[[test]]
+name = "fenced_abandon_facade"
+path = "tests/fenced_abandon.rs"
+
 [dependencies]
 crabber-core = { path = "../crabber-core" }
 crabber-auth = { path = "../crabber-auth", optional = true }
