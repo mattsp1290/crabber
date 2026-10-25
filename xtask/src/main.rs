@@ -27,6 +27,19 @@ const GLUE_END: &str = "crabber:glue-end";
 const GLUE_LIMIT: usize = 60;
 
 fn main() {
+    let root = workspace().canonicalize();
+    let invocation = env::current_dir().and_then(fs::canonicalize);
+    if !matches!((root, invocation), (Ok(root), Ok(invocation)) if invocation.starts_with(&root)
+        && !invocation
+            .ancestors()
+            .take_while(|path| *path != root.as_path())
+            .any(|path| path.join(".git").exists()))
+    {
+        eprintln!(
+            "xtask belongs to a different workspace; run `cargo clean -p xtask` in this checkout and retry"
+        );
+        std::process::exit(2);
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     // A partial fixture command replaces this process before any owner,
     // signal handler or budget thread exists. The enabled binary owns cleanup.
