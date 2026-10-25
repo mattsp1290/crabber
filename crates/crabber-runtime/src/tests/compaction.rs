@@ -2,6 +2,71 @@
 use super::*;
 
 #[tokio::test]
+async fn unsafe_summary_finish_reason_never_installs_compaction_history() {
+    use crabber_core::ModelFinishReason;
+    for reason in [
+        ModelFinishReason::Length,
+        ModelFinishReason::ContentFilter,
+        ModelFinishReason::Other,
+    ] {
+        let store = Arc::new(MemoryStore::new());
+        let fake = FakeProvider::scripted(vec![
+            vec![StreamDelta::Error(ProviderError {
+                kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+                message: "full".into(),
+                retryable: false,
+            })],
+            vec![
+                StreamDelta::TextDelta("incomplete summary".into()),
+                StreamDelta::FinishReason(reason),
+                StreamDelta::Usage(Usage {
+                    input_tokens: 2,
+                    output_tokens: 40,
+                }),
+                StreamDelta::Completed,
+            ],
+            text_script("must not retry"),
+        ]);
+        let runtime = orchestrator(
+            store.clone(),
+            fake.clone(),
+            Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))),
+            Arc::new(RecordingObserver::default()),
+        );
+        let handle = runtime.start(request()).await.unwrap();
+        let session = handle.session_id().clone();
+        let error = handle.done().await.unwrap_err();
+        match reason {
+            ModelFinishReason::Length => assert!(matches!(
+                error,
+                RuntimeError::OutputLimit { tool_call_count: 0 }
+            )),
+            _ => assert!(
+                matches!(error, RuntimeError::ModelResponseRejected(actual) if actual == reason)
+            ),
+        }
+        assert_eq!(fake.requests().len(), 2);
+        assert!(
+            !store
+                .list_messages(&session, None)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|message| &message.parts)
+                .any(|part| part.kind == crabber_core::PartKind::CompactionSummary)
+        );
+        assert!(
+            !store
+                .list_events(&session, None, 100)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == EventKind::ContextEpochFinished)
+        );
+    }
+}
+
+#[tokio::test]
 async fn overflow_compacts_once_and_retries_open_turn() {
     let store = Arc::new(MemoryStore::new());
     let fake = FakeProvider::scripted(vec![

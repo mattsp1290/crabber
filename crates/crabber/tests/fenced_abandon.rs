@@ -512,6 +512,8 @@ mod attempt_conclusion {
 mod attempt_contract;
 #[path = "../../crabber-session/src/binding_fault.rs"]
 mod binding_fault;
+#[path = "../../crabber-session/src/context_projection.rs"]
+mod context_projection;
 #[path = "../../crabber-session/src/execution_binding_contract/fixture.rs"]
 #[allow(dead_code)]
 mod execution_binding_contract;
