@@ -287,7 +287,7 @@
     {
       "id": "bounded-snapshot-cli-smoke",
       "disposition": "DELETE-REDUNDANT",
-      "state": "targeted-backend-qualified",
+      "state": "implemented-unqualified",
       "failure": "CLI argument/backend selection, output, continuation serialization and cold child database wiring must work; reads must remain bounded independently of total history.",
       "owner": [
         "examples/bounded-snapshot/src/main.rs",
@@ -305,9 +305,43 @@
         "postgres_embedding_independent_pools_and_fresh_process"
       ],
       "before": "Each CLI backend repeats the canonical 1024-message, 147-page and 512KiB/32MiB allocation histories already required in facade tests.",
-      "after": "Required native facade tests keep the full fixture and allocation proof unchanged; CLI --smoke uses eight fixture messages and the same continuation, settled relation, invalidation, event-tail and actual cold-child assertions.",
-      "rationale": "Facade tests source-include the exact journey.rs and still call journey with 1024 messages plus allocation_proof for every backend. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing; smoke keeps those actual executable child entrypoints and requires a multi-page continuation. No allocation or large-history detector is removed from the required native graph.",
-      "validation": "Actual Memory, SQLite and managed PostgreSQL --smoke modes passed; both durable modes verified their actual child entrypoints and 11-message/two-page output. The three full native history/allocation owners passed at one and four slots. Full combined budget qualification remains pending."
+      "after": "CLI --smoke uses sixteen fixture messages and the same continuation, settled relation, invalidation, event-tail and actual cold-child assertions. Its nineteen total messages span three pages, so each durable child resumes two pages and advances its own continuation. Facade allocation proofs remain required on every backend; the separate durable embedding policy describes its smaller SQL journey fixture.",
+      "rationale": "Facade tests source-include the exact journey.rs. Memory retains the 1024-message journey, every facade backend retains allocation_proof, and native SQL tests retain large-history allocation checks. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing. The sixteen-message smoke fixture keeps those actual executable child entrypoints and requires child token advancement after its first resumed page.",
+      "validation": "Earlier eight-message runs passed, but source review found that no required child advanced its own continuation. They do not qualify this revised fixture. Sixteen-message backend, CLI, mutation-control and full-check verification remain pending; no performance improvement is claimed."
+    },
+    {
+      "id": "bounded-snapshot-sql-embedding-size",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-unqualified",
+      "failure": "Durable facade pagination must preserve the snapshot cutoff, settled relations, exact continuation and event-tail readback across independent stores and a fresh process.",
+      "owner": [
+        "crates/crabber/tests/bounded_snapshots.rs",
+        "examples/bounded-snapshot/src/journey.rs",
+        "crates/crabber-session/src/sqlite/snapshot_tests.rs",
+        "crates/crabber-session/src/postgres/snapshot_tests.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_embedding_pages_settled_relations_then_resumes_events",
+        "sqlite_embedding_independent_stores_and_fresh_process",
+        "postgres_embedding_independent_pools_and_fresh_process",
+        "sqlite::snapshot_tests::independent_pools_append_pages_freeze_cutoffs_and_keep_settled_relationships",
+        "postgres::snapshot_tests::independent_pools_append_pages_freeze_cutoffs_and_keep_settled_relationships",
+        "sqlite::snapshot_tests::continuation_survives_fresh_process",
+        "postgres::snapshot_tests::continuation_survives_fresh_process",
+        "sqlite::snapshot_tests::delayed_event_commit_cannot_cross_snapshot_high_water_unseen",
+        "postgres::snapshot_tests::delayed_event_commit_cannot_cross_snapshot_high_water_unseen",
+        "sqlite::snapshot_tests::large_sqlite_history_keeps_client_allocation_bounded",
+        "postgres::snapshot_tests::large_postgres_history_keeps_client_allocation_bounded"
+      ],
+      "before": "Both SQL facade journeys repeat 1024 small-row fixture appends and about 147 snapshot pages, including a cold child walking the remaining pages.",
+      "after": "Each SQL facade journey uses the existing smoke helper with sixteen fixture messages and unchanged assertions. Its nineteen total messages span three pages at the seven-message page limit; the cold child resumes two pages and advances its own continuation. Memory retains its 1024-message journey. All facade allocation proofs and native SQL snapshot contracts remain unchanged.",
+      "rationale": "The same journey_with_messages implementation still verifies exact remaining IDs, snapshot cutoff, settled tool relations, independent post-cutoff writes, event-tail readback, invalidation and missing sessions. The cold child must advance its continuation between two resumed pages. Native SQL tests separately cover independent-pool pagination, fresh-process continuation, delayed-commit high-water behavior, exact limits and 128 records of 262144 bytes for allocation bounds. The removed dimension is repeated SQL small-row appends and long page chains, while a positive child token-advancement history remains required.",
+      "validation": "The prior eight-message measurements describe a rejected candidate because no required child advanced its own continuation. Revised sixteen-message paired timings, real PostgreSQL and CLI execution, mutation controls and the full required check remain pending; no performance improvement is claimed."
     },
     {
       "id": "native-pending-approval-family-scheduling",
@@ -556,8 +590,8 @@
         "role_handoff_preserves_owned_server_database_and_exact_role"
       ],
       "before": "CI reruns the complete future_queue, session_owners, durable_controls, bounded_snapshots, session_management, durable_interactions and server_host facade binaries using one shared restricted-worker login.",
-      "after": "The combined graph runs dedicated own-workspace positives and foreign-workspace denials, the native restricted-worker Store, public-state, typed-admission, session-owner, queue, fork and management contracts, the existing ordered-steer history, and one actual restricted-worker snapshot continuation in a cold process.",
-      "rationale": "Each isolated role fixture owns its cloned database and unique LOGIN roles. Public positives retain prompt and keyed replay, queue claim, preparation, dispatch and recovery, cancellation, management, fork, deletion and V2 reads. Native restricted-role contracts retain storage and ordered-steer behavior. The cold snapshot history delegates only its owned database to the expected worker role, verifies the real login lacks superuser and BYPASSRLS, and retains exact continuation, cutoff, relation and event readback. Ordinary administrative child handoffs retain their exact credential check. The removed dimension is repeating every facade fault and scenario combination under a second login. Backend and facade behavior matrices remain in the ordinary combined run.",
+      "after": "The combined graph runs dedicated own-workspace positives and foreign-workspace denials, the native restricted-worker Store, public-state, typed-admission, session-owner, queue, fork and management contracts, the existing ordered-steer history, and one actual restricted-worker snapshot continuation in a cold process with sixteen fixture messages and two resumed pages.",
+      "rationale": "Each isolated role fixture owns its cloned database and unique LOGIN roles. Public positives retain prompt and keyed replay, queue claim, preparation, dispatch and recovery, cancellation, management, fork, deletion and V2 reads. Native restricted-role contracts retain storage and ordered-steer behavior. The cold snapshot history delegates only its owned database to the expected worker role, verifies the real login lacks superuser and BYPASSRLS, and retains child token advancement, exact continuation, cutoff, relation and event readback. Ordinary administrative child handoffs retain their exact credential check. The removed dimension is repeating every facade fault and scenario combination under a second login. Backend and facade behavior matrices remain in the ordinary combined run.",
       "validation": "Source integration candidate only. No new build, test run or timing qualification has completed."
     },
     {

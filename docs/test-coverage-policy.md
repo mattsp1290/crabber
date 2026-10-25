@@ -10,13 +10,16 @@ Each costly family records the failure, production owner, required backend, reta
 | Runtime successor wrapper faults | MOVE-CHEAPER | All 28 Memory histories; 16 histories on each SQL backend retain both origins, before/after-call errors, actual replay, dispatch counts and original cleanup | Repeating backend-independent wrapper panics around completed SQL calls |
 | Runtime initial-driver malformed Join ACK | MOVE-CHEAPER | All 18 Memory histories; four per SQL backend retain both origins, wrong termination/owner, original proof and retry key, native Replay and exactly one business effect | Repeating all nine returned-receipt mutations on each SQL backend |
 | WASM state | MOVE-CHEAPER | Two actual Agent runs, real guest imports at64entries/16KiB, direct1000countertransition and existing concurrent isolation | 210 redundant model turns |
-| Bounded snapshot CLI | DELETE-REDUNDANT | Full native Memory/SQLite/PostgreSQL history and allocation proofs; short CLI pagination with genuine durable child entrypoints | Repeating 1024-message and 32MiB histories in each CLI |
+| Bounded snapshot CLI | DELETE-REDUNDANT | Native large-history checks and per-backend allocation proofs; short CLI pagination with genuine durable child entrypoints | Repeating 1024-message and 32MiB histories in each CLI |
+| Durable snapshot embedding | DELETE-REDUNDANT | Sixteen fixture messages require pagination and child token advancement, independent stores, settled relations and event tails; Memory keeps 1024 fixture messages and every backend keeps allocation proofs | Repeating 1024 small-row appends and about 147 pages in both SQL facade journeys |
 | Server host Memory CLI | DELETE-REDUNDANT | Required locked consumer executes the full public Memory host journey with stronger report assertions; normal CLI smoke still constructs the backend/adapter, runs one real fake-provider turn, closes resources and serializes JSON | Running the same full Memory host journey twice |
 | Embedded Memory queue bounds | DELETE-REDUNDANT | Native Memory plus both SQL item/byte-budget contracts; adapter-specific fenced journeys stay | One named duplicate private contract registration |
 | Narrow feature builds | MERGE | Real production library/CLI checks and standalone WASM-only consumer | Recompiling full private test crates in additional feature graphs |
 | Native pending approval scheduling | KEEP | Every existing keyed/unkeyed claim/recovery, held ACK, malformed/replay and blocked-main assertion; five fresh independent families per backend | Sequential coupling inside one76.7s PostgreSQL case |
 | Pending tool malformed ACK | MOVE-CHEAPER | Twelve corruptions through real shared pending execution on Memory; forged metadata and wrong outcome through each of four SQL origin paths; zero dispatch/register assertions retained | SQL corruption preparations fall from 48 to eight per backend |
 | Command-guard execution canaries | DELETE-REDUNDANT | Analyze every corpus row and dialect, execute every non-denied row in every interpreter variant, and verify real blocked-command controls | Shell launches for scripts whose denying outcome already satisfies the implication |
+
+The durable SQL snapshot embeddings and required CLI checks use the existing smoke helper with sixteen fixture messages. Its nineteen total messages fill three pages at the seven-message limit. The cold child resumes two pages and must advance its own continuation between them. The unchanged assertions require exact child readback, settled tool relations and post-cutoff events. Memory retains the 1024-message journey. Allocation proofs remain unchanged on all three backends, including 32 MiB histories. Native SQL snapshot tests retain independent-pool pagination, fresh-process continuation, delayed-commit high-water checks and exact limits. The removed coverage is repeated SQL small-row and long page-chain stress. Earlier eight-message measurements describe a rejected candidate that lost child token advancement. Revised timings and backend verification remain pending.
 
 The SQL fault histories call the original assertion helpers unchanged. Before/after-commit and activation uncertainty remain real SQL transactions. Current PostgreSQL fixtures already provide the migrated schema; dedicated migration tests continue using Blank/legacy fixtures. Every independent fault test receives fresh storage. Shared state between independently scheduled histories is forbidden.
 
@@ -93,9 +96,9 @@ durable interactions and server hosts. The dedicated public tests retain
 own-workspace operations and foreign-workspace denial without provider calls or
 row changes. Native restricted-role contracts retain Store, public-state,
 typed-admission, session-owner, queue, fork, management and ordered-steer checks.
-A separate eight-message snapshot journey resumes a real continuation in a cold
-child logged in as the worker. It checks the login has neither superuser nor
-BYPASSRLS. The child still verifies the owned database and expected login against
+A separate sixteen-message snapshot journey resumes two pages in a cold child
+logged in as the worker. The child must advance its own continuation. The login
+has neither superuser nor BYPASSRLS. The child still verifies the owned database and expected login against
 the server. Administrative child handoffs keep their exact credential check.
 
 This removes repeated facade fault and scenario combinations under the second
