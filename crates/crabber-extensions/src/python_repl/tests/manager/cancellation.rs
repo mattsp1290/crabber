@@ -128,3 +128,50 @@ async fn cancellation_boundaries_and_dropped_receiver_reset() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancellation_during_response_poll_prevents_commit_for_fresh_and_existing_interpreters() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    for existing in [false, true] {
+        let Some(f) = Fixture::new(|_| {}) else {
+            return;
+        };
+        if existing {
+            f.execute(key("one"), "x=1").await.unwrap();
+        }
+        let cancel = CancellationToken::new();
+        let at_commit = cancel.clone();
+        let reached = Arc::new(AtomicBool::new(false));
+        let observed = reached.clone();
+        f.manager.hooks.lock().unwrap().before_commit = Some(Arc::new(move || {
+            observed.store(true, Ordering::SeqCst);
+            at_commit.cancel();
+            Box::pin(async {})
+        }));
+        let error = f
+            .manager
+            .execute_owner(
+                key("one"),
+                f.root.clone(),
+                cancel,
+                "x=2".into(),
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap_err();
+        code(&error, "cancelled");
+        assert!(reached.load(Ordering::SeqCst));
+        f.manager.hooks.lock().unwrap().before_commit = None;
+        let next = f.execute(key("one"), "'x' in globals()").await.unwrap();
+        assert_eq!(next.result.text, "False");
+        assert_eq!(next.state_reset, existing);
+        assert_eq!(next.generation, u64::from(existing));
+        if existing {
+            assert_eq!(next.state_reset_reason, "canceled");
+        }
+        f.close().await;
+    }
+}
