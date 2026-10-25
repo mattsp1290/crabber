@@ -1,3 +1,4 @@
+use crate::native_files::{Family, File};
 use crate::{native_compiler_input::Input, parts::Quarter};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -200,7 +201,7 @@ impl Plan {
             .chain(command.get_args())
             .map(|v| v.to_string_lossy().into_owned())
             .collect();
-        fs::write(directory.join("remaining-target-plan.json"), serde_json::to_vec_pretty(&json!({"plan":self,"materialized_argv":argv,"argv_authority":"materialized request; output establishes successful spawn"})).unwrap()).unwrap();
+        fs::write(File::TargetPlan.path(directory), serde_json::to_vec_pretty(&json!({"plan":self,"materialized_argv":argv,"argv_authority":"materialized request; output establishes successful spawn"})).unwrap()).unwrap();
     }
     pub(crate) fn admit_build(&self, directory: &Path, metadata: &Value, input: &Input) {
         let binaries = input.admit();
@@ -272,11 +273,13 @@ impl Plan {
         }
         assert_eq!(listed, actual.keys().cloned().collect());
         admit_normal_metadata(binaries, &normals);
-        let journal =
-            crate::normal_outputs::journal(directory, &directory.join("remaining-artifacts.jsonl"));
+        let journal = crate::normal_outputs::journal(
+            directory,
+            &File::Compiler(Family::Remaining).path(directory),
+        );
         assert_eq!(journal[0]["source"], self.source);
         assert_eq!(journal[0]["metadata_sha256"], self.metadata_sha256);
-        fs::write(directory.join("remaining-targets.json"), serde_json::to_vec_pretty(&json!({"source":self.source,"metadata_sha256":self.metadata_sha256,"owned_targets":self.owned,"test_artifacts":actual.into_values().collect::<Vec<_>>(),"normal_prerequisites":normals.into_values().collect::<Vec<_>>(),"normal_prerequisite_scope":"eligible declared bins of owned test packages","semantic_credit":false})).unwrap()).unwrap();
+        fs::write(File::Targets(Family::Remaining).path(directory), serde_json::to_vec_pretty(&json!({"source":self.source,"metadata_sha256":self.metadata_sha256,"owned_targets":self.owned,"test_artifacts":actual.into_values().collect::<Vec<_>>(),"normal_prerequisites":normals.into_values().collect::<Vec<_>>(),"normal_prerequisite_scope":"eligible declared bins of owned test packages","semantic_credit":false})).unwrap()).unwrap();
     }
 }
 

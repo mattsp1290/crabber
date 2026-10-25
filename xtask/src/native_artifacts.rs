@@ -24,7 +24,7 @@ impl Journal {
         let directory = path
             .parent()
             .ok_or_else(|| io::Error::other("journal directory"))?;
-        let metadata = fs::read(directory.join("cargo-metadata.json"))?;
+        let metadata = fs::read(directory.join(crate::native_files::METADATA))?;
         let value: Value = serde_json::from_slice(&metadata)?;
         let members = value["workspace_members"]
             .as_array()
@@ -212,7 +212,7 @@ mod tests {
             ));
             fs::create_dir(&directory).unwrap();
             fs::write(
-                directory.join("cargo-metadata.json"),
+                directory.join(crate::native_files::METADATA),
                 br#"{"workspace_members":["workspace"]}"#,
             )
             .unwrap();

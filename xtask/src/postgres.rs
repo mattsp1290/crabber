@@ -174,7 +174,7 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
         options.timings = Some(directory.join("phases.json"));
     }
     let timings = options.timings.clone().unwrap();
-    let metrics = directory.join("fixtures.jsonl");
+    let metrics = crate::native_files::File::Fixtures.path(&directory);
     let part = options.part;
     let mut code = execute_options(Options {
         complete: Some(options),
@@ -217,9 +217,9 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
     });
     report["postgres_transport"] = serde_json::json!(transport);
     report["tool_versions"] = serde_json::json!({
-        "rustc": std::fs::read_to_string(directory.join("rustc-version.txt")).ok(),
-        "wasm-tools": std::fs::read_to_string(directory.join("wasm-tools-version.txt")).ok(),
-        "docker-server": std::fs::read_to_string(directory.join("docker-version.txt")).ok(),
+        "rustc": std::fs::read_to_string(crate::native_files::File::RustcVersion.path(&directory)).ok(),
+        "wasm-tools": std::fs::read_to_string(crate::native_files::File::WasmToolsVersion.path(&directory)).ok(),
+        "docker-server": std::fs::read_to_string(crate::native_files::File::DockerVersion.path(&directory)).ok(),
         "nextest": serde_json::from_str::<serde_json::Value>(include_str!("../../.config/test-tools.json")).unwrap()["nextest"]["version"],
     });
     if let Some(parent) = timings.parent()

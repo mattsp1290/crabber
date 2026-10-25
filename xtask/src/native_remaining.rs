@@ -1,3 +1,4 @@
+use crate::native_files::{Family, File, Run};
 use crate::{
     checks::Checks,
     native_compiler_input::Input,
@@ -47,12 +48,12 @@ impl RemainingBuild {
     }
     pub(crate) fn execute(&self, command: &mut Command, signal: &AtomicUsize) -> Result<(), i32> {
         let bytes =
-            fs::read(self.directory.join("cargo-metadata.json")).expect("scheduled Cargo metadata");
+            fs::read(File::Metadata.path(&self.directory)).expect("scheduled Cargo metadata");
         let metadata: Value = serde_json::from_slice(&bytes).expect("actual Cargo metadata");
         let plan = Plan::from_metadata(&metadata, crate::workspace(), self.quarter, &bytes);
         plan.append_arguments(command);
         plan.persist(&self.directory, command);
-        let journal = self.directory.join("remaining-artifacts.jsonl");
+        let journal = File::Compiler(Family::Remaining).path(&self.directory);
         let output = match crate::checks::captured_output(command, signal, Some(&journal)) {
             Ok(output) => output,
             Err(error) => {
@@ -93,7 +94,12 @@ pub(crate) fn prepare(gates: &mut Checks, directory: &Path, features: &str) {
     };
     gates.native_contribution(PartFamily::NativeRemaining, |gates| {
         gates.remaining_target_build(RemainingBuild::new(directory, features, quarter));
-        crate::normal_outputs::migration_owner(gates, directory, "native-remaining", "remaining");
+        crate::normal_outputs::migration_owner(
+            gates,
+            directory,
+            "native-remaining",
+            Family::Remaining,
+        );
     });
 }
 
@@ -102,9 +108,9 @@ fn base(action: &str, directory: &Path, profile: &str) -> Command {
     command
         .current_dir(crate::workspace())
         .args(["nextest", action, "--cargo-metadata"])
-        .arg(directory.join("cargo-metadata.json"))
+        .arg(File::Metadata.path(directory))
         .arg("--binaries-metadata")
-        .arg(directory.join("remaining-binaries.json"))
+        .arg(File::Binaries(Family::Remaining).path(directory))
         .args(["--profile", profile]);
     command
 }
@@ -126,19 +132,19 @@ fn manifest(gates: &mut Checks, directory: &Path, profile: &str, selected: bool)
         move |result| {
             let value: Value = serde_json::from_slice(&result.stdout).unwrap();
             let filename = if selected {
-                "remaining-selected-tests.json"
+                File::Selected(Family::Remaining)
             } else {
-                "remaining-tests.json"
+                File::Cases(Family::Remaining)
             };
-            fs::write(output.join(filename), serde_json::to_vec(&value).unwrap()).unwrap();
+            fs::write(filename.path(&output), serde_json::to_vec(&value).unwrap()).unwrap();
             crate::native_test_evidence::admit_manifest(
-                &read(output.join("remaining-binaries.json")),
+                &read(File::Binaries(Family::Remaining).path(&output)),
                 &value,
             );
             if selected {
                 assert_eq!(
                     value,
-                    read(output.join("remaining-tests.json")),
+                    read(File::Cases(Family::Remaining).path(&output)),
                     "selected remaining inventory changed"
                 );
             }
@@ -149,13 +155,13 @@ fn manifest(gates: &mut Checks, directory: &Path, profile: &str, selected: bool)
 pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
     gates.native_contribution(PartFamily::NativeRemaining, |gates| {
         manifest(gates,directory,profile,false);
-        crate::nextest::scoped_group_gate(crate::workspace(),gates,&directory.join("cargo-metadata.json"),&directory.join("remaining-binaries.json"),profile,"native-remaining-resource-groups",directory.join("remaining-resource-groups.json"));
+        crate::nextest::scoped_group_gate(crate::workspace(),gates,&File::Metadata.path(directory),&File::Binaries(Family::Remaining).path(directory),profile,"native-remaining-resource-groups",File::Groups(Family::Remaining).path(directory));
         manifest(gates,directory,profile,true);
         let mut command = base("run",directory,profile);
         command.args(["--retries","0","--no-fail-fast","--no-tests","fail","--color","never","--success-output","never","--status-level","pass"]);
         crate::standard_tools::require_subprocess_tools(&mut command);
-        let selected = directory.join("remaining-selected-tests.json");let verdict = directory.join("native-remaining-execution.json");
-        gates.recorded("native-remaining",command,directory.join("native-remaining"),"exact observed remaining case execution",move |result: &Output| {
+        let selected = File::Selected(Family::Remaining).path(directory);let verdict = File::Execution(Run::Remaining).path(directory);
+        gates.recorded("native-remaining",command,Run::Remaining.path(directory),"exact observed remaining case execution",move |result: &Output| {
             let expected = crate::native_test_evidence::selected(&read(&selected));
             let actual = crate::native_test_evidence::passing(&result.stdout,&result.stderr);
             assert_eq!(actual,expected,"executed remaining cases differ from admitted selection");
