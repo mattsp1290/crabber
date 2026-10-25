@@ -57,32 +57,7 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
         let (package, target) = declared.get(&key).expect("undeclared library target");
         assert_eq!(row["target"]["src_path"], target["src_path"]);
         assert_eq!(row["target"]["kind"], target["kind"]);
-        let node = metadata["resolve"]["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|node| node["id"] == row["package_id"])
-            .unwrap();
-        let features = |value: &Value| {
-            value
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_owned())
-                .collect::<BTreeSet<_>>()
-        };
-        assert_eq!(features(&row["features"]), features(&node["features"]));
-        assert_eq!(
-            row["profile"]["opt_level"],
-            if package["name"] == "crabber-core" {
-                "1"
-            } else {
-                "0"
-            }
-        );
-        assert_eq!(row["profile"]["debuginfo"], 0);
-        assert_eq!(row["profile"]["debug_assertions"], true);
-        assert_eq!(row["profile"]["overflow_checks"], true);
+        admit_compiler_context(&metadata, &row, package);
         assert!(
             actual.insert(key, row).is_none(),
             "duplicate library executable"
@@ -126,6 +101,35 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
         "declared_target_count": declared.len(), "artifacts": actual.into_values().collect::<Vec<_>>(),
         "scope": "all workspace testable libraries and proc-macros; no integration or binary harnesses",
     })).unwrap()).unwrap();
+}
+
+fn admit_compiler_context(metadata: &Value, row: &Value, package: &Value) {
+    let node = metadata["resolve"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == row["package_id"])
+        .unwrap();
+    let features = |value: &Value| {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(features(&row["features"]), features(&node["features"]));
+    assert_eq!(
+        row["profile"]["opt_level"],
+        if package["name"] == "crabber-core" {
+            "1"
+        } else {
+            "0"
+        }
+    );
+    assert_eq!(row["profile"]["debuginfo"], 0);
+    assert_eq!(row["profile"]["debug_assertions"], true);
+    assert_eq!(row["profile"]["overflow_checks"], true);
 }
 
 fn library(kind: &Value) -> bool {

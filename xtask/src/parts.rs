@@ -21,6 +21,7 @@ impl Part {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PartFamily {
+    #[cfg(feature = "postgres-check")]
     QualityContracts,
     QualityArtifacts,
     NativeLibraries,
@@ -61,6 +62,7 @@ pub(crate) enum ResourcePolicy {
 }
 
 impl Part {
+    #[cfg(feature = "postgres-check")]
     pub(crate) fn family(self) -> PartFamily {
         match self {
             Self::QualityContracts => PartFamily::QualityContracts,

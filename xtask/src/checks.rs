@@ -225,7 +225,7 @@ impl Checks {
         schedule: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let previous = self.role.clone();
-        self.role = crate::parts::GateRole::Required(owner, Default::default());
+        self.role = crate::parts::GateRole::Required(owner, std::collections::BTreeSet::default());
         let result = schedule(self);
         self.role = previous;
         result
@@ -898,45 +898,7 @@ mod tests {
             assert_eq!(metadata["full_coverage_policy_executed"], false);
             assert_eq!(metadata["requires_owned_postgres"], true);
             assert_eq!(metadata["postgres_demos"], json!([]));
-            let ids: std::collections::BTreeSet<_> = partial
-                .gates
-                .iter()
-                .map(|gate| gate.inventory["id"].as_str().unwrap())
-                .collect();
-            assert_eq!(ids.len(), partial.gates.len());
-            for id in [
-                "acquire-wasm-fixture-output",
-                "wasm-fixture-aliases",
-                "release-wasm-fixture-output",
-                "prepare-complete-manifests",
-                "standard-tool-prerequisites",
-                "native-library-build",
-                "native-library-migration-owner",
-                "native-library-manifest",
-                "native-library-resource-groups",
-                "native-library-quarter-manifest",
-                "native-library-quarter",
-            ] {
-                assert!(ids.contains(id), "missing {id}");
-            }
-            for id in [
-                "required-coverage-and-features",
-                "native-test-manifest",
-                "native-resource-groups",
-                "native-cluster-role",
-                "native-complement",
-                "normal-output-build",
-            ] {
-                assert!(!ids.contains(id), "selected full obligation {id}");
-            }
-            assert_eq!(
-                ids.contains("native-library-role"),
-                quarter == LibraryQuarter::One
-            );
-            assert_eq!(
-                ids.contains("native-library-role-manifest"),
-                quarter == LibraryQuarter::One
-            );
+            assert_library_gate_selection(&partial, quarter);
             assert!(
                 partial
                     .gates
@@ -980,6 +942,50 @@ mod tests {
         ] {
             assert!(Options::parse(&["--part".into(), invalid.into()]).is_err());
         }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    fn assert_library_gate_selection(partial: &Checks, quarter: crate::parts::LibraryQuarter) {
+        use crate::parts::LibraryQuarter;
+        let ids: std::collections::BTreeSet<_> = partial
+            .gates
+            .iter()
+            .map(|gate| gate.inventory["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), partial.gates.len());
+        for id in [
+            "acquire-wasm-fixture-output",
+            "wasm-fixture-aliases",
+            "release-wasm-fixture-output",
+            "prepare-complete-manifests",
+            "standard-tool-prerequisites",
+            "native-library-build",
+            "native-library-migration-owner",
+            "native-library-manifest",
+            "native-library-resource-groups",
+            "native-library-quarter-manifest",
+            "native-library-quarter",
+        ] {
+            assert!(ids.contains(id), "missing {id}");
+        }
+        for id in [
+            "required-coverage-and-features",
+            "native-test-manifest",
+            "native-resource-groups",
+            "native-cluster-role",
+            "native-complement",
+            "normal-output-build",
+        ] {
+            assert!(!ids.contains(id), "selected full obligation {id}");
+        }
+        assert_eq!(
+            ids.contains("native-library-role"),
+            quarter == LibraryQuarter::One
+        );
+        assert_eq!(
+            ids.contains("native-library-role-manifest"),
+            quarter == LibraryQuarter::One
+        );
     }
 
     #[cfg(feature = "postgres-check")]

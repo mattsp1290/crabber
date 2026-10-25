@@ -331,41 +331,8 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
         .await
     }
     .await;
-    let server_cleanup = Instant::now();
-    let cleanup = endpoint.finish().await;
-    if options
-        .complete
-        .as_ref()
-        .and_then(|complete| complete.part)
-        .is_some_and(crate::parts::Part::owns_postgres)
-    {
-        match cleanup {
-            Ok(()) => {
-                if let Some(metrics) = &metrics
-                    && let Err(error) =
-                        metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())
-                {
-                    if matches!(&result, Ok(0)) {
-                        result = Err(error.into());
-                    } else {
-                        eprintln!("owned server cleanup recording also failed: {error}");
-                    }
-                }
-            }
-            Err(error) => {
-                if matches!(&result, Ok(0)) {
-                    result = Err(error);
-                } else {
-                    eprintln!("owned server cleanup also failed: {error}");
-                }
-            }
-        }
-    } else {
-        cleanup?;
-        if let Some(metrics) = &metrics {
-            metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())?;
-        }
-    }
+    let part = options.complete.as_ref().and_then(|complete| complete.part);
+    finish_server(endpoint, metrics.as_ref(), part, &mut result).await?;
     println!(
         "PostgreSQL gate wall time {:.3}s",
         started.elapsed().as_secs_f64()
@@ -378,13 +345,7 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
             "gate_failed"
         };
         let recorded = metrics.record(phase, "runner", None, started.elapsed());
-        if options
-            .complete
-            .as_ref()
-            .and_then(|complete| complete.part)
-            .is_some_and(crate::parts::Part::owns_postgres)
-            && !matches!(&result, Ok(0))
-        {
+        if part.is_some_and(crate::parts::Part::owns_postgres) && !matches!(&result, Ok(0)) {
             if let Err(error) = recorded {
                 eprintln!("owned terminal recording also failed: {error}");
             }
@@ -397,6 +358,45 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
     } else {
         result
     }
+}
+
+async fn finish_server(
+    endpoint: Endpoint,
+    metrics: Option<&Arc<FixtureMetrics>>,
+    part: Option<crate::parts::Part>,
+    result: &mut Result<i32, Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server_cleanup = Instant::now();
+    let cleanup = endpoint.finish().await;
+    if part.is_some_and(crate::parts::Part::owns_postgres) {
+        match cleanup {
+            Ok(()) => {
+                if let Some(metrics) = metrics
+                    && let Err(error) =
+                        metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())
+                {
+                    if matches!(&*result, Ok(0)) {
+                        *result = Err(error.into());
+                    } else {
+                        eprintln!("owned server cleanup recording also failed: {error}");
+                    }
+                }
+            }
+            Err(error) => {
+                if matches!(&*result, Ok(0)) {
+                    *result = Err(error);
+                } else {
+                    eprintln!("owned server cleanup also failed: {error}");
+                }
+            }
+        }
+    } else {
+        cleanup?;
+        if let Some(metrics) = metrics {
+            metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())?;
+        }
+    }
+    Ok(())
 }
 
 async fn execute_owned_run(
