@@ -58,6 +58,7 @@ mod continuation_source;
 mod continuations;
 #[path = "tests/frontend_replay.rs"]
 mod frontend_replay;
+mod model_completion;
 mod native_phase;
 #[path = "tests/owned_tool_invocations.rs"]
 mod owned_tool_invocations;
