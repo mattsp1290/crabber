@@ -207,6 +207,12 @@ pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
         malformed(store.clone(), clock.clone(), expired).await;
     }
 }
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(super) async fn sql_contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
+    blocked(store.clone(), clock.clone(), false, false).await;
+    blocked(store.clone(), clock.clone(), true, true).await;
+    malformed(store, clock, true).await;
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn memory_runtime_successor_actual_main_and_cleanup_retention() {
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));

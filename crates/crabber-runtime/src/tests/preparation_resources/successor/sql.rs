@@ -41,7 +41,7 @@ cases!(
 cases!(
     sqlite_runtime_successor_retention,
     postgres_runtime_successor_retention,
-    retention::contract
+    retention::sql_contract
 );
 cases!(
     sqlite_runtime_successor_recovery,

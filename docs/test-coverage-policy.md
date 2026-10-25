@@ -8,6 +8,7 @@ Each costly family records the failure, production owner, required backend, reta
 | --- | --- | --- | --- |
 | SQL successor tool faults | MERGE | All seven fault/refusal boundaries per SQLite/PostgreSQL, with three alternate-origin faults; existing source/guard contracts retain all four origins | 28 histories become ten independently scheduled histories per backend |
 | Runtime successor wrapper faults | MOVE-CHEAPER | All 28 Memory histories; 16 histories on each SQL backend retain both origins, before/after-call errors, actual replay, dispatch counts and original cleanup | Repeating backend-independent wrapper panics around completed SQL calls |
+| Runtime successor retention | MOVE-CHEAPER | All six Memory histories; each SQL backend keeps fresh driver panic, expired cancellation and expired malformed Join ACK with original main/resource joins | Expired driver panic, fresh cancellation and fresh malformed Join ACK on each SQL backend |
 | Runtime initial-driver malformed Join ACK | MOVE-CHEAPER | All 18 Memory histories; four per SQL backend retain both origins, wrong termination/owner, original proof and retry key, native Replay and exactly one business effect | Repeating all nine returned-receipt mutations on each SQL backend |
 | WASM state | MOVE-CHEAPER | Two actual Agent runs, real guest imports at64entries/16KiB, direct1000countertransition and existing concurrent isolation | 210 redundant model turns |
 | Bounded snapshot CLI | DELETE-REDUNDANT | Native large-history checks and per-backend allocation proofs; short CLI pagination with genuine durable child entrypoints | Repeating 1024-message and 32MiB histories in each CLI |
@@ -38,6 +39,22 @@ Before qualification, audit the final selected manifest against the policy and v
 The WASM replacement and independently scheduled native pending families passed their targeted executions, including real guest builds and all three Store backends. Full combined execution and budget qualification remain pending. The new state-import cases use the unchanged default64-entry/16KiB limits and PerCall mode; they assert both the specific state refusal and unchanged persisted state. The short Agent case continues proving public extension wiring and state reuse across distinct runs. The old numeric growth milestone remains a direct real-guest999→1000 transition, with no model-turn amplification.
 
 Native pending-tool histories now have separate success/replay, held-ACK, malformed/replay and blocked-cleanup entrypoints for each origin/backend. This preserves the retained helper bodies and creates fresh Store/clock state per independent family; it adds no cross-test dependencies. All new entrypoints then passed serially and at four slots across Memory, SQLite and PostgreSQL, with owned fixture and container cleanup verified. The machine-readable policy names their actual detector entrypoints.
+
+### Runtime successor retention (unqualified)
+
+Memory retains fresh and expired origins for driver panic, cancellation and
+malformed Join ACK. Each SQL backend retains fresh driver panic, expired
+cancellation and expired malformed Join ACK. The existing helpers still hold
+the actual main task and resource child, require Active state while either is
+held, and require genuine Joined state and original cleanup afterward.
+Malformed ACK histories retain identical retry keys and complete only after
+the corruption is cleared. No helper assertion, clock or deadline changes.
+
+This removes expired driver panic, fresh cancellation and fresh malformed ACK
+on each SQL backend. The shared Runtime owns these checks. Both SQL origins and
+interruption mechanisms remain exercised, alongside unchanged SQL core,
+recovery and pending families. This candidate has not run. Paired timing and
+the complete required check remain pending; no speedup is claimed.
 
 ### Embedded Memory owner capacity duplicate
 

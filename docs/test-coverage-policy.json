@@ -71,6 +71,30 @@
       "validation": "All three retained core families passed once serially and once at four scheduler slots: 28 Memory and 16 histories per SQL backend. Native wall times were43.857s serial and21.536s parallel. Each run created and finished its one PostgreSQL history fixture, cleaned its owned run/server, and left its container absent. This is partial changed-family validation; complete and affected-rebuild qualification remain pending. Prior full-run timings are not a controlled critical-path comparison."
     },
     {
+      "id": "runtime-successor-retention-origins",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A successor driver panic, cancellation or malformed Join ACK must retain the actual main task, resource children and original cleanup until genuine completion.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/driver/retirement.rs",
+        "crates/crabber-runtime/src/execution_tasks.rs"
+      ],
+      "retained_tests": [
+        "memory_runtime_successor_actual_main_and_cleanup_retention",
+        "sqlite_runtime_successor_retention",
+        "postgres_runtime_successor_retention"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Each backend crosses fresh and expired origins with held-main driver panic, held-main cancellation and malformed Join ACK: six retention histories.",
+      "after": "Memory retains all six histories. Each SQL backend retains fresh driver panic, expired cancellation and expired malformed Join ACK: three histories with unchanged assertion helpers.",
+      "rationale": "Both origins use the shared Runtime task and resource ownership checks. SQL still proves both origins, both interruption mechanisms, actual Active-to-Joined cleanup, original main/resource joins, repeated identical Join keys and completion only after corruption is cleared. Removed SQL combinations are expired driver panic, fresh cancellation and fresh malformed Join ACK. Other SQL successor core, recovery and pending histories remain unchanged.",
+      "validation": "Candidate only. Static source comparison confirms unchanged retention helper bodies and the complete Memory contract. Paired timing, real backend execution and the full required check remain pending; no speedup is claimed."
+    },
+    {
       "id": "runtime-initial-driver-join-ack",
       "disposition": "MOVE-CHEAPER",
       "state": "implemented-unqualified",
