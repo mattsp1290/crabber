@@ -96,8 +96,6 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
     let mut listed = BTreeSet::new();
     for (id, binary) in binaries["rust-binaries"].as_object().unwrap() {
         assert_eq!(binary["binary-id"], id.as_str());
-        assert_eq!(binary["build-platform"], "target");
-        assert!(binary["kind"] == "lib" || binary["kind"] == "proc-macro");
         let key = (
             binary["package-id"].as_str().unwrap().to_owned(),
             binary["binary-name"].as_str().unwrap().to_owned(),
@@ -105,6 +103,16 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
         let artifact = actual
             .get(&key)
             .expect("binary outside declared library outputs");
+        let (_, target) = &declared[&key];
+        let proc_macro = target["kind"] == json!(["proc-macro"]);
+        assert_eq!(
+            binary["kind"],
+            if proc_macro { "proc-macro" } else { "lib" }
+        );
+        assert_eq!(
+            binary["build-platform"],
+            if proc_macro { "host" } else { "target" }
+        );
         assert_eq!(binary["binary-path"], artifact["executable"]);
         assert!(listed.insert(key), "duplicate listed binary");
     }
@@ -157,7 +165,10 @@ pub(crate) fn admit_manifest(directory: &Path, manifest: &Value) {
         .values()
         .map(|suite| suite["testcases"].as_object().unwrap().len())
         .sum();
-    assert_eq!(manifest["test-count"].as_u64().unwrap() as usize, count);
+    assert_eq!(
+        usize::try_from(manifest["test-count"].as_u64().unwrap()).unwrap(),
+        count
+    );
     assert_eq!(
         selected(manifest)
             .iter()
@@ -250,7 +261,7 @@ pub(crate) fn passing(stdout: &[u8], stderr: &[u8]) -> Cases {
             assert!(
                 duration
                     .parse::<f64>()
-                    .is_ok_and(|v| v.is_finite() && v >= 0.0())
+                    .is_ok_and(|v| v.is_finite() && v >= 0.0)
             );
             let mut rest = rest.trim_start();
             if rest.starts_with('(') {
