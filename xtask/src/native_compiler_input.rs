@@ -1,3 +1,4 @@
+use crate::native_files::{Family, File};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fs, io, path::Path};
@@ -142,12 +143,12 @@ impl Input {
     }
     pub(crate) fn persist(&self, directory: &Path) -> io::Result<()> {
         fs::write(
-            directory.join("remaining-compiler-input.json"),
+            File::CompilerInput.path(directory),
             serde_json::to_vec_pretty(self)?,
         )?;
         if let Some(summary) = &self.summary {
             fs::write(
-                directory.join("remaining-binaries.json"),
+                File::Binaries(Family::Remaining).path(directory),
                 serde_json::to_vec(summary)?,
             )?;
         }

@@ -96,7 +96,7 @@ fn key(package: &str, target: &Value) -> String {
 }
 
 fn declared(directory: &Path, kind: &str) -> BTreeMap<String, Value> {
-    let metadata = read(directory.join("cargo-metadata.json"));
+    let metadata = read(crate::native_files::File::Metadata.path(directory));
     let mut result = BTreeMap::new();
     for package in metadata["packages"].as_array().unwrap() {
         if !metadata["workspace_members"]
@@ -124,7 +124,7 @@ pub(crate) fn journal(directory: &Path, path: &Path) -> Vec<Value> {
     assert_eq!(rows[0]["kind"], "header");
     assert_eq!(rows.last().unwrap()["kind"], "reader-finished");
     assert_eq!(rows.last().unwrap()["invalid"], false);
-    let metadata = fs::read(directory.join("cargo-metadata.json")).unwrap();
+    let metadata = fs::read(crate::native_files::File::Metadata.path(directory)).unwrap();
     assert_eq!(
         rows[0]["metadata_sha256"],
         format!("{:x}", sha2::Sha256::digest(metadata))
@@ -242,7 +242,12 @@ fn finish(directory: &Path, path: &Path) {
     })).unwrap()).unwrap();
 }
 
-pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path, id: &str, prefix: &str) {
+pub(crate) fn migration_owner(
+    gates: &mut Checks,
+    directory: &Path,
+    id: &str,
+    family: crate::native_files::Family,
+) {
     let mut command = Command::new("cargo");
     command.current_dir(crate::workspace()).args([
         "build",
@@ -254,8 +259,8 @@ pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path, id: &str, pr
         "json-render-diagnostics",
     ]);
     let output = directory.to_owned();
-    let path = directory.join(format!("{prefix}-migration-owner-artifacts.jsonl"));
-    let verdict = output.join(format!("{prefix}-migration-owner.json"));
+    let path = crate::native_files::File::OwnerJournal(family).path(directory);
+    let verdict = crate::native_files::File::Owner(family).path(&output);
     gates.named_captured(&format!("{id}-migration-owner"), crate::workspace(), command,
         "timed normal enabled xtask producer immediately before owned template migration",
         path.clone(), move |_| {

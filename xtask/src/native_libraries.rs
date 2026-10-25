@@ -1,4 +1,5 @@
 //! Library contributions retain their own inventories and never satisfy Native gates.
+use crate::native_files::{Family, File, Run};
 use crate::{checks::Checks, parts::Quarter};
 use serde_json::Value;
 use std::{fs, path::Path, process::Command};
@@ -14,17 +15,22 @@ pub(crate) fn compile(gates: &mut Checks, directory: &Path, features: &str) {
         let output = directory.to_owned();
         gates.named_captured("native-library-build", crate::workspace(), command,
             "all metadata-declared library and proc-macro test targets with actual compiler evidence",
-            directory.join("library-artifacts.jsonl"), move |result| {
+            File::Compiler(Family::Libraries).path(directory), move |result| {
                 let binaries = crate::native_artifacts::summary(&result.stdout);
                 crate::native_library_evidence::admit_build(&output, &binaries, &result.stdout);
-                fs::write(output.join("library-binaries.json"), serde_json::to_vec(&binaries).unwrap()).unwrap();
+                fs::write(File::Binaries(Family::Libraries).path(&output), serde_json::to_vec(&binaries).unwrap()).unwrap();
             });
     });
 }
 
 pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
     gates.native_contribution(crate::parts::PartFamily::NativeLibraries, |gates| {
-        crate::normal_outputs::migration_owner(gates, directory, "native-library", "library");
+        crate::normal_outputs::migration_owner(
+            gates,
+            directory,
+            "native-library",
+            Family::Libraries,
+        );
     });
 }
 
@@ -33,7 +39,7 @@ pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
         return;
     };
     gates.native_contribution(crate::parts::PartFamily::NativeLibraries, |gates| {
-        let inventory = directory.join("library-tests.json");
+        let inventory = File::Cases(Family::Libraries).path(directory);
         let output = directory.to_owned();
         let mut command = base("list", directory, profile);
         command.args(["--message-format", "json"]);
@@ -51,11 +57,11 @@ pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
         crate::nextest::scoped_group_gate(
             crate::workspace(),
             gates,
-            &directory.join("cargo-metadata.json"),
-            &directory.join("library-binaries.json"),
+            &File::Metadata.path(directory),
+            &File::Binaries(Family::Libraries).path(directory),
             profile,
             "native-library-resource-groups",
-            directory.join("library-resource-groups.json"),
+            File::Groups(Family::Libraries).path(directory),
         );
         if quarter == Quarter::One {
             Selection::Role.schedule(gates, directory, profile);
@@ -69,9 +75,9 @@ fn base(action: &str, directory: &Path, profile: &str) -> Command {
     command
         .current_dir(crate::workspace())
         .args(["nextest", action, "--cargo-metadata"])
-        .arg(directory.join("cargo-metadata.json"))
+        .arg(File::Metadata.path(directory))
         .arg("--binaries-metadata")
-        .arg(directory.join("library-binaries.json"))
+        .arg(File::Binaries(Family::Libraries).path(directory))
         .args(["--profile", profile]);
     command
 }
@@ -109,9 +115,13 @@ impl Selection {
         let mut list = base("list", directory, profile);
         list.args(["--message-format", "json"]);
         self.arguments(&mut list);
-        let selected = directory.join(format!("{}-tests.json", self.name()));
+        let selected = match self {
+            Self::Role => File::RoleCases,
+            Self::Quarter(_) => File::Selected(Family::Libraries),
+        }
+        .path(directory);
         let destination = selected.clone();
-        let full = directory.join("library-tests.json");
+        let full = File::Cases(Family::Libraries).path(directory);
         gates.captured(
             Some(&format!("{}-manifest", self.name())),
             crate::workspace(),
@@ -143,8 +153,12 @@ impl Selection {
         ]);
         self.arguments(&mut run);
         crate::standard_tools::require_subprocess_tools(&mut run);
-        let evidence = directory.join(self.name());
-        let verdict = directory.join(format!("{}-execution.json", self.name()));
+        let run_kind = match self {
+            Self::Role => Run::LibraryRole,
+            Self::Quarter(_) => Run::LibraryQuarter,
+        };
+        let evidence = run_kind.path(directory);
+        let verdict = File::Execution(run_kind).path(directory);
         gates.recorded(self.name(), run, evidence, "exact observed library case execution", move |result| {
             let expected = crate::native_test_evidence::selected(&read(&selected));
             let actual = crate::native_test_evidence::passing(&result.stdout, &result.stderr);

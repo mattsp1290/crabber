@@ -14,7 +14,10 @@ mod inventory;
 mod lease;
 mod native_artifacts;
 #[cfg(feature = "postgres-check")]
+mod native_bundle;
+#[cfg(feature = "postgres-check")]
 mod native_compiler_input;
+mod native_files;
 #[cfg(feature = "postgres-check")]
 mod native_libraries;
 #[cfg(feature = "postgres-check")]
@@ -80,6 +83,13 @@ fn main() {
         std::process::exit(1);
     }
     match args.first().map(String::as_str) {
+        #[cfg(feature = "postgres-check")]
+        Some("native-bundle") => {
+            if let Err(error) = native_bundle::command(&args[1..]) {
+                eprintln!("native-bundle: {error}");
+                std::process::exit(2);
+            }
+        }
         Some("check") => {
             let options = checks::Options::parse(&args[1..]).unwrap_or_else(|error| {
                 eprintln!("{error}");
@@ -127,7 +137,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts|native-library-1..4|native-remaining-1..4] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
+                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts|native-library-1..4|native-remaining-1..4] [--timings <path>] | native-bundle --report <path> --data-dir <path> --output <path> | build-fixtures | verify-datadog | check-probes | inventory-tests"
             );
             std::process::exit(2);
         }

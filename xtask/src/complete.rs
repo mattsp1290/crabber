@@ -282,7 +282,7 @@ fn behavior_graph(
     // The same features own binaries, tests and docs; there are no per-package
     // behavior reruns merely to enable PostgreSQL or another provider/exporter.
     gates.owned(Owner::Native, |gates| {
-        let cargo_metadata = directory.join("cargo-metadata.json");
+        let cargo_metadata = crate::native_files::File::Metadata.path(directory);
         let binaries = directory.join("binaries.json");
         let manifest = directory.join("tests.json");
         gates.prepares_for(crate::parts::PartFamily::NativeRemaining, |gates| {
@@ -546,7 +546,13 @@ fn tool_versions(gates: &mut Checks, directory: &Path) {
     ] {
         let mut command = Command::new(program);
         command.args(arguments).current_dir(crate::workspace());
-        let path = directory.join(format!("{program}-version.txt"));
+        let path = match program {
+            "rustc" => crate::native_files::File::RustcVersion,
+            "wasm-tools" => crate::native_files::File::WasmToolsVersion,
+            "docker" => crate::native_files::File::DockerVersion,
+            _ => unreachable!("known version program"),
+        }
+        .path(directory);
         gates.captured(
             None,
             crate::workspace(),
