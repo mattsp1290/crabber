@@ -332,8 +332,14 @@ fn associate(
         bind_record(&json(&values[role])?)?;
     }
     if worker.family == Family::Remaining {
-        bind_record(&json(&values["target-plan"])?["plan"])?;
+        let plan = json(&values["target-plan"])?;
+        bind_record(&plan["plan"])?;
+        require(
+            plan["plan"]["quarter"] == worker.quarter,
+            "plan quarter binding",
+        )?;
     }
+    fixture_interval(&values["fixture-ledger"], &wrapper)?;
     let binaries = json(&values["binaries"])?;
     require(
         binaries["rust-build-meta"]["target-directory"] == roots.target,
@@ -373,6 +379,37 @@ fn associate(
     }
     require(references > 0, "missing metadata run reference")?;
     Ok((worker, roots, source.clone()))
+}
+
+fn fixture_interval(raw: &[u8], wrapper: &Value) -> Result<()> {
+    let start = wrapper["started_unix_seconds"]
+        .as_f64()
+        .ok_or("missing start")?;
+    let end = wrapper["ended_unix_seconds"]
+        .as_f64()
+        .ok_or("missing end")?;
+    let mut setup = Vec::new();
+    let mut cleanup = Vec::new();
+    for line in raw.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
+        let event = json(line)?;
+        let nanos = event["unix_nanos"]
+            .as_u64()
+            .ok_or("invalid fixture timestamp")?;
+        let seconds = std::time::Duration::from_nanos(nanos).as_secs_f64();
+        require(
+            start <= seconds && seconds <= end,
+            "fixture interval binding",
+        )?;
+        match event["phase"].as_str() {
+            Some("run_setup") => setup.push(text(&event, "identity")?.to_owned()),
+            Some("run_cleanup") => cleanup.push(text(&event, "identity")?.to_owned()),
+            _ => {}
+        }
+    }
+    require(
+        setup.len() == 1 && !setup[0].is_empty() && setup == cleanup,
+        "fixture run binding",
+    )
 }
 
 pub(crate) fn export(report: &Path, data: &Path, destination: &Path) -> Result<()> {
@@ -598,6 +635,7 @@ mod tests {
             let metadata = json!({"workspace_root":"/old/workspace","target_directory":"/old/workspace/target"});
             save(&File::Metadata.path(&data), &metadata);
             let record = json!({"source":source,"metadata_sha256":digest(&fs::read(File::Metadata.path(&data)).unwrap())});
+            fs::write(File::Fixtures.path(&data), b"{\"phase\":\"run_setup\",\"identity\":\"run\",\"unix_nanos\":2000000000}\n{\"phase\":\"run_cleanup\",\"identity\":\"run\",\"unix_nanos\":2500000000}\n").unwrap();
             for file in [File::Targets(family), File::Owner(family)] {
                 save(&file.path(&data), &record);
             }
@@ -617,7 +655,9 @@ mod tests {
                 &json!({"rust-build-meta":{"target-directory":"/old/workspace/target"}}),
             );
             if family == Family::Remaining {
-                save(&File::TargetPlan.path(&data), &json!({"plan":record}));
+                let mut plan = record;
+                plan["quarter"] = json!(quarter);
+                save(&File::TargetPlan.path(&data), &json!({"plan":plan}));
             }
             Self { root, report, data }
         }
@@ -712,6 +752,37 @@ mod tests {
     }
     #[test]
     fn terminal_source_and_run_associations_reject_substitution() {
+        for (file, replacement, reason) in [
+            (File::TargetPlan, json!({"plan":{"quarter":2}}), "quarter"),
+            (
+                File::Fixtures,
+                json!({"phase":"run_setup","identity":"other","unix_nanos":4_000_000_000_u64}),
+                "interval",
+            ),
+            (
+                File::Fixtures,
+                json!({"phase":"run_setup","identity":"other","unix_nanos":2_000_000_000_u64}),
+                "run",
+            ),
+        ] {
+            let snapshot = Snapshot::new(Family::Remaining, 1);
+            let path = file.path(&snapshot.data);
+            if matches!(file, File::TargetPlan) {
+                let mut plan = json(&fs::read(&path).unwrap()).unwrap();
+                plan["plan"]["quarter"] = replacement["plan"]["quarter"].clone();
+                save(&path, &plan);
+            } else {
+                fs::write(&path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+            }
+            let error = export(
+                &snapshot.report,
+                &snapshot.data,
+                &snapshot.root.join("rejected"),
+            )
+            .err()
+            .unwrap();
+            assert!(error.contains(reason), "{error}");
+        }
         for (key, value) in [
             ("status", json!("failed")),
             ("processes_drained", json!(false)),
