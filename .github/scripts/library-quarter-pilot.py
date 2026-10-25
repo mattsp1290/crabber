@@ -19,6 +19,7 @@ OUT = ROOT / 'target/test-performance' / ('library-quarter-' + os.environ.get('G
 CANONICAL_REVISION = 'cbbbbbded5e2b3290346863ef1e51ff7ed6b2b03'
 CANONICAL = json.loads((ROOT / '.github/scripts/library-quarter-canonical.json').read_text())[os.uname().machine]
 ROLE = 'postgres::isolation_tests::migration::migration_without_createrole_fails_clearly'
+REQUIRED_TOOLS = ('BACKGROUND_JOBS_REQUIRE_SHELL', 'PYTHON_REPL_REQUIRE_PYTHON', 'CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE')
 
 
 def save(name, value):
@@ -74,6 +75,20 @@ def cargo(args):
         return 0
     if args[:2] != ['nextest', 'run']:
         os.execv(real, [real, *args])
+    requirements = {name: os.environ.get(name) == '1' for name in REQUIRED_TOOLS}
+    requirements['CRABBER_REQUIRE_POSTGRES'] = os.environ.get('CRABBER_REQUIRE_POSTGRES') == '1'
+    python_version = subprocess.run(['python3', '--version'], capture_output=True, text=True, check=True).stdout.strip()
+    rg_version = subprocess.run(['rg', '--version'], capture_output=True, text=True, check=True).stdout.splitlines()[0]
+    shell = subprocess.run(['/bin/sh', '-c', 'test -n "$0"'], check=False).returncode == 0
+    capabilities = {'python3_supported': re.fullmatch(r'Python 3\.(11|12|13|14)\.\d+', python_version) is not None,
+                    'ripgrep_supported': int(rg_version.split()[1].split('.')[0]) >= 14,
+                    'sh_on_path': shutil.which('sh') is not None, 'bin_sh_executes': shell}
+    phase = 'role' if args[args.index('-E') + 1].startswith('test(') else 'quarter'
+    save(phase + '-tool-requirements.json', {'requirements': requirements, 'capabilities': capabilities,
+                                          'versions': {'python3': python_version, 'ripgrep': rg_version},
+                                          'observation': 'native Cargo wrapper before build and nextest execution'})
+    assert all(requirements.values()), 'native Cargo wrapper must require shell, Python, login profile, and PostgreSQL tests'
+    assert all(capabilities.values()), 'required subprocess tools unavailable or unsupported'
     metadata = OUT / 'cargo-metadata.json'
     binaries = OUT / 'binaries.json'
     if not binaries.exists():
@@ -185,6 +200,7 @@ def run():
     wrapper.chmod(0o755)
     os.environ['LIBRARY_QUARTER_REAL_CARGO'] = real
     os.environ['PATH'] = str(shim) + os.pathsep + os.environ['PATH']
+    os.environ.update({name: '1' for name in REQUIRED_TOOLS})
     try:
         command([str(owner), 'check-postgres', '--package', 'crabber-session', '--runner', 'nextest', '--test-threads', '4', '--fixture-metrics', str(OUT / 'fixtures.jsonl')], 'owned-pg')
     finally:
