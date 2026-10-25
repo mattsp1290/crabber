@@ -86,6 +86,8 @@ fn compile_native_artifacts(gates: &mut Checks, directory: &Path, destination: P
                 "--workspace",
                 "--bins",
                 "--tests",
+                "--example",
+                "protected_workspace",
                 "--features",
                 FEATURES,
             ],
@@ -376,6 +378,8 @@ fn cli_journeys(gates: &mut Checks) {
         ("fenced-abandon", vec!["--sqlite"]),
         ("server-host-probe", vec!["memory", "--smoke"]),
         ("agui-sse", vec!["--check"]),
+        ("mount-standard", vec!["--check"]),
+        ("examples/protected_workspace", vec![]),
     ] {
         let mut command = binary_command(name);
         command.args(arguments);
