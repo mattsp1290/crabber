@@ -65,9 +65,21 @@ impl Options {
                     options.part = Some(match args.next().map(String::as_str) {
                         Some("quality-contracts") => crate::parts::Part::QualityContracts,
                         Some("quality-artifacts") => crate::parts::Part::QualityArtifacts,
+                        Some("native-library-1") => {
+                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::One)
+                        }
+                        Some("native-library-2") => {
+                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::Two)
+                        }
+                        Some("native-library-3") => {
+                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::Three)
+                        }
+                        Some("native-library-4") => {
+                            crate::parts::Part::NativeLibraries(crate::parts::LibraryQuarter::Four)
+                        }
                         _ => {
                             return Err(
-                                "--part accepts quality-contracts or quality-artifacts".into()
+                                "--part accepts quality-contracts, quality-artifacts or native-library-1 through native-library-4".into()
                             );
                         }
                     });
@@ -92,7 +104,12 @@ impl Options {
 enum Action {
     Command(Command),
     Internal(Box<dyn Fn(&Path)>),
-    Captured(Command, Box<dyn Fn(&Output)>, Option<PathBuf>),
+    Captured(
+        Command,
+        Box<dyn Fn(&Output)>,
+        Option<PathBuf>,
+        Option<PathBuf>,
+    ),
 }
 
 pub(crate) struct GateCommand {
@@ -125,7 +142,7 @@ impl GateCommand {
                     },
                 )
             }
-            Action::Captured(command, validate, journal) => {
+            Action::Captured(command, validate, journal, evidence) => {
                 let output = if let Some(path) = journal {
                     crate::process::native_output(command, signal, path)
                 } else {
@@ -138,6 +155,12 @@ impl GateCommand {
                     );
                     1
                 })?;
+                if let Some(path) = evidence {
+                    std::fs::write(path.with_extension("stdout.log"), &output.stdout)
+                        .expect("persist actual stdout");
+                    std::fs::write(path.with_extension("stderr.log"), &output.stderr)
+                        .expect("persist actual stderr");
+                }
                 if !output.status.success() {
                     eprintln!(
                         "captured command {} failed: {}",
@@ -201,8 +224,8 @@ impl Checks {
         owner: crate::parts::Owner,
         schedule: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let previous = self.role;
-        self.role = crate::parts::GateRole::Required(owner, None);
+        let previous = self.role.clone();
+        self.role = crate::parts::GateRole::Required(owner, Default::default());
         let result = schedule(self);
         self.role = previous;
         result
@@ -210,20 +233,35 @@ impl Checks {
 
     pub(crate) fn prepares_for<T>(
         &mut self,
-        part: crate::parts::Part,
+        family: crate::parts::PartFamily,
         schedule: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let previous = self.role;
-        if let crate::parts::GateRole::Required(owner, existing) = previous {
-            assert!(
-                existing.is_none_or(|existing| existing == part),
-                "gate already prepares another part"
-            );
-            self.role = crate::parts::GateRole::Required(owner, Some(part));
+        let previous = self.role.clone();
+        if let crate::parts::GateRole::Required(owner, mut existing) = previous.clone() {
+            existing.insert(family);
+            self.role = crate::parts::GateRole::Required(owner, existing);
         }
         let result = schedule(self);
         self.role = previous;
         result
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn library_quarter(&self) -> Option<crate::parts::LibraryQuarter> {
+        match self.part {
+            Some(crate::parts::Part::NativeLibraries(quarter)) => Some(quarter),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn native_contribution(&mut self, schedule: impl FnOnce(&mut Self)) {
+        if self.library_quarter().is_some() {
+            let previous =
+                std::mem::replace(&mut self.role, crate::parts::GateRole::NativeContribution);
+            schedule(self);
+            self.role = previous;
+        }
     }
 
     #[cfg(feature = "postgres-check")]
@@ -233,7 +271,7 @@ impl Checks {
         schedule: impl FnOnce(&mut Self),
     ) {
         if self.part == Some(part) {
-            let previous = self.role;
+            let previous = self.role.clone();
             self.role = crate::parts::GateRole::Preparation(part);
             schedule(self);
             self.role = previous;
@@ -256,12 +294,14 @@ impl Checks {
         );
         if let Some(part) = self.part {
             self.gates.retain_mut(|gate| {
-                let role = match gate.role {
-                    GateRole::Required(owner, _) if owner.name() == part.name() => "obligation",
-                    GateRole::Required(_, Some(prepared)) | GateRole::Preparation(prepared)
-                        if prepared == part =>
-                    {
+                let role = match &gate.role {
+                    GateRole::Required(owner, _) if part.owns(*owner) => "obligation",
+                    GateRole::Required(_, prepared) if prepared.contains(&part.family()) => {
                         "preparation"
+                    }
+                    GateRole::Preparation(prepared) if *prepared == part => "preparation",
+                    GateRole::NativeContribution if matches!(part, Part::NativeLibraries(_)) => {
+                        "contribution"
                     }
                     _ => return false,
                 };
@@ -473,7 +513,29 @@ impl Checks {
         if let Action::Command(command) =
             std::mem::replace(&mut gate.action, Action::Internal(Box::new(|_| {})))
         {
-            gate.action = Action::Captured(command, Box::new(validate), None);
+            gate.action = Action::Captured(command, Box::new(validate), None, None);
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn recorded(
+        &mut self,
+        id: &str,
+        command: Command,
+        evidence: PathBuf,
+        validate: impl Fn(&Output) + 'static,
+    ) {
+        self.captured(
+            Some(id),
+            crate::workspace(),
+            command,
+            "exact observed library case execution",
+            validate,
+        );
+        let gate = self.gates.last_mut().unwrap();
+        gate.inventory["execution_evidence"] = json!(evidence);
+        if let Action::Captured(_, _, _, path) = &mut gate.action {
+            *path = Some(evidence);
         }
     }
 
@@ -494,7 +556,7 @@ impl Checks {
         );
         let gate = self.gates.last_mut().unwrap();
         gate.inventory["native_artifacts"] = json!(journal);
-        if let Action::Captured(_, _, path) = &mut gate.action {
+        if let Action::Captured(_, _, path, _) = &mut gate.action {
             *path = Some(journal);
         }
     }
@@ -515,7 +577,7 @@ impl Checks {
         if let Action::Command(command) =
             std::mem::replace(&mut gate.action, Action::Internal(Box::new(|_| {})))
         {
-            gate.action = Action::Captured(command, Box::new(validate), Some(journal));
+            gate.action = Action::Captured(command, Box::new(validate), Some(journal), None);
         }
     }
 
@@ -544,9 +606,13 @@ impl Checks {
 
     fn push(&mut self, directory: &Path, mut inventory: Value, action: Action) {
         if self.partitioned {
-            match self.role {
+            match &self.role {
                 crate::parts::GateRole::Required(owner, _) => {
                     inventory["owner"] = json!(owner.name());
+                }
+                #[cfg(feature = "postgres-check")]
+                crate::parts::GateRole::NativeContribution => {
+                    inventory["owner"] = json!("native");
                 }
                 #[cfg(feature = "postgres-check")]
                 crate::parts::GateRole::Preparation(part) => {
@@ -577,7 +643,7 @@ impl Checks {
             directory: directory.to_owned(),
             action,
             #[cfg(feature = "postgres-check")]
-            role: self.role,
+            role: self.role.clone(),
         });
     }
 
@@ -799,6 +865,124 @@ mod tests {
         assert_eq!(checks.execute(&Options::default()), 1);
     }
     #[cfg(feature = "postgres-check")]
+    #[test]
+    fn library_parts_project_closed_preparation_without_whole_native_credit() {
+        use crate::parts::{LibraryQuarter, Part};
+        let directory =
+            crate::workspace().join("target/test-performance/library-list-purity-unused");
+        let full = crate::complete::schedule(Vec::new(), &directory, None, None);
+        for (label, quarter) in [
+            ("native-library-1", LibraryQuarter::One),
+            ("native-library-2", LibraryQuarter::Two),
+            ("native-library-3", LibraryQuarter::Three),
+            ("native-library-4", LibraryQuarter::Four),
+        ] {
+            assert_eq!(
+                Options::parse(&["--part".into(), label.into()])
+                    .unwrap()
+                    .part,
+                Some(Part::NativeLibraries(quarter))
+            );
+            let partial = crate::complete::schedule(
+                Vec::new(),
+                &directory,
+                None,
+                Some(Part::NativeLibraries(quarter)),
+            );
+            let metadata = partial.scope.as_ref().unwrap().metadata();
+            assert_eq!(
+                metadata["ownership"],
+                crate::parts::ownership(full.gates.iter().map(|g| &g.inventory))
+            );
+            assert_eq!(metadata["qualified"], false);
+            assert_eq!(metadata["full_coverage_policy_executed"], false);
+            assert_eq!(metadata["requires_owned_postgres"], true);
+            assert_eq!(metadata["postgres_demos"], json!([]));
+            let ids: std::collections::BTreeSet<_> = partial
+                .gates
+                .iter()
+                .map(|gate| gate.inventory["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids.len(), partial.gates.len());
+            for id in [
+                "acquire-wasm-fixture-output",
+                "wasm-fixture-aliases",
+                "release-wasm-fixture-output",
+                "prepare-complete-manifests",
+                "standard-tool-prerequisites",
+                "native-library-build",
+                "native-library-migration-owner",
+                "native-library-manifest",
+                "native-library-resource-groups",
+                "native-library-quarter-manifest",
+                "native-library-quarter",
+            ] {
+                assert!(ids.contains(id), "missing {id}");
+            }
+            for id in [
+                "required-coverage-and-features",
+                "native-test-manifest",
+                "native-resource-groups",
+                "native-cluster-role",
+                "native-complement",
+                "normal-output-build",
+            ] {
+                assert!(!ids.contains(id), "selected full obligation {id}");
+            }
+            assert_eq!(
+                ids.contains("native-library-role"),
+                quarter == LibraryQuarter::One
+            );
+            assert_eq!(
+                ids.contains("native-library-role-manifest"),
+                quarter == LibraryQuarter::One
+            );
+            assert!(
+                partial
+                    .gates
+                    .iter()
+                    .all(|gate| gate.inventory["semantic_credit"] == false)
+            );
+            let owner = partial
+                .gates
+                .iter()
+                .position(|gate| gate.inventory["id"] == "native-library-migration-owner")
+                .unwrap();
+            assert_eq!(
+                partial.gates[owner + 1].inventory["argv"][1],
+                "postgres-template-migrate"
+            );
+            for gate in &partial.gates {
+                if gate.inventory["execution_role"] == "preparation" {
+                    let original = full
+                        .gates
+                        .iter()
+                        .find(|original| original.inventory["id"] == gate.inventory["id"])
+                        .unwrap();
+                    assert_eq!(gate.inventory["argv"], original.inventory["argv"]);
+                }
+            }
+            assert_eq!(
+                partial.execute(&Options {
+                    list: true,
+                    part: Some(Part::NativeLibraries(quarter)),
+                    ..Options::default()
+                }),
+                0
+            );
+        }
+        assert!(!directory.exists());
+        for invalid in [
+            "native-library-0",
+            "native-library-5",
+            "native-library-01",
+            "native-libraries",
+        ] {
+            assert!(Options::parse(&["--part".into(), invalid.into()]).is_err());
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
     fn assert_part_projection(full: &Checks, directory: &Path, part: crate::parts::Part) {
         use crate::parts::Part;
         let partial = crate::complete::schedule(Vec::new(), directory, None, Some(part));
@@ -888,7 +1072,7 @@ mod tests {
         let bins = position("normal-output-build");
         for index in [examples, bins] {
             let gate = &partial.gates[index];
-            let super::Action::Captured(_, _, Some(journal)) = &gate.action else {
+            let super::Action::Captured(_, _, Some(journal), None) = &gate.action else {
                 panic!("normal-output capture must retain its Cargo journal");
             };
             assert_eq!(gate.inventory["cargo_artifacts"], json!(journal));
@@ -975,7 +1159,10 @@ mod tests {
                 .iter()
                 .find(|gate| gate.inventory["id"] == id)
                 .unwrap();
-            assert!(matches!(&gate.action, super::Action::Captured(_, _, None)));
+            assert!(matches!(
+                &gate.action,
+                super::Action::Captured(_, _, None, None)
+            ));
             assert!(gate.inventory["cargo_artifacts"].is_null());
             assert!(gate.inventory["native_artifacts"].is_null());
         }

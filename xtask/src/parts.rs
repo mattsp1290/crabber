@@ -1,12 +1,12 @@
 //! Ownership of the required schedule; partial runs never qualify the suite.
 use serde_json::{Value, json};
-#[cfg(feature = "postgres-check")]
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Part {
     QualityContracts,
     QualityArtifacts,
+    NativeLibraries(LibraryQuarter),
 }
 
 impl Part {
@@ -14,7 +14,77 @@ impl Part {
         match self {
             Self::QualityContracts => "quality-contracts",
             Self::QualityArtifacts => "quality-artifacts",
+            Self::NativeLibraries(quarter) => quarter.name(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PartFamily {
+    QualityContracts,
+    QualityArtifacts,
+    NativeLibraries,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryQuarter {
+    One,
+    Two,
+    Three,
+    Four,
+}
+
+impl LibraryQuarter {
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Three => 3,
+            Self::Four => 4,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::One => "native-library-1",
+            Self::Two => "native-library-2",
+            Self::Three => "native-library-3",
+            Self::Four => "native-library-4",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourcePolicy {
+    Direct,
+    OwnedPostgres,
+    OwnedPostgresWithDemos,
+}
+
+impl Part {
+    pub(crate) fn family(self) -> PartFamily {
+        match self {
+            Self::QualityContracts => PartFamily::QualityContracts,
+            Self::QualityArtifacts => PartFamily::QualityArtifacts,
+            Self::NativeLibraries(_) => PartFamily::NativeLibraries,
+        }
+    }
+    pub(crate) fn resources(self) -> ResourcePolicy {
+        match self {
+            Self::QualityContracts => ResourcePolicy::Direct,
+            Self::QualityArtifacts => ResourcePolicy::OwnedPostgresWithDemos,
+            Self::NativeLibraries(_) => ResourcePolicy::OwnedPostgres,
+        }
+    }
+    pub(crate) fn owns_postgres(self) -> bool {
+        self.resources() != ResourcePolicy::Direct
+    }
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn owns(self, owner: Owner) -> bool {
+        matches!(
+            (self, owner),
+            (Self::QualityContracts, Owner::QualityContracts)
+                | (Self::QualityArtifacts, Owner::QualityArtifacts)
+        )
     }
 }
 
@@ -39,13 +109,15 @@ impl Owner {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) enum GateRole {
     #[default]
     Unpartitioned,
-    Required(Owner, Option<Part>),
+    Required(Owner, BTreeSet<PartFamily>),
     #[cfg(feature = "postgres-check")]
     Preparation(Part),
+    #[cfg(feature = "postgres-check")]
+    NativeContribution,
 }
 
 pub(crate) struct Scope {
@@ -56,13 +128,20 @@ pub(crate) struct Scope {
 
 impl Scope {
     pub(crate) fn metadata(&self) -> Value {
-        json!({
+        let mut value = json!({
             "coverage_scope": self.part.name(), "qualified": false,
             "full_native_suite_executed": false,
-            "requires_owned_postgres": self.part == Part::QualityArtifacts,
-            "owned_postgres_run": if self.part == Part::QualityArtifacts { Value::Null } else { json!(false) },
+            "requires_owned_postgres": self.part.owns_postgres(),
+            "owned_postgres_run": if self.part.owns_postgres() { Value::Null } else { json!(false) },
             "ownership": self.ownership, "postgres_demos": self.demos,
-        })
+        });
+        if let Part::NativeLibraries(quarter) = self.part {
+            value["part_family"] = json!("native-libraries");
+            value["library_quarter"] = json!(quarter.index());
+            value["library_quarter_count"] = json!(4);
+            value["full_coverage_policy_executed"] = json!(false);
+        }
+        value
     }
 }
 

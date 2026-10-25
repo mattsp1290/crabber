@@ -101,7 +101,7 @@ fn declared(directory: &Path, kind: &str) -> BTreeMap<String, Value> {
     result
 }
 
-fn journal(directory: &Path, path: &Path) -> Vec<Value> {
+pub(crate) fn journal(directory: &Path, path: &Path) -> Vec<Value> {
     let rows: Vec<Value> = fs::read_to_string(path)
         .expect("retained Cargo artifact journal")
         .lines()
@@ -226,4 +226,42 @@ fn finish(directory: &Path, path: &Path) {
         "normal_bins": bins, "normal_examples": examples,
         "scope": "actual normal executable observations; no canonical transitive-context equivalence claim",
     })).unwrap()).unwrap();
+}
+
+pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
+    let mut command = Command::new("cargo");
+    command.current_dir(crate::workspace()).args([
+        "build",
+        "-p",
+        "xtask",
+        "--features",
+        "postgres-check,session-fixtures",
+        "--message-format",
+        "json-render-diagnostics",
+    ]);
+    let output = directory.to_owned();
+    let path = directory.join("library-migration-owner-artifacts.jsonl");
+    gates.named_captured("native-library-migration-owner", crate::workspace(), command,
+        "timed normal enabled xtask producer immediately before owned template migration",
+        path.clone(), move |_| {
+            let rows = journal(&output, &path);
+            assert_eq!(rows.last().unwrap()["truncated_tail"], false);
+            assert_eq!(rows[0]["source"], crate::timings::source_identity());
+            let artifacts: Vec<_> = rows.iter().filter(|row| row["kind"] == "artifact").collect();
+            assert_eq!(artifacts.len(), 1, "narrow owner must produce only its normal executable");
+            let bins = observed(&output, &path, "bin");
+            assert_eq!(bins.len(), 1);
+            let owner = bins.values().next().unwrap();
+            assert_eq!(owner["target"]["name"], "xtask");
+            assert_eq!(owner["profile"]["test"], false);
+            assert_eq!(owner["profile"]["opt_level"], "0");
+            assert_eq!(owner["profile"]["debuginfo"], 0);
+            let features: std::collections::BTreeSet<_> = owner["features"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert_eq!(features, ["postgres-check", "session-fixtures"].into());
+            fs::write(output.join("library-migration-owner.json"), serde_json::to_vec_pretty(&json!({
+                "source": rows[0]["source"], "metadata_sha256": rows[0]["metadata_sha256"],
+                "argv": rows[0]["argv"], "artifact": owner,
+                "scope": "normal enabled xtask preparation; no full dependency-context equivalence claim",
+            })).unwrap()).unwrap();
+        });
 }
