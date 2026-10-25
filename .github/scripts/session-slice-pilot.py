@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'target/test-performance' / ('session-slice-' + os.environ.get('GITHUB_RUN_ID', 'local'))
 CANONICAL_REVISION = 'ecfa40cb7381c32c44b2deeb7ad3b5b417a7f351'
@@ -116,6 +118,25 @@ def run():
     command(['git', 'diff', '--exit-code', CANONICAL_REVISION, 'HEAD', '--', 'xtask'], 'owner-source')
     save('owner.json', {'sha256': owner_sha, 'fingerprints': owner_matches, 'source_equivalence': 'xtask Rust source unchanged from ecfa; cached owner is inside the measured dependency cache', 'canonical_revision': CANONICAL_REVISION})
     real = shutil.which('cargo')
+    spec = importlib.util.spec_from_file_location('prepare_rebuild', ROOT / '.github/scripts/prepare-rebuild.py')
+    rebuild = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rebuild)
+    rows = rebuild.inventory(ROOT, ROOT / 'target', 'crabber-session')
+    signature = b'Signature: 8a477f597d28d172789f06886806bc55\n'
+    tag_bytes = signature + b'# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n'
+    tags = []
+    for row in rows:
+        target = rebuild.owned(ROOT, Path(row['target']))
+        tag = target / 'CACHEDIR.TAG'
+        assert not tag.is_symlink(), 'cache tag must not be a symlink'
+        if tag.exists():
+            assert tag.read_bytes().startswith(signature), 'existing Cargo cache tag is invalid'
+        tags.append({'target': str(target), 'tag': str(tag), 'existed': tag.exists()})
+    for row in tags:
+        if not row['existed']:
+            with Path(row['tag']).open('xb') as stream:
+                stream.write(tag_bytes)
+    save('cache-tags.json', {'ownership': 'existing prepare-rebuild inventory requires current-source package/dependent fingerprints inside nonsymlink owned targets', 'tags': tags, 'created_tag_sha256': hashlib.sha256(tag_bytes).hexdigest()})
     command([sys.executable, '-I', '-S', str(ROOT / '.github/scripts/prepare-rebuild.py'), 'crabber-session', '--report', str(OUT / 'invalidation.json')], 'invalidation')
     shim = OUT / 'bin'
     shim.mkdir()
@@ -142,13 +163,18 @@ def run():
 
 def launch():
     OUT.mkdir(parents=True, exist_ok=False)
+    source_paths = {'before_supervisor_import': subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).splitlines()}
     spec = importlib.util.spec_from_file_location('check_supervisor', ROOT / '.github/scripts/check.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    source_paths['after_supervisor_import'] = subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).splitlines()
+    save('source-paths.json', source_paths)
     elapsed = time.time() - float(os.environ['CHECK_STARTED'])
     report = OUT / 'report.json'
     code = module.supervise([sys.executable, '-I', '-S', str(Path(__file__).resolve()), 'run'], ROOT, report, budget=4800, reserve=20, elapsed=elapsed)
     value = json.loads(report.read_text())
+    source_paths['after_run'] = subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).splitlines()
+    save('source-paths.json', source_paths)
     value.update(qualified=False, coverage_scope='diagnostic Session execution only; all-library compilation', timing_target_seconds=600, timing_target_met=False, source_end=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), source_end_clean=not subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip())
     stable = value['source_clean'] and value['source_end_clean'] and value['source_revision'] == value['source_end']
     if not stable:
