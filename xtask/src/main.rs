@@ -14,6 +14,8 @@ mod inventory;
 mod lease;
 mod native_artifacts;
 mod nextest;
+#[cfg(feature = "postgres-check")]
+mod normal_outputs;
 mod parts;
 #[cfg(feature = "postgres-check")]
 mod postgres;
@@ -72,7 +74,7 @@ fn main() {
                 std::process::exit(2);
             });
             #[cfg(feature = "postgres-check")]
-            if options.part.is_some() {
+            if options.part == Some(parts::Part::QualityContracts) {
                 std::process::exit(complete::contracts(options));
             }
             if options.offline {
@@ -113,7 +115,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check [--list] [--part quality-contracts] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
+                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
             );
             std::process::exit(2);
         }
@@ -126,8 +128,10 @@ fn workspace() -> &'static Path {
 
 fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
     gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
-    gates.internal("standard-tool-prerequisites", workspace, |_| {
-        standard_tools::check_tool_prerequisites();
+    gates.prepares_for(parts::Part::QualityArtifacts, |gates| {
+        gates.internal("standard-tool-prerequisites", workspace, |_| {
+            standard_tools::check_tool_prerequisites();
+        });
     });
     gates.internal(
         "live-tests-ignored",
@@ -142,7 +146,9 @@ fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
         .current_dir(workspace);
     gates.command(workspace, wit, "WIT contract validation");
     gates.internal("minimal-embed-glue", workspace, check_glue);
-    nextest::version_gate(workspace, gates);
+    gates.prepares_for(parts::Part::QualityArtifacts, |gates| {
+        nextest::version_gate(workspace, gates);
+    });
 }
 
 fn check() -> checks::Checks {
@@ -794,6 +800,7 @@ fn check_observability(workspace: &Path, gates: &mut checks::Checks) {
         .env("CRABBER_LOG_STDERR", "1")
         .env("RUST_LOG", "info");
     gates.captured(
+        None,
         workspace,
         command,
         "Completed; retry diagnostic on stderr; no fixture secrets",

@@ -34,6 +34,7 @@ impl TemplateMigration {
             command.env_remove(TEMPLATE_URL);
         }
         gates.captured(
+            None,
             crate::workspace(),
             command,
             "run-owned template migration before native execution",

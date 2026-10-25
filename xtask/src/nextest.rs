@@ -29,6 +29,7 @@ pub(crate) fn group_gate(workspace: &Path, gates: &mut Checks) {
         ])
         .current_dir(workspace);
     gates.captured(
+        None,
         workspace,
         command,
         "every discovered entrypoint is bounded by the required PostgreSQL group",
@@ -53,6 +54,7 @@ pub(crate) fn version_gate(workspace: &Path, gates: &mut Checks) {
         .args(["nextest", "--version"])
         .current_dir(workspace);
     gates.captured(
+        None,
         workspace,
         command,
         "repository-pinned cargo-nextest version",
@@ -112,6 +114,7 @@ pub(crate) fn complete_group_gate(
         ])
         .current_dir(workspace);
     gates.captured(
+        Some("native-resource-groups"),
         workspace,
         command,
         "backend cases retain service limits and each custom group has uniform worker weights",

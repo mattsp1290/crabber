@@ -113,6 +113,7 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut Checks) {
     .env_remove("DELEGATE_TASK_REQUIRE_OPENCODE_GO");
     gates.owned(crate::parts::Owner::QualityContracts, |gates| {
         gates.captured(
+            None,
             workspace,
             live,
             "both live suites prove credential-free skip",
