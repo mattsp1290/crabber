@@ -169,13 +169,31 @@ pub(crate) fn admit_manifest(directory: &Path, manifest: &Value) {
         usize::try_from(manifest["test-count"].as_u64().unwrap()).unwrap(),
         count
     );
+    admit_role(&read(directory.join("cargo-metadata.json")), manifest);
+}
+
+fn admit_role(metadata: &Value, manifest: &Value) {
+    let members = metadata["workspace_members"].as_array().unwrap();
+    let session: Vec<_> = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|package| package["name"] == "crabber-session" && members.contains(&package["id"]))
+        .collect();
+    assert_eq!(session.len(), 1, "one declared workspace Session package");
+    let cases = selected(manifest);
+    let role: Vec<_> = cases
+        .keys()
+        .filter(|(_, name)| name == crate::nextest::CLUSTER_ROLE_TEST)
+        .collect();
+    assert_eq!(role.len(), 1, "one active cluster-role detector");
+    let suite = &manifest["rust-suites"][&role[0].0];
     assert_eq!(
-        selected(manifest)
-            .iter()
-            .filter(|((_, name), _)| name == crate::nextest::CLUSTER_ROLE_TEST)
-            .count(),
-        1
+        suite["package-id"], session[0]["id"],
+        "cluster-role detector must belong to declared Session"
     );
+    assert_eq!(suite["package-name"], session[0]["name"]);
+    assert_eq!(suite["kind"], "lib");
 }
 
 pub(crate) fn selected(manifest: &Value) -> Cases {
@@ -300,6 +318,32 @@ mod tests {
             "ignored": {"ignored": true, "filter-match": {"status": "matches"}},
             "excluded": {"ignored": false, "filter-match": {"status": "mismatch"}}
         }}}})
+    }
+
+    #[test]
+    fn cluster_role_requires_the_declared_session_library() {
+        let metadata = json!({"workspace_members": ["session", "other"], "packages": [
+            {"id": "session", "name": "crabber-session"}, {"id": "other", "name": "other-library"}
+        ]});
+        let role = crate::nextest::CLUSTER_ROLE_TEST;
+        let valid = json!({"rust-suites": {"session": {"binary-id": "session", "package-id": "session",
+            "package-name": "crabber-session", "kind": "lib", "testcases": {
+                role: {"ignored": false, "filter-match": {"status": "matches"}}
+            }
+        }}});
+        admit_role(&metadata, &valid);
+        for (field, replacement) in [
+            ("package-id", json!("other")),
+            ("package-name", json!("other-library")),
+            ("kind", json!("test")),
+        ] {
+            let mut substituted = valid.clone();
+            substituted["rust-suites"]["session"][field] = replacement;
+            assert!(std::panic::catch_unwind(|| admit_role(&metadata, &substituted)).is_err());
+        }
+        let mut ignored = valid.clone();
+        ignored["rust-suites"]["session"]["testcases"][role]["ignored"] = json!(true);
+        assert!(std::panic::catch_unwind(|| admit_role(&metadata, &ignored)).is_err());
     }
 
     #[test]
