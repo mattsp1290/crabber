@@ -33,11 +33,12 @@ pub(crate) fn output_directory() -> PathBuf {
         ))
 }
 
-fn capture_json(gates: &mut Checks, arguments: &[&str], destination: PathBuf) {
+fn capture_json(gates: &mut Checks, name: Option<&str>, arguments: &[&str], destination: PathBuf) {
     let workspace = crate::workspace();
     let mut command = Command::new("cargo");
     command.args(arguments).current_dir(workspace);
     gates.captured(
+        name,
         workspace,
         command,
         "successful JSON build metadata",
@@ -209,6 +210,7 @@ fn driver_free_libraries(gates: &mut Checks, destination: PathBuf) {
         ])
         .current_dir(workspace);
     gates.captured(
+        None,
         workspace,
         command,
         "SQLite libraries without a PostgreSQL driver; observations without OTLP",
@@ -270,6 +272,7 @@ fn behavior_graph(
         gates.prepares_for(Part::QualityArtifacts, |gates| {
             capture_json(
                 gates,
+                None,
                 &["metadata", "--format-version", "1", "--features", FEATURES],
                 cargo_metadata.clone(),
             );
@@ -285,6 +288,7 @@ fn behavior_graph(
         };
         capture_json(
             gates,
+            Some("native-test-manifest"),
             &[
                 "nextest",
                 "list",
@@ -305,39 +309,7 @@ fn behavior_graph(
             validate_manifest(root, &inspect_metadata, &inspect_manifest);
         });
         crate::nextest::complete_group_gate(workspace, gates, &cargo_metadata, &binaries, profile);
-        let role_test = crate::nextest::CLUSTER_ROLE_TEST;
-        for (filter, expected) in [
-            (
-                format!("test(={role_test})"),
-                "isolated cluster-role migration; no other native histories run",
-            ),
-            (
-                format!("not test(={role_test})"),
-                "all remaining native behavior, including required real PostgreSQL",
-            ),
-        ] {
-            let mut behavior = Command::new("cargo");
-            behavior
-                .args([
-                    "nextest",
-                    "run",
-                    "--cargo-metadata",
-                    cargo_metadata.to_str().unwrap(),
-                    "--binaries-metadata",
-                    binaries.to_str().unwrap(),
-                    "--profile",
-                    profile,
-                    "--retries",
-                    "0",
-                    "--no-fail-fast",
-                    "--no-tests",
-                    "fail",
-                ])
-                .args(["-E", &filter])
-                .current_dir(workspace);
-            crate::standard_tools::require_subprocess_tools(&mut behavior);
-            gates.command(workspace, behavior, expected);
-        }
+        run_native_behaviors(gates, workspace, &cargo_metadata, &binaries, profile);
     });
     gates.owned(Owner::QualityArtifacts, |gates| {
         gates.cargo(
@@ -345,6 +317,50 @@ fn behavior_graph(
             &["test", "--workspace", "--features", FEATURES, "--doc"],
         );
     });
+}
+
+fn run_native_behaviors(
+    gates: &mut Checks,
+    workspace: &Path,
+    cargo_metadata: &Path,
+    binaries: &Path,
+    profile: &str,
+) {
+    let role_test = crate::nextest::CLUSTER_ROLE_TEST;
+    for (id, filter, expected) in [
+        (
+            "native-cluster-role",
+            format!("test(={role_test})"),
+            "isolated cluster-role migration; no other native histories run",
+        ),
+        (
+            "native-complement",
+            format!("not test(={role_test})"),
+            "all remaining native behavior, including required real PostgreSQL",
+        ),
+    ] {
+        let mut behavior = Command::new("cargo");
+        behavior
+            .args([
+                "nextest",
+                "run",
+                "--cargo-metadata",
+                cargo_metadata.to_str().unwrap(),
+                "--binaries-metadata",
+                binaries.to_str().unwrap(),
+                "--profile",
+                profile,
+                "--retries",
+                "0",
+                "--no-fail-fast",
+                "--no-tests",
+                "fail",
+            ])
+            .args(["-E", &filter])
+            .current_dir(workspace);
+        crate::standard_tools::require_subprocess_tools(&mut behavior);
+        gates.named_command(id, workspace, behavior, expected);
+    }
 }
 
 fn cli_journeys(gates: &mut Checks) {
@@ -374,6 +390,7 @@ fn cli_journeys(gates: &mut Checks) {
         .env("CRABBER_LOG_STDERR", "1")
         .env("RUST_LOG", "info");
     gates.captured(
+        None,
         workspace,
         exporter,
         "offline exporter diagnostic and redaction",
@@ -502,6 +519,7 @@ fn tool_versions(gates: &mut Checks, directory: &Path) {
         command.args(arguments).current_dir(crate::workspace());
         let path = directory.join(format!("{program}-version.txt"));
         gates.captured(
+            None,
             crate::workspace(),
             command,
             "pinned compiler/tool and server version",
