@@ -167,10 +167,11 @@ fn admit(bundle: LoadedBundle) -> Worker {
     for row in &rows {
         context.artifact(row);
     }
-    bind_debug_controls(&rows, &compiler[0]);
+    bind_debug_controls(&rows, &compiler[0], ProducerProfile::Test);
     bind_debug_controls(
         &[worker.json("migration-owner")["artifact"].clone()],
         &migration[0],
+        ProducerProfile::Dev,
     );
     let manifest = worker.json("unpartitioned-cases");
     crate::native_test_evidence::admit_manifest(&binaries, &manifest);
@@ -524,13 +525,18 @@ fn profile_controls(compiler: &Value, migration: &Value) {
     }
 }
 
-fn bind_debug_controls(rows: &[Value], header: &Value) {
+#[derive(Clone, Copy)]
+enum ProducerProfile {
+    Test,
+    Dev,
+}
+
+fn bind_debug_controls(rows: &[Value], header: &Value, producer: ProducerProfile) {
+    let key = match producer {
+        ProducerProfile::Test => "CARGO_PROFILE_TEST_DEBUG",
+        ProducerProfile::Dev => "CARGO_PROFILE_DEV_DEBUG",
+    };
     for row in rows {
-        let key = if row["profile"]["test"] == true {
-            "CARGO_PROFILE_TEST_DEBUG"
-        } else {
-            "CARGO_PROFILE_DEV_DEBUG"
-        };
         if let Some(value) = header["profile"][key].as_str() {
             let expected = match value {
                 "0" | "none" => json!(0),
@@ -909,12 +915,29 @@ mod tests {
     fn debug_controls_preserve_distinct_test_and_normal_owner_roles() {
         let header =
             json!({"profile":{"CARGO_PROFILE_DEV_DEBUG":"1","CARGO_PROFILE_TEST_DEBUG":"0"}});
-        let mut rows = vec![
+        let rows = vec![
             json!({"profile":{"test":true,"debuginfo":0}}),
-            json!({"profile":{"test":false,"debuginfo":1}}),
+            json!({"profile":{"test":false,"debuginfo":0}}),
         ];
-        bind_debug_controls(&rows, &header);
-        rows[0]["profile"]["debuginfo"] = json!(1);
-        assert!(std::panic::catch_unwind(|| bind_debug_controls(&rows, &header)).is_err());
+        bind_debug_controls(&rows, &header, ProducerProfile::Test);
+        let mut owner = vec![json!({"profile":{"test":false,"debuginfo":1}})];
+        bind_debug_controls(&owner, &header, ProducerProfile::Dev);
+        for index in 0..rows.len() {
+            let mut invalid = rows.clone();
+            invalid[index]["profile"]["debuginfo"] = json!(1);
+            assert!(
+                std::panic::catch_unwind(|| bind_debug_controls(
+                    &invalid,
+                    &header,
+                    ProducerProfile::Test
+                ))
+                .is_err()
+            );
+        }
+        owner[0]["profile"]["debuginfo"] = json!(0);
+        assert!(
+            std::panic::catch_unwind(|| bind_debug_controls(&owner, &header, ProducerProfile::Dev))
+                .is_err()
+        );
     }
 }
