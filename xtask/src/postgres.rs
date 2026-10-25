@@ -155,9 +155,16 @@ fn execute_options(options: Options) -> i32 {
 
 pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
     let started = Instant::now();
+    let owned_started_epoch = options.part.map(|_| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    });
     let directory = crate::complete::output_directory();
     if options.list {
-        return crate::complete::schedule(Vec::new(), &directory, None).execute(&options);
+        return crate::complete::schedule(Vec::new(), &directory, None, options.part)
+            .execute(&options);
     }
     if let Err(error) = std::fs::create_dir_all(&directory) {
         eprintln!("cannot prepare complete-check reports: {error}");
@@ -168,7 +175,8 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
     }
     let timings = options.timings.clone().unwrap();
     let metrics = directory.join("fixtures.jsonl");
-    let code = execute_options(Options {
+    let part = options.part;
+    let mut code = execute_options(Options {
         complete: Some(options),
         fixture_metrics: Some(metrics.clone()),
         ..Options::default()
@@ -177,7 +185,18 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    report["coverage_scope"] = serde_json::json!("complete");
+    if part == Some(crate::parts::Part::QualityArtifacts) {
+        let drained = artifact_process_cleanup(&mut code);
+        report["processes_drained"] = serde_json::json!(drained);
+        report["selected_gates_started_unix_seconds"] = report["started_unix_seconds"].clone();
+        report["started_unix_seconds"] = serde_json::json!(owned_started_epoch.unwrap());
+        report["selected_gates_wall_seconds"] = report["wall_seconds"].clone();
+        report["wall_seconds"] = serde_json::json!(started.elapsed().as_secs_f64());
+        report["qualified"] = serde_json::json!(false);
+        report["full_native_suite_executed"] = serde_json::json!(false);
+        report["owned_postgres_run"] = serde_json::json!(observed_owned_run(&metrics));
+    }
+    report["coverage_scope"] = serde_json::json!(part.map_or("complete", crate::parts::Part::name));
     report["status"] = serde_json::json!(if code == 0 { "passed" } else { "failed" });
     report["exit_code"] = serde_json::json!(code);
     report["wall_seconds_including_fixture_lifecycle"] =
@@ -213,6 +232,44 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
         return 1;
     }
     code
+}
+
+fn observed_owned_run(metrics: &Path) -> bool {
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(metrics)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    ["server_setup", "run_setup"].into_iter().all(|phase| {
+        events
+            .iter()
+            .filter(|event| event["phase"] == phase)
+            .count()
+            == 1
+    })
+}
+
+fn artifact_process_cleanup(code: &mut i32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        match crate::process::verify_drained() {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("artifact owner final process cleanup failed: {error}");
+                if *code == 0 {
+                    *code = 1;
+                }
+                false
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if *code == 0 {
+            *code = 1;
+        }
+        false
+    }
 }
 
 async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
@@ -348,18 +405,24 @@ async fn execute_owned_run(
             }
             let directory = metrics_path.unwrap().parent().unwrap();
             let migration = session::TemplateMigration::new(&run, metrics.cloned());
-            let code = crate::complete::schedule(environment, directory, Some(migration))
-                .execute(complete);
+            let code =
+                crate::complete::schedule(environment, directory, Some(migration), complete.part)
+                    .execute(complete);
             if code != 0 {
                 return Ok(code);
             }
-            return execute_demos(&run, metrics.map(Arc::as_ref), metrics_path).await;
+            return execute_demos(&run, options, metrics.map(Arc::as_ref), metrics_path).await;
         }
         execute_schedule(&run, options, metrics.map(Arc::as_ref), metrics_path).await
     })
     .catch_unwind()
     .await
     .unwrap_or_else(|_| Err("fixture qualification panicked; performing owned cleanup".into()));
+    if options.complete.as_ref().and_then(|complete| complete.part)
+        == Some(crate::parts::Part::QualityArtifacts)
+    {
+        return finish_artifact_run(run, outcome, metrics).await;
+    }
     #[cfg(target_os = "linux")]
     crate::process::verify_drained()?;
     let cleanup_started = Instant::now();
@@ -375,12 +438,68 @@ async fn execute_owned_run(
     outcome
 }
 
+async fn finish_artifact_run(
+    run: RunFixture,
+    outcome: Result<i32, Box<dyn std::error::Error>>,
+    metrics: Option<&Arc<FixtureMetrics>>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    let drained = crate::process::verify_drained();
+    #[cfg(not(target_os = "linux"))]
+    let drained: std::io::Result<()> =
+        Err(std::io::Error::other("artifact supervision requires Linux"));
+    let started = Instant::now();
+    let identity = run.identity().to_owned();
+    let cleanup = run.finish().await;
+    let recorded = if cleanup.is_ok()
+        && let Some(metrics) = metrics
+    {
+        metrics.record("run_cleanup", &identity, None, started.elapsed())
+    } else {
+        Ok(())
+    };
+    if !matches!(&outcome, Ok(0)) {
+        if let Err(error) = drained {
+            eprintln!("artifact stage also failed process cleanup: {error}");
+        }
+        if let Err(error) = cleanup {
+            eprintln!("artifact stage also failed run cleanup: {error}");
+        }
+        if let Err(error) = recorded {
+            eprintln!("artifact stage also failed cleanup recording: {error}");
+        }
+        return outcome;
+    }
+    drained?;
+    cleanup?;
+    recorded?;
+    outcome
+}
+
+fn demo_command(args: &[&str]) -> Command {
+    let package = args.windows(2).find(|pair| pair[0] == "-p").unwrap()[1];
+    let separator = args.iter().position(|arg| *arg == "--").unwrap();
+    let mut command = crate::complete::binary_command(package);
+    command.args(&args[separator + 1..]);
+    command
+}
+
+pub(crate) fn demo_inventory() -> serde_json::Value {
+    serde_json::Value::Array(schedule::COMMANDS.iter().filter(|args| args[0] == "run").map(|args| {
+        let command = demo_command(args);
+        let argv: Vec<_> = std::iter::once(command.get_program()).chain(command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned()).collect();
+        serde_json::json!({"argv": argv, "execution_role": "owned-postgres-demo", "database_mode": "Current"})
+    }).collect())
+}
+
 async fn execute_demos(
     run: &RunFixture,
+    options: &Options,
     metrics: Option<&FixtureMetrics>,
     metrics_path: Option<&Path>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    execute_schedule_mode(run, &Options::default(), metrics, metrics_path, true).await
+    execute_schedule_mode(run, options, metrics, metrics_path, true).await
 }
 
 async fn execute_schedule(
@@ -441,11 +560,7 @@ async fn execute_schedule_mode(
         let mut code = 0;
         for arguments in arguments::commands(args, options) {
             let mut command = if demos_only {
-                let package = args.windows(2).find(|pair| pair[0] == "-p").unwrap()[1];
-                let separator = args.iter().position(|arg| *arg == "--").unwrap();
-                let mut command = crate::complete::binary_command(package);
-                command.args(&args[separator + 1..]);
-                command
+                demo_command(args)
             } else {
                 let mut command = Command::new("cargo");
                 command.args(arguments);
@@ -460,11 +575,14 @@ async fn execute_schedule_mode(
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_DATABASE")
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD")
-                .env_remove(METRICS_FILE);
-            crate::checks::remove_live_configuration(&mut command);
-            if let Some(path) = metrics_path {
-                command.env(METRICS_FILE, path);
+                .env_remove(METRICS_FILE)
+                .envs(metrics_path.map(|path| (METRICS_FILE, path)));
+            if options.complete.as_ref().and_then(|complete| complete.part)
+                == Some(crate::parts::Part::QualityArtifacts)
+            {
+                crate::standard_tools::require_subprocess_tools(&mut command);
             }
+            crate::checks::remove_live_configuration(&mut command);
             if let Some(database) = &database {
                 command
                     .env("CRABBER_TEST_POSTGRES_URL", database.url())

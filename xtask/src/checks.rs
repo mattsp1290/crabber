@@ -62,10 +62,15 @@ impl Options {
                     options.offline = true;
                 }
                 "--part" if options.part.is_none() => {
-                    if args.next().map(String::as_str) != Some("quality-contracts") {
-                        return Err("--part accepts quality-contracts".into());
-                    }
-                    options.part = Some(crate::parts::Part::QualityContracts);
+                    options.part = Some(match args.next().map(String::as_str) {
+                        Some("quality-contracts") => crate::parts::Part::QualityContracts,
+                        Some("quality-artifacts") => crate::parts::Part::QualityArtifacts,
+                        _ => {
+                            return Err(
+                                "--part accepts quality-contracts or quality-artifacts".into()
+                            );
+                        }
+                    });
                 }
                 "--timings" if options.timings.is_none() => {
                     options.timings =
@@ -94,6 +99,8 @@ pub(crate) struct GateCommand {
     pub(crate) inventory: Value,
     directory: PathBuf,
     action: Action,
+    #[cfg(feature = "postgres-check")]
+    role: crate::parts::GateRole,
 }
 
 impl GateCommand {
@@ -155,10 +162,10 @@ pub(crate) struct Checks {
     gates: Vec<GateCommand>,
     offline: bool,
     required_environment: Vec<(String, String)>,
-    owner: Option<crate::parts::Owner>,
+    role: crate::parts::GateRole,
     partitioned: bool,
     part: Option<crate::parts::Part>,
-    scope: Option<Value>,
+    scope: Option<crate::parts::Scope>,
 }
 
 impl Checks {
@@ -194,28 +201,88 @@ impl Checks {
         owner: crate::parts::Owner,
         schedule: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let previous = self.owner.replace(owner);
+        let previous = self.role;
+        self.role = crate::parts::GateRole::Required(owner, None);
         let result = schedule(self);
-        self.owner = previous;
+        self.role = previous;
+        result
+    }
+
+    pub(crate) fn prepares_for<T>(
+        &mut self,
+        part: crate::parts::Part,
+        schedule: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.role;
+        if let crate::parts::GateRole::Required(owner, existing) = previous {
+            assert!(
+                existing.is_none_or(|existing| existing == part),
+                "gate already prepares another part"
+            );
+            self.role = crate::parts::GateRole::Required(owner, Some(part));
+        }
+        let result = schedule(self);
+        self.role = previous;
         result
     }
 
     #[cfg(feature = "postgres-check")]
+    pub(crate) fn preparation(
+        &mut self,
+        part: crate::parts::Part,
+        schedule: impl FnOnce(&mut Self),
+    ) {
+        if self.part == Some(part) {
+            let previous = self.role;
+            self.role = crate::parts::GateRole::Preparation(part);
+            schedule(self);
+            self.role = previous;
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn is_part(&self, part: crate::parts::Part) -> bool {
+        self.part == Some(part)
+    }
+
+    #[cfg(feature = "postgres-check")]
     pub(crate) fn select_part(mut self) -> Self {
-        let ownership = crate::parts::ownership(self.gates.iter().map(|gate| &gate.inventory));
-        if let Some(part) = self.part {
-            self.scope = Some(json!({
-                "coverage_scope": part.name(), "qualified": false,
-                "full_native_suite_executed": false, "owned_postgres_run": false,
-                "ownership": ownership,
-            }));
+        use crate::parts::{GateRole, Part, Scope};
+        let ownership = crate::parts::ownership(
             self.gates
-                .retain(|gate| gate.inventory["owner"] == part.name());
+                .iter()
+                .filter(|gate| matches!(gate.role, GateRole::Required(..)))
+                .map(|gate| &gate.inventory),
+        );
+        if let Some(part) = self.part {
+            self.gates.retain_mut(|gate| {
+                let role = match gate.role {
+                    GateRole::Required(owner, _) if owner.name() == part.name() => "obligation",
+                    GateRole::Required(_, Some(prepared)) | GateRole::Preparation(prepared)
+                        if prepared == part =>
+                    {
+                        "preparation"
+                    }
+                    _ => return false,
+                };
+                gate.inventory["execution_role"] = json!(role);
+                gate.inventory["semantic_credit"] = json!(role == "obligation");
+                true
+            });
             let mut previous = None;
             for gate in &mut self.gates {
                 gate.inventory["prerequisites"] = json!(previous.into_iter().collect::<Vec<_>>());
                 previous = Some(gate.inventory["id"].clone());
             }
+            self.scope = Some(Scope {
+                part,
+                ownership,
+                demos: if part == Part::QualityArtifacts {
+                    crate::postgres::demo_inventory()
+                } else {
+                    json!([])
+                },
+            });
         }
         self
     }
@@ -278,7 +345,7 @@ impl Checks {
                 .env_remove("CRABBER_TEST_POSTGRES_CHILD_ROLE")
                 .env_remove("CRABBER_TEST_HISTORY_CHILD");
         }
-        if self.part.is_some() {
+        if self.part == Some(crate::parts::Part::QualityContracts) {
             for name in [
                 "CRABBER_TEST_POSTGRES_ADMIN_URL",
                 "CRABBER_TEST_RUN_POSTGRES_ADMIN_URL",
@@ -304,6 +371,8 @@ impl Checks {
             ] {
                 command.env_remove(name);
             }
+        }
+        if self.part.is_some() {
             crate::standard_tools::require_subprocess_tools(command);
             command.env("CRABBER_REQUIRE_POSTGRES", "1");
         }
@@ -392,12 +461,13 @@ impl Checks {
 
     pub(crate) fn captured(
         &mut self,
+        name: Option<&str>,
         directory: &Path,
         command: Command,
         expected: &str,
         validate: impl Fn(&Output) + 'static,
     ) {
-        self.command(directory, command, expected);
+        self.register_command(name, directory, command, expected);
         let gate = self.gates.last_mut().unwrap();
         gate.inventory["kind"] = json!("captured-command");
         if let Action::Command(command) =
@@ -416,6 +486,7 @@ impl Checks {
         validate: impl Fn(&Output) + 'static,
     ) {
         self.captured(
+            None,
             directory,
             command,
             "successful canonical native build metadata",
@@ -425,6 +496,26 @@ impl Checks {
         gate.inventory["native_artifacts"] = json!(journal);
         if let Action::Captured(_, _, path) = &mut gate.action {
             *path = Some(journal);
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn named_captured(
+        &mut self,
+        id: &str,
+        directory: &Path,
+        command: Command,
+        expected: &str,
+        journal: PathBuf,
+        validate: impl Fn(&Output) + 'static,
+    ) {
+        self.named_command(id, directory, command, expected);
+        let gate = self.gates.last_mut().unwrap();
+        gate.inventory["cargo_artifacts"] = json!(journal);
+        if let Action::Command(command) =
+            std::mem::replace(&mut gate.action, Action::Internal(Box::new(|_| {})))
+        {
+            gate.action = Action::Captured(command, Box::new(validate), Some(journal));
         }
     }
 
@@ -453,11 +544,18 @@ impl Checks {
 
     fn push(&mut self, directory: &Path, mut inventory: Value, action: Action) {
         if self.partitioned {
-            inventory["owner"] = json!(
-                self.owner
-                    .expect("required gate needs a source owner")
-                    .name()
-            );
+            match self.role {
+                crate::parts::GateRole::Required(owner, _) => {
+                    inventory["owner"] = json!(owner.name());
+                }
+                #[cfg(feature = "postgres-check")]
+                crate::parts::GateRole::Preparation(part) => {
+                    inventory["preparation_for"] = json!(part.name());
+                }
+                crate::parts::GateRole::Unpartitioned => {
+                    panic!("required gate needs a source owner")
+                }
+            }
         }
         let prerequisite = self.gates.last().map(|gate| gate.inventory["id"].clone());
         inventory["working_directory"] = json!(
@@ -478,15 +576,18 @@ impl Checks {
             inventory,
             directory: directory.to_owned(),
             action,
+            #[cfg(feature = "postgres-check")]
+            role: self.role,
         });
     }
 
     pub(crate) fn execute(self, options: &Options) -> i32 {
         if options.list {
             let gates: Vec<_> = self.gates.iter().map(|gate| &gate.inventory).collect();
-            let inventory = if let Some(mut scope) = self.scope {
-                scope["gates"] = json!(gates);
-                scope
+            let inventory = if let Some(scope) = self.scope {
+                let mut metadata = scope.metadata();
+                metadata["gates"] = json!(gates);
+                metadata
             } else {
                 json!(gates)
             };
@@ -518,9 +619,23 @@ mod tests {
             vec!["--part", "quality-contracts", "--part", "quality-contracts"],
             vec!["--part", "quality-contracts", "--lane", "offline"],
             vec!["--lane", "offline", "--part", "quality-contracts"],
+            vec!["--part", "quality-artifacts", "--lane", "offline"],
+            vec!["--part", "quality-artifacts", "--part", "quality-artifacts"],
         ] {
             assert!(
                 Options::parse(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
+            );
+        }
+        #[cfg(feature = "postgres-check")]
+        for (name, part) in [
+            ("quality-contracts", crate::parts::Part::QualityContracts),
+            ("quality-artifacts", crate::parts::Part::QualityArtifacts),
+        ] {
+            assert_eq!(
+                Options::parse(&["--part".into(), name.into()])
+                    .unwrap()
+                    .part,
+                Some(part)
             );
         }
     }
@@ -554,6 +669,29 @@ mod tests {
         assert_eq!(report["gates"][0]["status"], "failed");
         assert_eq!(report["gates"][0]["exit_code"], 7);
         assert_eq!(report["gates"][1]["status"], "cancelled");
+        let artifact_path = directory.join("artifact-stage.json");
+        let mut artifact = Checks {
+            scope: Some(crate::parts::Scope {
+                part: crate::parts::Part::QualityArtifacts,
+                ownership: json!({}),
+                demos: json!([]),
+            }),
+            ..Checks::default()
+        };
+        let mut failure = Command::new("sh");
+        failure.args(["-c", "exit 7"]);
+        artifact.command(&directory, failure, "actual failed artifact stage");
+        assert_eq!(
+            artifact.execute(&Options {
+                timings: Some(artifact_path.clone()),
+                ..Options::default()
+            }),
+            7
+        );
+        let stage: Value = serde_json::from_slice(&std::fs::read(artifact_path).unwrap()).unwrap();
+        assert_eq!(stage["status"], "awaiting-owned-cleanup");
+        assert_eq!(stage["selected_gates_status"], "failed");
+        assert!(stage["processes_drained"].is_null());
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -596,6 +734,37 @@ mod tests {
             "contracts rejects inherited fixture context",
         );
         assert_eq!(contracts.execute(&Options::default()), 0);
+        let mut artifacts = Checks {
+            part: Some(crate::parts::Part::QualityArtifacts),
+            required_environment: vec![
+                ("CRABBER_TEST_POSTGRES_RUN".into(), "owned-run".into()),
+                (
+                    "CRABBER_TEST_RUN_POSTGRES_ADMIN_URL".into(),
+                    "owned-admin".into(),
+                ),
+            ],
+            ..Checks::default()
+        };
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                concat!(
+                    "test \"$CRABBER_TEST_POSTGRES_RUN\" = owned-run && ",
+                    "test \"$CRABBER_TEST_RUN_POSTGRES_ADMIN_URL\" = owned-admin && ",
+                    "test \"$CRABBER_TEST_POSTGRES_TEMPLATE_URL\" = owned-template && ",
+                    "test \"$BACKGROUND_JOBS_REQUIRE_SHELL\" = 1 && ",
+                    "test \"$PYTHON_REPL_REQUIRE_PYTHON\" = 1 && ",
+                    "test \"$CRABBER_REQUIRE_POSTGRES\" = 1"
+                ),
+            ])
+            .env("CRABBER_TEST_POSTGRES_TEMPLATE_URL", "owned-template");
+        artifacts.command(
+            Path::new("."),
+            command,
+            "artifact owner retains its scoped handoff",
+        );
+        assert_eq!(artifacts.execute(&Options::default()), 0);
     }
 
     #[test]
@@ -630,6 +799,190 @@ mod tests {
         assert_eq!(checks.execute(&Options::default()), 1);
     }
     #[cfg(feature = "postgres-check")]
+    fn assert_part_projection(full: &Checks, directory: &Path, part: crate::parts::Part) {
+        use crate::parts::Part;
+        let partial = crate::complete::schedule(Vec::new(), directory, None, Some(part));
+        let expected: Vec<_> = full
+            .gates
+            .iter()
+            .filter(|g| g.inventory["owner"] == part.name())
+            .map(|g| g.inventory["id"].clone())
+            .collect();
+        let actual: Vec<_> = partial
+            .gates
+            .iter()
+            .filter(|g| g.inventory["semantic_credit"] == true)
+            .map(|g| g.inventory["id"].clone())
+            .collect();
+        assert_eq!(actual, expected);
+        let metadata = partial.scope.as_ref().unwrap().metadata();
+        assert_eq!(metadata["qualified"], false);
+        assert_eq!(
+            metadata["requires_owned_postgres"],
+            part == Part::QualityArtifacts
+        );
+        let mut previous = None;
+        for gate in &partial.gates {
+            assert_eq!(
+                gate.inventory["prerequisites"],
+                json!(previous.into_iter().collect::<Vec<_>>())
+            );
+            previous = Some(gate.inventory["id"].clone());
+        }
+        if part == Part::QualityContracts {
+            assert_eq!(partial.gates.len(), 41);
+            assert_eq!(metadata["postgres_demos"], json!([]));
+        } else {
+            assert_artifact_preparation(&partial, full);
+            assert_eq!(metadata["postgres_demos"].as_array().unwrap().len(), 4);
+        }
+        assert_eq!(
+            partial.execute(&Options {
+                list: true,
+                part: Some(part),
+                ..Options::default()
+            }),
+            0
+        );
+        assert!(
+            !directory.exists(),
+            "listing must not execute any preparation"
+        );
+    }
+
+    #[cfg(feature = "postgres-check")]
+    fn assert_artifact_preparation(partial: &Checks, full: &Checks) {
+        assert_eq!(partial.gates.len(), 32);
+        assert_eq!(
+            partial
+                .gates
+                .iter()
+                .filter(|g| g.inventory["execution_role"] == "preparation")
+                .count(),
+            9
+        );
+        assert!(
+            !partial
+                .gates
+                .iter()
+                .any(|g| g.inventory["argv"]
+                    .as_array()
+                    .is_some_and(|args| args.starts_with(&[
+                        json!("cargo"),
+                        json!("nextest"),
+                        json!("run")
+                    ]) || args.starts_with(&[
+                        json!("cargo"),
+                        json!("nextest"),
+                        json!("list")
+                    ])))
+        );
+        let position = |id: &str| {
+            partial
+                .gates
+                .iter()
+                .position(|g| g.inventory["id"] == id)
+                .unwrap()
+        };
+        let examples = position("prepare-normal-examples");
+        let bins = position("normal-output-build");
+        for index in [examples, bins] {
+            let gate = &partial.gates[index];
+            let super::Action::Captured(_, _, Some(journal)) = &gate.action else {
+                panic!("normal-output capture must retain its Cargo journal");
+            };
+            assert_eq!(gate.inventory["cargo_artifacts"], json!(journal));
+            assert!(gate.inventory["native_artifacts"].is_null());
+        }
+        let migration = partial
+            .gates
+            .iter()
+            .position(|g| g.inventory["argv"][1] == "postgres-template-migrate")
+            .unwrap();
+        assert!(examples < bins && bins < migration);
+        assert_eq!(partial.gates[migration].inventory["owner"], "native");
+        assert_eq!(partial.gates[migration].inventory["semantic_credit"], false);
+        let full_bins = full
+            .gates
+            .iter()
+            .find(|g| g.inventory["id"] == "normal-output-build")
+            .unwrap();
+        let mut expected = full_bins.inventory["argv"].as_array().unwrap().clone();
+        expected.extend([json!("--message-format"), json!("json-render-diagnostics")]);
+        assert_eq!(partial.gates[bins].inventory["argv"], json!(expected));
+        assert_eq!(
+            partial.gates[migration].inventory["execution_role"],
+            "preparation"
+        );
+    }
+
+    #[cfg(feature = "postgres-check")]
+    fn assert_stable_gate_ids(checks: &Checks, directory: &Path) {
+        let other_directory = directory.with_extension("other");
+        let other = crate::complete::schedule(Vec::new(), &other_directory, None, None);
+        let commands = |checks: &Checks| {
+            checks
+                .gates
+                .iter()
+                .map(|gate| gate.inventory["argv"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            commands(checks),
+            commands(&other),
+            "output paths must really differ"
+        );
+        let identities = |checks: &Checks| {
+            checks
+                .gates
+                .iter()
+                .map(|gate| {
+                    json!({
+                        "id": gate.inventory["id"],
+                        "prerequisites": gate.inventory["prerequisites"],
+                        "owner": gate.inventory["owner"],
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            identities(checks),
+            identities(&other),
+            "obligation identity must not depend on output paths"
+        );
+        let ids: std::collections::BTreeSet<_> = checks
+            .gates
+            .iter()
+            .map(|gate| gate.inventory["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), checks.gates.len());
+        for id in [
+            "native-test-manifest",
+            "native-resource-groups",
+            "native-cluster-role",
+            "native-complement",
+        ] {
+            let gate = checks
+                .gates
+                .iter()
+                .find(|gate| gate.inventory["id"] == id)
+                .unwrap();
+            assert_eq!(gate.inventory["owner"], "native");
+        }
+        for id in ["native-test-manifest", "native-resource-groups"] {
+            let gate = checks
+                .gates
+                .iter()
+                .find(|gate| gate.inventory["id"] == id)
+                .unwrap();
+            assert!(matches!(&gate.action, super::Action::Captured(_, _, None)));
+            assert!(gate.inventory["cargo_artifacts"].is_null());
+            assert!(gate.inventory["native_artifacts"].is_null());
+        }
+        assert!(!other_directory.exists());
+    }
+
+    #[cfg(feature = "postgres-check")]
     #[test]
     fn complete_migrates_the_owned_template_after_builds_before_native_execution() {
         let directory = std::env::temp_dir().join(format!(
@@ -641,38 +994,15 @@ mod tests {
                 .as_nanos()
         ));
         assert!(!directory.exists());
-        let checks = crate::complete::schedule(Vec::new(), &directory, None);
+        let checks = crate::complete::schedule(Vec::new(), &directory, None, None);
+        assert_stable_gate_ids(&checks, &directory);
         let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
         assert_eq!(checks.gates.len(), 72);
         assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 41);
         assert_eq!(ownership["quality-artifacts"].as_array().unwrap().len(), 23);
         assert_eq!(ownership["native"].as_array().unwrap().len(), 8);
-        let expected: Vec<_> = checks
-            .gates
-            .iter()
-            .filter(|gate| gate.inventory["owner"] == "quality-contracts")
-            .map(|gate| gate.inventory["id"].clone())
-            .collect();
-        let mut partial = crate::complete::schedule(Vec::new(), &directory, None);
-        partial.part = Some(crate::parts::Part::QualityContracts);
-        let partial = partial.select_part();
-        assert_eq!(
-            partial
-                .gates
-                .iter()
-                .map(|gate| gate.inventory["id"].clone())
-                .collect::<Vec<_>>(),
-            expected
-        );
-        assert_eq!(partial.scope.as_ref().unwrap()["qualified"], false);
-        let mut previous = None;
-        for gate in &partial.gates {
-            assert_eq!(
-                gate.inventory["prerequisites"],
-                json!(previous.into_iter().collect::<Vec<_>>())
-            );
-            previous = Some(gate.inventory["id"].clone());
-        }
+        assert_part_projection(&checks, &directory, crate::parts::Part::QualityContracts);
+        assert_part_projection(&checks, &directory, crate::parts::Part::QualityArtifacts);
         for invalid in [
             json!({"id": "lost"}),
             json!({"id": "lost", "owner": "typo"}),

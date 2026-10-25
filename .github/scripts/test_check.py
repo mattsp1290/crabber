@@ -153,7 +153,12 @@ class DeadlineTests(unittest.TestCase):
                  ('partial', 600, None, 0), ('partial-report-only', 4800, None, 0),
                  ('partial-wrong-scope', 600, None, 0),
                  ('partial-claims-qualified', 600, None, 0),
-                 ('partial-not-drained', 600, None, 0)]
+                 ('partial-not-drained', 600, None, 0),
+                 ('artifacts', 600, None, 0), ('artifacts-report-only', 4800, None, 0),
+                 ('artifacts-awaiting-cleanup', 600, None, 0),
+                 ('artifacts-not-drained', 600, None, 0),
+                 ('artifacts-claims-qualified', 600, None, 0),
+                 ('artifacts-without-owner', 600, None, 0)]
         for name, budget, change, child_code in cases:
             with self.subTest(name=name):
                 repo = self.root / name
@@ -188,21 +193,25 @@ class DeadlineTests(unittest.TestCase):
                     elif change == 'revision':
                         git(*commit, '--allow-empty', '-m', 'changed head')
                     path.write_text(json.dumps(value))
-                    partial = name.startswith('partial')
+                    partial = name.startswith(('partial', 'artifacts'))
+                    selected_part = 'quality-artifacts' if name.startswith('artifacts') else 'quality-contracts'
                     self.assertEqual(command[3:5] if partial else command[3:4],
-                                     ['--part', 'quality-contracts'] if partial else ['--timings'])
-                    scope = ('quality-contracts' if partial and name != 'partial-wrong-scope'
+                                     ['--part', selected_part] if partial else ['--timings'])
+                    scope = (selected_part if partial and name != 'partial-wrong-scope'
                              else 'complete')
                     Path(command[-1]).write_text(json.dumps({'coverage_scope': scope,
-                                                            'qualified': name == 'partial-claims-qualified',
-                                                            'processes_drained': name != 'partial-not-drained',
-                                                            'status': 'passed'}))
+                                                            'qualified': name in {'partial-claims-qualified', 'artifacts-claims-qualified'},
+                                                            'processes_drained': name not in {'partial-not-drained', 'artifacts-not-drained'},
+                                                            'full_native_suite_executed': False,
+                                                            'owned_postgres_run': name.startswith('artifacts') and name != 'artifacts-without-owner',
+                                                            'status': 'awaiting-owned-cleanup' if name == 'artifacts-awaiting-cleanup' else 'passed'}))
                     return child_code
 
                 argv = ['check.py', '--report', str(report), '--cache-state', 'unchanged']
-                partial = name.startswith('partial')
+                partial = name.startswith(('partial', 'artifacts'))
+                selected_part = 'quality-artifacts' if name.startswith('artifacts') else 'quality-contracts'
                 if partial:
-                    argv += ['--part', 'quality-contracts']
+                    argv += ['--part', selected_part]
                 if budget != 600:
                     argv += ['--budget-seconds', str(budget)]
                 with mock.patch.object(check, '__file__', str(repo / '.github/scripts/check.py')), \
@@ -210,7 +219,9 @@ class DeadlineTests(unittest.TestCase):
                         mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
                     code = check.main()
                 value = json.loads(report.read_text())
-                bad_partial = name in {'partial-wrong-scope', 'partial-claims-qualified', 'partial-not-drained'}
+                bad_partial = name in {'partial-wrong-scope', 'partial-claims-qualified', 'partial-not-drained',
+                                'artifacts-awaiting-cleanup', 'artifacts-not-drained',
+                                'artifacts-claims-qualified', 'artifacts-without-owner'}
                 expected = child_code or (1 if change or bad_partial else 0)
                 self.assertEqual(code, expected)
                 self.assertEqual(value['status'], 'failed' if expected else 'passed')
