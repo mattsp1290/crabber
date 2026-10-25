@@ -50,7 +50,7 @@ fn capture_json(gates: &mut Checks, arguments: &[&str], destination: PathBuf) {
     );
 }
 
-fn capture_native_binaries(gates: &mut Checks, directory: &Path, destination: PathBuf) {
+fn compile_native_artifacts(gates: &mut Checks, directory: &Path, destination: PathBuf) {
     let workspace = crate::workspace();
     let mut compile = Command::new("cargo");
     compile.current_dir(workspace).args([
@@ -76,6 +76,21 @@ fn capture_native_binaries(gates: &mut Checks, directory: &Path, destination: Pa
                 .expect("persist canonical native build metadata");
         },
     );
+    // Keep dev dependencies selected for normal CLIs so their transitive
+    // feature unions match the native test graph.
+    gates.owned(Owner::QualityArtifacts, |gates| {
+        gates.cargo(
+            workspace,
+            &[
+                "build",
+                "--workspace",
+                "--bins",
+                "--tests",
+                "--features",
+                FEATURES,
+            ],
+        );
+    });
 }
 
 pub(crate) fn schedule(
@@ -275,22 +290,7 @@ fn behavior_graph(
             &["metadata", "--format-version", "1", "--features", FEATURES],
             cargo_metadata.clone(),
         );
-        capture_native_binaries(gates, directory, binaries.clone());
-        // Keep dev dependencies selected for normal CLIs so their transitive
-        // feature unions match the native test graph.
-        gates.owned(Owner::QualityArtifacts, |gates| {
-            gates.cargo(
-                workspace,
-                &[
-                    "build",
-                    "--workspace",
-                    "--bins",
-                    "--tests",
-                    "--features",
-                    FEATURES,
-                ],
-            );
-        });
+        compile_native_artifacts(gates, directory, binaries.clone());
         crate::postgres::session::TemplateMigration::schedule(gates, migration);
         let profile = if std::env::var("CI").as_deref() == Ok("true") {
             "complete-ci"
