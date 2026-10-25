@@ -1,9 +1,13 @@
 name: Test performance diagnostic
 
 on:
-  push:
-    branches:
-      - diagnostics/test-suite-full-run
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Diagnostic scope; neither mode qualifies the timing target
+        type: choice
+        options: [full, session-slice]
+        default: full
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -132,6 +137,7 @@ jobs:
           path.write_text(json.dumps(report, indent=2) + '\n')
           PY
       - name: Diagnostic full check with 80-minute supervision, without timing qualification
+        if: inputs.mode != 'session-slice'
         env:
           CHECK_STARTED: ${{ steps.budget.outputs.start }}
           CACHE_STATE: ${{ steps.conditions.outputs.state }}
@@ -139,6 +145,14 @@ jobs:
           directory="target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$directory"
           python3 -I -S .github/scripts/check.py --budget-seconds 4800 --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "$directory/check.json" 2>&1 | tee "$directory/raw.log"
+      - name: Diagnostic all-library build and Session-only execution
+        if: inputs.mode == 'session-slice'
+        env:
+          CHECK_STARTED: ${{ steps.budget.outputs.start }}
+        run: |
+          directory="target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$directory"
+          python3 -I -S .github/scripts/session-slice-pilot.py launch 2>&1 | tee "$directory/session-slice-raw.log"
       - name: Preserve sanitized check, coverage and fixture reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -148,6 +162,8 @@ jobs:
             target/test-performance/cache-restore.json
             target/test-performance/ci-*/**/*.json
             target/test-performance/ci-*/raw.log
+            target/test-performance/ci-*/session-slice-raw.log
+            target/test-performance/session-slice-*/**/*
             target/test-performance/complete-*/fixtures.jsonl
             target/test-performance/complete-*/tests.json
             target/test-performance/complete-*/binaries.json
@@ -159,7 +175,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Prune obsolete native test executables as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
+        if: always() && steps.cache.outcome == 'success' && inputs.mode != 'session-slice'
         # Run only after the complete check or whole qualification protocol.
         # Partial builds may prune only equivalent variants of completed units;
         # absent or ambiguous current artifact evidence retains their cache.
@@ -168,15 +184,15 @@ jobs:
           mkdir -p "$directory"
           python3 -I -S .github/scripts/prune-test-cache.py --run-directory "$directory" --apply | tee "$directory/native-cache-prune.json"
       - name: Prune artifacts that must rebuild after every restore
-        if: always() && steps.cache.outcome == 'success'
+        if: always() && steps.cache.outcome == 'success' && inputs.mode != 'session-slice'
         # Keep the restore-side clean: old snapshots still contain these files.
         # Their required provenance rebuilds remain inside the measured check.
         run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
       - name: Preserve unchanged source freshness as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
+        if: always() && steps.cache.outcome == 'success' && inputs.mode != 'session-slice'
         run: python3 -I -S .github/scripts/cache-source-times.py capture
       - name: Save dependency and compiler snapshot as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
+        if: always() && steps.cache.outcome == 'success' && inputs.mode != 'session-slice'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
