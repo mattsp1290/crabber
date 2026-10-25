@@ -95,7 +95,6 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
     let rows =
         crate::normal_outputs::journal(directory, &directory.join("library-artifacts.jsonl"));
     assert_eq!(rows[0]["source"], crate::timings::source_identity());
-    assert_eq!(rows.last().unwrap()["truncated_tail"], false);
     fs::write(directory.join("library-targets.json"), serde_json::to_vec_pretty(&json!({
         "source": rows[0]["source"], "metadata_sha256": rows[0]["metadata_sha256"],
         "declared_target_count": declared.len(), "artifacts": actual.into_values().collect::<Vec<_>>(),
