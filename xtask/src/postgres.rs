@@ -185,8 +185,8 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    if part == Some(crate::parts::Part::QualityArtifacts) {
-        let drained = artifact_process_cleanup(&mut code);
+    if part.is_some_and(crate::parts::Part::owns_postgres) {
+        let drained = owned_partial_process_cleanup(&mut code);
         report["processes_drained"] = serde_json::json!(drained);
         report["selected_gates_started_unix_seconds"] = report["started_unix_seconds"].clone();
         report["started_unix_seconds"] = serde_json::json!(owned_started_epoch.unwrap());
@@ -197,6 +197,14 @@ pub(crate) fn complete(mut options: crate::checks::Options) -> i32 {
         report["owned_postgres_run"] = serde_json::json!(observed_owned_run(&metrics));
     }
     report["coverage_scope"] = serde_json::json!(part.map_or("complete", crate::parts::Part::name));
+    if let Some(crate::parts::Part::NativeLibraries(quarter)) = part {
+        report["part_family"] = serde_json::json!("native-libraries");
+        report["library_quarter"] = serde_json::json!(quarter.index());
+        report["library_quarter_count"] = serde_json::json!(4);
+        report["full_coverage_policy_executed"] = serde_json::json!(false);
+        report["requires_owned_postgres"] = serde_json::json!(true);
+        report["postgres_demos"] = serde_json::json!([]);
+    }
     report["status"] = serde_json::json!(if code == 0 { "passed" } else { "failed" });
     report["exit_code"] = serde_json::json!(code);
     report["wall_seconds_including_fixture_lifecycle"] =
@@ -249,7 +257,7 @@ fn observed_owned_run(metrics: &Path) -> bool {
     })
 }
 
-fn artifact_process_cleanup(code: &mut i32) -> bool {
+fn owned_partial_process_cleanup(code: &mut i32) -> bool {
     #[cfg(target_os = "linux")]
     {
         match crate::process::verify_drained() {
@@ -303,7 +311,7 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
         .map(Arc::new);
     let endpoint = Endpoint::start().await?;
     let admin = &endpoint.admin;
-    let result = async {
+    let mut result = async {
         if let Some(metrics) = &metrics {
             metrics.record("server_setup", "runner", None, started.elapsed())?;
             metrics.record(
@@ -323,11 +331,8 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
         .await
     }
     .await;
-    let server_cleanup = Instant::now();
-    endpoint.finish().await?;
-    if let Some(metrics) = &metrics {
-        metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())?;
-    }
+    let part = options.complete.as_ref().and_then(|complete| complete.part);
+    finish_server(endpoint, metrics.as_ref(), part, &mut result).await?;
     println!(
         "PostgreSQL gate wall time {:.3}s",
         started.elapsed().as_secs_f64()
@@ -339,13 +344,59 @@ async fn run(options: Options) -> Result<i32, Box<dyn std::error::Error>> {
         } else {
             "gate_failed"
         };
-        metrics.record(phase, "runner", None, started.elapsed())?;
+        let recorded = metrics.record(phase, "runner", None, started.elapsed());
+        if part.is_some_and(crate::parts::Part::owns_postgres) && !matches!(&result, Ok(0)) {
+            if let Err(error) = recorded {
+                eprintln!("owned terminal recording also failed: {error}");
+            }
+        } else {
+            recorded?;
+        }
     }
     if interrupted != 0 {
         Ok(128 + i32::try_from(interrupted).unwrap_or(1))
     } else {
         result
     }
+}
+
+async fn finish_server(
+    endpoint: Endpoint,
+    metrics: Option<&Arc<FixtureMetrics>>,
+    part: Option<crate::parts::Part>,
+    result: &mut Result<i32, Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server_cleanup = Instant::now();
+    let cleanup = endpoint.finish().await;
+    if part.is_some_and(crate::parts::Part::owns_postgres) {
+        match cleanup {
+            Ok(()) => {
+                if let Some(metrics) = metrics
+                    && let Err(error) =
+                        metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())
+                {
+                    if matches!(&*result, Ok(0)) {
+                        *result = Err(error.into());
+                    } else {
+                        eprintln!("owned server cleanup recording also failed: {error}");
+                    }
+                }
+            }
+            Err(error) => {
+                if matches!(&*result, Ok(0)) {
+                    *result = Err(error);
+                } else {
+                    eprintln!("owned server cleanup also failed: {error}");
+                }
+            }
+        }
+    } else {
+        cleanup?;
+        if let Some(metrics) = metrics {
+            metrics.record("server_cleanup", "runner", None, server_cleanup.elapsed())?;
+        }
+    }
+    Ok(())
 }
 
 async fn execute_owned_run(
@@ -411,6 +462,12 @@ async fn execute_owned_run(
             if code != 0 {
                 return Ok(code);
             }
+            if complete
+                .part
+                .is_some_and(|part| part.resources() == crate::parts::ResourcePolicy::OwnedPostgres)
+            {
+                return Ok(0);
+            }
             return execute_demos(&run, options, metrics.map(Arc::as_ref), metrics_path).await;
         }
         execute_schedule(&run, options, metrics.map(Arc::as_ref), metrics_path).await
@@ -418,10 +475,13 @@ async fn execute_owned_run(
     .catch_unwind()
     .await
     .unwrap_or_else(|_| Err("fixture qualification panicked; performing owned cleanup".into()));
-    if options.complete.as_ref().and_then(|complete| complete.part)
-        == Some(crate::parts::Part::QualityArtifacts)
+    if options
+        .complete
+        .as_ref()
+        .and_then(|complete| complete.part)
+        .is_some_and(crate::parts::Part::owns_postgres)
     {
-        return finish_artifact_run(run, outcome, metrics).await;
+        return finish_owned_partial_run(run, outcome, metrics).await;
     }
     #[cfg(target_os = "linux")]
     crate::process::verify_drained()?;
@@ -438,7 +498,7 @@ async fn execute_owned_run(
     outcome
 }
 
-async fn finish_artifact_run(
+async fn finish_owned_partial_run(
     run: RunFixture,
     outcome: Result<i32, Box<dyn std::error::Error>>,
     metrics: Option<&Arc<FixtureMetrics>>,

@@ -136,7 +136,7 @@ fn finish_stage_status(
         "passed"
     };
     report["status"] = json!(status);
-    if part == Some(crate::parts::Part::QualityArtifacts) {
+    if part.is_some_and(crate::parts::Part::owns_postgres) {
         report["selected_gates_status"] = json!(status);
         report["status"] = json!("awaiting-owned-cleanup");
     }
