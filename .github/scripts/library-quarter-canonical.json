@@ -1,0 +1,1060 @@
+{
+  "aarch64": {
+    "libraries": {
+      "agui-sse": {
+        "binary": {
+          "binary-id": "agui-sse",
+          "binary-name": "agui_sse",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/agui_sse-81ac8daaa53a16cd",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/examples/agui-sse#0.1.0"
+        },
+        "package_name": "agui-sse",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber": {
+        "binary": {
+          "binary-id": "crabber",
+          "binary-name": "crabber",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber-e04f0d9f44a685c0",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber#0.1.0"
+        },
+        "package_name": "crabber",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-agui": {
+        "binary": {
+          "binary-id": "crabber-agui",
+          "binary-name": "crabber_agui",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_agui-4e77908b4b424542",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-agui#0.1.0"
+        },
+        "package_name": "crabber-agui",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-auth": {
+        "binary": {
+          "binary-id": "crabber-auth",
+          "binary-name": "crabber_auth",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_auth-95ae61dc406195f3",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-auth#0.1.0"
+        },
+        "package_name": "crabber-auth",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-core": {
+        "binary": {
+          "binary-id": "crabber-core",
+          "binary-name": "crabber_core",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_core-396d7ee8b59c212a",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-core#0.1.0"
+        },
+        "package_name": "crabber-core",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "1",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-extension": {
+        "binary": {
+          "binary-id": "crabber-extension",
+          "binary-name": "crabber_extension",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_extension-f9829ba768f7eded",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-extension#0.1.0"
+        },
+        "package_name": "crabber-extension",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-extensions": {
+        "binary": {
+          "binary-id": "crabber-extensions",
+          "binary-name": "crabber_extensions",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_extensions-3f808fd8d9143ab0",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-extensions#0.1.0"
+        },
+        "package_name": "crabber-extensions",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-guest": {
+        "binary": {
+          "binary-id": "crabber-guest",
+          "binary-name": "crabber_guest",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_guest-95d76a4a1e1fe79a",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-guest#0.1.0"
+        },
+        "package_name": "crabber-guest",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-guest-macros": {
+        "binary": {
+          "binary-id": "crabber-guest-macros",
+          "binary-name": "crabber_guest_macros",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_guest_macros-d1063dfde80fcd1f",
+          "build-platform": "host",
+          "kind": "proc-macro",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-guest-macros#0.1.0"
+        },
+        "package_name": "crabber-guest-macros",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-middleware": {
+        "binary": {
+          "binary-id": "crabber-middleware",
+          "binary-name": "crabber_middleware",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_middleware-16b74f857766ea7b",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-middleware#0.1.0"
+        },
+        "package_name": "crabber-middleware",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-obs": {
+        "binary": {
+          "binary-id": "crabber-obs",
+          "binary-name": "crabber_obs",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_obs-8ab0e9fb4a180295",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-obs#0.1.0"
+        },
+        "package_name": "crabber-obs",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-providers": {
+        "binary": {
+          "binary-id": "crabber-providers",
+          "binary-name": "crabber_providers",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_providers-8f05dda936226617",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-providers#0.1.0"
+        },
+        "package_name": "crabber-providers",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-runtime": {
+        "binary": {
+          "binary-id": "crabber-runtime",
+          "binary-name": "crabber_runtime",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_runtime-8e340f744ef7d937",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-runtime#0.1.0"
+        },
+        "package_name": "crabber-runtime",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-session": {
+        "binary": {
+          "binary-id": "crabber-session",
+          "binary-name": "crabber_session",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_session-51a1db06d1c8de43",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-session#0.1.0"
+        },
+        "package_name": "crabber-session",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-test-support": {
+        "binary": {
+          "binary-id": "crabber-test-support",
+          "binary-name": "crabber_test_support",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_test_support-b537f6160cad8d53",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-test-support#0.1.0"
+        },
+        "package_name": "crabber-test-support",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-applypatch": {
+        "binary": {
+          "binary-id": "crabber-tools-applypatch",
+          "binary-name": "crabber_tools_applypatch",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_applypatch-6cae8f60d5e5e254",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-applypatch#0.1.0"
+        },
+        "package_name": "crabber-tools-applypatch",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-catalog": {
+        "binary": {
+          "binary-id": "crabber-tools-catalog",
+          "binary-name": "crabber_tools_catalog",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_catalog-51db89dd85b3e953",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-catalog#0.1.0"
+        },
+        "package_name": "crabber-tools-catalog",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-core": {
+        "binary": {
+          "binary-id": "crabber-tools-core",
+          "binary-name": "crabber_tools_core",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_core-3e050adb8e32bc32",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-core#0.1.0"
+        },
+        "package_name": "crabber-tools-core",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-fileops": {
+        "binary": {
+          "binary-id": "crabber-tools-fileops",
+          "binary-name": "crabber_tools_fileops",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_fileops-c87697fae6712c8b",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-fileops#0.1.0"
+        },
+        "package_name": "crabber-tools-fileops",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-glob": {
+        "binary": {
+          "binary-id": "crabber-tools-glob",
+          "binary-name": "crabber_tools_glob",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_glob-3539d2710c663068",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-glob#0.1.0"
+        },
+        "package_name": "crabber-tools-glob",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-search": {
+        "binary": {
+          "binary-id": "crabber-tools-search",
+          "binary-name": "crabber_tools_search",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_search-1905050874733f38",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-search#0.1.0"
+        },
+        "package_name": "crabber-tools-search",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-shell": {
+        "binary": {
+          "binary-id": "crabber-tools-shell",
+          "binary-name": "crabber_tools_shell",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_shell-1b216f1dc38297c5",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-shell#0.1.0"
+        },
+        "package_name": "crabber-tools-shell",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-testkit": {
+        "binary": {
+          "binary-id": "crabber-tools-testkit",
+          "binary-name": "crabber_tools_testkit",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_testkit-25f836ec88be6ddd",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-testkit#0.1.0"
+        },
+        "package_name": "crabber-tools-testkit",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-trackerwrite": {
+        "binary": {
+          "binary-id": "crabber-tools-trackerwrite",
+          "binary-name": "crabber_tools_trackerwrite",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_trackerwrite-a55f1a455f30d8a3",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-trackerwrite#0.1.0"
+        },
+        "package_name": "crabber-tools-trackerwrite",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-urlfetch": {
+        "binary": {
+          "binary-id": "crabber-tools-urlfetch",
+          "binary-name": "crabber_tools_urlfetch",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_urlfetch-2d6f1143299cba72",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-urlfetch#0.1.0"
+        },
+        "package_name": "crabber-tools-urlfetch",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-userinteract": {
+        "binary": {
+          "binary-id": "crabber-tools-userinteract",
+          "binary-name": "crabber_tools_userinteract",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_userinteract-649f008bcdd1e43d",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-userinteract#0.1.0"
+        },
+        "package_name": "crabber-tools-userinteract",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-wasm": {
+        "binary": {
+          "binary-id": "crabber-wasm",
+          "binary-name": "crabber_wasm",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_wasm-2dcb3a4a1382cbc7",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-wasm#0.1.0"
+        },
+        "package_name": "crabber-wasm",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "server-host-probe": {
+        "binary": {
+          "binary-id": "server-host-probe",
+          "binary-name": "server_host_probe",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/server_host_probe-a2a53c77955f0072",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/examples/server-host-probe#0.1.0"
+        },
+        "package_name": "server-host-probe",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "workspace-context-probe": {
+        "binary": {
+          "binary-id": "workspace-context-probe",
+          "binary-name": "workspace_context_probe",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/workspace_context_probe-d4112b9bd3191d3c",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/examples/workspace-context-probe#0.1.0"
+        },
+        "package_name": "workspace-context-probe",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      }
+    },
+    "inventory_sha256": "73b26a7a8c0589dbc85b2cff2645113b8e5ada44d81a23ef0336340f09484b73",
+    "total": 2357,
+    "nonignored": 2356
+  },
+  "x86_64": {
+    "libraries": {
+      "agui-sse": {
+        "binary": {
+          "binary-id": "agui-sse",
+          "binary-name": "agui_sse",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/agui_sse-7edba9c75ea68540",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/examples/agui-sse#0.1.0"
+        },
+        "package_name": "agui-sse",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber": {
+        "binary": {
+          "binary-id": "crabber",
+          "binary-name": "crabber",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber-12237fc616d262f3",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber#0.1.0"
+        },
+        "package_name": "crabber",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-agui": {
+        "binary": {
+          "binary-id": "crabber-agui",
+          "binary-name": "crabber_agui",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_agui-bc34fb4fe2be1760",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-agui#0.1.0"
+        },
+        "package_name": "crabber-agui",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-auth": {
+        "binary": {
+          "binary-id": "crabber-auth",
+          "binary-name": "crabber_auth",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_auth-481f67660cf5ad89",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-auth#0.1.0"
+        },
+        "package_name": "crabber-auth",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-core": {
+        "binary": {
+          "binary-id": "crabber-core",
+          "binary-name": "crabber_core",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_core-793065bdedd9f6b1",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-core#0.1.0"
+        },
+        "package_name": "crabber-core",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "1",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-extension": {
+        "binary": {
+          "binary-id": "crabber-extension",
+          "binary-name": "crabber_extension",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_extension-1c5d74300c2f4673",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-extension#0.1.0"
+        },
+        "package_name": "crabber-extension",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-extensions": {
+        "binary": {
+          "binary-id": "crabber-extensions",
+          "binary-name": "crabber_extensions",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_extensions-01090c86bd818f68",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-extensions#0.1.0"
+        },
+        "package_name": "crabber-extensions",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-guest": {
+        "binary": {
+          "binary-id": "crabber-guest",
+          "binary-name": "crabber_guest",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_guest-719fd7fe22baa96a",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-guest#0.1.0"
+        },
+        "package_name": "crabber-guest",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-guest-macros": {
+        "binary": {
+          "binary-id": "crabber-guest-macros",
+          "binary-name": "crabber_guest_macros",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_guest_macros-07dfbaa05bc033b3",
+          "build-platform": "host",
+          "kind": "proc-macro",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-guest-macros#0.1.0"
+        },
+        "package_name": "crabber-guest-macros",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-middleware": {
+        "binary": {
+          "binary-id": "crabber-middleware",
+          "binary-name": "crabber_middleware",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_middleware-75516971e501f732",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-middleware#0.1.0"
+        },
+        "package_name": "crabber-middleware",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-obs": {
+        "binary": {
+          "binary-id": "crabber-obs",
+          "binary-name": "crabber_obs",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_obs-7166786201c24be1",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-obs#0.1.0"
+        },
+        "package_name": "crabber-obs",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-providers": {
+        "binary": {
+          "binary-id": "crabber-providers",
+          "binary-name": "crabber_providers",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_providers-62f13ae09edd4cdc",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-providers#0.1.0"
+        },
+        "package_name": "crabber-providers",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-runtime": {
+        "binary": {
+          "binary-id": "crabber-runtime",
+          "binary-name": "crabber_runtime",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_runtime-bc7da3334655bdcb",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-runtime#0.1.0"
+        },
+        "package_name": "crabber-runtime",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-session": {
+        "binary": {
+          "binary-id": "crabber-session",
+          "binary-name": "crabber_session",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_session-7a249514c276ccb4",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-session#0.1.0"
+        },
+        "package_name": "crabber-session",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-test-support": {
+        "binary": {
+          "binary-id": "crabber-test-support",
+          "binary-name": "crabber_test_support",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_test_support-c1ef906420cf5970",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-test-support#0.1.0"
+        },
+        "package_name": "crabber-test-support",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-applypatch": {
+        "binary": {
+          "binary-id": "crabber-tools-applypatch",
+          "binary-name": "crabber_tools_applypatch",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_applypatch-4143427368a9f206",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-applypatch#0.1.0"
+        },
+        "package_name": "crabber-tools-applypatch",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-catalog": {
+        "binary": {
+          "binary-id": "crabber-tools-catalog",
+          "binary-name": "crabber_tools_catalog",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_catalog-74b7e926cac26774",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-catalog#0.1.0"
+        },
+        "package_name": "crabber-tools-catalog",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-core": {
+        "binary": {
+          "binary-id": "crabber-tools-core",
+          "binary-name": "crabber_tools_core",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_core-0c93baa20d1f8072",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-core#0.1.0"
+        },
+        "package_name": "crabber-tools-core",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-fileops": {
+        "binary": {
+          "binary-id": "crabber-tools-fileops",
+          "binary-name": "crabber_tools_fileops",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_fileops-99d8abba77668587",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-fileops#0.1.0"
+        },
+        "package_name": "crabber-tools-fileops",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-glob": {
+        "binary": {
+          "binary-id": "crabber-tools-glob",
+          "binary-name": "crabber_tools_glob",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_glob-28200b6fa8987c07",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-glob#0.1.0"
+        },
+        "package_name": "crabber-tools-glob",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-search": {
+        "binary": {
+          "binary-id": "crabber-tools-search",
+          "binary-name": "crabber_tools_search",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_search-41fa04cce43bc165",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-search#0.1.0"
+        },
+        "package_name": "crabber-tools-search",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-shell": {
+        "binary": {
+          "binary-id": "crabber-tools-shell",
+          "binary-name": "crabber_tools_shell",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_shell-e56487ddb7baa739",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-shell#0.1.0"
+        },
+        "package_name": "crabber-tools-shell",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-testkit": {
+        "binary": {
+          "binary-id": "crabber-tools-testkit",
+          "binary-name": "crabber_tools_testkit",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_testkit-7ac04bb45cfd0486",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-testkit#0.1.0"
+        },
+        "package_name": "crabber-tools-testkit",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-trackerwrite": {
+        "binary": {
+          "binary-id": "crabber-tools-trackerwrite",
+          "binary-name": "crabber_tools_trackerwrite",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_trackerwrite-ad1b85416b58f5db",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-trackerwrite#0.1.0"
+        },
+        "package_name": "crabber-tools-trackerwrite",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-urlfetch": {
+        "binary": {
+          "binary-id": "crabber-tools-urlfetch",
+          "binary-name": "crabber_tools_urlfetch",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_urlfetch-ccb1264f81f1d16e",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-urlfetch#0.1.0"
+        },
+        "package_name": "crabber-tools-urlfetch",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-tools-userinteract": {
+        "binary": {
+          "binary-id": "crabber-tools-userinteract",
+          "binary-name": "crabber_tools_userinteract",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_tools_userinteract-60647f44d2d889c7",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-tools-userinteract#0.1.0"
+        },
+        "package_name": "crabber-tools-userinteract",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "crabber-wasm": {
+        "binary": {
+          "binary-id": "crabber-wasm",
+          "binary-name": "crabber_wasm",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/crabber_wasm-cc4443853a476e4a",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/crates/crabber-wasm#0.1.0"
+        },
+        "package_name": "crabber-wasm",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "server-host-probe": {
+        "binary": {
+          "binary-id": "server-host-probe",
+          "binary-name": "server_host_probe",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/server_host_probe-f980d83a8599c735",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/examples/server-host-probe#0.1.0"
+        },
+        "package_name": "server-host-probe",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      },
+      "workspace-context-probe": {
+        "binary": {
+          "binary-id": "workspace-context-probe",
+          "binary-name": "workspace_context_probe",
+          "binary-path": "/home/runner/work/crabber/crabber/target/debug/deps/workspace_context_probe-50b070b3deacb41d",
+          "build-platform": "target",
+          "kind": "lib",
+          "package-id": "path+file:///home/runner/work/crabber/crabber/examples/workspace-context-probe#0.1.0"
+        },
+        "package_name": "workspace-context-probe",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 0,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        }
+      }
+    },
+    "inventory_sha256": "73b26a7a8c0589dbc85b2cff2645113b8e5ada44d81a23ef0336340f09484b73",
+    "total": 2357,
+    "nonignored": 2356
+  }
+}
