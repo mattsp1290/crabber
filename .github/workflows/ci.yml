@@ -32,6 +32,9 @@ jobs:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_PROFILE_DEV_STRIP: "symbols"
+      CARGO_PROFILE_TEST_STRIP: "symbols"
     # Bootstrap correctness runs report the 600s target separately.
     # Qualification still enforces 600s for each of its three cases.
     timeout-minutes: 90
@@ -71,14 +74,14 @@ jobs:
             target/consumer-probes
             target/test-tools
             fixtures/wasm/target
-          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           # Prefer the exact dependency/feature graph. The fallback keeps the
           # compiler/base profile identical; the exact key includes per-package
           # profile overrides in Cargo.toml. Cargo still validates every unit's
           # dependency/features fingerprint and rebuilds changed source.
           restore-keys: |
-            rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
-            rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-
+            rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
+            rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-
       - name: Record cache conditions and install pinned tools
         id: conditions
         env:
