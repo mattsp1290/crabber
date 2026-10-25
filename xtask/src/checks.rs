@@ -907,6 +907,43 @@ mod tests {
     }
 
     #[cfg(feature = "postgres-check")]
+    fn assert_stable_gate_ids(checks: &Checks, directory: &Path) {
+        let other_directory = directory.with_extension("other");
+        let other = crate::complete::schedule(Vec::new(), &other_directory, None, None);
+        let commands = |checks: &Checks| {
+            checks
+                .gates
+                .iter()
+                .map(|gate| gate.inventory["argv"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            commands(checks),
+            commands(&other),
+            "output paths must really differ"
+        );
+        let identities = |checks: &Checks| {
+            checks
+                .gates
+                .iter()
+                .map(|gate| {
+                    json!({
+                        "id": gate.inventory["id"],
+                        "prerequisites": gate.inventory["prerequisites"],
+                        "owner": gate.inventory["owner"],
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            identities(checks),
+            identities(&other),
+            "obligation identity must not depend on output paths"
+        );
+        assert!(!other_directory.exists());
+    }
+
+    #[cfg(feature = "postgres-check")]
     #[test]
     fn complete_migrates_the_owned_template_after_builds_before_native_execution() {
         let directory = std::env::temp_dir().join(format!(
@@ -919,6 +956,7 @@ mod tests {
         ));
         assert!(!directory.exists());
         let checks = crate::complete::schedule(Vec::new(), &directory, None, None);
+        assert_stable_gate_ids(&checks, &directory);
         let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
         assert_eq!(checks.gates.len(), 72);
         assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 41);
