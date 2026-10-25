@@ -1,7 +1,7 @@
 use crabber::{core::*, session::*, *};
 use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub(super) struct Fixture {
     database: TestDatabase,
@@ -161,25 +161,31 @@ impl Fixture {
         worker.close_extensions().await.unwrap();
         drop(host);
         drop(worker);
-        drop(native);
-        drop(worker_native);
-        for role in &roles {
-            sqlx::query("DELETE FROM crabber_workspace_grants WHERE role_name=$1")
-                .bind(role)
-                .execute(&admin)
-                .await
-                .unwrap();
-            sqlx::query(&format!("DROP OWNED BY {role}"))
-                .execute(&admin)
-                .await
-                .unwrap();
-            sqlx::query(&format!("DROP ROLE {role}"))
-                .execute(&admin)
-                .await
-                .unwrap();
-        }
-        admin.close().await;
-        database.finish().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            native.close().await;
+            worker_native.close().await;
+            drop(native);
+            drop(worker_native);
+            for role in &roles {
+                sqlx::query("DELETE FROM crabber_workspace_grants WHERE role_name=$1")
+                    .bind(role)
+                    .execute(&admin)
+                    .await
+                    .unwrap();
+                sqlx::query(&format!("DROP OWNED BY {role}"))
+                    .execute(&admin)
+                    .await
+                    .unwrap();
+                sqlx::query(&format!("DROP ROLE {role}"))
+                    .execute(&admin)
+                    .await
+                    .unwrap();
+            }
+            admin.close().await;
+            database.finish().await.unwrap();
+        })
+        .await
+        .expect("role fixture connections and teardown did not drain within five seconds");
     }
 }
 pub(super) fn selection() -> Selection {
