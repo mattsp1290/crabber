@@ -88,7 +88,7 @@ def inventory(root, main, package):
     # Local/API probes retain explicit child targets; WASM guests have one
     # explicit target. Obsolete default consumer targets are not retained.
     bases = [main, root / 'fixtures/wasm/target']
-    targets = set()
+    targets = {owned(root, main)}
     for base in bases:
         if base.exists():
             targets.update(owned(root, p.parent) for p in base.rglob('.rustc_info.json'))
