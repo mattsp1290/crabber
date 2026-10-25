@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crabber::{
     Agent, AgentConfig, EventKind, EventRecord, JsonToolExecutor, Observer, PermissionDecision,
     RuntimeError, Selection, StaticPolicy, ToolDefinition,
-    core::{Role, RunStatus, ToolInfo},
+    core::{ContentBlock, PartKind, Role, RunStatus, ToolInfo},
     extension::ExtensionError,
     providers::{HttpAdapter, HttpResolver, ProviderErrorKind},
     session::{MemoryStore, Store},
@@ -459,5 +459,12 @@ async fn facade_overflow_after_text_compacts_and_reruns() {
         .map(|event| event.payload["text"].clone())
         .collect();
     assert_eq!(streamed, [json!("partial"), json!("OK")]);
-    assert_eq!(assistant_messages(&store, &session).await.len(), 1);
+    let assistants = assistant_messages(&store, &session).await;
+    assert_eq!(assistants.len(), 2);
+    assert_eq!(assistants[0].parts[0].kind, PartKind::CompactionSummary);
+    assert_eq!(assistants[1].parts[0].kind, PartKind::AssistantText);
+    assert_eq!(
+        assistants[1].parts[0].content,
+        ContentBlock::Text { text: "OK".into() }
+    );
 }

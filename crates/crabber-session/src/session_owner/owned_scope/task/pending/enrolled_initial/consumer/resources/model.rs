@@ -162,6 +162,7 @@ impl InitialResources {
                     | Delta::ToolCallArgsDelta { .. }
                     | Delta::ToolCallDone { .. }
                     | Delta::ProviderState { .. }
+                    | Delta::FinishReason(_)
                     | Delta::Usage(_),
                 ) => return Err(ModelFailure::Semantic),
             }

@@ -17,7 +17,6 @@ mod admission_execution;
 mod admission_journal;
 #[cfg(test)]
 mod binding_fault;
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod context_projection;
 mod continuation_input;
 mod event_persistence;

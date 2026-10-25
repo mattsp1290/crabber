@@ -201,6 +201,7 @@ pub enum StreamDelta {
         payload: Value,
     },
     Usage(Usage),
+    FinishReason(crabber_core::ModelFinishReason),
     Completed,
     Error(ProviderError),
 }

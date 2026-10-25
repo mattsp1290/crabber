@@ -338,6 +338,11 @@ pub enum RuntimeError {
     ExtensionPlan(#[from] crabber_extension::ExtensionError),
     #[error("turn limit reached")]
     TurnLimit,
+    /// The response exhausted its output limit before assistant history or tools were committed.
+    #[error("model output limit reached")]
+    OutputLimit { tool_call_count: usize },
+    #[error("model response rejected: {0:?}")]
+    ModelResponseRejected(crabber_core::ModelFinishReason),
     #[error("run task stopped")]
     TaskStopped,
     #[error("orchestrator is missing {0}")]
@@ -463,6 +468,8 @@ impl RuntimeError {
                 _ => "extension",
             },
             Self::TurnLimit => "turn_limit",
+            Self::OutputLimit { .. } => "output_limit",
+            Self::ModelResponseRejected(..) => "model_response_rejected",
             Self::TaskStopped => "task_stopped",
             Self::Missing(..) => "missing",
             Self::InvalidConfiguration(..) => "invalid_configuration",

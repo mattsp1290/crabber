@@ -259,6 +259,19 @@ impl Codec {
                 out.push(StreamDelta::ToolCallDone { call_id: id });
             }
         }
+        if let Some(reason) = value["choices"][0]
+            .get("finish_reason")
+            .filter(|reason| !reason.is_null())
+        {
+            use crabber_core::ModelFinishReason;
+            out.push(StreamDelta::FinishReason(match reason.as_str() {
+                Some("stop") => ModelFinishReason::Stop,
+                Some("tool_calls") => ModelFinishReason::ToolCalls,
+                Some("length") => ModelFinishReason::Length,
+                Some("content_filter") => ModelFinishReason::ContentFilter,
+                _ => ModelFinishReason::Other,
+            }));
+        }
         Ok(out)
     }
 }
