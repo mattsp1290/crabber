@@ -12,11 +12,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'target/test-performance/library-quarter-baseline'
 REVISION = '49317956a606826999161c8ae283c5c1f5fce19f'
+REBUILD_FIX = '901b1693e044b99c46486ba41fa140e04f85d3ce'
 RUN = 40164010460
 ARTIFACT = 12588359604
 DIGEST = 'd417fa27a7986eb7f993f9af5cb94579194c2af703099a8aa28463816322e643'
 CACHE = 'rust-Linux-X64-b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112-dev0-test0-inc0-combined-v1-2140fed529d2fc7a4b7788fa8a0ae04e871570c1df6d03fa97d46e9e82ac09e0-49317956a606826999161c8ae283c5c1f5fce19f-40164010460-1'
-ALLOWED = {'.github/workflows/ci.yml', '.github/scripts/library-quarter-baseline.py', '.github/scripts/library-quarter-pilot.py'}
+FIXED_SCRIPTS = {'.github/scripts/prepare-rebuild.py', '.github/scripts/test_check.py'}
+ALLOWED = {'.github/workflows/ci.yml', '.github/scripts/library-quarter-baseline.py', '.github/scripts/library-quarter-pilot.py'} | FIXED_SCRIPTS
 
 
 def read(path):
@@ -34,7 +36,10 @@ def api(path):
 def source_guard():
     assert not git('status', '--porcelain'), 'diagnostic source must be clean'
     changed = set(git('diff', '--name-only', REVISION, 'HEAD').splitlines())
-    assert changed <= ALLOWED, 'only the three diagnostic files may differ from493'
+    assert changed <= ALLOWED, 'only diagnostic files and the approved rebuild fix may differ from493'
+    git('merge-base', '--is-ancestor', REBUILD_FIX, 'HEAD')
+    for path in sorted(FIXED_SCRIPTS):
+        assert git('ls-tree', 'HEAD', '--', path) == git('ls-tree', REBUILD_FIX, '--', path), 'rebuild scripts must match the approved901b blobs and modes exactly'
     assert os.environ.get('PILOT_BASE_SHA') == REVISION, 'diagnostic PR must target the exact493 feature branch'
     assert os.uname().machine == 'x86_64'
 
@@ -153,7 +158,7 @@ def prepare():
     subset = [row for row in full if row[0] in libraries]
     assert len(subset) == 2364 and sum(not row[2] for row in subset) == 2363
     assert digest(subset) == '73b2a7bc4076701ddae7e662272a439ef309f7a9e7ed431f229fb9eb15b9392a'
-    baseline = {'revision': REVISION, 'artifact': ARTIFACT, 'artifact_sha256': DIGEST, 'cache_id': 9468484999, 'cache_key': CACHE, 'full_total': len(full), 'full_nonignored': 3800, 'total': len(subset), 'nonignored': 2363, 'inventory_sha256': digest(subset), 'libraries': libraries, 'fingerprints': fingerprints, 'cached_binary_sha256': hashes, 'fingerprint_provenance': 'observed from exact matched cache, not separately retained in original artifact'}
+    baseline = {'revision': REVISION, 'approved_rebuild_fix': REBUILD_FIX, 'artifact': ARTIFACT, 'artifact_sha256': DIGEST, 'cache_id': 9468484999, 'cache_key': CACHE, 'full_total': len(full), 'full_nonignored': 3800, 'total': len(subset), 'nonignored': 2363, 'inventory_sha256': digest(subset), 'libraries': libraries, 'fingerprints': fingerprints, 'cached_binary_sha256': hashes, 'fingerprint_provenance': 'observed from exact matched cache, not separately retained in original artifact'}
     (ROOT / 'target/test-performance/library-quarter-baseline.json').write_text(json.dumps(baseline, indent=2) + '\n')
     (ROOT / 'target/test-performance/cache-restore.json').write_text(json.dumps({'restored_key': CACHE, 'exact_hit': True, 'cache_state': 'matched-normal493'}, indent=2) + '\n')
 
