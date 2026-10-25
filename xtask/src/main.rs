@@ -14,6 +14,7 @@ mod inventory;
 mod lease;
 mod native_artifacts;
 mod nextest;
+mod parts;
 #[cfg(feature = "postgres-check")]
 mod postgres;
 mod probes;
@@ -70,6 +71,10 @@ fn main() {
                 eprintln!("{error}");
                 std::process::exit(2);
             });
+            #[cfg(feature = "postgres-check")]
+            if options.part.is_some() {
+                std::process::exit(complete::contracts(options));
+            }
             if options.offline {
                 std::process::exit(check().execute(&options));
             }
@@ -108,7 +113,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check [--list] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
+                "usage: cargo xtask check [--list] [--part quality-contracts] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
             );
             std::process::exit(2);
         }

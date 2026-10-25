@@ -234,6 +234,7 @@ def main():
     main_started_epoch = time.time()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--part', choices=['quality-contracts'])
     parser.add_argument('--budget-seconds', type=int, default=600)
     parser.add_argument('--ci-start-time', type=float)
     parser.add_argument('--cache-state', choices=['unclassified', 'unchanged', 'runtime-rebuild', 'session-rebuild', 'bootstrap'], default='unclassified')
@@ -254,7 +255,11 @@ def main():
     # unnecessary for this gate; explicit caller settings remain authoritative.
     env.setdefault('CARGO_PROFILE_DEV_DEBUG', '0')
     env.setdefault('CARGO_PROFILE_TEST_DEBUG', '0')
-    code = supervise(['cargo', 'xtask', 'check', '--timings', str(inner)], cwd, report, budget=args.budget_seconds, elapsed=elapsed + time.monotonic() - main_started, env=env)
+    command = ['cargo', 'xtask', 'check']
+    if args.part:
+        command += ['--part', args.part]
+    command += ['--timings', str(inner)]
+    code = supervise(command, cwd, report, budget=args.budget_seconds, elapsed=elapsed + time.monotonic() - main_started, env=env)
     result = json.loads(report.read_text())
     result['cache_state'] = args.cache_state
     result['phases_report'] = str(inner)
@@ -263,8 +268,11 @@ def main():
             phases = json.loads(inner.read_text())
         except (OSError, ValueError):
             phases = {}
-        if phases.get('coverage_scope') != 'complete' or phases.get('status') != 'passed':
-            result.update(status='failed', reason='complete-schedule-report-missing')
+        expected_scope = args.part or 'complete'
+        if (phases.get('coverage_scope') != expected_scope or phases.get('status') != 'passed'
+                or (args.part and (phases.get('qualified') is not False
+                                  or phases.get('processes_drained') is not True))):
+            result.update(status='failed', reason='partial-schedule-report-missing' if args.part else 'complete-schedule-report-missing')
             code = 1
     result['end_revision'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip()
     result['end_clean'] = not subprocess.check_output(['git', 'status', '--porcelain'], cwd=cwd, text=True).strip()
@@ -280,10 +288,12 @@ def main():
     if code == 0 and not source_stable:
         result.update(status='failed', reason='source-changed-or-dirty')
         code = 1
-    result['timing_target_met'] = code == 0 and result['status'] == 'passed' and source_stable and result['wall_seconds'] <= result['timing_target_seconds']
+    result['coverage_scope'] = args.part or 'complete'
+    result['timing_target_met'] = args.part is None and code == 0 and result['status'] == 'passed' and source_stable and result['wall_seconds'] <= result['timing_target_seconds']
     result['qualified'] = args.budget_seconds == result['timing_target_seconds'] and result['timing_target_met'] and args.cache_state in {'unchanged', 'runtime-rebuild', 'session-rebuild'}
     persist(report, result)
-    print(f"Complete check: {result['status']} in {result['wall_seconds']:.3f}s ({args.budget_seconds}s supervision budget; cache state {args.cache_state})", flush=True)
+    label = f'Partial check ({args.part})' if args.part else 'Complete check'
+    print(f"{label}: {result['status']} in {result['wall_seconds']:.3f}s ({args.budget_seconds}s supervision budget; cache state {args.cache_state})", flush=True)
     return code
 
 
