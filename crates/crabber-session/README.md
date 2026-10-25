@@ -210,7 +210,7 @@ sessions, receipts and arbitrary event history. Event payloads alone never
 authorize replay; the migration does not backfill caller-authored markers. Custom
 stores return `Unsupported` until they implement this complete atomic contract.
 
-Memory verification is in facade `fenced_abandon` and session
+Memory verification is in facade `fenced_abandon_facade` and session
 `memory::abandon_tests`: Running/Paused zero-effect journeys, live/stale denial,
 all old-owner writes rejected, privately seeded Pending settlement, rollback
 after tool writes, preserved usage/history/completed tools/inbox and exact replay.

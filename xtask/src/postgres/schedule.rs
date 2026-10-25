@@ -86,7 +86,7 @@ pub(super) const COMMANDS: &[&[&str]] = &[
         "--features",
         "postgres",
         "--test",
-        "fenced_abandon",
+        "fenced_abandon_facade",
         "--",
         "--nocapture",
     ],
