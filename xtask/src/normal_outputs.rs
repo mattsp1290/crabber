@@ -255,7 +255,7 @@ pub(crate) fn migration_owner(gates: &mut Checks, directory: &Path) {
             assert_eq!(owner["target"]["name"], "xtask");
             assert_eq!(owner["profile"]["test"], false);
             assert_eq!(owner["profile"]["opt_level"], "0");
-            assert_eq!(owner["profile"]["debuginfo"], 0);
+            crate::native_artifacts::validate_debuginfo(&owner["profile"]["debuginfo"]);
             let features: std::collections::BTreeSet<_> = owner["features"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
             assert_eq!(features, ["postgres-check", "session-fixtures"].into());
             fs::write(output.join("library-migration-owner.json"), serde_json::to_vec_pretty(&json!({

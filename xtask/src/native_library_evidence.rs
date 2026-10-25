@@ -126,7 +126,7 @@ fn admit_compiler_context(metadata: &Value, row: &Value, package: &Value) {
             "0"
         }
     );
-    assert_eq!(row["profile"]["debuginfo"], 0);
+    crate::native_artifacts::validate_debuginfo(&row["profile"]["debuginfo"]);
     assert_eq!(row["profile"]["debug_assertions"], true);
     assert_eq!(row["profile"]["overflow_checks"], true);
 }
