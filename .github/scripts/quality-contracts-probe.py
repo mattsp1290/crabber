@@ -10,17 +10,20 @@ import subprocess
 import sys
 import time
 import zipfile
+from urllib.parse import quote
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'target/test-performance/quality-contracts-probe'
 SOURCE = 'f0cfc61dfec018c24be0124ad6f80856f50be47e'
-MAIN = '8868d6ec1bf4b8e1a7f0684ceb970a399c80eb90'
-RUN = 40181958569
-ARTIFACT = 12596077587
-DIGEST = '8e46ace367ae736921368c96e03298fbd8a0971e9f9f787e1b6dfd8218aa117d'
-CACHE_ID = 9474387290
-CACHE = 'rust-Linux-X64-b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112-dev0-test0-inc0-combined-v1-2140fed529d2fc7a4b7788fa8a0ae04e871570c1df6d03fa97d46e9e82ac09e0-8868d6ec1bf4b8e1a7f0684ceb970a399c80eb90-40181958569-1'
+BASELINE = 'f0cfc61dfec018c24be0124ad6f80856f50be47e'
+BASE_BRANCH = 'feat/quality-contracts-part'
+BASE_REF = 'refs/heads/feat/quality-contracts-part'
+RUN = 40182665064
+ARTIFACT = 12596750792
+DIGEST = 'ae8034b4c1c95db3468fe6b9a9dba350b69cdb71c5ab479abd74feb878526e86'
+CACHE_ID = 9474983181
+CACHE = 'rust-Linux-X64-b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112-dev0-test0-inc0-combined-v1-24bb56e0cd76db97a185336083fb00d1aebb3dc7e37318c01cb175e8f820acc9-f0cfc61dfec018c24be0124ad6f80856f50be47e-40182665064-1'
 ALLOWED = {'.github/workflows/ci.yml', '.github/scripts/quality-contracts-probe.py'}
 
 
@@ -58,7 +61,8 @@ def source_guard():
     event = read(Path(os.environ['GITHUB_EVENT_PATH']))['pull_request']
     assert event['draft'] is True and event['head']['repo']['full_name'] == 'mattsp1290/crabber'
     assert event['head']['ref'] == 'diagnostics/quality-contracts-f0'
-    assert event['base']['ref'] == 'main' and event['base']['sha'] == MAIN
+    assert event['base']['ref'] == BASE_BRANCH and event['base']['sha'] == BASELINE == SOURCE
+    assert git('rev-parse', 'HEAD') == event['head']['sha'], 'checkout must use the immutable pilot head, not a mutable PR merge ref'
     assert not git('status', '--porcelain'), 'clean diagnostic source required'
     git('merge-base', '--is-ancestor', SOURCE, 'HEAD')
     assert set(git('diff', '--name-only', '--no-renames', '-z', SOURCE, 'HEAD').rstrip('\0').split('\0')) <= ALLOWED
@@ -71,12 +75,12 @@ def source_guard():
 
 def baseline():
     source_guard()
-    cache = api('actions/caches?key=' + CACHE + '&ref=refs%2Fheads%2Fmain&per_page=100')
+    cache = api('actions/caches?key=' + CACHE + '&ref=' + quote(BASE_REF, safe='') + '&per_page=100')
     save('cache-preflight.json', cache)
-    matches = [row for row in cache['actions_caches'] if row['id'] == CACHE_ID and row['key'] == CACHE and row['ref'] == 'refs/heads/main']
-    assert len(matches) == 1, 'exact Main cache unavailable; no fallback or workspace work permitted'
+    matches = [row for row in cache['actions_caches'] if row['id'] == CACHE_ID and row['key'] == CACHE and row['ref'] == BASE_REF]
+    assert len(matches) == 1, 'exact f0 push cache unavailable; no fallback or workspace work permitted'
     run = api(f'actions/runs/{RUN}')
-    assert run['head_sha'] == MAIN and run['head_branch'] == 'main' and run['event'] == 'push' and run['run_attempt'] == 1
+    assert run['head_sha'] == BASELINE and run['head_branch'] == BASE_BRANCH and run['event'] == 'push' and run['run_attempt'] == 1
     artifact = api(f'actions/artifacts/{ARTIFACT}')
     assert artifact['name'] == f'complete-check-X64-{RUN}-1' and not artifact['expired']
     assert artifact['workflow_run']['id'] == RUN and artifact['digest'] == 'sha256:' + DIGEST
@@ -94,10 +98,12 @@ def baseline():
     assert len(checks) == 1
     normal = read(checks[0])
     assert normal['status'] == 'passed' and normal['child_exit_code'] == 0
-    assert normal['source_revision'] == normal['end_revision'] == MAIN and normal['source_clean'] and normal['end_clean']
+    assert normal['source_revision'] == normal['end_revision'] == BASELINE and normal['source_clean'] and normal['end_clean']
     phases = read(checks[0].parent / 'check-phases.json')
     assert phases['coverage_scope'] == 'complete' and len(phases['gates']) == 72 and all(g['status'] == 'passed' for g in phases['gates'])
-    save('baseline.json', {'source': SOURCE, 'main': MAIN, 'run': RUN, 'artifact': ARTIFACT, 'archive_sha256': DIGEST, 'cache_id': CACHE_ID, 'cache_key': CACHE, 'normal_check': str(checks[0])})
+    assert phases['source']['revision'] == BASELINE and phases['source']['tracked_source_clean']
+    assert phases['source']['tree'] == git('rev-parse', BASELINE + '^{tree}')
+    save('baseline.json', {'source': SOURCE, 'baseline': BASELINE, 'baseline_ref': BASE_REF, 'run': RUN, 'artifact': ARTIFACT, 'archive_sha256': DIGEST, 'cache_id': CACHE_ID, 'cache_key': CACHE, 'normal_check': str(checks[0])})
 
 
 def restored():
@@ -105,16 +111,16 @@ def restored():
     assert os.environ.get('RESTORED_KEY') == CACHE and os.environ.get('CACHE_EXACT_HIT') == 'true'
     assert read(OUT / 'baseline.json')['cache_key'] == CACHE
     marker = read(cached('target/test-tools/complete-cache.json'))
-    assert marker['revision'] == MAIN and marker['complete'] is True
+    assert marker['revision'] == BASELINE and marker['complete'] is True
     assert marker['check'] == read(Path(read(OUT / 'baseline.json')['normal_check']))
     timestamps = read(cached('target/test-tools/source-times.json'))
     assert timestamps['version'] == 2 and timestamps['workspace'] == str(ROOT)
-    for entry in git('ls-tree', '-r', '-z', MAIN).rstrip('\0').split('\0'):
+    for entry in git('ls-tree', '-r', '-z', BASELINE).rstrip('\0').split('\0'):
         metadata, name = entry.split('\t', 1)
         mode, kind, blob = metadata.split()
         if mode in {'100644', '100755'}:
             saved = timestamps['files'].get(name, {})
-            assert saved.get('blob') == blob and saved.get('mode') == mode, 'restored source provenance is not exact Main'
+            assert saved.get('blob') == blob and saved.get('mode') == mode, 'restored source provenance is not exact f0'
     pins = read(ROOT / '.config/test-tools.json')
     for binary, argv, expected in [
         (cached('target/test-tools/cargo-nextest'), ['nextest', '--version'], 'cargo-nextest ' + pins['nextest']['version']),

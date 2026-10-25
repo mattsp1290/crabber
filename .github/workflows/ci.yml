@@ -2,7 +2,7 @@ name: DIAGNOSTIC ONLY - quality contracts - NEVER MERGE
 
 on:
   pull_request:
-    branches: [main]
+    branches: [feat/quality-contracts-part]
     types: [opened, synchronize, reopened, converted_to_draft]
 
 permissions:
@@ -31,16 +31,17 @@ jobs:
       github.event.pull_request.draft == true &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'diagnostics/quality-contracts-f0' &&
-      github.base_ref == 'main' &&
-      github.event.pull_request.base.sha == '8868d6ec1bf4b8e1a7f0684ceb970a399c80eb90'
+      github.base_ref == 'feat/quality-contracts-part' &&
+      github.event.pull_request.base.sha == 'f0cfc61dfec018c24be0124ad6f80856f50be47e'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Refuse a missing exact Main cache and bind its normal artifact
+      - name: Refuse a missing exact f0 push cache and bind its normal artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I -S .github/scripts/quality-contracts-probe.py baseline
@@ -69,7 +70,7 @@ jobs:
             target/consumer-probes
             target/test-tools
             fixtures/wasm/target
-          key: rust-Linux-X64-b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112-dev0-test0-inc0-combined-v1-2140fed529d2fc7a4b7788fa8a0ae04e871570c1df6d03fa97d46e9e82ac09e0-8868d6ec1bf4b8e1a7f0684ceb970a399c80eb90-40181958569-1
+          key: rust-Linux-X64-b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112-dev0-test0-inc0-combined-v1-24bb56e0cd76db97a185336083fb00d1aebb3dc7e37318c01cb175e8f820acc9-f0cfc61dfec018c24be0124ad6f80856f50be47e-40182665064-1
       - name: Verify restored provenance and restore source timestamps without building
         env:
           RESTORED_KEY: ${{ steps.cache.outputs.cache-matched-key }}
