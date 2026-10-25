@@ -72,13 +72,13 @@ enum DebugName {
     Tables,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Record {
     index: usize,
     artifact: Artifact,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Input {
     records: Vec<Record>,
     error: Option<ParseFailure>,
@@ -87,13 +87,34 @@ pub(crate) struct Input {
     pub(crate) summary: Option<Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ParseFailure {
     index: usize,
-    category: &'static str,
+    category: String,
 }
 
 impl Input {
+    pub(crate) fn retained(raw: &[u8], binaries: Value) -> Self {
+        let value: Value = serde_json::from_slice(raw).expect("retained compiler JSON");
+        let mut input: Self =
+            serde_json::from_value(value.clone()).expect("typed retained compiler projection");
+        assert_eq!(
+            serde_json::to_value(&input).unwrap(),
+            value,
+            "unexpected retained compiler fields"
+        );
+        assert!(
+            input
+                .records
+                .windows(2)
+                .all(|pair| pair[0].index < pair[1].index),
+            "compiler projection indices must increase"
+        );
+        input.summary = Some(binaries);
+        input.admit();
+        input
+    }
+
     pub(crate) fn parse(bytes: &[u8]) -> Self {
         let mut input = Self {
             records: Vec::new(),
@@ -135,7 +156,10 @@ impl Input {
         self.incomplete = true;
     }
     fn reject(&mut self, index: usize, category: &'static str) {
-        self.error = Some(ParseFailure { index, category });
+        self.error = Some(ParseFailure {
+            index,
+            category: category.into(),
+        });
         self.incomplete = true;
     }
     pub(crate) fn artifacts(&self) -> impl Iterator<Item = &Artifact> {
@@ -168,7 +192,7 @@ impl Input {
             records: Vec::new(),
             error: Some(ParseFailure {
                 index: 0,
-                category: "capture-failed",
+                category: "capture-failed".into(),
             }),
             incomplete: true,
             summary: None,

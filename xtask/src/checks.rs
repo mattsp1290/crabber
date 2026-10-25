@@ -215,6 +215,17 @@ pub(crate) struct Checks {
 }
 
 impl Checks {
+    #[cfg(feature = "postgres-check")]
+    pub(crate) fn inventory(&self) -> Value {
+        serde_json::to_value(
+            self.gates
+                .iter()
+                .map(|gate| &gate.inventory)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
     pub(crate) fn offline() -> Self {
         Self {
             offline: true,

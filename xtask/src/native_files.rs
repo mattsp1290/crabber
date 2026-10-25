@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const METADATA: &str = "cargo-metadata.json";
 
 #[cfg(feature = "postgres-check")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum Family {
     #[serde(rename = "native-libraries")]
     Libraries,
