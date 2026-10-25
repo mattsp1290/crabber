@@ -39,7 +39,7 @@ fn postgres_embedding_independent_pools_and_fresh_process() {
         let url = database.url();
         let stores = runtime.block_on(journey::postgres(&url, true));
         let source = journey::source(false);
-        runtime.block_on(journey::journey(
+        runtime.block_on(journey::smoke(
             stores.clone(),
             "postgres",
             &source,
@@ -70,7 +70,7 @@ fn sqlite_embedding_independent_stores_and_fresh_process() {
     let runtime = runtime();
     let stores = runtime.block_on(journey::sqlite(&path, true));
     let source = journey::source(false);
-    runtime.block_on(journey::journey(
+    runtime.block_on(journey::smoke(
         stores.clone(),
         "sqlite",
         &source,

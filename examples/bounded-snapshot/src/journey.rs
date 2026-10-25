@@ -467,10 +467,10 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
     journey_with_messages(stores, backend, source, mode, 1024).await;
 }
 
-/// CLI wiring keeps a real continuation and cold child; the facade tests own
-/// the full history and allocation proofs through `journey` above.
+/// Sixteen fixture messages require the cold child to advance its continuation.
+/// Memory retains the full journey; each backend retains allocation proofs.
 pub async fn smoke(stores: Stores, backend: &str, source: &Source, mode: ChildMode) {
-    journey_with_messages(stores, backend, source, mode, 8).await;
+    journey_with_messages(stores, backend, source, mode, 16).await;
 }
 
 #[allow(clippy::too_many_lines)]
