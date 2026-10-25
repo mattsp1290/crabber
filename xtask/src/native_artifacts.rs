@@ -153,6 +153,18 @@ impl Journal {
     }
 }
 
+#[cfg(feature = "postgres-check")]
+pub(crate) fn validate_debuginfo(value: &Value) {
+    assert!(
+        value.as_u64().is_some_and(|level| level <= 2)
+            || matches!(
+                value.as_str(),
+                Some("line-directives-only" | "line-tables-only")
+            ),
+        "unsupported Cargo debuginfo evidence"
+    );
+}
+
 #[cfg(any(feature = "postgres-check", test))]
 pub(crate) fn summary(bytes: &[u8]) -> Value {
     let mut result = None;
@@ -270,6 +282,31 @@ mod tests {
         assert_eq!(records[1]["kind"], "artifact");
         assert_eq!(records[2]["truncated_tail"], true);
         assert_eq!(records[2]["invalid"], false);
+        #[cfg(feature = "postgres-check")]
+        {
+            for value in [
+                json!(0),
+                json!(1),
+                json!(2),
+                json!("line-directives-only"),
+                json!("line-tables-only"),
+            ] {
+                validate_debuginfo(&value);
+            }
+            for value in [
+                Value::Null,
+                json!(-1),
+                json!(3),
+                json!(0.0),
+                json!(false),
+                json!("unknown"),
+                json!("1"),
+                json!({}),
+                json!([]),
+            ] {
+                assert!(std::panic::catch_unwind(|| validate_debuginfo(&value)).is_err());
+            }
+        }
         assert!(
             !fs::read_to_string(fixture.path())
                 .unwrap()

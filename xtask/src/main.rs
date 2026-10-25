@@ -13,6 +13,10 @@ mod datadog;
 mod inventory;
 mod lease;
 mod native_artifacts;
+#[cfg(feature = "postgres-check")]
+mod native_libraries;
+#[cfg(feature = "postgres-check")]
+mod native_library_evidence;
 mod nextest;
 #[cfg(feature = "postgres-check")]
 mod normal_outputs;
@@ -115,7 +119,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
+                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts|native-library-1..4] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
             );
             std::process::exit(2);
         }
@@ -128,9 +132,11 @@ fn workspace() -> &'static Path {
 
 fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
     gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
-    gates.prepares_for(parts::Part::QualityArtifacts, |gates| {
-        gates.internal("standard-tool-prerequisites", workspace, |_| {
-            standard_tools::check_tool_prerequisites();
+    gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+        gates.prepares_for(parts::PartFamily::QualityArtifacts, |gates| {
+            gates.internal("standard-tool-prerequisites", workspace, |_| {
+                standard_tools::check_tool_prerequisites();
+            });
         });
     });
     gates.internal(
@@ -146,8 +152,10 @@ fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
         .current_dir(workspace);
     gates.command(workspace, wit, "WIT contract validation");
     gates.internal("minimal-embed-glue", workspace, check_glue);
-    gates.prepares_for(parts::Part::QualityArtifacts, |gates| {
-        nextest::version_gate(workspace, gates);
+    gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+        gates.prepares_for(parts::PartFamily::QualityArtifacts, |gates| {
+            nextest::version_gate(workspace, gates);
+        });
     });
 }
 

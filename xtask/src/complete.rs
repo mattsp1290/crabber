@@ -117,8 +117,10 @@ pub(crate) fn schedule(
     gates.owned(Owner::QualityArtifacts, |gates| {
         cli_journeys(gates);
         crate::standard_tools::schedule(workspace, gates);
-        gates.internal("release-wasm-fixture-output", workspace, move |_| {
-            fixture_lease.release();
+        gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+            gates.internal("release-wasm-fixture-output", workspace, move |_| {
+                fixture_lease.release();
+            });
         });
     });
     gates.select_part()
@@ -127,14 +129,18 @@ pub(crate) fn schedule(
 fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     let workspace = crate::workspace();
     let create = directory.to_owned();
-    gates.prepares_for(Part::QualityArtifacts, |gates| {
-        gates.internal("prepare-complete-manifests", workspace, move |_| {
-            fs::create_dir_all(&create).expect("prepare complete-check manifests");
+    gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+        gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
+            gates.internal("prepare-complete-manifests", workspace, move |_| {
+                fs::create_dir_all(&create).expect("prepare complete-check manifests");
+            });
         });
     });
     crate::check_workspace(workspace, gates);
-    gates.prepares_for(Part::QualityArtifacts, |gates| {
-        tool_versions(gates, directory);
+    gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+        gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
+            tool_versions(gates, directory);
+        });
     });
     let mut supervisor_tests = Command::new("python3");
     supervisor_tests
@@ -165,7 +171,9 @@ fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     );
     crate::probes::schedule(workspace, gates);
     gates.owned(Owner::QualityArtifacts, |gates| {
-        crate::schedule_fixtures(workspace, gates)
+        gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+            crate::schedule_fixtures(workspace, gates)
+        })
     })
 }
 
@@ -269,17 +277,23 @@ fn behavior_graph(
         let cargo_metadata = directory.join("cargo-metadata.json");
         let binaries = directory.join("binaries.json");
         let manifest = directory.join("tests.json");
-        gates.prepares_for(Part::QualityArtifacts, |gates| {
-            capture_json(
-                gates,
-                None,
-                &["metadata", "--format-version", "1", "--features", FEATURES],
-                cargo_metadata.clone(),
-            );
+        gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+            gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
+                capture_json(
+                    gates,
+                    None,
+                    &["metadata", "--format-version", "1", "--features", FEATURES],
+                    cargo_metadata.clone(),
+                );
+            });
         });
         compile_native_artifacts(gates, directory, binaries.clone());
-        gates.prepares_for(Part::QualityArtifacts, |gates| {
-            crate::postgres::session::TemplateMigration::schedule(gates, migration);
+        crate::native_libraries::compile(gates, directory, FEATURES);
+        crate::native_libraries::migration_owner(gates, directory);
+        gates.prepares_for(crate::parts::PartFamily::NativeLibraries, |gates| {
+            gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
+                crate::postgres::session::TemplateMigration::schedule(gates, migration);
+            });
         });
         let profile = if std::env::var("CI").as_deref() == Ok("true") {
             "complete-ci"
@@ -310,6 +324,7 @@ fn behavior_graph(
         });
         crate::nextest::complete_group_gate(workspace, gates, &cargo_metadata, &binaries, profile);
         run_native_behaviors(gates, workspace, &cargo_metadata, &binaries, profile);
+        crate::native_libraries::execute(gates, directory, profile);
     });
     gates.owned(Owner::QualityArtifacts, |gates| {
         gates.cargo(
