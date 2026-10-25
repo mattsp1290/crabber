@@ -17,7 +17,7 @@ impl Report {
     pub(crate) fn run(
         mut gates: Vec<GateCommand>,
         path: Option<&Path>,
-        scope: Option<Value>,
+        scope: Option<crate::parts::Scope>,
     ) -> i32 {
         let signal = match crate::process::cancellation() {
             Ok(signal) => signal,
@@ -39,12 +39,12 @@ impl Report {
                 record
             }).collect::<Vec<_>>(),
         });
-        let partial = scope.is_some();
+        let part = scope.as_ref().map(|scope| scope.part);
         if let Some(scope) = scope {
             report
                 .as_object_mut()
                 .unwrap()
-                .extend(scope.as_object().unwrap().clone());
+                .extend(scope.metadata().as_object().unwrap().clone());
         }
         if let Err(error) = persist(path, &report) {
             eprintln!("cannot create timing report: {error}");
@@ -92,10 +92,10 @@ impl Report {
                 exit = 1;
             }
         }
-        if partial {
+        if part.is_some() {
             drop(gates);
             #[cfg(target_os = "linux")]
-            {
+            if part == Some(crate::parts::Part::QualityContracts) {
                 let drained = crate::process::verify_drained();
                 report["processes_drained"] = json!(drained.is_ok());
                 if let Err(error) = drained {
@@ -106,13 +106,12 @@ impl Report {
                 }
             }
         }
-        report["status"] = json!(if signal.load(std::sync::atomic::Ordering::SeqCst) != 0 {
-            "cancelled"
-        } else if exit == 0 {
-            "passed"
-        } else {
-            "failed"
-        });
+        finish_stage_status(
+            &mut report,
+            part,
+            signal.load(std::sync::atomic::Ordering::SeqCst) != 0,
+            exit,
+        );
         report["exit_code"] = json!(exit);
         report["wall_seconds"] = json!(start.elapsed().as_secs_f64());
         if let Err(error) = persist(path, &report) {
@@ -120,6 +119,26 @@ impl Report {
             return 1;
         }
         exit
+    }
+}
+
+fn finish_stage_status(
+    report: &mut Value,
+    part: Option<crate::parts::Part>,
+    interrupted: bool,
+    exit: i32,
+) {
+    let status = if interrupted {
+        "cancelled"
+    } else if exit != 0 {
+        "failed"
+    } else {
+        "passed"
+    };
+    report["status"] = json!(status);
+    if part == Some(crate::parts::Part::QualityArtifacts) {
+        report["selected_gates_status"] = json!(status);
+        report["status"] = json!("awaiting-owned-cleanup");
     }
 }
 

@@ -76,31 +76,7 @@ fn compile_native_artifacts(gates: &mut Checks, directory: &Path, destination: P
                 .expect("persist canonical native build metadata");
         },
     );
-    // Keep dev dependencies selected for normal CLIs so their transitive
-    // feature unions match the native test graph.
-    gates.owned(Owner::QualityArtifacts, |gates| {
-        gates.cargo(
-            workspace,
-            &[
-                "build",
-                "--workspace",
-                "--bins",
-                "--tests",
-                "--example",
-                "protected_workspace",
-                "--features",
-                FEATURES,
-            ],
-        );
-    });
-}
-
-pub(crate) fn schedule(
-    environment: Vec<(String, String)>,
-    directory: &Path,
-    migration: Option<crate::postgres::session::TemplateMigration>,
-) -> Checks {
-    schedule_scope(environment, directory, migration, None)
+    crate::normal_outputs::schedule(gates, directory, FEATURES);
 }
 
 pub(crate) fn contracts(mut options: crate::checks::Options) -> i32 {
@@ -113,10 +89,10 @@ pub(crate) fn contracts(mut options: crate::checks::Options) -> i32 {
         options.timings = Some(directory.join("phases.json"));
     }
     let environment = vec![("CRABBER_REQUIRE_POSTGRES".into(), "1".into())];
-    schedule_scope(environment, &directory, None, Some(Part::QualityContracts)).execute(&options)
+    schedule(environment, &directory, None, Some(Part::QualityContracts)).execute(&options)
 }
 
-fn schedule_scope(
+pub(crate) fn schedule(
     environment: Vec<(String, String)>,
     directory: &Path,
     migration: Option<crate::postgres::session::TemplateMigration>,
@@ -150,11 +126,15 @@ fn schedule_scope(
 fn preflight(gates: &mut Checks, directory: &Path) -> crate::lease::Lease {
     let workspace = crate::workspace();
     let create = directory.to_owned();
-    gates.internal("prepare-complete-manifests", workspace, move |_| {
-        fs::create_dir_all(&create).expect("prepare complete-check manifests");
+    gates.prepares_for(Part::QualityArtifacts, |gates| {
+        gates.internal("prepare-complete-manifests", workspace, move |_| {
+            fs::create_dir_all(&create).expect("prepare complete-check manifests");
+        });
     });
     crate::check_workspace(workspace, gates);
-    tool_versions(gates, directory);
+    gates.prepares_for(Part::QualityArtifacts, |gates| {
+        tool_versions(gates, directory)
+    });
     let mut supervisor_tests = Command::new("python3");
     supervisor_tests
         .args(["-I", "-S", ".github/scripts/test_check.py"])
@@ -287,13 +267,17 @@ fn behavior_graph(
         let cargo_metadata = directory.join("cargo-metadata.json");
         let binaries = directory.join("binaries.json");
         let manifest = directory.join("tests.json");
-        capture_json(
-            gates,
-            &["metadata", "--format-version", "1", "--features", FEATURES],
-            cargo_metadata.clone(),
-        );
+        gates.prepares_for(Part::QualityArtifacts, |gates| {
+            capture_json(
+                gates,
+                &["metadata", "--format-version", "1", "--features", FEATURES],
+                cargo_metadata.clone(),
+            );
+        });
         compile_native_artifacts(gates, directory, binaries.clone());
-        crate::postgres::session::TemplateMigration::schedule(gates, migration);
+        gates.prepares_for(Part::QualityArtifacts, |gates| {
+            crate::postgres::session::TemplateMigration::schedule(gates, migration);
+        });
         let profile = if std::env::var("CI").as_deref() == Ok("true") {
             "complete-ci"
         } else {

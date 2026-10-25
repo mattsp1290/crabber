@@ -84,7 +84,21 @@ python3 -I -S .github/scripts/check.py --part quality-contracts \
   --report target/test-performance/contracts-cost/check.json
 ```
 
-The larger supervision budget lets the first cost probe finish. The supervisor report always has `coverage_scope=quality-contracts`, `qualified=false` and `timing_target_met=false`, including a passing run below600 seconds. The phase report records the partial scope, `qualified=false` and terminal process drain. They cannot replace the required full check. This mode preserves required tool flags, clears inherited PostgreSQL fixture handoffs and does not create an owned PostgreSQL run. Its passing phase report requires terminal process drain. Artifact and native partition runners and a hosted matrix are separate work.
+The larger supervision budget lets the first cost probe finish. The supervisor report always has `coverage_scope=quality-contracts`, `qualified=false` and `timing_target_met=false`, including a passing run below600 seconds. The phase report records the partial scope, `qualified=false` and terminal process drain. They cannot replace the required full check. This mode preserves required tool flags, clears inherited PostgreSQL fixture handoffs and does not create an owned PostgreSQL run. Its passing phase report requires terminal process drain. The native partition runner and a hosted matrix are separate work.
+
+## Partial artifact cost probe
+
+`cargo xtask check --part quality-artifacts` runs 23 artifact obligations with their explicit readiness, normal-example and template preparation, followed by the four real PostgreSQL demos. `--list` shows the semantic gates, preparation steps and owned demo commands without starting them. The existing producer still selects `--bins --tests --example protected_workspace`: it compiles native test harnesses. This mode executes rustdoc tests and CLI journeys, while the canonical Nextest suite remains part of the full check.
+
+The extra example build precedes the normal producer. The runner checks actual Cargo output records for the normal programs and all three normal examples, with the protected example bound to its final producer. No transitive feature-context equivalence is inferred for the other two examples. The normal producer now has the semantic ID `normal-output-build` in both full and partial reports; full command selectors and order stay unchanged.
+
+```sh
+python3 -I -S .github/scripts/check.py --part quality-artifacts \
+  --budget-seconds 4800 --cache-state unclassified \
+  --report target/test-performance/artifacts-cost/check.json
+```
+
+Artifact stage reports remain `awaiting-owned-cleanup` until demos, run/server cleanup and the final process drain finish. Final wall time includes that lifecycle, and partial reports always remain unqualified. `requires_owned_postgres` describes the resource requirement; final `owned_postgres_run` records whether retained metrics show actual server and run setup. Contracts stays direct and PostgreSQL-free. The artifact mode keeps scoped PostgreSQL handoffs and all four environment requirements. These cost probes do not replace the required full check or qualify a cached-source timing result.
 
 ## Historical: Commands and reports
 

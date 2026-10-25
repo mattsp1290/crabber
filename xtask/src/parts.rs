@@ -1,5 +1,4 @@
 //! Ownership of the required schedule; partial runs never qualify the suite.
-#[cfg(feature = "postgres-check")]
 use serde_json::{Value, json};
 #[cfg(feature = "postgres-check")]
 use std::collections::BTreeSet;
@@ -7,13 +6,14 @@ use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Part {
     QualityContracts,
+    QualityArtifacts,
 }
 
-#[cfg(feature = "postgres-check")]
 impl Part {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::QualityContracts => "quality-contracts",
+            Self::QualityArtifacts => "quality-artifacts",
         }
     }
 }
@@ -36,6 +36,33 @@ impl Owner {
             #[cfg(feature = "postgres-check")]
             Self::Native => "native",
         }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) enum GateRole {
+    #[default]
+    Unpartitioned,
+    Required(Owner, Option<Part>),
+    #[cfg(feature = "postgres-check")]
+    Preparation(Part),
+}
+
+pub(crate) struct Scope {
+    pub(crate) part: Part,
+    pub(crate) ownership: Value,
+    pub(crate) demos: Value,
+}
+
+impl Scope {
+    pub(crate) fn metadata(&self) -> Value {
+        json!({
+            "coverage_scope": self.part.name(), "qualified": false,
+            "full_native_suite_executed": false,
+            "requires_owned_postgres": self.part == Part::QualityArtifacts,
+            "owned_postgres_run": if self.part == Part::QualityArtifacts { Value::Null } else { json!(false) },
+            "ownership": self.ownership, "postgres_demos": self.demos,
+        })
     }
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the complete check with a supervised deadline, defaulting to 600 seconds."""
+"""Run a full or partial check with a supervised deadline, defaulting to 600 seconds."""
 import argparse
 import ctypes
 import json
@@ -234,7 +234,7 @@ def main():
     main_started_epoch = time.time()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
-    parser.add_argument('--part', choices=['quality-contracts'])
+    parser.add_argument('--part', choices=['quality-contracts', 'quality-artifacts'])
     parser.add_argument('--budget-seconds', type=int, default=600)
     parser.add_argument('--ci-start-time', type=float)
     parser.add_argument('--cache-state', choices=['unclassified', 'unchanged', 'runtime-rebuild', 'session-rebuild', 'bootstrap'], default='unclassified')
@@ -271,7 +271,9 @@ def main():
         expected_scope = args.part or 'complete'
         if (phases.get('coverage_scope') != expected_scope or phases.get('status') != 'passed'
                 or (args.part and (phases.get('qualified') is not False
-                                  or phases.get('processes_drained') is not True))):
+                                  or phases.get('processes_drained') is not True
+                                  or phases.get('full_native_suite_executed') is not False
+                                  or phases.get('owned_postgres_run') is not (args.part == 'quality-artifacts')))):
             result.update(status='failed', reason='partial-schedule-report-missing' if args.part else 'complete-schedule-report-missing')
             code = 1
     result['end_revision'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip()
