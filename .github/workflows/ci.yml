@@ -1,17 +1,13 @@
-name: CI
+name: Diagnostic current493 library quarter
 
 on:
-  push:
   pull_request:
-  workflow_dispatch:
-    inputs:
-      qualify:
-        description: Run the three cached-source qualification cases once
-        type: boolean
-        default: false
+    branches: [feat/ten-minute-tests]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
+  actions: read
 
 defaults:
   run:
@@ -24,25 +20,23 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CRABBER_POSTGRES_IMAGE: postgres:14@sha256:c2427de38f998489d36de7ca3553db2134872c400f2b08be4b824e5c50e4d619
+  PILOT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
 jobs:
-  check:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
-    # Bootstrap correctness runs report the 600s target separately.
-    # Qualification still enforces 600s for each of its three cases.
-    timeout-minutes: 90
+  library-quarter:
+    if: github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'diagnostics/library-quarter-current493'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: Install ripgrep for standard tools
+      - name: Install required ripgrep
         run: |
           sudo apt-get update && sudo apt-get install -y ripgrep
           major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
@@ -52,12 +46,11 @@ jobs:
           rust_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["rust"]["version"])')"
           rustup toolchain install "$rust_version" --profile minimal --component rustfmt --component clippy
           rustup target add --toolchain "$rust_version" wasm32-wasip2
-      - name: Record compiler cache identity
-        id: compiler
-        run: echo "hash=$(rustc -Vv | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - name: Start setup clock before cache restoration
-        id: setup
-        run: echo "start=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
+          test "$(rustc -Vv | sha256sum | cut -d ' ' -f 1)" = b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112
+      - name: Download exact successful normal493 evidence without compilation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -S -B .github/scripts/library-quarter-baseline.py download
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
@@ -71,272 +64,46 @@ jobs:
             target/consumer-probes
             target/test-tools
             fixtures/wasm/target
-          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          # Prefer the exact dependency/feature graph. The fallback keeps the
-          # compiler/base profile identical; the exact key includes per-package
-          # profile overrides in Cargo.toml. Cargo still validates every unit's
-          # dependency/features fingerprint and rebuilds changed source.
-          restore-keys: |
-            rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
-            rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-inc0-combined-v1-
-      - name: Record cache conditions and install pinned tools
-        id: conditions
+          key: rust-Linux-X64-b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112-dev0-test0-inc0-combined-v1-2140fed529d2fc7a4b7788fa8a0ae04e871570c1df6d03fa97d46e9e82ac09e0-49317956a606826999161c8ae283c5c1f5fce19f-40164010460-1
+          fail-on-cache-miss: true
+      - name: Verify exact cache and current493 baseline without compilation
         env:
+          GH_TOKEN: ${{ github.token }}
           RESTORED_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+          CACHE_EXACT_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: |
-          python3 -I -S - <<'PY'
-          import json, os, pathlib, subprocess, sys
-          root = pathlib.Path('target/test-tools')
-          root.mkdir(parents=True, exist_ok=True)
-          pins = json.loads(pathlib.Path('.config/test-tools.json').read_text())
-          marker = root / 'complete-cache.json'
-          warm = marker.exists() and bool(os.environ['RESTORED_KEY'])
-          state = 'unclassified' if warm else 'bootstrap'
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              print('state=' + state, file=output)
-          report = pathlib.Path('target/test-performance/cache-restore.json')
-          report.parent.mkdir(parents=True, exist_ok=True)
-          report.write_text(json.dumps({'restored_key': os.environ['RESTORED_KEY'], 'previous_complete_result': json.loads(marker.read_text()) if marker.exists() else None, 'cache_state': state}, indent=2) + '\n')
-          marker.unlink(missing_ok=True)
-          binary = root / 'cargo-nextest'
-          version = subprocess.run([str(binary), 'nextest', '--version'], capture_output=True, text=True).stdout.split() if binary.exists() else []
-          if len(version) < 2 or version[1] != pins['nextest']['version']:
-              subprocess.run([sys.executable, '-I', '-S', '.github/scripts/install-nextest.py', str(root)], check=True)
-          PY
-          wasm_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["wasm-tools"]["version"])')"
-          if ! test -x target/test-tools/bin/wasm-tools || test "$(target/test-tools/bin/wasm-tools --version)" != "wasm-tools $wasm_version"; then
-            cargo install wasm-tools --version "$wasm_version" --locked --root target/test-tools --force
-          fi
+          python3 -I -S -B .github/scripts/cache-source-times.py restore
+          python3 -I -S -B .github/scripts/library-quarter-baseline.py prepare
           echo "$GITHUB_WORKSPACE/target/test-tools" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/target/test-tools/bin" >> "$GITHUB_PATH"
-      - name: Restore and verify pinned PostgreSQL image
+      - name: Verify cached pinned tools and PostgreSQL image
         run: |
-          if test -f target/test-tools/postgres-14.tar; then
-            docker load -i target/test-tools/postgres-14.tar
-          fi
+          nextest_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["nextest"]["version"])')"
+          test "$(cargo-nextest nextest --version | cut -d' ' -f2)" = "$nextest_version"
+          wasm_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["wasm-tools"]["version"])')"
+          test "$(wasm-tools --version)" = "wasm-tools $wasm_version"
+          test -f target/test-tools/postgres-14.tar
+          docker load -i target/test-tools/postgres-14.tar
           docker pull "$CRABBER_POSTGRES_IMAGE"
-          if ! test -f target/test-tools/postgres-14.tar; then
-            docker save "$CRABBER_POSTGRES_IMAGE" -o target/test-tools/postgres-14.tar
-          fi
-      - name: Refresh source provenance after cache restore
-        run: |
-          python3 -I -S .github/scripts/cache-source-times.py restore
-          cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
-      - name: Start complete-check clock after setup
+      - name: Start after-setup clock
         id: budget
-        env:
-          SETUP_STARTED: ${{ steps.setup.outputs.start }}
-        run: |
-          python3 -I -S - <<'PY'
-          import json, os, pathlib, time
-          started = time.time()
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              print(f'start={started}', file=output)
-          path = pathlib.Path('target/test-performance/cache-restore.json')
-          report = json.loads(path.read_text())
-          report['setup_seconds_before_check'] = started - float(os.environ['SETUP_STARTED'])
-          report['check_timing_scope'] = 'after setup, including compilation and cleanup'
-          path.write_text(json.dumps(report, indent=2) + '\n')
-          PY
-      - name: Complete required check including compilation and cleanup
-        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha) }}
+        run: echo "start=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
+      - name: Invalidate Session, compile all libraries and execute exact first quarter
         env:
           CHECK_STARTED: ${{ steps.budget.outputs.start }}
-          CACHE_STATE: ${{ steps.conditions.outputs.state }}
-        run: python3 -I -S .github/scripts/check.py --budget-seconds 4800 --ci-start-time "$CHECK_STARTED" --cache-state "$CACHE_STATE" --report "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/check.json"
-      - name: Qualify no-op and affected workspace rebuilds
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.qualify) || vars.CRABBER_QUALIFY_REVISION == github.sha }}
-        env:
-          CHECK_STARTED: ${{ steps.budget.outputs.start }}
-        run: python3 -I -S .github/scripts/qualify-check.py --warm-report target/test-performance/cache-restore.json --ci-start-time "$CHECK_STARTED" --output "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/qualification"
-      - name: Mark complete cache snapshot
-        if: success()
         run: |
-          python3 -I -S - <<'PY'
-          import json, os, pathlib
-          directory = pathlib.Path('target/test-performance') / ('ci-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
-          report = directory / 'check.json'
-          if not report.exists():
-              report = directory / 'qualification/session-rebuild.json'
-          result = json.loads(report.read_text())
-          pathlib.Path('target/test-tools/complete-cache.json').write_text(json.dumps({'revision': os.environ['GITHUB_SHA'], 'complete': True, 'check': result}) + '\n')
-          PY
-      - name: Prune obsolete native test executables as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
-        # Run only after the complete check or whole qualification protocol.
-        # Partial builds may prune only equivalent variants of completed units;
-        # absent or ambiguous current artifact evidence retains their cache.
-        run: |
-          directory="target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$directory"
-          python3 -I -S .github/scripts/prune-test-cache.py --run-directory "$directory" --apply | tee "$directory/native-cache-prune.json"
-      - name: Prune artifacts that must rebuild after every restore
-        if: always() && steps.cache.outcome == 'success'
-        # Keep the restore-side clean: old snapshots still contain these files.
-        # Their required provenance rebuilds remain inside the measured check.
-        run: cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
-      - name: Preserve unchanged source freshness as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
-        run: python3 -I -S .github/scripts/cache-source-times.py capture
-      - name: Save dependency and compiler snapshot as CI maintenance
-        if: always() && steps.cache.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/debug
-            target/release
-            target/wasm32-wasip2
-            target/local-probes
-            target/consumer-probes
-            target/test-tools
-            fixtures/wasm/target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: Preserve sanitized check, coverage and fixture reports
+          mkdir -p target/test-performance/library-quarter-logs
+          python3 -I -S -B .github/scripts/library-quarter-pilot.py launch 2>&1 | tee target/test-performance/library-quarter-logs/raw.log
+      - name: Preserve diagnostic evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: complete-check-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: diagnostic-current493-quarter-X64-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             target/test-performance/cache-restore.json
-            target/test-performance/ci-*/**/*.json
-            target/test-performance/complete-*/fixtures.jsonl
-            target/test-performance/complete-*/tests.json
-            target/test-performance/complete-*/binaries.json
-            target/test-performance/complete-*/cargo-metadata.json
-            target/test-performance/complete-*/native-artifacts.jsonl
-            target/test-performance/complete-*/boundary-features.json
-            target/test-performance/complete-*/resource-groups.json
-            target/test-performance/complete-*/*-version.txt
+            target/test-performance/library-quarter-baseline.json
+            target/test-performance/library-quarter-baseline/download.json
+            target/test-performance/library-quarter-logs/raw.log
+            target/test-performance/library-quarter-${{ github.run_id }}/**/*
           if-no-files-found: ignore
           retention-days: 7
-
-  aarch64-gnu:
-    runs-on: ubuntu-24.04-arm
-    env:
-      BACKGROUND_JOBS_REQUIRE_SHELL: "1"
-      PYTHON_REPL_REQUIRE_PYTHON: "1"
-      CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE: "1"
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - name: Install ripgrep for standard tools
-        run: |
-          sudo apt-get update && sudo apt-get install -y ripgrep
-          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
-          test "$major" -ge 14
-      - name: Install stable Rust with rustfmt and Clippy
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-      - name: Install WASM tooling
-        run: |
-          rustup target add wasm32-wasip2
-          cargo install wasm-tools --locked
-      - name: Verify native arm64 GNU toolchain
-        run: |
-          rustc -vV | grep 'host: aarch64-unknown-linux-gnu'
-      - name: Build architecture-independent WASM fixtures
-        run: cargo xtask build-fixtures
-      - name: Build workspace and all targets
-        run: cargo build --workspace --all-targets
-      - name: Test workspace
-        run: cargo test --workspace
-      - name: Run credential-free embedding smoke test
-        run: cargo run --quiet -p minimal-embed
-      - name: Run standard tools mounting smoke test
-        run: cargo run --quiet -p mount-standard -- --check
-
-  aarch64-musl:
-    runs-on: ubuntu-24.04-arm
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      CC_aarch64_unknown_linux_musl: musl-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install stable Rust and musl target
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add aarch64-unknown-linux-musl
-      - name: Install native musl toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools ripgrep
-          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
-          test "$major" -ge 14
-      - name: Build musl workspace without native TLS example
-        run: cargo build --workspace --exclude agui-sse --target aarch64-unknown-linux-musl
-      - name: Test standard tools as native arm64 musl binaries
-        shell: bash
-        run: |
-          cargo test -p crabber-tools-catalog -p crabber-tools-fileops -p crabber-tools-glob -p crabber-tools-search --target aarch64-unknown-linux-musl 2>&1 | tee musl-tests.log
-          grep -E '^test result: ok\. [1-9][0-9]* passed' musl-tests.log
-      - name: Run static standard tools mounting smoke test
-        run: cargo run -p mount-standard --target aarch64-unknown-linux-musl -- --check
-      - name: Verify static linking of embedding and tools binaries
-        shell: bash
-        run: |
-          for binary in minimal-embed mount-standard; do
-            file "target/aarch64-unknown-linux-musl/debug/$binary" | grep -E 'statically linked|static-pie linked'
-          done
-
-  extensions-python-311:
-    runs-on: ubuntu-latest
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      PYTHON_REPL_REQUIRE_PYTHON: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Test native Python REPL with the oldest supported Python
-        run: cargo test -p crabber-extensions --test python_repl
-
-  consumer-probe:
-    if: github.event_name == 'push'
-    needs: check
-    runs-on: ubuntu-latest
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target/consumer
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - name: Install ripgrep
-        run: |
-          sudo apt-get update && sudo apt-get install -y ripgrep
-          major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
-          test "$major" -ge 14
-      - name: Fetch the public Crabber source over HTTPS
-        run: git config --global url.https://github.com/mattsp1290/crabber.git.insteadOf ssh://git@github.com/mattsp1290/crabber.git
-      - name: Qualify the runtime, tools, and native extensions at one revision
-        env:
-          CRABBER_REV: ${{ github.sha }}
-        run: ./testdata/standard-tools-consumer/check.sh
-      - name: Qualify native extension host and restart journeys
-        env:
-          CRABBER_REV: ${{ github.sha }}
-        run: ./testdata/extensions-consumer/run.sh
