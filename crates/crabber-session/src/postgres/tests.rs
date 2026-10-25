@@ -2,22 +2,7 @@
 use super::*;
 use crabber_core::{ContentBlock, ManualClock, PartId, Role};
 use std::time::Duration;
-pub(super) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-pub(super) fn test_url() -> Option<String> {
-    match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Ok(value) => Some(value),
-        Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_))
-            if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
-        {
-            panic!("CRABBER_TEST_POSTGRES_URL is required")
-        }
-        Err(_error) => {
-            eprintln!("skipping PostgreSQL tests: CRABBER_TEST_POSTGRES_URL is unset");
-            None
-        }
-    }
-}
 pub(super) fn input(session_id: &SessionId, text: &str) -> Message {
     let id = MessageId::new();
     Message {
@@ -54,116 +39,146 @@ pub(super) fn request(session: &SessionId) -> AdmitRequest {
 }
 #[tokio::test]
 async fn postgres_public_state_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    crate::public_state_contract::run_contract(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::public_state_contract::run_contract(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn postgres_typed_admission_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    crate::typed_admission_contract::run_contract(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::typed_admission_contract::run_contract(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn postgres_revision_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    crate::revision_contract::run_contract(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::revision_contract::run_contract(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn postgres_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    sqlx::query("TRUNCATE sessions CASCADE")
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    crate::storetest::run_contract(|clock: Arc<ManualClock>| store.clone().with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_contract(|clock: Arc<ManualClock>| store.clone().with_clock(clock))
+            .await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn postgres_storable_record_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    sqlx::query("TRUNCATE sessions CASCADE")
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    crate::storetest::run_storable_record_contract(|clock: Arc<ManualClock>| {
-        store.clone().with_clock(clock)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_storable_record_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn postgres_workspace_discovery_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    sqlx::query("TRUNCATE sessions CASCADE")
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    crate::storetest::run_workspace_discovery_contract(|clock: Arc<ManualClock>| {
-        store.clone().with_clock(clock)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_workspace_discovery_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn postgres_workspace_identity_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    sqlx::query("TRUNCATE sessions CASCADE")
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    crate::storetest::run_workspace_identity_contract(|clock: Arc<ManualClock>| {
-        store.clone().with_clock(clock)
-    })
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    // A second pool reads the identity the first one persisted, and a
-    // stored row that no longer decodes fails closed with a typed error.
-    let session = SessionId::new();
-    let admitted = store.admit_run(request(&session)).await.unwrap();
-    let fresh = PostgresStore::connect(&url).await.unwrap();
-    let stored = fresh.get_session(&session).await.unwrap().unwrap();
-    assert_eq!(
-        (stored.workspace_id.as_str(), stored.directory.as_str()),
-        ("test", "/tmp")
-    );
-    assert_eq!(stored, admitted.session);
-    sqlx::query("UPDATE sessions SET data = data - 'workspace_id' WHERE id=$1")
-        .bind(&session.0)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let invalid = StoreError::Validation("stored record is invalid".into());
-    assert_eq!(fresh.get_session(&session).await.unwrap_err(), invalid);
-    let mut again = request(&session);
-    again.session_id = Some(session.clone());
-    assert_eq!(fresh.admit_run(again).await.unwrap_err(), invalid);
-    sqlx::query("TRUNCATE sessions CASCADE")
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_workspace_identity_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
+
+        // A second pool reads the identity the first one persisted, and a
+        // stored row that no longer decodes fails closed with a typed error.
+        let session = SessionId::new();
+        let admitted = store.admit_run(request(&session)).await.unwrap();
+        let fresh = PostgresStore::connect(&url).await.unwrap();
+        let stored = fresh.get_session(&session).await.unwrap().unwrap();
+        assert_eq!(
+            (stored.workspace_id.as_str(), stored.directory.as_str()),
+            ("test", "/tmp")
+        );
+        assert_eq!(stored, admitted.session);
+        sqlx::query("UPDATE sessions SET data = data - 'workspace_id' WHERE id=$1")
+            .bind(&session.0)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let invalid = StoreError::Validation("stored record is invalid".into());
+        assert_eq!(fresh.get_session(&session).await.unwrap_err(), invalid);
+        let mut again = request(&session);
+        again.session_id = Some(session.clone());
+        assert_eq!(fresh.admit_run(again).await.unwrap_err(), invalid);
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn migrate_reopen_and_concurrent_sessions() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url).await.unwrap();
     let before: Vec<i32> =
@@ -208,7 +223,7 @@ async fn migrate_reopen_and_concurrent_sessions() {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let blocked: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock' AND query LIKE 'SELECT CASE WHEN octet_length(data::text)<=33554432 THEN data END AS data FROM runs WHERE id=% FOR UPDATE')"
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1 = ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock' AND query LIKE 'SELECT CASE WHEN octet_length(data::text)<=33554432 THEN data END AS data FROM runs WHERE id=% FOR UPDATE')"
             )
             .bind(blocker_pid).fetch_one(&store.pool).await.unwrap();
             if blocked { break; }
@@ -262,32 +277,36 @@ async fn migrate_reopen_and_concurrent_sessions() {
             .len(),
         2
     );
+
+    }).await.unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn postgres_admission_transaction_span_records_scope_and_outcome() {
-    let Some(url) = test_url() else {
-        return;
-    };
-    let _lock = TEST_LOCK.lock().await;
-    let (captured, _guard) = crate::tracing_capture_tests::capture();
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    store.admit_run(request(&SessionId::new())).await.unwrap();
-    let records = captured.0.lock().unwrap();
-    assert!(records.iter().any(|r| {
-        r.name == "crabber.store.transaction"
-            && r.fields.get("db.system").is_some_and(|v| v == "postgresql")
-            && r.fields
-                .get("crabber.store.scope")
-                .is_some_and(|v| v == "admission")
-            && r.fields.get("outcome").is_some_and(|v| v == "committed")
-    }));
-    assert!(records.iter().any(|r| {
-        r.name == "crabber.store.transaction"
-            && r.fields
-                .get("crabber.store.scope")
-                .is_some_and(|v| v == "verify")
-            && r.fields.get("outcome").is_some_and(|v| v == "rolled_back")
-    }));
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let (captured, _guard) = crate::tracing_capture_tests::capture();
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        store.admit_run(request(&SessionId::new())).await.unwrap();
+        let records = captured.0.lock().unwrap();
+        assert!(records.iter().any(|r| {
+            r.name == "crabber.store.transaction"
+                && r.fields.get("db.system").is_some_and(|v| v == "postgresql")
+                && r.fields
+                    .get("crabber.store.scope")
+                    .is_some_and(|v| v == "admission")
+                && r.fields.get("outcome").is_some_and(|v| v == "committed")
+        }));
+        assert!(records.iter().any(|r| {
+            r.name == "crabber.store.transaction"
+                && r.fields
+                    .get("crabber.store.scope")
+                    .is_some_and(|v| v == "verify")
+                && r.fields.get("outcome").is_some_and(|v| v == "rolled_back")
+        }));
+    })
+    .await
+    .unwrap();
 }

@@ -8,9 +8,9 @@ use std::{sync::Arc, time::Duration};
 
 #[async_trait::async_trait]
 pub(crate) trait FixtureStore: Store {
-    async fn seed_run(&self, run: Run);
-    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord>;
-    async fn unconsumed_inbox(&self, session: &SessionId) -> usize;
+    async fn seed_run(&self, run: Run, fixture_url: Option<&str>);
+    async fn calls(&self, run: &RunId, fixture_url: Option<&str>) -> Vec<ToolCallRecord>;
+    async fn unconsumed_inbox(&self, session: &SessionId, fixture_url: Option<&str>) -> usize;
 }
 
 pub(crate) fn request() -> AdmitRequest {
@@ -157,9 +157,13 @@ pub(crate) async fn assert_stale(execution: &dyn ExecutionStore, run: &Run, call
     );
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClock>) {
     native_guards::run(&store, &clock).await;
+    run_borrowed(&store, &clock).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_borrowed(store: &dyn FixtureStore, clock: &Arc<ManualClock>) {
     for status in [RunStatus::Pending, RunStatus::Running, RunStatus::Paused] {
         for authority in [
             AbandonAuthority::ExpiredLease,
@@ -267,7 +271,7 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
             // Checkpoint must be retained regardless of whether the host has the
             // executable configuration needed to interpret its continuation.
             run.checkpoint = Some(json!({"unavailable": "continuation"}));
-            store.seed_run(run.clone()).await;
+            store.seed_run(run.clone(), None).await;
             for kind in [InboxKind::Steer, InboxKind::FollowUp] {
                 let mut message = request().user_message;
                 message.session_id = run.session_id.clone();
@@ -288,7 +292,7 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
                 marker.payload = json!({"abandonment_v1": {"request": abandon_request(&admitted, authority), "run": run, "interrupted_tools": []}});
                 execution.append_event(marker).await.unwrap();
             }
-            let original_calls = store.calls(&run.id).await;
+            let original_calls = store.calls(&run.id, None).await;
             let original_messages = store.list_all_messages(&run.session_id).await.unwrap();
             let original_events = store.list_events(&run.session_id, None, 100).await.unwrap();
             let request = abandon_request(&admitted, authority);
@@ -354,7 +358,7 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
             assert_eq!(outcome.run.error, run.error);
             assert_eq!(outcome.run.checkpoint, run.checkpoint);
             assert_eq!(outcome.interrupted_tools.len(), 2);
-            let calls = store.calls(&run.id).await;
+            let calls = store.calls(&run.id, None).await;
             let messages = store.list_all_messages(&run.session_id).await.unwrap();
             let events = store.list_events(&run.session_id, None, 100).await.unwrap();
             snapshot_request.continuation = None;
@@ -421,7 +425,7 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
                 store.list_unfinished_tool_calls(&run.id).await.unwrap(),
                 [] as [crabber_core::ToolCallRecord; 0]
             );
-            assert_eq!(store.unconsumed_inbox(&run.session_id).await, 2);
+            assert_eq!(store.unconsumed_inbox(&run.session_id, None).await, 2);
             assert_eq!(
                 store
                     .lookup_admission(&run.session_id, &options.key)
@@ -555,7 +559,7 @@ pub(crate) async fn untrusted_terminal_contract<S: FixtureStore>(store: &S, cloc
                 store.get_run(&admitted.run.id).await.unwrap().unwrap(),
                 predicted
             );
-            let calls = store.calls(&admitted.run.id).await;
+            let calls = store.calls(&admitted.run.id, None).await;
             let messages = store
                 .list_all_messages(&admitted.run.session_id)
                 .await
@@ -574,7 +578,7 @@ pub(crate) async fn untrusted_terminal_contract<S: FixtureStore>(store: &S, cloc
                 store.get_run(&admitted.run.id).await.unwrap().unwrap(),
                 predicted
             );
-            assert_eq!(store.calls(&admitted.run.id).await, calls);
+            assert_eq!(store.calls(&admitted.run.id, None).await, calls);
             assert_eq!(
                 store
                     .list_unfinished_tool_calls(&admitted.run.id)

@@ -72,7 +72,7 @@ pub(crate) struct Fixture {
     pub request: PhaseMutation,
     pub mode: Mode,
 }
-pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
+pub(crate) async fn pending(store: &dyn Store, mode: Mode) -> Fixture {
     let admitted =
         crate::public_state_contract::admit(store, time::OffsetDateTime::now_utc()).await;
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
@@ -152,7 +152,7 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
     }
 }
 pub(crate) async fn write(
-    store: &impl Store,
+    store: &dyn Store,
     fixture: &Fixture,
     inject: impl Fn(u8),
     lose_ack: bool,
@@ -299,7 +299,7 @@ async fn prepare(
         .unwrap();
     None
 }
-pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
+pub(crate) async fn uncommitted(store: &dyn Store, fixture: &Fixture) {
     assert_eq!(
         store.get_run(&fixture.fence.run_id).await.unwrap(),
         Some(fixture.initial_run.clone())
@@ -376,7 +376,7 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         _ => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Uncertain),
     }
 }
-pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture) {
+pub(crate) async fn recover_killed_writer(store: &dyn Store, fixture: &Fixture) {
     if matches!(fixture.mode, Mode::Uncertainty | Mode::Cleanup) {
         controls::recover(store, fixture).await;
         return;

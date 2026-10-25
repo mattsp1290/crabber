@@ -24,12 +24,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Migrations take DDL locks across all tables. Keep separate PG journeys from
-// rerunning them while another journey owns live writers on this shared DB.
-// Each journey still exercises its own independent processes/connections.
-#[cfg(feature = "postgres")]
-static POSTGRES_JOURNEY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 #[derive(Default)]
 struct ContextCapture(Mutex<Vec<(EventRecord, Option<TraceContext>)>>);
 impl Observer for ContextCapture {
@@ -232,19 +226,16 @@ async fn evidence(
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_public_facade_fault_restart_journey() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
-            "CRABBER_TEST_POSTGRES_URL required"
-        );
-        eprintln!("skipping live facade journey: CRABBER_TEST_POSTGRES_URL absent");
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    fault_restart_journey(BackendKind::Postgres(url)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        fault_restart_journey(BackendKind::Postgres(url)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]

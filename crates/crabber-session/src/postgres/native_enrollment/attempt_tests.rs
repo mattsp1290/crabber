@@ -238,138 +238,155 @@ const NATIVE: [&str; 21] = [
 ];
 #[tokio::test]
 async fn raw_attempt_fresh_replay_rollback_and_ack_loss() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::run(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::run(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_attempt_keeps_caller_proof_through_genuine_barriers() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::budgets(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::budgets(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_phase_fresh_replay_rollback_and_ack_loss() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::phases(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::phases(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_compatibility_original_inputs_and_atomic_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::compatibility(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::compatibility(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::recoveries(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::recoveries(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_initial_fresh_replay_rollback_and_ack_loss() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_prepared_recovery_original_sources_and_atomic_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock))
+            .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
-        .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
+            .await;
+    })
+    .await
+    .unwrap();
 }
 
 /// Rollback does not roll PostgreSQL sequence allocation back. Keep this finite
@@ -408,37 +425,41 @@ async fn stable_approval_event_cursor_width(store: &crate::PostgresStore) {
 
 #[tokio::test]
 async fn raw_approval_compound_original_grant_proof_and_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    stable_approval_event_cursor_width(&store).await;
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::approvals(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        stable_approval_event_cursor_width(&store).await;
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::approvals(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raw_tool_compound_original_grant_proof_and_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    Box::pin(crate::native_enrollment::caller::contract::tools(
-        &store, &clock,
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        Box::pin(crate::native_enrollment::caller::contract::tools(
+            &store, &clock,
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }

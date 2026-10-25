@@ -11,7 +11,7 @@ use crabber_core::{Clock, ControlId, EventKind, ManualClock, RunStatus, Usage};
 use serde_json::json;
 
 pub(crate) async fn started(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     boundary: RunBoundary,
 ) -> (
@@ -93,7 +93,7 @@ pub(crate) fn terminal(status: RunStatus) -> RunBoundary {
         },
     }
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for boundary in [
         terminal(RunStatus::Completed),
         terminal(RunStatus::Failed),
@@ -112,7 +112,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     contradictory_boundary(store, clock).await;
     guards::run(store).await;
 }
-async fn lifecycle(store: &impl Store, clock: &ManualClock, boundary: RunBoundary) {
+async fn lifecycle(store: &dyn Store, clock: &ManualClock, boundary: RunBoundary) {
     let (admitted, execution, owner, conclusion) = started(store, clock, boundary).await;
     let before = store
         .list_events(&admitted.session.id, None, 100)
@@ -288,7 +288,7 @@ async fn conflicting_choices(execution: &dyn ExecutionStore, conclusion: Attempt
     );
 }
 
-async fn pending_input(store: &impl Store, clock: &ManualClock) {
+async fn pending_input(store: &dyn Store, clock: &ManualClock) {
     let (admitted, execution, owner, mut conclusion) =
         started(store, clock, terminal(RunStatus::Completed)).await;
     let mut message = store
@@ -364,7 +364,7 @@ async fn pending_input(store: &impl Store, clock: &ManualClock) {
         .await
         .unwrap();
 }
-async fn contradictory_boundary(store: &impl Store, clock: &ManualClock) {
+async fn contradictory_boundary(store: &dyn Store, clock: &ManualClock) {
     let (admitted, execution, owner, mut conclusion) =
         started(store, clock, terminal(RunStatus::Completed)).await;
     conclusion.boundary = RunBoundary::Suspended {
@@ -394,7 +394,7 @@ async fn contradictory_boundary(store: &impl Store, clock: &ManualClock) {
 }
 
 pub(super) async fn faults(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     inject: &impl Fn(super::FaultPoint),
 ) {

@@ -22,6 +22,11 @@ pub(crate) use fixture::prepare;
 pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S) {
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
+    run_borrowed(&store, &clock).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>) {
     let session = SessionId::new();
     let input = envelope(&session);
     let original = fixture(&session, clock.now(), "typed-backend");

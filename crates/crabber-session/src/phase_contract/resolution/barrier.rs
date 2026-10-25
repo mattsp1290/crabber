@@ -7,7 +7,7 @@ use crate::{
 };
 use crabber_core::{ControlId, ManualClock, RunStatus};
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let (scope, uncertain) = prepare(store, clock).await;
     let before = store
         .approval_snapshot(&scope.session_id, &scope.id)
@@ -65,7 +65,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
 }
 
 async fn prepare(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
 ) -> (crabber_core::Run, crate::PhaseReceipt) {
     let f = crate::approval_contract::fixture::staged(store, clock).await;

@@ -16,17 +16,24 @@ impl manifest_api::Guest for Fixture {
     }
 }
 impl event_sink_api::Guest for Fixture {
-    fn emit(_event: types::BoundedEvent) -> Result<(), types::StructuredError> {
+    fn emit(event: types::BoundedEvent) -> Result<(), types::StructuredError> {
+        // Direct host-boundary tests write through the same real state import;
+        // ordinary Agent events retain the counter behavior below.
+        if event.kind == "test-state-write" {
+            return crabber::host::state::set(&event.run_id, &event.payload_summary)
+                .map_err(state_error);
+        }
         let count = crabber::host::state::get("count")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        crabber::host::state::set("count", &(count + 1).to_string()).map_err(|message| {
-            types::StructuredError {
-                code: "state".into(),
-                message,
-                retryable: false,
-            }
-        })
+        crabber::host::state::set("count", &(count + 1).to_string()).map_err(state_error)
+    }
+}
+fn state_error(message: String) -> types::StructuredError {
+    types::StructuredError {
+        code: "state".into(),
+        message,
+        retryable: false,
     }
 }
 export!(Fixture);

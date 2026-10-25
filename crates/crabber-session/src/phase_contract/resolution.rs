@@ -18,7 +18,7 @@ use crabber_core::{
     ToolOutput,
 };
 use time::OffsetDateTime;
-pub(super) async fn fault_contract(store: &impl Store, set_fault: &impl Fn(super::FaultPoint)) {
+pub(super) async fn fault_contract(store: &dyn Store, set_fault: &impl Fn(super::FaultPoint)) {
     faults::run(store, set_fault).await;
 }
 
@@ -66,7 +66,7 @@ pub(super) fn mixed_output() -> ToolOutput {
     .unwrap()
 }
 pub(super) async fn prepare(
-    store: &impl Store,
+    store: &dyn Store,
     choice: UncertainPhaseChoice,
     quiet: PhaseQuiescence,
     started: bool,
@@ -160,7 +160,7 @@ pub(super) fn fresh(outcome: PhaseResolutionOutcome) -> PhaseReceipt {
     };
     receipt
 }
-pub(super) async fn evidence(store: &impl Store, request: &PhaseResolution) -> serde_json::Value {
+pub(super) async fn evidence(store: &dyn Store, request: &PhaseResolution) -> serde_json::Value {
     serde_json::json!({
         "run":store.get_run(&request.run_id).await.unwrap(),
         "attempt":store.latest_execution_attempt(&request.run_id).await.unwrap().map(|versioned|versioned.attempt),
@@ -172,7 +172,7 @@ pub(super) async fn evidence(store: &impl Store, request: &PhaseResolution) -> s
         "approval":store.approval_snapshot(&request.session_id,&request.run_id).await.unwrap(),
     })
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for quiet in [
         PhaseQuiescence::Pending,
         PhaseQuiescence::Incomplete,

@@ -1,6 +1,6 @@
 //! Actual fresh gated dispatch, with metadata retries granting no second effect.
 use super::super::*;
-pub(crate) async fn exercise(store: &impl Store, request: RegisterSuccessorExecutionDriver) {
+pub(crate) async fn exercise(store: &dyn Store, request: RegisterSuccessorExecutionDriver) {
     let SuccessorExecutionDriverOutcome::Applied { receipt, grant } = store
         .register_successor_execution_driver(request.clone())
         .await
@@ -69,7 +69,7 @@ pub(crate) async fn exercise(store: &impl Store, request: RegisterSuccessorExecu
 }
 
 pub(crate) async fn faults(
-    store: &impl Store,
+    store: &dyn Store,
     request: RegisterSuccessorExecutionDriver,
     boundary: u8,
     fault: &impl Fn(u8),
@@ -111,7 +111,7 @@ pub(crate) async fn faults(
     }
 }
 pub(crate) async fn activation_fault(
-    store: &impl Store,
+    store: &dyn Store,
     request: RegisterSuccessorExecutionDriver,
     fault: &impl Fn(u8),
 ) {
@@ -127,7 +127,7 @@ pub(crate) async fn activation_fault(
 
 /// Cancellation, lease expiry and unrelated public state never grant the waiting gate.
 pub(crate) async fn refusals(
-    store: &impl Store,
+    store: &dyn Store,
     request: RegisterSuccessorExecutionDriver,
     clock: &ManualClock,
     mode: u8,
@@ -214,7 +214,7 @@ pub(crate) async fn refusals(
         crate::session_owner::SessionOwnerState::Active
     );
 }
-async fn advance(store: &impl Store, request: &RegisterSuccessorExecutionDriver) {
+async fn advance(store: &dyn Store, request: &RegisterSuccessorExecutionDriver) {
     store
         .execution(request.fence.clone())
         .await

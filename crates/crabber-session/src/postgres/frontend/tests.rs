@@ -1,32 +1,36 @@
 #[tokio::test]
 async fn frontend_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::frontend_contract::run_contract(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::frontend_contract::run_contract(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn frontend_fault_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    crate::frontend_contract::run_fault_contract(&store, &clock, |fault| {
-        store
-            .tool_continuation_fault
-            .store(fault, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        crate::frontend_contract::run_fault_contract(&store, &clock, |fault| {
+            store
+                .tool_continuation_fault
+                .store(fault, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -34,7 +38,9 @@ async fn frontend_process_helper() {
     let Some(directory) = crate::tool_continuation_contract::process::directory() else {
         return;
     };
-    let url = crate::postgres::tests::test_url().unwrap();
+    let url = crabber_test_support::postgres::TestDatabase::attached_url()
+        .await
+        .unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
@@ -48,24 +54,26 @@ async fn frontend_process_helper() {
 }
 #[tokio::test]
 async fn frontend_controls_survive_killed_writer() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    crate::tool_continuation_contract::process::journey(
-        "postgres::frontend::tests::frontend_process_helper",
-        None,
-    )
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        crate::tool_continuation_contract::process::journey(
+            "postgres::frontend::tests::frontend_process_helper",
+            crabber_test_support::ChildDatabase::Postgres(&url),
+        )
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn frontend_origin_absence_and_receipt_index_corruption_fail_closed() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     for kind in 0..5 {
@@ -142,14 +150,16 @@ async fn frontend_origin_absence_and_receipt_index_corruption_fail_closed() {
             receipt.revision
         );
     }
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn frontend_removed_required_links_and_original_results_are_rejected() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     for kind in 0..3 {
@@ -212,15 +222,19 @@ async fn frontend_removed_required_links_and_original_results_are_rejected() {
             receipt.revision
         );
     }
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn frontend_near_limit_recovery() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::frontend_contract::large::run(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::frontend_contract::large::run(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }

@@ -17,7 +17,7 @@ pub(crate) struct Fixture {
     pub owner: AttemptAuthority,
     pub batch: ApprovalSuspension,
 }
-pub(crate) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
+pub(crate) async fn staged(store: &dyn Store, clock: &ManualClock) -> Fixture {
     let mut prepared =
         crate::typed_admission_contract::fixture(&SessionId::new(), clock.now(), "approval");
     prepared.keyed.request.session_id = None;
@@ -32,7 +32,7 @@ pub(crate) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
 }
 /// Authentic admission supplied by a preparation fixture, never a synthetic Run.
 pub(crate) async fn staged_on(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     admitted: crate::AdmitOutcome,
 ) -> Fixture {
@@ -98,7 +98,7 @@ pub(crate) async fn staged_on(
     }
 }
 pub(crate) async fn answer(
-    store: &impl Store,
+    store: &dyn Store,
     f: &Fixture,
     index: usize,
     reply: crate::ApprovalReply,
@@ -121,7 +121,7 @@ pub(crate) async fn answer(
         reply,
     }
 }
-pub(crate) async fn claim(store: &impl Store, f: &Fixture) -> ApprovalContinuationClaim {
+pub(crate) async fn claim(store: &dyn Store, f: &Fixture) -> ApprovalContinuationClaim {
     ApprovalContinuationClaim {
         id: ControlId::new(),
         expected_revision: store.session_revision(&f.run.session_id).await.unwrap(),
@@ -202,7 +202,7 @@ async fn prepared_calls(
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 /// A child writer will acquire and begin this first native attempt itself.
 pub(crate) async fn unstarted_batch(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
 ) -> (Run, crabber_core::RunFence, ApprovalSuspension) {
     let mut prepared = crate::typed_admission_contract::fixture(

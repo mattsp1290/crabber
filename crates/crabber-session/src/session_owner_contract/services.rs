@@ -24,7 +24,7 @@ pub(crate) async fn setup() -> (
 }
 
 pub(crate) async fn setup_on(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (
     PreparationGrant,
     crate::session_owner::preparation::PreparationResourceReceipt,
@@ -32,7 +32,7 @@ pub(crate) async fn setup_on(
     setup_in(store, SessionId::new()).await
 }
 pub(crate) async fn setup_in(
-    store: &impl Store,
+    store: &dyn Store,
     session: SessionId,
 ) -> (
     PreparationGrant,
@@ -102,10 +102,10 @@ pub(crate) async fn activated_setup() -> (MemoryStore, PreparationGrant) {
     (store, grant)
 }
 
-pub(crate) async fn activated_setup_on(store: &impl Store) -> PreparationGrant {
+pub(crate) async fn activated_setup_on(store: &dyn Store) -> PreparationGrant {
     activated_in(store, SessionId::new()).await
 }
-pub(crate) async fn activated_in(store: &impl Store, session: SessionId) -> PreparationGrant {
+pub(crate) async fn activated_in(store: &dyn Store, session: SessionId) -> PreparationGrant {
     use crate::session_owner::owned_scope::{
         OwnedScopeParentAuthority, OwnedScopeSource, OwnedTaskRegistration,
     };
@@ -132,7 +132,7 @@ pub(crate) async fn activated_in(store: &impl Store, session: SessionId) -> Prep
     grant
 }
 
-pub(crate) async fn lifecycle(store: &impl Store) {
+pub(crate) async fn lifecycle(store: &dyn Store) {
     use crate::session_owner::owned_scope::{
         OwnedCleanupTask, OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedScopeSource,
         OwnedTaskRegistration,
@@ -223,7 +223,7 @@ pub(crate) async fn lifecycle(store: &impl Store) {
     assert_eq!(saved, receipt);
 }
 
-pub(crate) async fn faults(store: &impl Store, set: impl Fn(u8)) {
+pub(crate) async fn faults(store: &dyn Store, set: impl Fn(u8)) {
     use crate::session_owner::SessionOwnerError;
     use crate::session_owner::service::{
         RegisterSessionServiceDependency, SessionServiceDependencyOutcome,

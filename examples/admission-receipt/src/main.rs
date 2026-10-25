@@ -1,3 +1,6 @@
+#[cfg(feature = "postgres")]
+#[path = "../../postgres-fixture.rs"]
+mod postgres_fixture;
 mod response_loss;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, FakeProvider, InputFingerprint,
@@ -202,6 +205,7 @@ async fn connect(
         "--postgres" => {
             let url = std::env::var("CRABBER_TEST_POSTGRES_URL")
                 .map_err(|_| "CRABBER_TEST_POSTGRES_URL is required for --postgres")?;
+            postgres_fixture::verify(&url).await;
             crabber::session::PostgresStore::migrate(&url).await?;
             Arc::new(crabber::session::PostgresStore::connect(&url).await?)
         }

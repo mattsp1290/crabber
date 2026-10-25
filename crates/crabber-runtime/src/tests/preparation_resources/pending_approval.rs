@@ -269,23 +269,22 @@ async fn sqlite_runtime_pending_approval_actual_task_ack_and_cold_recovery() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn postgres_runtime_pending_approval_actual_task_ack_and_cold_recovery() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = Arc::new(
+            crabber_session::PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock.clone()),
         );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = Arc::new(
-        crabber_session::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone()),
-    );
-    contract(store.clone(), clock.clone()).await;
-    held_ack(store, clock).await;
+        contract(store.clone(), clock.clone()).await;
+        held_ack(store, clock).await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn pending_approval_preflight_refusal_precedes_factory_and_begin() {

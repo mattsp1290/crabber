@@ -3,37 +3,41 @@ use crate::Store;
 
 #[tokio::test]
 async fn postgres_execution_binding_contract() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::execution_binding_contract::run_contract(|clock| store.with_clock(clock)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::execution_binding_contract::run_contract(|clock| store.with_clock(clock)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn postgres_execution_binding_fault_contract() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::execution_binding_contract::faults::run(&store, |stage| {
-        store
-            .binding_fault
-            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::execution_binding_contract::faults::run(&store, |stage| {
+            store
+                .binding_fault
+                .store(stage, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn binding_read_is_scoped_and_independent_of_worker_token() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let session = SessionId::new();
@@ -91,4 +95,6 @@ async fn binding_read_is_scoped_and_independent_of_worker_token() {
         store.admit_bound_keyed_run(original).await.unwrap_err(),
         StoreError::AdmissionConflict
     );
+
+    }).await.unwrap();
 }

@@ -165,18 +165,17 @@ async fn sqlite_owned_tool_invocations() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_owned_tool_invocations() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    contract(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        contract(Arc::new(
+            crabber_session::PostgresStore::connect(&url).await.unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[path = "owned_tool_invocations/products.rs"]

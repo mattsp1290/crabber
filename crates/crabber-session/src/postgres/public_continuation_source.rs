@@ -225,22 +225,28 @@ fn charge(proof: &mut Proof, bytes: i64) -> Result<(), Error> {
 #[cfg(test)]
 #[tokio::test]
 async fn continuation_source_exact_native_parent_and_foreign_authority() {
-    let Some(url) = super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::continuation_source::tests::run(&store).await;
-    crate::continuation_source::tests::waiting_atomic(&store, &clock, &store.approval_fault).await;
-    crate::continuation_source::tests::tool_waiting_atomic(&store, &store.tool_continuation_fault)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::continuation_source::tests::run(&store).await;
+        crate::continuation_source::tests::waiting_atomic(&store, &clock, &store.approval_fault)
+            .await;
+        crate::continuation_source::tests::tool_waiting_atomic(
+            &store,
+            &store.tool_continuation_fault,
+        )
         .await;
+    })
+    .await
+    .unwrap();
 }
 
 // Called only inside the suspension compound; its receipt revision covers this

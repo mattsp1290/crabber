@@ -15,7 +15,8 @@ type ResultSender = oneshot::Sender<Result<(), RuntimeError>>;
 
 pub(in crate::orchestrator) struct ControlObservation {
     owner: ToolResourceOwner,
-    result: oneshot::Receiver<Result<(), RuntimeError>>,
+    result: Option<oneshot::Receiver<Result<(), RuntimeError>>>,
+    lifetime: Arc<ObservationLifetime>,
     // A cooperative host close stops observation without fabricating worker failure.
     _closed_result: Arc<Mutex<Option<ResultSender>>>,
 }
@@ -38,6 +39,7 @@ impl ControlObservation {
             .ok_or(RuntimeError::PreparationRecoveryRequired)?;
         let store = Arc::clone(&runtime.store);
         let lifetime = Arc::clone(&runtime.observation_lifetime);
+        let task_lifetime = Arc::clone(&lifetime);
         let (sender, result) = oneshot::channel();
         let closed_result = Arc::new(Mutex::new(None));
         let retained_result = Arc::clone(&closed_result);
@@ -45,7 +47,9 @@ impl ControlObservation {
             .resources()
             .spawn(
                 async move {
-                    if let Some(result) = watch(store, execution, fence, lifetime, closing).await {
+                    if let Some(result) =
+                        watch(store, execution, fence, task_lifetime, closing).await
+                    {
                         let _ = sender.send(result);
                     } else {
                         // Keep this sender alive in the caller on ordinary close.
@@ -59,15 +63,22 @@ impl ControlObservation {
             .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
         Ok(Self {
             owner,
-            result,
+            result: Some(result),
+            lifetime,
             _closed_result: closed_result,
         })
     }
 
     pub(in crate::orchestrator) async fn wait(&mut self) -> Result<(), RuntimeError> {
-        (&mut self.result)
-            .await
-            .map_err(|_| RuntimeError::TaskStopped)?
+        let result = match self.result.as_mut() {
+            Some(result) => result.await,
+            None => return std::future::pending().await,
+        };
+        self.result = None;
+        if !self.lifetime.active() || self.owner.snapshot().sealed {
+            return std::future::pending().await;
+        }
+        result.map_err(|_| RuntimeError::TaskStopped)?
     }
 }
 impl Drop for ControlObservation {
@@ -76,6 +87,10 @@ impl Drop for ControlObservation {
     }
 }
 
+#[cfg_attr(
+    test,
+    tracing::instrument(name = "crabber.test.durable_cancel", skip_all, level = "debug")
+)]
 async fn watch(
     store: Arc<dyn Store>,
     execution: Arc<dyn ExecutionStore>,
@@ -136,6 +151,83 @@ async fn watch(
                 }
             }
             Err(error) => return Some(Err(error.into())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (ControlObservation, ResultSender) {
+        let (sender, receiver) = oneshot::channel();
+        (
+            ControlObservation {
+                owner: ToolResourceOwner::new(),
+                result: Some(receiver),
+                lifetime: Arc::default(),
+                _closed_result: Arc::default(),
+            },
+            sender,
+        )
+    }
+
+    #[tokio::test]
+    async fn cooperative_retirement_is_pending_but_unexpected_sender_loss_fails() {
+        let (mut observation, sender) = fixture();
+        observation.owner.close();
+        sender.send(Ok(())).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), observation.wait())
+                .await
+                .is_err()
+        );
+        assert!(observation.result.is_none());
+        let (mut observation, sender) = fixture();
+        drop(sender);
+        assert!(matches!(
+            observation.wait().await,
+            Err(RuntimeError::TaskStopped)
+        ));
+    }
+    #[tokio::test]
+    async fn losing_a_select_race_retains_the_original_control_receiver() {
+        let (mut observation, sender) = fixture();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), observation.wait(),)
+                .await
+                .is_err()
+        );
+        assert!(observation.result.is_some());
+        sender.send(Ok(())).unwrap();
+        observation.wait().await.unwrap();
+        assert!(observation.result.is_none());
+    }
+    #[tokio::test]
+    async fn queued_results_cannot_supersede_quiescent_ack_or_cooperative_close() {
+        for close_owner in [false, true] {
+            for outcome in 0..3 {
+                let (mut observation, sender) = fixture();
+                match outcome {
+                    0 => sender.send(Ok(())).unwrap(),
+                    1 => sender.send(Err(RuntimeError::LeaseLost)).unwrap(),
+                    _ => drop(sender),
+                }
+                // Queue while Active, then revoke observation before delivery.
+                let lifetime = Arc::clone(&observation.lifetime);
+                let _quiescent = if close_owner {
+                    observation.owner.close();
+                    None
+                } else {
+                    Some(lifetime.quiescent_commit())
+                };
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(10), observation.wait(),)
+                        .await
+                        .is_err()
+                );
+                assert!(observation.result.is_none());
+            }
         }
     }
 }

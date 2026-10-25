@@ -2,18 +2,14 @@
 use super::*;
 #[tokio::test]
 async fn postgres_initial_consumer_real_gate_original_join_then_absorbing_close() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },
@@ -68,4 +64,6 @@ async fn postgres_initial_consumer_real_gate_original_join_then_absorbing_close(
         status,
         PendingInitialProducerStatus::ClosedNoPublication
     ));
+
+    }).await.unwrap();
 }

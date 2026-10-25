@@ -430,19 +430,17 @@ async fn sqlite_native_services_release_only_exact_session_and_keep_workspace_al
     .await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_native_services_release_only_exact_session_and_keep_workspace_alive() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1"),
-            "required PostgreSQL URL missing"
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    journey(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+#[test]
+fn postgres_native_services_release_only_exact_session_and_keep_workspace_alive() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    let history_runtime = tokio::runtime::Builder::new_current_thread();
+    TestDatabase::run_with_runtime(DatabaseMode::Current, history_runtime, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        journey(Arc::new(
+            crabber_session::PostgresStore::connect(&url).await.unwrap(),
+        ))
+        .await;
+    })
+    .unwrap();
 }

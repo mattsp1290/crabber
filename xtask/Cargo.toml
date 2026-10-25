@@ -16,3 +16,41 @@ time = { version = "0.3", features = ["formatting"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "=0.4.5"
+nix = { version = "=0.31.3", features = ["signal", "process", "time"] }
+
+[features]
+postgres-check = ["dep:futures-util", "dep:testcontainers-modules", "dep:tokio", "dep:crabber-test-support", "dep:sqlx"]
+session-fixtures = ["postgres-check", "dep:crabber-session"]
+
+[dependencies.testcontainers-modules]
+version = "=0.15.0"
+features = ["postgres"]
+optional = true
+
+[dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread", "time"]
+optional = true
+
+[dependencies.crabber-session]
+path = "../crates/crabber-session"
+features = ["postgres"]
+optional = true
+
+[dependencies.crabber-test-support]
+path = "../crates/crabber-test-support"
+features = ["postgres"]
+optional = true
+
+[dependencies.sqlx]
+version = "0.8"
+default-features = false
+features = ["runtime-tokio", "postgres", "tls-rustls"]
+optional = true
+
+[dependencies.futures-util]
+version = "0.3"
+optional = true

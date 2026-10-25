@@ -4,7 +4,7 @@ use crate::{
 };
 use crabber_core::{ControlId, PhaseId, RunId, SessionId, ToolCallId};
 
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     let f = prepare(
         store,
         UncertainPhaseChoice::Success {
@@ -102,7 +102,7 @@ pub(super) async fn run(store: &impl Store) {
     races(store).await;
     non_uncertain(store).await;
 }
-async fn wrong_scope(store: &impl Store, f: &Prepared) {
+async fn wrong_scope(store: &dyn Store, f: &Prepared) {
     let before = evidence(store, &f.request).await;
     // Malformed exact identities must not change any durable evidence.
     for variant in 0..7 {
@@ -140,7 +140,7 @@ async fn wrong_scope(store: &impl Store, f: &Prepared) {
     );
     assert_eq!(evidence(store, &f.request).await, before);
 }
-async fn races(store: &impl Store) {
+async fn races(store: &dyn Store) {
     let f = prepare(
         store,
         UncertainPhaseChoice::Success {
@@ -194,7 +194,7 @@ async fn races(store: &impl Store) {
             .any(|r| matches!(r, Err(PhaseError::RevisionConflict)))
     );
 }
-async fn non_uncertain(store: &impl Store) {
+async fn non_uncertain(store: &dyn Store) {
     let (admitted, execution, owner, claim) = crate::phase_contract::fixture(store).await;
     let (claimed, worker) = crate::phase_contract::applied(
         execution

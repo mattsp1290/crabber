@@ -424,7 +424,7 @@ mod tests {
                 .map(|value| (*value).to_owned())
                 .collect::<Vec<_>>();
             let source = LibraryScriptedSource::new(
-                crabber::Selection {
+                crabber_providers::Selection {
                     provider_id: "provider".into(),
                     model_id: "model".into(),
                 },

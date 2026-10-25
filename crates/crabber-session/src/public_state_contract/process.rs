@@ -1,6 +1,7 @@
 //! Fresh-process reconciliation and crash-test support.
 use super::*;
 use crabber_core::RunFence;
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -121,7 +122,7 @@ impl Drop for Child {
 pub(crate) fn spawn(
     helper: &str,
     fixture: &Fixture,
-    path: Option<&std::path::Path>,
+    path: ChildDatabase<'_>,
     extra: &[(&str, String)],
 ) -> Child {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -129,16 +130,14 @@ pub(crate) fn spawn(
         "CRABBER_PUBLIC_STATE_CHILD",
         serde_json::to_string(fixture).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     for (key, value) in extra {
         command.env(key, value);
     }
     Child(command.spawn().unwrap())
 }
 
-pub(crate) async fn run(helper: &str, fixture: &Fixture, path: Option<&std::path::Path>) {
+pub(crate) async fn run(helper: &str, fixture: &Fixture, path: ChildDatabase<'_>) {
     let mut child = spawn(helper, fixture, path, &[]);
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {

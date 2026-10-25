@@ -202,25 +202,24 @@ async fn sqlite_durable_owner_cancellation_supervisor() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_durable_owner_cancellation_supervisor() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(
-            std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none(),
-            "required PostgreSQL URL missing"
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        let live = Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
         );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let live = Arc::new(
-        crabber::session::PostgresStore::connect(&url)
-            .await
-            .unwrap(),
-    );
-    let cold = Arc::new(
-        crabber::session::PostgresStore::connect(&url)
-            .await
-            .unwrap(),
-    );
-    Box::pin(journey(live, cold)).await;
+        let cold = Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        );
+        Box::pin(journey(live, cold)).await;
+    })
+    .await
+    .unwrap();
 }

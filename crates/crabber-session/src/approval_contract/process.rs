@@ -59,7 +59,7 @@ impl Fixture {
         }
     }
 }
-pub(crate) async fn pending(store: &impl Store, mode: Mode, clock: &ManualClock) -> Fixture {
+pub(crate) async fn pending(store: &dyn Store, mode: Mode, clock: &ManualClock) -> Fixture {
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
     if matches!(mode, Mode::Recover) {
         return recovered(store, clock).await;
@@ -151,7 +151,7 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode, clock: &ManualClock)
     }
 }
 pub(crate) async fn write(
-    store: &impl Store,
+    store: &dyn Store,
     f: &Fixture,
     inject: impl Fn(u8),
     lost_ack: bool,
@@ -202,7 +202,7 @@ pub(crate) async fn write(
     inject(0);
     result
 }
-async fn begin(store: &impl Store, f: &Fixture) -> AttemptAuthority {
+async fn begin(store: &dyn Store, f: &Fixture) -> AttemptAuthority {
     let execution = store.execution(f.fence.clone()).await.unwrap();
     let reserve = AttemptMutation {
         id: ControlId::new(),
@@ -245,7 +245,7 @@ pub(crate) fn fixture_clock(fixture: &Fixture) -> std::sync::Arc<ManualClock> {
     std::sync::Arc::new(ManualClock::new(fixture.clock_at))
 }
 
-async fn recovered(store: &impl Store, clock: &ManualClock) -> Fixture {
+async fn recovered(store: &dyn Store, clock: &ManualClock) -> Fixture {
     let mode = Mode::Recover;
     let p = super::recovery::prepare(store, clock).await;
     clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31));

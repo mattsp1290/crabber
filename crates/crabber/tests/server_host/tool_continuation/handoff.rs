@@ -36,30 +36,33 @@ async fn sqlite_bidirectional_approval_tool_handoff() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_bidirectional_approval_tool_handoff() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let (session, run) = journey(Arc::new(
-        crabber::session::PostgresStore::connect(&url)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
             .await
-            .unwrap(),
-    ))
-    .await;
-    let cold = crabber::session::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    header(&cold, &session, &run).await;
-    let pool = sqlx::PgPool::connect(&url).await.unwrap();
-    postgres_corruption(&cold, &pool, &session, &run).await;
-    let cold = Arc::new(cold);
-    fixture::cancel_handoffs(cold.clone()).await;
-    fixture::cancel_with_probe(cold.clone(), |request| async move {
-        postgres_terminal_corruption(cold.as_ref(), &pool, request).await;
+            .unwrap();
+        let (session, run) = journey(Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        ))
+        .await;
+        let cold = crabber::session::PostgresStore::connect(&url)
+            .await
+            .unwrap();
+        header(&cold, &session, &run).await;
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        postgres_corruption(&cold, &pool, &session, &run).await;
+        let cold = Arc::new(cold);
+        fixture::cancel_handoffs(cold.clone()).await;
+        fixture::cancel_with_probe(cold.clone(), |request| async move {
+            postgres_terminal_corruption(cold.as_ref(), &pool, request).await;
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 #[cfg(feature = "postgres")]
 async fn postgres_corruption(
@@ -396,28 +399,27 @@ async fn sqlite_ordinary_terminal_output_has_immutable_provenance() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_ordinary_terminal_output_has_immutable_provenance() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = Arc::new(
-        crabber::session::PostgresStore::connect(&url)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
             .await
-            .unwrap(),
-    );
-    let pool = sqlx::PgPool::connect(&url).await.unwrap();
-    for approval in [true, false] {
-        let probe_store = store.clone();
-        let pool = &pool;
-        fixture::cancel_completed_with_probe(store.clone(), approval, |request| async move {
-            postgres_terminal_corruption(probe_store.as_ref(), pool, request).await;
-        })
-        .await;
-    }
+            .unwrap();
+        let store = Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        );
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        for approval in [true, false] {
+            let probe_store = store.clone();
+            let pool = &pool;
+            fixture::cancel_completed_with_probe(store.clone(), approval, |request| async move {
+                postgres_terminal_corruption(probe_store.as_ref(), pool, request).await;
+            })
+            .await;
+        }
+    })
+    .await
+    .unwrap();
 }

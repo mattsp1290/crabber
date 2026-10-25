@@ -1,10 +1,11 @@
 use crate::{Store, queue_contract::process};
+use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 #[tokio::test]
 async fn queue_process_helper() {
     let Some(request) = process::request() else {
         return;
     };
-    let url = crate::postgres::tests::test_url().unwrap();
+    let url = TestDatabase::attached_url().await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     if std::env::var_os("CRABBER_QUEUE_WRITE").is_some() {
         store.mutate_queue(request).await.unwrap();
@@ -15,53 +16,45 @@ async fn queue_process_helper() {
 }
 #[tokio::test]
 async fn queue_killed_after_claim_prepared_and_admit_commit() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for step in 0..3 {
-        let request = process::setup(&store, step).await;
-        let directory = tempfile::tempdir().unwrap();
-        let marker = directory.path().join("committed");
-        let mut child = process::spawn(
-            "postgres::queue::process_tests::queue_process_helper",
-            &request,
-            None,
-            &[
-                ("CRABBER_QUEUE_WRITE", "1".into()),
-                (
-                    "CRABBER_QUEUE_COMMITTED",
-                    marker.to_string_lossy().into_owned(),
-                ),
-            ],
-        );
-        process::marker(&marker).await;
-        child.kill();
-        process::spawn(
-            "postgres::queue::process_tests::queue_process_helper",
-            &request,
-            None,
-            &[],
-        )
-        .wait()
-        .await;
-    }
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        for step in 0..3 {
+            let request = process::setup(&store, step).await;
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("committed");
+            let mut child = spawn(
+                &url,
+                &request,
+                &[
+                    ("CRABBER_QUEUE_WRITE", "1".into()),
+                    (
+                        "CRABBER_QUEUE_COMMITTED",
+                        marker.to_string_lossy().into_owned(),
+                    ),
+                ],
+            );
+            process::marker(&marker).await;
+            child.kill();
+            spawn(&url, &request, &[]).wait().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn queue_killed_before_claim_prepared_and_admit_commit() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for step in 0..3 {
-        kill_before(&store, step).await;
-    }
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        for step in 0..3 {
+            kill_before(&url, &store, step).await;
+        }
+    })
+    .await
+    .unwrap();
 }
-async fn kill_before(store: &crate::PostgresStore, step: u8) {
+async fn kill_before(url: &str, store: &crate::PostgresStore, step: u8) {
     let request = process::setup(store, step).await;
     let revision = store.session_revision(&request.session_id).await.unwrap();
     let function = format!("queue_barrier_{}", uuid::Uuid::new_v4().simple());
@@ -78,15 +71,10 @@ async fn kill_before(store: &crate::PostgresStore, step: u8) {
         .fetch_one(&mut *held)
         .await
         .unwrap();
-    let mut child = process::spawn(
-        "postgres::queue::process_tests::queue_process_helper",
-        &request,
-        None,
-        &[("CRABBER_QUEUE_WRITE", "1".into())],
-    );
+    let mut child = spawn(url, &request, &[("CRABBER_QUEUE_WRITE", "1".into())]);
     let waiter = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
-            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
+            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
             if let Some(pid) = pid { break pid; }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -103,7 +91,7 @@ async fn kill_before(store: &crate::PostgresStore, step: u8) {
         revision
     );
     child.kill();
-    sqlx::query("SELECT pg_terminate_backend($1)")
+    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
         .bind(waiter)
         .execute(&store.pool)
         .await
@@ -129,12 +117,14 @@ async fn kill_before(store: &crate::PostgresStore, step: u8) {
         revision
     );
     store.mutate_queue(request.clone()).await.unwrap();
+    spawn(url, &request, &[]).wait().await;
+}
+
+fn spawn(url: &str, request: &crate::QueueMutation, extras: &[(&str, String)]) -> process::Guard {
     process::spawn(
         "postgres::queue::process_tests::queue_process_helper",
-        &request,
-        None,
-        &[],
+        request,
+        crabber_test_support::ChildDatabase::Postgres(url),
+        extras,
     )
-    .wait()
-    .await;
 }

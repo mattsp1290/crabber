@@ -65,6 +65,7 @@ async fn foreign_controls_and_abandonment_are_hidden() {
     ));
     assert_eq!(held.finish().await, RunStatus::Interrupted);
     host.close_extensions().await.unwrap();
+    drop(host);
     let admitted = legacy(&f.native, &f.workspace_b).await;
     let abandon = AbandonRequest {
         expected: admitted.fence,

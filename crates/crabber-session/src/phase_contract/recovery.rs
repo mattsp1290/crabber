@@ -3,7 +3,7 @@ use super::{
     PhaseState, PhaseWriteAuthority, Store, applied, fixture, mutation,
 };
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     // A lost claim is uncertain even if the phase may never have dispatched.
     // The same rule applies after a committed Begin, including retry_safe calls.
     for started in [false, true] {

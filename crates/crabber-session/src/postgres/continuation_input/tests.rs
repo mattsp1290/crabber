@@ -4,47 +4,49 @@ use crate::Store;
 use crate::continuation_input::tests::{Case, fixture, rewrite};
 #[tokio::test]
 async fn coherent_birth_carrier_rewrites_are_refused() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    )));
-    for domain in [Domain::Approval, Domain::Tool] {
-        for answer in [false, true] {
-            let case = fixture(&store, domain, answer).await;
-            Box::pin(rewritten(&store, &case)).await;
-            Box::pin(guards(&store, &case)).await;
-            Box::pin(legacy_scope(&store, &case)).await;
-            Box::pin(erased_current(&store, &case)).await;
-            // Cold original reads still work after rolling back the corrupt projections.
-            match domain {
-                Domain::Approval => {
-                    store
-                        .original_approval_plan(
-                            &case.scope.session,
-                            &case.scope.run,
-                            &case.scope.continuation,
-                        )
-                        .await
-                        .unwrap();
-                }
-                Domain::Tool => {
-                    store
-                        .original_tool_continuation_plan(
-                            &case.scope.session,
-                            &case.scope.run,
-                            &case.scope.continuation,
-                        )
-                        .await
-                        .unwrap();
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        )));
+        for domain in [Domain::Approval, Domain::Tool] {
+            for answer in [false, true] {
+                let case = fixture(&store, domain, answer).await;
+                Box::pin(rewritten(&store, &case)).await;
+                Box::pin(guards(&store, &case)).await;
+                Box::pin(legacy_scope(&store, &case)).await;
+                Box::pin(erased_current(&store, &case)).await;
+                // Cold original reads still work after rolling back the corrupt projections.
+                match domain {
+                    Domain::Approval => {
+                        store
+                            .original_approval_plan(
+                                &case.scope.session,
+                                &case.scope.run,
+                                &case.scope.continuation,
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    Domain::Tool => {
+                        store
+                            .original_tool_continuation_plan(
+                                &case.scope.session,
+                                &case.scope.run,
+                                &case.scope.continuation,
+                            )
+                            .await
+                            .unwrap();
+                    }
                 }
             }
         }
-    }
+    })
+    .await
+    .unwrap();
 }
 async fn rewritten(store: &crate::PostgresStore, case: &Case) {
     let scope = &case.scope;

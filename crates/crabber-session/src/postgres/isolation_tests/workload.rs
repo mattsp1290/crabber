@@ -3,21 +3,24 @@ use crabber_core::ManualClock;
 
 #[tokio::test]
 async fn worker_role_workload_succeeds() {
-    let _guard = tests::TEST_LOCK.lock().await;
-    let Some((url, admin)) = admin().await else {
-        return;
-    };
-    // The reusable store contract asserts its unfinished-run roster is empty.
-    // Only the owner resets the fixture; the worker never receives TRUNCATE.
-    sqlx::query("TRUNCATE sessions CASCADE")
-        .execute(&admin.pool)
-        .await
-        .unwrap();
-    let role = ProvisionedRole::worker(&url, &admin, CONTRACT_WORKSPACES).await;
-    let store = PostgresStore::connect(&role.url).await.unwrap();
-    exercise(&store, &admin.pool).await;
-    store.pool.close().await;
-    role.cleanup().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let admin = admin(&url).await;
+        // The reusable store contract asserts its unfinished-run roster is empty.
+        // Only the owner resets the fixture; the worker never receives TRUNCATE.
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&admin.pool)
+            .await
+            .unwrap();
+        let role = ProvisionedRole::worker(&url, &admin, CONTRACT_WORKSPACES).await;
+        let store = PostgresStore::connect(&role.url).await.unwrap();
+        exercise(&store, &admin.pool).await;
+        store.pool.close().await;
+        role.cleanup().await;
+    })
+    .await
+    .unwrap();
 }
 
 /// Identical assertions for the ordinary worker proof and manual role timing.
@@ -28,6 +31,7 @@ async fn exercise(store: &PostgresStore, admin_pool: &sqlx::PgPool) {
     crate::session_owner_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let timed = store.clone().with_clock(clock.clone());
+    crate::control_contract::ordered(&timed, &clock).await;
     crate::queue_contract::run(&timed, clock).await;
     let fixture = crate::fork_pending_contract::fixture(store).await;
     store.fork_session(fixture.request).await.unwrap();
@@ -60,34 +64,37 @@ async fn exercise(store: &PostgresStore, admin_pool: &sqlx::PgPool) {
 #[tokio::test]
 #[ignore = "manual paired owner/worker timing; run with --ignored --nocapture"]
 async fn worker_role_workload_performance() {
-    let _guard = tests::TEST_LOCK.lock().await;
-    let Some((url, admin)) = admin().await else {
-        return;
-    };
-    let role = ProvisionedRole::worker(&url, &admin, CONTRACT_WORKSPACES).await;
-    let worker = PostgresStore::connect(&role.url).await.unwrap();
-    for sample in 1..=3 {
-        sqlx::query("TRUNCATE sessions CASCADE")
-            .execute(&admin.pool)
-            .await
-            .unwrap();
-        let start = std::time::Instant::now();
-        exercise(&admin, &admin.pool).await;
-        let owner_seconds = start.elapsed().as_secs_f64();
-        sqlx::query("TRUNCATE sessions CASCADE")
-            .execute(&admin.pool)
-            .await
-            .unwrap();
-        let start = std::time::Instant::now();
-        exercise(&worker, &admin.pool).await;
-        let worker_seconds = start.elapsed().as_secs_f64();
-        println!(
-            "PERF sample={sample} owner_seconds={owner_seconds:.6} worker_seconds={worker_seconds:.6} ratio={:.6}",
-            worker_seconds / owner_seconds
-        );
-    }
-    worker.pool.close().await;
-    role.cleanup().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let admin = admin(&url).await;
+        let role = ProvisionedRole::worker(&url, &admin, CONTRACT_WORKSPACES).await;
+        let worker = PostgresStore::connect(&role.url).await.unwrap();
+        for sample in 1..=3 {
+            sqlx::query("TRUNCATE sessions CASCADE")
+                .execute(&admin.pool)
+                .await
+                .unwrap();
+            let start = std::time::Instant::now();
+            exercise(&admin, &admin.pool).await;
+            let owner_seconds = start.elapsed().as_secs_f64();
+            sqlx::query("TRUNCATE sessions CASCADE")
+                .execute(&admin.pool)
+                .await
+                .unwrap();
+            let start = std::time::Instant::now();
+            exercise(&worker, &admin.pool).await;
+            let worker_seconds = start.elapsed().as_secs_f64();
+            println!(
+                "PERF sample={sample} owner_seconds={owner_seconds:.6} worker_seconds={worker_seconds:.6} ratio={:.6}",
+                worker_seconds / owner_seconds
+            );
+        }
+        worker.pool.close().await;
+        role.cleanup().await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn management_and_delete(store: &PostgresStore) {

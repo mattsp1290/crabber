@@ -2,7 +2,7 @@ use super::{Store, fixture};
 use crate::*;
 use crabber_core::{Clock, ControlId, ManualClock};
 #[allow(clippy::too_many_lines)] // Four consecutive atomic boundaries, each with rollback and lost-ACK verification.
-pub(crate) async fn run(store: &impl Store, clock: &ManualClock, set: impl Fn(u8)) {
+pub(crate) async fn run(store: &dyn Store, clock: &ManualClock, set: impl Fn(u8)) {
     let f = fixture::fixture(store).await;
     set(1);
     assert_eq!(

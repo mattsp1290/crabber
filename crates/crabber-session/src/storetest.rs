@@ -68,6 +68,11 @@ where
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid test timestamp");
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(Arc::clone(&clock));
+    run_borrowed(&store, &clock, now).await;
+}
+
+#[allow(clippy::too_many_lines)] // One sequential scenario exercises the transaction lifecycle.
+async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>, now: OffsetDateTime) {
     let session_id = SessionId::new();
     let user = message(
         &session_id,
@@ -591,7 +596,7 @@ where
             entry.id != user.id && entry.id != old.id && entry.id != custom_message.id
         }));
     }
-    context_projection::run(&store, now).await;
+    context_projection::run(store, now).await;
 }
 
 /// Proves that workspace identity is immutable on unkeyed admission.
@@ -610,6 +615,15 @@ where
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid test timestamp");
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(Arc::clone(&clock));
+    workspace_identity_borrowed(&store, &clock, now).await;
+}
+
+#[allow(clippy::too_many_lines)] // Complete cross-backend immutable identity contract.
+async fn workspace_identity_borrowed(
+    store: &dyn Store,
+    _clock: &Arc<ManualClock>,
+    now: OffsetDateTime,
+) {
     let admit = |session: &SessionId, existing: bool, workspace: &str, directory: &str| {
         let request = AdmitRequest {
             input_envelope: None,
@@ -725,6 +739,14 @@ where
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp");
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(Arc::clone(&clock));
+    storable_record_borrowed(&store, &clock, now).await;
+}
+
+async fn storable_record_borrowed(
+    store: &dyn Store,
+    _clock: &Arc<ManualClock>,
+    now: OffsetDateTime,
+) {
     let session_id = SessionId::new();
     let user = message(
         &session_id,

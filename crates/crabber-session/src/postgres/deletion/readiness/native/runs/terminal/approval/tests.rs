@@ -6,34 +6,36 @@ use crate::{DeletionBlocker, DeletionError};
 use crabber_core::{EventRecord, ManualClock};
 #[tokio::test]
 async fn approval_terminal_history_requires_frozen_origin_and_independent_cursor() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = store.with_clock(clock.clone());
-    for expire in [false, true] {
-        let f = fixture(&store, &clock, expire).await;
-        let mut tx = crate::postgres::transaction::begin(&store.pool)
-            .await
-            .unwrap();
-        assert!(matches!(read(&mut tx, &f, MAX_PROOF_BYTES).await, Ok(true)));
-        exact(&mut tx, &f).await;
-        assert!(matches!(
-            read(&mut tx, &f, 1).await,
-            Err(Failure::Blocked(DeletionBlocker::ProofLimit))
-        ));
-        tx.rollback().await.unwrap();
-        relink(&store, &f).await;
-        coherent_usage(&store, &f).await;
-        coherent_turn(&store, &f).await;
-        current_error(&store, &f).await;
-        missing_origin(&store, &f).await;
-        legacy(&store, &f).await;
-        oversized(&store, &f).await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = store.with_clock(clock.clone());
+        for expire in [false, true] {
+            let f = fixture(&store, &clock, expire).await;
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
+            assert!(matches!(read(&mut tx, &f, MAX_PROOF_BYTES).await, Ok(true)));
+            exact(&mut tx, &f).await;
+            assert!(matches!(
+                read(&mut tx, &f, 1).await,
+                Err(Failure::Blocked(DeletionBlocker::ProofLimit))
+            ));
+            tx.rollback().await.unwrap();
+            relink(&store, &f).await;
+            coherent_usage(&store, &f).await;
+            coherent_turn(&store, &f).await;
+            current_error(&store, &f).await;
+            missing_origin(&store, &f).await;
+            legacy(&store, &f).await;
+            oversized(&store, &f).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 async fn read(tx: &mut Transaction<'_, Postgres>, f: &Fixture, budget: usize) -> Result<bool> {
     verify(

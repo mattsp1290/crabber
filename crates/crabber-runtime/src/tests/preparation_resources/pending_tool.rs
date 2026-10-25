@@ -126,77 +126,101 @@ async fn journey(
         usize::from(!frontend)
     );
 }
-async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
-    for frontend in [false, true] {
-        for unkeyed in [false, true] {
-            for fault in [0, 2, 4, 7] {
-                Box::pin(journey(
-                    store.clone(),
-                    clock.clone(),
-                    frontend,
-                    unkeyed,
-                    fault,
-                ))
-                .await;
-            }
-            Box::pin(faults::held_ack(
-                store.clone(),
-                clock.clone(),
-                frontend,
-                unkeyed,
-            ))
-            .await;
-            Box::pin(faults::preflight(
-                store.clone(),
-                clock.clone(),
-                frontend,
-                unkeyed,
-            ))
-            .await;
-        }
+async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>, frontend: bool, unkeyed: bool) {
+    for fault in [0, 2, 4, 7] {
+        Box::pin(journey(
+            store.clone(),
+            clock.clone(),
+            frontend,
+            unkeyed,
+            fault,
+        ))
+        .await;
     }
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn memory_runtime_pending_tool_actual_task_ack_and_cold_recovery() {
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(MemoryStore::with_clock(clock.clone())),
-        clock,
+    Box::pin(faults::held_ack(
+        store.clone(),
+        clock.clone(),
+        frontend,
+        unkeyed,
+    ))
+    .await;
+    Box::pin(faults::preflight(
+        store.clone(),
+        clock.clone(),
+        frontend,
+        unkeyed,
     ))
     .await;
 }
-#[cfg(feature = "sqlite")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sqlite_runtime_pending_tool_actual_task_ack_and_cold_recovery() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("pending-tool.sqlite");
-    crabber_session::SqliteStore::migrate(&path).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = Arc::new(
-        crabber_session::SqliteStore::connect(path)
+macro_rules! cases {
+    ($memory:ident, $sqlite:ident, $postgres:ident, $frontend:literal, $unkeyed:literal) => {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn $memory() {
+            let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+            Box::pin(contract(
+                Arc::new(MemoryStore::with_clock(clock.clone())),
+                clock,
+                $frontend,
+                $unkeyed,
+            ))
+            .await;
+        }
+        #[cfg(feature = "sqlite")]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn $sqlite() {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("pending-tool.sqlite");
+            crabber_session::SqliteStore::migrate(&path).await.unwrap();
+            let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+            let store = crabber_session::SqliteStore::connect(path)
+                .await
+                .unwrap()
+                .with_clock(clock.clone());
+            Box::pin(contract(Arc::new(store), clock, $frontend, $unkeyed)).await;
+        }
+        #[cfg(feature = "postgres")]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn $postgres() {
+            use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+            TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+                crabber_session::PostgresStore::migrate(&url).await.unwrap();
+                let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+                let store = crabber_session::PostgresStore::connect(&url)
+                    .await
+                    .unwrap()
+                    .with_clock(clock.clone());
+                Box::pin(contract(Arc::new(store), clock, $frontend, $unkeyed)).await;
+            })
             .await
-            .unwrap()
-            .with_clock(clock.clone()),
-    );
-    Box::pin(contract(store, clock)).await;
-}
-#[cfg(feature = "postgres")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_runtime_pending_tool_actual_task_ack_and_cold_recovery() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
+            .unwrap();
+        }
     };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = Arc::new(
-        crabber_session::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone()),
-    );
-    Box::pin(contract(store, clock)).await;
 }
+cases!(
+    memory_runtime_pending_tool_keyed,
+    sqlite_runtime_pending_tool_keyed,
+    postgres_runtime_pending_tool_keyed,
+    false,
+    false
+);
+cases!(
+    memory_runtime_pending_tool_unkeyed,
+    sqlite_runtime_pending_tool_unkeyed,
+    postgres_runtime_pending_tool_unkeyed,
+    false,
+    true
+);
+cases!(
+    memory_runtime_pending_frontend_keyed,
+    sqlite_runtime_pending_frontend_keyed,
+    postgres_runtime_pending_frontend_keyed,
+    true,
+    false
+);
+cases!(
+    memory_runtime_pending_frontend_unkeyed,
+    sqlite_runtime_pending_frontend_unkeyed,
+    postgres_runtime_pending_frontend_unkeyed,
+    true,
+    true
+);

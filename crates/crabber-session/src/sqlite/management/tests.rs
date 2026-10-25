@@ -57,7 +57,7 @@ async fn committed_management_response_loss_survives_fresh_process() {
     process::spawn(
         "sqlite::management::tests::process_helper",
         &request,
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
         &[],
     )
     .wait()
@@ -97,7 +97,7 @@ async fn killed_management_writer_rolls_back_session_metadata_revision_audit_and
     process::spawn(
         "sqlite::management::tests::process_helper",
         &request,
-        Some(&path),
+        crabber_test_support::ChildDatabase::Sqlite(&path),
         &[],
     )
     .wait()

@@ -1,12 +1,14 @@
 //! Check standalone consumer source against this workspace without altering its
 //! tracked Git pins. Published revision adoption remains a separate check.
+use sha2::Digest;
 use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::SystemTime,
 };
+
+use crate::lease::Lease;
 
 const CRABBER_REMOTE: &str = "ssh://git@github.com/mattsp1290/crabber.git";
 const PROBES: [&str; 5] = [
@@ -17,25 +19,21 @@ const PROBES: [&str; 5] = [
     "extensions-consumer",
 ];
 
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "crabber-local-probes-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).expect("create unique local-probe scratch directory");
-        Self(path)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn cache_root(workspace: &Path) -> PathBuf {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| workspace.join("target"), PathBuf::from);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        workspace.join(target)
+    };
+    let canonical = workspace
+        .canonicalize()
+        .expect("canonical checkout identity");
+    let identity = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    target
+        .join("local-probes")
+        .join(&format!("{identity:x}")[..32])
 }
 
 fn copy_source(from: &Path, to: &Path) {
@@ -130,35 +128,59 @@ fn extra_sources(workspace: &Path, destination: &Path, probe: &str) {
 }
 
 pub(crate) fn check(workspace: &Path) {
-    let scratch = Scratch::new();
+    let mut gates = crate::checks::Checks::default();
+    schedule(workspace, &mut gates);
+    let code = gates.execute(&crate::checks::Options::default());
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+pub(crate) fn schedule(workspace: &Path, gates: &mut crate::checks::Checks) {
+    let cache = cache_root(workspace);
     for probe in PROBES {
+        let directory = cache.join(probe);
+        let destination = directory.join("source");
         let original = workspace.join("testdata").join(probe);
-        let destination = scratch.0.join(probe);
-        fs::create_dir(&destination).unwrap();
-        let mut manifest: toml::Value =
-            toml::from_str(&fs::read_to_string(original.join("Cargo.toml")).unwrap()).unwrap();
-        let revision = local_dependencies(workspace, &mut manifest);
-        fs::write(
-            destination.join("Cargo.toml"),
-            toml::to_string(&manifest).unwrap(),
-        )
-        .unwrap();
-        // Cargo may update this disposable lock for the consumer and its dependencies.
-        fs::copy(workspace.join("Cargo.lock"), destination.join("Cargo.lock")).unwrap();
-        for directory in ["src", "tests"] {
-            if original.join(directory).is_dir() {
-                copy_source(&original.join(directory), &destination.join(directory));
-            }
-        }
-        extra_sources(workspace, &destination, probe);
-        println!(
-            "$ cargo check --all-targets # {probe}: local API check; recorded Git pin {revision} is unchanged and not qualified here"
-        );
-        let status = Command::new("cargo")
+        let lease = Lease::default();
+        let locked = lease.clone();
+        let prepared = destination.clone();
+        let locked_directory = directory.clone();
+        gates.internal(&format!("prepare-{probe}"), workspace, move |workspace| {
+            locked.acquire(&locked_directory.join("probe.lock"));
+            prepare(workspace, &original, &prepared);
+            extra_sources(workspace, &prepared, probe);
+        });
+        let mut command = Command::new("cargo");
+        command
             .args(["check", "--all-targets"])
             .current_dir(&destination)
-            .status()
-            .expect("launch local-probe check");
-        assert!(status.success(), "local API check failed for {probe}");
+            .env("CARGO_TARGET_DIR", directory.join("target"));
+        gates.named_command(&format!("local-probe-{probe}"),&destination,command,"all consumer targets compile against current local sources; original Git pin unchanged");
+        gates.internal(&format!("release-{probe}"), workspace, move |_| {
+            lease.release();
+        });
     }
+}
+
+fn prepare(workspace: &Path, original: &Path, destination: &Path) {
+    if destination.exists() {
+        fs::remove_dir_all(destination).expect("remove stale generated probe source");
+    }
+    fs::create_dir(destination).expect("refresh generated probe source");
+    let mut manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(original.join("Cargo.toml")).unwrap()).unwrap();
+    let revision = local_dependencies(workspace, &mut manifest);
+    fs::write(
+        destination.join("Cargo.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+    fs::copy(workspace.join("Cargo.lock"), destination.join("Cargo.lock")).unwrap();
+    for directory in ["src", "tests"] {
+        if original.join(directory).is_dir() {
+            copy_source(&original.join(directory), &destination.join(directory));
+        }
+    }
+    println!("local API check: recorded Git pin {revision} is unchanged and not qualified here");
 }

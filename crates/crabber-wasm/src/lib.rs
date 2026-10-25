@@ -966,7 +966,7 @@ mod tests {
     use super::*;
     use crabber_extension::StateSink;
 
-    fn fixture(name: &str) -> ModuleConfig {
+    pub(super) fn fixture(name: &str) -> ModuleConfig {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/wasm/target/wasm32-wasip2/release");
         let path = root.join(format!("{}.wasm", name.replace('-', "_")));
@@ -2271,9 +2271,9 @@ mod tests {
         }
     }
 
-    struct TestSink {
-        session: crabber_core::SessionId,
-        state: Mutex<BTreeMap<String, String>>,
+    pub(super) struct TestSink {
+        pub(super) session: crabber_core::SessionId,
+        pub(super) state: Mutex<BTreeMap<String, String>>,
     }
 
     #[async_trait]
@@ -2356,3 +2356,6 @@ mod tests {
 
 #[cfg(test)]
 mod tracing_capture_tests;
+
+#[cfg(test)]
+mod state_limits_tests;

@@ -2,7 +2,7 @@ use super::{Error, Store, fixture};
 use crate::approval::{ApprovalRecord, verify_receipt};
 use crabber_core::{InteractionState, ManualClock};
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let f = fixture::staged(store, clock).await;
     let receipt = f
         .execution

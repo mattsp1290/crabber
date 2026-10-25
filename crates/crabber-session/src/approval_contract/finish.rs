@@ -11,7 +11,7 @@ use crabber_core::{
 use serde_json::json;
 
 pub(super) async fn complete(
-    store: &impl Store,
+    store: &dyn Store,
     clock: &ManualClock,
     f: &Fixture,
     execution: &dyn ExecutionStore,

@@ -422,6 +422,12 @@ fn after(outcome: SessionOwnerOutcome, fault: u8) -> Result<SessionOwnerOutcome,
 }
 
 #[cfg(test)]
+native_store_unit_tests! {
+    #[path = "session_owner/capacity_fixture.rs"]
+    mod capacity_fixture;
+}
+
+#[cfg(test)]
 #[path = "session_owner_tests.rs"]
 mod tests;
 

@@ -5,12 +5,12 @@ use crate::{
 };
 use crabber_core::{ControlId, RunStatus, Usage};
 use serde_json::json;
-pub(super) async fn run(store: &impl Store) {
+pub(super) async fn run(store: &dyn Store) {
     pending_call_can_only_suspend(store).await;
     uncertain_phase_blocks_clean_conclusion(store).await;
 }
 
-async fn pending_call_can_only_suspend(store: &impl Store) {
+async fn pending_call_can_only_suspend(store: &dyn Store) {
     let (admitted, execution, owner, claim) = crate::phase_contract::fixture(store).await;
     let mut conclusion = AttemptConclusion {
         finish: AttemptMutation {
@@ -75,7 +75,7 @@ async fn pending_call_can_only_suspend(store: &impl Store) {
         1
     );
 }
-async fn uncertain_phase_blocks_clean_conclusion(store: &impl Store) {
+async fn uncertain_phase_blocks_clean_conclusion(store: &dyn Store) {
     let (admitted, execution, owner, claim) = crate::phase_contract::fixture(store).await;
     let (claimed, _) = crate::phase_contract::applied(
         execution

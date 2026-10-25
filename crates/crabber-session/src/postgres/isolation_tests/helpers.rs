@@ -11,11 +11,8 @@ pub(super) const CONTRACT_WORKSPACES: &[&str] = &[
     "ws-b",
 ];
 
-pub(super) async fn admin() -> Option<(String, PostgresStore)> {
-    let url = tests::test_url()?;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    Some((url, store))
+pub(super) async fn admin(url: &str) -> PostgresStore {
+    PostgresStore::connect(url).await.unwrap()
 }
 
 pub(super) struct ProvisionedRole {
@@ -23,6 +20,7 @@ pub(super) struct ProvisionedRole {
     pub name: String,
     pub pool: sqlx::PgPool,
     admin: sqlx::PgPool,
+    cleanup_complete: bool,
 }
 impl ProvisionedRole {
     pub async fn worker(url: &str, admin: &PostgresStore, workspaces: &[&str]) -> Self {
@@ -77,15 +75,20 @@ impl ProvisionedRole {
             name,
             pool,
             admin: admin.pool.clone(),
+            cleanup_complete: false,
         }
     }
-    pub async fn cleanup(&self) {
+    pub async fn cleanup(mut self) {
         self.pool.close().await;
         cleanup(&self.admin, &self.name).await;
+        self.cleanup_complete = true;
     }
 }
 impl Drop for ProvisionedRole {
     fn drop(&mut self) {
+        if self.cleanup_complete {
+            return;
+        }
         let admin = self.admin.clone();
         let pool = self.pool.clone();
         let name = self.name.clone();

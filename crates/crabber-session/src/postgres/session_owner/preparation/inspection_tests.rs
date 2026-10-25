@@ -3,14 +3,10 @@ use crate::session_owner::preparation::inspection::contract;
 use crate::{PostgresStore, Store};
 #[tokio::test]
 async fn original_initial_admission_inspection_is_pure_and_bounded() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url).await.unwrap();
     contract::run(&store).await;
@@ -70,18 +66,16 @@ async fn original_initial_admission_inspection_is_pure_and_bounded() {
             .await
             .is_err()
     );
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn initial_inspection_rejects_missing_witness_and_audit() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let store = PostgresStore::connect(&url).await.unwrap();
     for fault in ["witness", "audit"] {
@@ -134,4 +128,6 @@ async fn initial_inspection_rejects_missing_witness_and_audit() {
             .unwrap()
             .is_some()
     );
+
+    }).await.unwrap();
 }

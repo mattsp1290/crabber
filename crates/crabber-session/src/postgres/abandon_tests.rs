@@ -1,4 +1,3 @@
-use super::tests::{TEST_LOCK, test_url};
 use super::*;
 use crate::abandonment_contract::{FixtureStore, abandon_request, event, request};
 use async_trait::async_trait;
@@ -10,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 #[async_trait]
 impl FixtureStore for PostgresStore {
-    async fn seed_run(&self, run: Run) {
+    async fn seed_run(&self, run: Run, _fixture_url: Option<&str>) {
         let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .unwrap();
@@ -18,7 +17,7 @@ impl FixtureStore for PostgresStore {
         save_run(&mut tx, &run).await.unwrap();
         tx.commit().await.unwrap();
     }
-    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
+    async fn calls(&self, run: &RunId, _fixture_url: Option<&str>) -> Vec<ToolCallRecord> {
         sqlx::query("SELECT data FROM tool_calls WHERE run_id=$1 ORDER BY id")
             .bind(&run.0)
             .fetch_all(&self.pool)
@@ -28,7 +27,7 @@ impl FixtureStore for PostgresStore {
             .map(|row| decode(row.get("data")).unwrap())
             .collect()
     }
-    async fn unconsumed_inbox(&self, session: &SessionId) -> usize {
+    async fn unconsumed_inbox(&self, session: &SessionId, _fixture_url: Option<&str>) -> usize {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL",
         )
@@ -42,15 +41,19 @@ impl FixtureStore for PostgresStore {
 
 #[tokio::test]
 async fn shared_abandonment_contract() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::abandonment_contract::run_contract(store, clock).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::abandonment_contract::run_contract(store, clock).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -61,9 +64,13 @@ async fn process_helper() {
     let request: AbandonRequest = serde_json::from_str(&encoded).unwrap();
     let expected: AbandonOutcome =
         serde_json::from_str(&std::env::var("CRABBER_ABANDON_CHILD_OUTCOME").unwrap()).unwrap();
-    let store = PostgresStore::connect(&test_url().expect("child database required"))
-        .await
-        .unwrap();
+    let store = PostgresStore::connect(
+        &crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .expect("child database required"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         store
             .get_run(&request.expected.run_id)
@@ -130,98 +137,105 @@ async fn process_helper() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn rollback_unknown_response_and_fresh_process_replay() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let admitted = store.admit_run(request()).await.unwrap();
-    let execution = store.execution(admitted.fence.clone()).await.unwrap();
-    let call = ToolCallRecord {
-        id: ToolCallId::new(),
-        run_id: admitted.run.id.clone(),
-        name: "unavailable".into(),
-        arguments: serde_json::json!({}),
-        status: ToolCallStatus::Pending,
-        retry_safe: false,
-        result: None,
-    };
-    execution
-        .create_tool_call(call, event(&admitted.run, EventKind::ToolCallPending))
-        .await
-        .unwrap();
-    let request = abandon_request(&admitted, AbandonAuthority::HostStoppedOwner);
-    let messages = store
-        .list_all_messages(&admitted.run.session_id)
-        .await
-        .unwrap();
-    let events = store
-        .list_events(&admitted.run.session_id, None, 100)
-        .await
-        .unwrap();
-    let calls = store.calls(&admitted.run.id).await;
-    store.abandon_fault.store(1, Ordering::SeqCst);
-    assert!(matches!(
-        store.abandon_run(request.clone()).await,
-        Err(AbandonError::Store(_))
-    ));
-    let fresh = PostgresStore::connect(&url).await.unwrap();
-    assert_eq!(
-        fresh.get_run(&admitted.run.id).await.unwrap().unwrap(),
-        admitted.run
-    );
-    assert_eq!(
-        fresh
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let admitted = store.admit_run(request()).await.unwrap();
+        let execution = store.execution(admitted.fence.clone()).await.unwrap();
+        let call = ToolCallRecord {
+            id: ToolCallId::new(),
+            run_id: admitted.run.id.clone(),
+            name: "unavailable".into(),
+            arguments: serde_json::json!({}),
+            status: ToolCallStatus::Pending,
+            retry_safe: false,
+            result: None,
+        };
+        execution
+            .create_tool_call(call, event(&admitted.run, EventKind::ToolCallPending))
+            .await
+            .unwrap();
+        let request = abandon_request(&admitted, AbandonAuthority::HostStoppedOwner);
+        let messages = store
             .list_all_messages(&admitted.run.session_id)
             .await
-            .unwrap(),
-        messages
-    );
-    assert_eq!(
-        fresh
+            .unwrap();
+        let events = store
             .list_events(&admitted.run.session_id, None, 100)
             .await
-            .unwrap(),
-        events
-    );
-    assert_eq!(fresh.calls(&admitted.run.id).await, calls);
-    store.abandon_fault.store(2, Ordering::SeqCst);
-    assert!(matches!(
-        store.abandon_run(request.clone()).await,
-        Err(AbandonError::Store(_))
-    ));
-    let outcome = fresh.abandon_run(request.clone()).await.unwrap();
-    assert_eq!(outcome.run.status, RunStatus::Interrupted);
-    let exe = std::env::current_exe().unwrap();
-    let child = std::process::Command::new(exe)
-        .args([
-            "--exact",
-            "postgres::abandon_tests::process_helper",
-            "--nocapture",
-        ])
-        .env(
-            "CRABBER_ABANDON_CHILD_REQUEST",
-            serde_json::to_string(&request).unwrap(),
-        )
-        .env(
-            "CRABBER_ABANDON_CHILD_OUTCOME",
-            serde_json::to_string(&outcome).unwrap(),
-        )
-        .output()
-        .unwrap();
-    print!("{}", String::from_utf8_lossy(&child.stdout));
-    assert!(
-        child.status.success(),
-        "child: {} {}",
-        String::from_utf8_lossy(&child.stdout),
-        String::from_utf8_lossy(&child.stderr)
-    );
+            .unwrap();
+        let calls = store.calls(&admitted.run.id, None).await;
+        store.abandon_fault.store(1, Ordering::SeqCst);
+        assert!(matches!(
+            store.abandon_run(request.clone()).await,
+            Err(AbandonError::Store(_))
+        ));
+        let fresh = PostgresStore::connect(&url).await.unwrap();
+        assert_eq!(
+            fresh.get_run(&admitted.run.id).await.unwrap().unwrap(),
+            admitted.run
+        );
+        assert_eq!(
+            fresh
+                .list_all_messages(&admitted.run.session_id)
+                .await
+                .unwrap(),
+            messages
+        );
+        assert_eq!(
+            fresh
+                .list_events(&admitted.run.session_id, None, 100)
+                .await
+                .unwrap(),
+            events
+        );
+        assert_eq!(fresh.calls(&admitted.run.id, None).await, calls);
+        store.abandon_fault.store(2, Ordering::SeqCst);
+        assert!(matches!(
+            store.abandon_run(request.clone()).await,
+            Err(AbandonError::Store(_))
+        ));
+        let outcome = fresh.abandon_run(request.clone()).await.unwrap();
+        assert_eq!(outcome.run.status, RunStatus::Interrupted);
+        let exe = std::env::current_exe().unwrap();
+        let child = std::process::Command::new(exe)
+            .envs(TestDatabase::child_environment(&url).unwrap())
+            .args([
+                "--exact",
+                "postgres::abandon_tests::process_helper",
+                "--nocapture",
+            ])
+            .env(
+                "CRABBER_ABANDON_CHILD_REQUEST",
+                serde_json::to_string(&request).unwrap(),
+            )
+            .env(
+                "CRABBER_ABANDON_CHILD_OUTCOME",
+                serde_json::to_string(&outcome).unwrap(),
+            )
+            .output()
+            .unwrap();
+        print!("{}", String::from_utf8_lossy(&child.stdout));
+        assert!(
+            child.status.success(),
+            "child: {} {}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn independent_pools_renew_resume_and_abandon_serialize() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
@@ -332,12 +346,14 @@ async fn independent_pools_renew_resume_and_abandon_serialize() {
             );
         }
     }
+
+    }).await.unwrap();
 }
 
 #[test]
 fn required_url_is_enforced_in_fresh_process() {
     if std::env::var("CRABBER_ABANDON_MISSING_URL_CHILD").as_deref() == Ok("1") {
-        test_url();
+        crabber_test_support::postgres::TestDatabase::available().unwrap();
         return;
     }
     let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -349,6 +365,8 @@ fn required_url_is_enforced_in_fresh_process() {
         .env("CRABBER_ABANDON_MISSING_URL_CHILD", "1")
         .env("CRABBER_REQUIRE_POSTGRES", "1")
         .env_remove("CRABBER_TEST_POSTGRES_URL")
+        .env_remove("CRABBER_TEST_RUN_POSTGRES_ADMIN_URL")
+        .env_remove("CRABBER_TEST_POSTGRES_RUN")
         .output()
         .unwrap();
     println!(
@@ -357,71 +375,76 @@ fn required_url_is_enforced_in_fresh_process() {
     );
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("CRABBER_TEST_POSTGRES_URL is required")
+        String::from_utf8_lossy(&output.stderr)
+            .contains("required PostgreSQL tests need check-postgres runner configuration")
     );
 }
 
 #[tokio::test]
 async fn clock_is_read_under_lock_and_abandonment_wins_queued_recovery() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(
-        OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
-    ));
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    let other = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    for resume in [false, true] {
-        let admitted = store.admit_run(request()).await.unwrap();
-        let execution = other.execution(admitted.fence.clone()).await.unwrap();
-        let mut held = crate::postgres::transaction::begin(&store.pool)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(
+            OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+        ));
+        let store = PostgresStore::connect(&url)
             .await
-            .unwrap();
-        load_run(&mut held, &admitted.run.id, true).await.unwrap();
-        let abandoning = store.clone();
-        let expected = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
-        let abandon = tokio::spawn(async move { abandoning.abandon_run(expected).await });
-        wait_for_locks(&store, 1).await;
-        // The request was submitted while the lease was live, but eligibility
-        // must use the clock after waiting for ownership serialization.
-        clock.set(admitted.run.lease_until);
-        let recovering = other.clone();
-        let id = admitted.run.id.clone();
-        let until = clock.now() + time::Duration::hours(1);
-        let recovery = tokio::spawn(async move {
-            if resume {
-                recovering
-                    .claim_expired_run(&id, "resume")
-                    .await
-                    .map(|_| ())
-            } else {
-                execution.renew_lease(until).await
-            }
-        });
-        wait_for_locks(&store, 2).await;
-        held.commit().await.unwrap();
-        assert_eq!(
-            abandon.await.unwrap().unwrap().run.status,
-            RunStatus::Interrupted
-        );
-        assert_eq!(recovery.await.unwrap().unwrap_err(), StoreError::Conflict);
-        assert_eq!(
-            store
-                .list_events(&admitted.run.session_id, None, 100)
+            .unwrap()
+            .with_clock(clock.clone());
+        let other = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        for resume in [false, true] {
+            let admitted = store.admit_run(request()).await.unwrap();
+            let execution = other.execution(admitted.fence.clone()).await.unwrap();
+            let mut held = crate::postgres::transaction::begin(&store.pool)
                 .await
-                .unwrap()
-                .iter()
-                .filter(|event| event.kind == EventKind::RunSettled)
-                .count(),
-            1
-        );
-    }
+                .unwrap();
+            load_run(&mut held, &admitted.run.id, true).await.unwrap();
+            let abandoning = store.clone();
+            let expected = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
+            let abandon = tokio::spawn(async move { abandoning.abandon_run(expected).await });
+            wait_for_locks(&store, 1).await;
+            // The request was submitted while the lease was live, but eligibility
+            // must use the clock after waiting for ownership serialization.
+            clock.set(admitted.run.lease_until);
+            let recovering = other.clone();
+            let id = admitted.run.id.clone();
+            let until = clock.now() + time::Duration::hours(1);
+            let recovery = tokio::spawn(async move {
+                if resume {
+                    recovering
+                        .claim_expired_run(&id, "resume")
+                        .await
+                        .map(|_| ())
+                } else {
+                    execution.renew_lease(until).await
+                }
+            });
+            wait_for_locks(&store, 2).await;
+            held.commit().await.unwrap();
+            assert_eq!(
+                abandon.await.unwrap().unwrap().run.status,
+                RunStatus::Interrupted
+            );
+            assert_eq!(recovery.await.unwrap().unwrap_err(), StoreError::Conflict);
+            assert_eq!(
+                store
+                    .list_events(&admitted.run.session_id, None, 100)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.kind == EventKind::RunSettled)
+                    .count(),
+                1
+            );
+        }
+    })
+    .await
+    .unwrap();
 }
 
 async fn wait_for_locks(store: &PostgresStore, required: i64) {
@@ -442,9 +465,13 @@ async fn denial_process_helper() {
     let request: AbandonRequest = serde_json::from_str(&encoded).unwrap();
     let expected_run: Run =
         serde_json::from_str(&std::env::var("CRABBER_ABANDON_DENIAL_RUN").unwrap()).unwrap();
-    let store = PostgresStore::connect(&test_url().expect("child database required"))
-        .await
-        .unwrap();
+    let store = PostgresStore::connect(
+        &crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .expect("child database required"),
+    )
+    .await
+    .unwrap();
     // Bound a regression's lock wait so this fresh-process check fails promptly
     // even while its parent synchronously waits for this process to exit.
     sqlx::query("SET statement_timeout = '5s'")
@@ -472,70 +499,79 @@ async fn denial_process_helper() {
 
 #[tokio::test]
 async fn denials_and_precommit_failure_release_locks_before_return() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    for mode in 0..3 {
-        let admitted = store.admit_run(request()).await.unwrap();
-        let mut attempted = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
-        if mode == 1 {
-            attempted.expected_owner = "stale".into();
-        }
-        if mode == 2 {
-            store.abandon_fault.store(1, Ordering::SeqCst);
-            let mut stopped = attempted.clone();
-            stopped.authority = AbandonAuthority::HostStoppedOwner;
-            assert!(matches!(
-                store.abandon_run(stopped).await,
-                Err(AbandonError::Store(_))
-            ));
-            store.abandon_fault.store(0, Ordering::SeqCst);
-        } else {
-            let error = if mode == 0 {
-                AbandonError::LiveLease
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        for mode in 0..3 {
+            let admitted = store.admit_run(request()).await.unwrap();
+            let mut attempted = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
+            if mode == 1 {
+                attempted.expected_owner = "stale".into();
+            }
+            if mode == 2 {
+                store.abandon_fault.store(1, Ordering::SeqCst);
+                let mut stopped = attempted.clone();
+                stopped.authority = AbandonAuthority::HostStoppedOwner;
+                assert!(matches!(
+                    store.abandon_run(stopped).await,
+                    Err(AbandonError::Store(_))
+                ));
+                store.abandon_fault.store(0, Ordering::SeqCst);
             } else {
-                AbandonError::StaleOwner
-            };
-            assert_eq!(
-                store.abandon_run(attempted.clone()).await.unwrap_err(),
-                error
+                let error = if mode == 0 {
+                    AbandonError::LiveLease
+                } else {
+                    AbandonError::StaleOwner
+                };
+                assert_eq!(
+                    store.abandon_run(attempted.clone()).await.unwrap_err(),
+                    error
+                );
+            }
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .envs(TestDatabase::child_environment(&url).unwrap())
+                .args([
+                    "--exact",
+                    "postgres::abandon_tests::denial_process_helper",
+                    "--nocapture",
+                ])
+                .env(
+                    "CRABBER_ABANDON_DENIAL_REQUEST",
+                    serde_json::to_string(&attempted).unwrap(),
+                )
+                .env(
+                    "CRABBER_ABANDON_DENIAL_RUN",
+                    serde_json::to_string(&admitted.run).unwrap(),
+                )
+                .output()
+                .unwrap();
+            print!("{}", String::from_utf8_lossy(&child.stdout));
+            assert!(
+                child.status.success(),
+                "{}",
+                String::from_utf8_lossy(&child.stderr)
             );
         }
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "postgres::abandon_tests::denial_process_helper",
-                "--nocapture",
-            ])
-            .env(
-                "CRABBER_ABANDON_DENIAL_REQUEST",
-                serde_json::to_string(&attempted).unwrap(),
-            )
-            .env(
-                "CRABBER_ABANDON_DENIAL_RUN",
-                serde_json::to_string(&admitted.run).unwrap(),
-            )
-            .output()
-            .unwrap();
-        print!("{}", String::from_utf8_lossy(&child.stdout));
-        assert!(
-            child.status.success(),
-            "{}",
-            String::from_utf8_lossy(&child.stderr)
-        );
-    }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn untrusted_terminal_markers_are_never_replay_authority() {
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::abandonment_contract::untrusted_terminal_contract(&store, &clock).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::abandonment_contract::untrusted_terminal_contract(&store, &clock).await;
+    })
+    .await
+    .unwrap();
 }

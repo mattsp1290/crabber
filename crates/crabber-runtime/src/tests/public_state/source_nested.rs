@@ -216,13 +216,15 @@ async fn sqlite_nested_public_source_is_independent_after_both_parents_join() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_nested_public_source_is_independent_after_both_parents_join() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    late_nested(Arc::new(
-        crabber_session::PostgresStore::connect(&url).await.unwrap(),
-    ))
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        late_nested(Arc::new(
+            crabber_session::PostgresStore::connect(&url).await.unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }

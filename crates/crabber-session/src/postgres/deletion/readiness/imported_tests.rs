@@ -23,61 +23,63 @@ async fn check(
 }
 #[tokio::test]
 async fn imported_history_requires_original_digest_before_readiness() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    )));
-    let fork = crate::sql_deletion::readiness::contract::closed_fork(&store).await;
-    assert!(matches!(
-        check(&store, &fork.target.session_id).await.unwrap(),
-        Readiness::Ready(_)
-    ));
-    let orphan = crabber_core::ToolCallId::new();
-    sqlx::query("INSERT INTO tool_call_identities(id,kind) VALUES($1,'imported')")
-        .bind(&orphan.0)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    corrupt_identity(&store, &fork.target.session_id, &orphan).await;
-    let revision = store
-        .session_revision(&fork.target.session_id)
-        .await
-        .unwrap();
-    let before = store
-        .list_all_messages(&fork.target.session_id)
-        .await
-        .unwrap();
-    assert!(matches!(
-        check(&store, &fork.target.session_id).await,
-        Err(DeletionError::UnknownStoreOutcome)
-    ));
-    assert_eq!(
-        store
-            .session_revision(&fork.target.session_id)
-            .await
-            .unwrap(),
-        revision
-    );
-    assert_eq!(
-        store
-            .list_all_messages(&fork.target.session_id)
-            .await
-            .unwrap(),
-        before
-    );
-    let retained: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_call_identities WHERE id=$1)")
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+
+        let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        )));
+        let fork = crate::sql_deletion::readiness::contract::closed_fork(&store).await;
+        assert!(matches!(
+            check(&store, &fork.target.session_id).await.unwrap(),
+            Readiness::Ready(_)
+        ));
+        let orphan = crabber_core::ToolCallId::new();
+        sqlx::query("INSERT INTO tool_call_identities(id,kind) VALUES($1,'imported')")
             .bind(&orphan.0)
-            .fetch_one(&store.pool)
+            .execute(&store.pool)
             .await
             .unwrap();
-    assert!(retained);
+        corrupt_identity(&store, &fork.target.session_id, &orphan).await;
+        let revision = store
+            .session_revision(&fork.target.session_id)
+            .await
+            .unwrap();
+        let before = store
+            .list_all_messages(&fork.target.session_id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            check(&store, &fork.target.session_id).await,
+            Err(DeletionError::UnknownStoreOutcome)
+        ));
+        assert_eq!(
+            store
+                .session_revision(&fork.target.session_id)
+                .await
+                .unwrap(),
+            revision
+        );
+        assert_eq!(
+            store
+                .list_all_messages(&fork.target.session_id)
+                .await
+                .unwrap(),
+            before
+        );
+        let retained: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_call_identities WHERE id=$1)")
+                .bind(&orphan.0)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert!(retained);
+    })
+    .await
+    .unwrap();
 }
 async fn corrupt_identity(
     store: &crate::PostgresStore,

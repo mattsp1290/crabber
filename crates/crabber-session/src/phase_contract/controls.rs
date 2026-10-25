@@ -46,10 +46,10 @@ fn cleanup(
         claim: resolver(),
     }
 }
-async fn evidence(store: &impl Store, request: &PhaseUncertainty) -> serde_json::Value {
+async fn evidence(store: &dyn Store, request: &PhaseUncertainty) -> serde_json::Value {
     serde_json::json!({"run":store.get_run(&request.run_id).await.unwrap(),"attempt":store.latest_execution_attempt(&request.run_id).await.unwrap().unwrap().attempt,"calls":super::settlement::read_calls(store,&request.session_id).await.unwrap(),"messages":store.list_messages(&request.session_id,None).await.unwrap(),"approval":store.approval_snapshot(&request.session_id,&request.run_id).await.unwrap()})
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for started in [false, true] {
         for resolve_first in [false, true] {
             lifecycle::run(store, clock, started, resolve_first).await;
@@ -60,7 +60,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
     let _ = pagination(store).await;
     identity::run(store).await;
 }
-async fn host_stopped_and_guards(store: &impl Store) {
+async fn host_stopped_and_guards(store: &dyn Store) {
     let (admitted, execution, owner, claim) = fixture(store).await;
     let (receipt, worker) = applied(
         execution
@@ -155,7 +155,7 @@ async fn host_stopped_and_guards(store: &impl Store) {
         (Ok(_), Err(PhaseError::RevisionConflict)) | (Err(PhaseError::RevisionConflict), Ok(_))
     ));
 }
-async fn page_fixture(store: &impl Store) -> (PhasePageRequest, crate::PhaseTarget) {
+async fn page_fixture(store: &dyn Store) -> (PhasePageRequest, crate::PhaseTarget) {
     let (admitted, execution, owner, claim) = fixture(store).await;
     let target = claim.command.target().clone();
     applied(
@@ -216,7 +216,7 @@ async fn page_fixture(store: &impl Store) -> (PhasePageRequest, crate::PhaseTarg
     };
     (request, target)
 }
-pub(crate) async fn pagination(store: &impl Store) -> (PhasePageRequest, crabber_core::PhaseId) {
+pub(crate) async fn pagination(store: &dyn Store) -> (PhasePageRequest, crabber_core::PhaseId) {
     let (request, target) = page_fixture(store).await;
     let first = store.list_tool_phases(request.clone()).await.unwrap();
     assert_eq!(first.phases.len(), 2);
@@ -274,7 +274,7 @@ pub(crate) async fn pagination(store: &impl Store) -> (PhasePageRequest, crabber
     (request, all[1].target.id.clone())
 }
 
-pub(super) async fn faults(store: &impl Store, set_fault: &impl Fn(super::FaultPoint)) {
+pub(super) async fn faults(store: &dyn Store, set_fault: &impl Fn(super::FaultPoint)) {
     for cleaning in [false, true] {
         for point in [
             super::FaultPoint::BeforeCommit,

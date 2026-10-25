@@ -3,7 +3,7 @@ use super::{Fixture, Mode, resolution, settlement, start};
 use crate::{PhaseError, PhaseMutationOutcome, PhaseState, Store};
 use crabber_core::{EventKind, ToolCallRecord, ToolCallStatus};
 
-pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
+pub(crate) async fn verify_loss(store: &dyn Store, fixture: Fixture) {
     if matches!(fixture.mode, Mode::Uncertainty | Mode::Cleanup) {
         super::controls::verify(store, &fixture).await;
         return;
@@ -82,7 +82,7 @@ pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
     assert_eq!(receipt.phase.state, expected);
 }
 
-async fn verify_settlement_loss(store: &impl Store, fixture: Fixture) {
+async fn verify_settlement_loss(store: &dyn Store, fixture: Fixture) {
     let receipt = store
         .lookup_phase_mutation(&fixture.session, &fixture.request.id)
         .await
@@ -148,7 +148,7 @@ async fn verify_settlement_loss(store: &impl Store, fixture: Fixture) {
     );
 }
 
-async fn verify_start_loss(store: &impl Store, fixture: Fixture) {
+async fn verify_start_loss(store: &dyn Store, fixture: Fixture) {
     let receipt = store
         .lookup_phase_mutation(&fixture.session, &fixture.request.id)
         .await
@@ -205,7 +205,7 @@ async fn verify_start_loss(store: &impl Store, fixture: Fixture) {
     );
 }
 
-async fn verify_resolution_loss(store: &impl Store, fixture: Fixture) {
+async fn verify_resolution_loss(store: &dyn Store, fixture: Fixture) {
     let request = resolution(&fixture);
     let receipt = store
         .lookup_phase_mutation(&fixture.session, &fixture.request.id)

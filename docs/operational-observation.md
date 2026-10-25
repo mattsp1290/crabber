@@ -102,7 +102,7 @@ Legacy model/tool elapsed payloads now also use monotonic time. Do not double
 count typed measurements and legacy elapsed events.
 
 Credential-free evidence lives in `crabber-runtime` tests (`operational_*` plus
-compaction cancellation tests) and `crabber/tests/operational_observation.rs`.
+compaction cancellation tests) and `crabber/tests/facade_contracts/operational_observation.rs`.
 The latter proves a scripted provider/native tool turn through two composed
 observers plus facade broadcasts and verifies context/attempt identity. Runtime
 fixtures use an injected clock, setup/text notification barriers and paused Tokio

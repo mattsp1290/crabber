@@ -10,10 +10,13 @@ async fn suspend_answer_and_claim_faults_are_atomic() {
         time::OffsetDateTime::UNIX_EPOCH,
     ));
     let store = store.with_clock(clock.clone());
-    crate::approval_contract::run_fault_contract(&store, &clock, |point| {
-        store
-            .approval_fault
-            .store(point as u8, std::sync::atomic::Ordering::SeqCst);
-    })
+    crate::approval_contract::run_fault_contract(
+        &store,
+        &clock,
+        crate::binding_fault::setter(
+            &store.approval_fault,
+            |point: crate::public_state_contract::FaultPoint| point as u8,
+        ),
+    )
     .await;
 }

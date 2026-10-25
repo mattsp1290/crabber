@@ -68,6 +68,11 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(clock.clone());
+    run_borrowed(&store, &clock, now).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>, now: OffsetDateTime) {
     let session = SessionId::new();
     let original = request(&session, now);
     assert!(
@@ -256,5 +261,5 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .iter()
             .any(|run| run.session_id == session)
     );
-    Box::pin(cross_session_ids::run(&store, &original, &receipt, now)).await;
+    Box::pin(cross_session_ids::run(store, &original, &receipt, now)).await;
 }

@@ -219,50 +219,58 @@ mod tests;
 #[cfg(test)]
 #[tokio::test]
 async fn aggregate_v2_real_mixed_metadata_and_paging() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::public_session::v2::tests::mixed(&store).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::public_session::v2::tests::mixed(&store).await;
+    })
+    .await
+    .unwrap();
 }
 #[cfg(test)]
 #[tokio::test]
 async fn aggregate_v2_real_approval_and_native() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    crate::public_session::v2::tests::approvals_and_native(&store, &clock).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        crate::public_session::v2::tests::approvals_and_native(&store, &clock).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(test)]
 #[tokio::test]
 async fn aggregate_v2_constituent_races_and_faults() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::public_session::races::run_v2(&store).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::public_session::races::run_v2(&store).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(test)]
 #[tokio::test]
 async fn aggregate_v2_large_queue_private_input_stays_on_server() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::public_session::v2::tests::large_queue_input_is_not_materialized(&store).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::public_session::v2::tests::large_queue_input_is_not_materialized(&store).await;
+    })
+    .await
+    .unwrap();
 }

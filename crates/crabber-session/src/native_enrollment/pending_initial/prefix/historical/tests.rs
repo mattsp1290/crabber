@@ -10,7 +10,7 @@ async fn shared_identity_recipe_preserves_original_wire_and_exact_bound() {
     for keyed in [false, true] {
         let store = crate::MemoryStore::new();
         let source = LibraryScriptedSource::new(
-            crabber::Selection {
+            crabber_providers::Selection {
                 provider_id: "p".into(),
                 model_id: "m".into(),
             },

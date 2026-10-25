@@ -9,10 +9,10 @@ fn proof() -> Proof {
 }
 #[tokio::test]
 async fn ordered_claim_sources_reject_borrowing_but_never_infer_erased_history_complete() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url)
         .await
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
@@ -97,6 +97,8 @@ async fn ordered_claim_sources_reject_borrowing_but_never_infer_erased_history_c
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
     missing_and_oversized(&store, &f).await;
     erased_tail(&store, &f, tail.sequence).await;
+
+    }).await.unwrap();
 }
 async fn erased_tail(
     store: &crate::PostgresStore,

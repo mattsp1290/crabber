@@ -4,18 +4,20 @@ const NATIVE: &str = "INSERT INTO tool_calls(id,run_id,status,data,snapshot_reco
 const IMPORTED: &str = "INSERT INTO imported_tool_calls(id,session_id,ordinal,data_json,snapshot_parts,snapshot_text,snapshot_bytes) VALUES($1,$2,$3,'{}',0,0,2)";
 #[tokio::test]
 async fn cross_table_identity_fence_rejects_bypass_and_serializes_races() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let cold = PostgresStore::connect(&url).await.unwrap();
-    let fixture = crate::fork_pending_contract::fixture(&store).await;
-    let native = &fixture.target.call_id.0;
-    let session = &fixture.request.source_session_id.0;
-    bypass(&store, native, session).await;
-    lifecycle(&store, &cold, native, session).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let cold = PostgresStore::connect(&url).await.unwrap();
+        let fixture = crate::fork_pending_contract::fixture(&store).await;
+        let native = &fixture.target.call_id.0;
+        let session = &fixture.request.source_session_id.0;
+        bypass(&store, native, session).await;
+        lifecycle(&store, &cold, native, session).await;
+    })
+    .await
+    .unwrap();
 }
 async fn bypass(store: &PostgresStore, native: &str, session: &str) {
     let imported = format!("imported-{}", uuid::Uuid::new_v4());

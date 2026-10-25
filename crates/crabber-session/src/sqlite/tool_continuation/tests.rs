@@ -40,7 +40,7 @@ async fn committed_controls_survive_killed_writer() {
     let (_native, database, _directory) = crate::sqlite::tests::temp_store().await;
     crate::tool_continuation_contract::process::journey(
         "sqlite::tool_continuation::tests::process_helper",
-        Some(&database),
+        crabber_test_support::ChildDatabase::Sqlite(&database),
     )
     .await;
 }

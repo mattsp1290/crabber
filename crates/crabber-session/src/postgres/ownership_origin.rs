@@ -126,67 +126,71 @@ mod tests {
     }
     #[tokio::test]
     async fn creation_coverage_authenticates_original_managed_and_fork_evidence() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-        crate::PostgresStore::migrate(&url).await.unwrap();
-        let store = crate::PostgresStore::connect(&url).await.unwrap();
-        let created = store
-            .manage_session(crate::management_contract::create())
-            .await
-            .unwrap();
-        known(&store, &created.session_id, created.revision).await;
-        let fork = store
-            .fork_session(crate::sql_fork_contract::request(&created.summary))
-            .await
-            .unwrap();
-        let crate::ForkOutcome::Applied(fork) = fork else {
-            panic!("new fork")
-        };
-        known(&store, &fork.target.session_id, fork.target.revision).await;
-        let renamed = store
-            .manage_session(crate::ManageSession {
-                id: crabber_core::ControlId::new(),
-                session_id: created.session_id.clone(),
-                expected_revision: created.revision,
-                change: crate::SessionChange::Rename {
-                    title: "later metadata".into(),
-                },
-            })
-            .await
-            .unwrap();
-        known(&store, &created.session_id, renamed.revision).await;
-        sqlx::query("DELETE FROM session_management_audit WHERE session_id=$1 AND operation_id=$2")
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            crate::PostgresStore::migrate(&url).await.unwrap();
+            let store = crate::PostgresStore::connect(&url).await.unwrap();
+            let created = store
+                .manage_session(crate::management_contract::create())
+                .await
+                .unwrap();
+            known(&store, &created.session_id, created.revision).await;
+            let fork = store
+                .fork_session(crate::sql_fork_contract::request(&created.summary))
+                .await
+                .unwrap();
+            let crate::ForkOutcome::Applied(fork) = fork else {
+                panic!("new fork")
+            };
+            known(&store, &fork.target.session_id, fork.target.revision).await;
+            let renamed = store
+                .manage_session(crate::ManageSession {
+                    id: crabber_core::ControlId::new(),
+                    session_id: created.session_id.clone(),
+                    expected_revision: created.revision,
+                    change: crate::SessionChange::Rename {
+                        title: "later metadata".into(),
+                    },
+                })
+                .await
+                .unwrap();
+            known(&store, &created.session_id, renamed.revision).await;
+            sqlx::query(
+                "DELETE FROM session_management_audit WHERE session_id=$1 AND operation_id=$2",
+            )
             .bind(&created.session_id.0)
             .bind(&created.operation_id.0)
             .execute(&store.pool)
             .await
             .unwrap();
-        assert!(matches!(
-            read(&store, &created.session_id).await,
-            Err(DeletionError::UnknownStoreOutcome)
-        ));
-        // The target authenticates its own immutable fork origin, independently
-        // of current source metadata and source management proof availability.
-        known(&store, &fork.target.session_id, fork.target.revision).await;
-        sqlx::query("DELETE FROM session_fork_audit WHERE session_id=$1 AND operation_id=$2")
-            .bind(&fork.target.session_id.0)
-            .bind(&fork.operation_id.0)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        assert!(matches!(
-            read(&store, &fork.target.session_id).await,
-            Err(DeletionError::UnknownStoreOutcome)
-        ));
+            assert!(matches!(
+                read(&store, &created.session_id).await,
+                Err(DeletionError::UnknownStoreOutcome)
+            ));
+            // The target authenticates its own immutable fork origin, independently
+            // of current source metadata and source management proof availability.
+            known(&store, &fork.target.session_id, fork.target.revision).await;
+            sqlx::query("DELETE FROM session_fork_audit WHERE session_id=$1 AND operation_id=$2")
+                .bind(&fork.target.session_id.0)
+                .bind(&fork.operation_id.0)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            assert!(matches!(
+                read(&store, &fork.target.session_id).await,
+                Err(DeletionError::UnknownStoreOutcome)
+            ));
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn creation_coverage_bounds_original_carriers_and_preserves_legacy_unknown() {
-        let Some(url) = crate::postgres::tests::test_url() else {
-            return;
-        };
-        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
         crate::PostgresStore::migrate(&url).await.unwrap();
         let store = crate::PostgresStore::connect(&url).await.unwrap();
         let legacy = SessionId::new();
@@ -215,6 +219,8 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+
+    }).await.unwrap();
     }
 }
 

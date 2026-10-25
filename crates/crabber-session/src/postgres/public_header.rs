@@ -181,26 +181,30 @@ async fn contents(
 #[cfg(test)]
 #[tokio::test]
 async fn public_session_contract() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::public_session::tests::run(&store, &clock).await;
-    let reopened = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::public_session::tests::cross_connection(&store, &reopened).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::public_session::tests::run(&store, &clock).await;
+        let reopened = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::public_session::tests::cross_connection(&store, &reopened).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(test)]
 #[test]
 fn oversized_approval_proof_is_not_transferred() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -208,50 +212,57 @@ fn oversized_approval_proof_is_not_transferred() {
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
+    if !TestDatabase::available().unwrap() {
         return;
-    };
-    let _guard = runtime.block_on(crate::postgres::tests::TEST_LOCK.lock());
-    runtime
-        .block_on(crate::PostgresStore::migrate(&url))
+    }
+    let database = runtime
+        .block_on(TestDatabase::create(DatabaseMode::Current))
         .unwrap();
-    let store = runtime
-        .block_on(crate::PostgresStore::connect(&url))
-        .unwrap()
-        .with_clock(clock.clone());
-    let f = runtime.block_on(crate::approval_contract::fixture::staged(&store, &clock));
-    runtime
-        .block_on(f.execution.suspend_for_approval(f.batch.clone(), f.owner))
-        .unwrap();
-    let saved: String = runtime
-        .block_on(
-            sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
-                .bind(&f.batch.continuation.id.0)
-                .fetch_one(&store.pool),
-        )
-        .unwrap();
-    runtime
-        .block_on(
-            sqlx::query("UPDATE continuations SET data_json=$1 WHERE id=$2")
-                .bind("private-carrier".repeat(100_000))
-                .bind(&f.batch.continuation.id.0)
-                .execute(&store.pool),
-        )
-        .unwrap();
-    crate::public_session::allocation::proof_allocation(
-        &runtime,
-        &store,
-        f.run.session_id,
-        f.run.id,
-    );
-    runtime
-        .block_on(
-            sqlx::query("UPDATE continuations SET data_json=$1 WHERE id=$2")
-                .bind(saved)
-                .bind(&f.batch.continuation.id.0)
-                .execute(&store.pool),
-        )
-        .unwrap();
+    {
+        let url = database.url();
+
+        runtime
+            .block_on(crate::PostgresStore::migrate(&url))
+            .unwrap();
+        let store = runtime
+            .block_on(crate::PostgresStore::connect(&url))
+            .unwrap()
+            .with_clock(clock.clone());
+        let f = runtime.block_on(crate::approval_contract::fixture::staged(&store, &clock));
+        runtime
+            .block_on(f.execution.suspend_for_approval(f.batch.clone(), f.owner))
+            .unwrap();
+        let saved: String = runtime
+            .block_on(
+                sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
+                    .bind(&f.batch.continuation.id.0)
+                    .fetch_one(&store.pool),
+            )
+            .unwrap();
+        runtime
+            .block_on(
+                sqlx::query("UPDATE continuations SET data_json=$1 WHERE id=$2")
+                    .bind("private-carrier".repeat(100_000))
+                    .bind(&f.batch.continuation.id.0)
+                    .execute(&store.pool),
+            )
+            .unwrap();
+        crate::public_session::allocation::proof_allocation(
+            &runtime,
+            &store,
+            f.run.session_id,
+            f.run.id,
+        );
+        runtime
+            .block_on(
+                sqlx::query("UPDATE continuations SET data_json=$1 WHERE id=$2")
+                    .bind(saved)
+                    .bind(&f.batch.continuation.id.0)
+                    .execute(&store.pool),
+            )
+            .unwrap();
+    }
+    runtime.block_on(database.finish()).unwrap();
 }
 
 mod v2;

@@ -6,7 +6,7 @@ use crate::{
 use crabber_core::{ControlId, Usage};
 use serde_json::json;
 
-pub(super) async fn pending(store: &impl Store) -> Fixture {
+pub(super) async fn pending(store: &dyn Store) -> Fixture {
     let admitted =
         crate::public_state_contract::admit(store, time::OffsetDateTime::now_utc()).await;
     let execution = store.execution(admitted.fence).await.unwrap();

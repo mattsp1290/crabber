@@ -6,22 +6,24 @@ use sqlx::Postgres;
 use std::sync::Arc;
 #[tokio::test]
 async fn pending_tool_preflight_rejects_coherent_tool_and_approval_claim_rewrites() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    for frontend in [false, true] {
-        Box::pin(tool_case(&store, &clock, frontend)).await;
-    }
-    Box::pin(approval_case(&store, &clock)).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        for frontend in [false, true] {
+            Box::pin(tool_case(&store, &clock, frontend)).await;
+        }
+        Box::pin(approval_case(&store, &clock)).await;
+    })
+    .await
+    .unwrap();
 }
 async fn tool_case(
     store: &crate::PostgresStore,

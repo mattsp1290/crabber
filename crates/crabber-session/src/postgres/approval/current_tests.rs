@@ -9,13 +9,13 @@ struct Saved {
 }
 #[tokio::test]
 async fn immutable_current_approval_sources_reject_coherent_private_changes() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url)
         .await
@@ -36,6 +36,8 @@ async fn immutable_current_approval_sources_reject_coherent_private_changes() {
         }
         tx.commit().await.unwrap();
     }
+
+    }).await.unwrap();
 }
 async fn corrupt(store: &crate::PostgresStore, target: Target) -> Saved {
     let mut tx = crate::postgres::transaction::begin(&store.pool)
@@ -132,62 +134,63 @@ async fn save_receipt(tx: &mut Transaction<'_, Postgres>, receipt: &ApprovalRece
 
 #[tokio::test]
 async fn current_approval_accepts_authentic_successor_and_parent_retirement() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
 
-    crate::public_session::rounds::checked(&store, &clock, |prior, run| {
-        let store = &store;
-        async move {
-            assert_eq!(run.status, crabber_core::RunStatus::Paused);
-            let mut tx = crate::postgres::transaction::begin(&store.pool)
-                .await
-                .unwrap();
-            let (latest, _) = super::load(&mut tx, &run.session_id, &run.id)
-                .await
-                .unwrap()
-                .unwrap();
-            let previous = super::current::exact(&mut tx, &latest, &prior)
-                .await
-                .unwrap();
-            assert_eq!(previous.state, crate::ApprovalContinuationState::Released);
-            super::origin::verify(&mut tx, &previous).await.unwrap();
-            super::current::verify(&mut tx, &run, &previous, false)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-        }
+        crate::public_session::rounds::checked(&store, &clock, |prior, run| {
+            let store = &store;
+            async move {
+                assert_eq!(run.status, crabber_core::RunStatus::Paused);
+                let mut tx = crate::postgres::transaction::begin(&store.pool)
+                    .await
+                    .unwrap();
+                let (latest, _) = super::load(&mut tx, &run.session_id, &run.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let previous = super::current::exact(&mut tx, &latest, &prior)
+                    .await
+                    .unwrap();
+                assert_eq!(previous.state, crate::ApprovalContinuationState::Released);
+                super::origin::verify(&mut tx, &previous).await.unwrap();
+                super::current::verify(&mut tx, &run, &previous, false)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }
+        })
+        .await;
+        crate::approval_contract::current::retired(&store, &clock).await;
     })
-    .await;
-    crate::approval_contract::current::retired(&store, &clock).await;
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn unrelated_nul_payload_does_not_break_immutable_source_selection() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::Store;
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    let mut f = crate::approval_contract::fixture::staged(&store, &clock).await;
-    f.execution
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        let mut f = crate::approval_contract::fixture::staged(&store, &clock).await;
+        f.execution
         .mutate_public_state(crate::PublicStateMutation {
             id: crabber_core::ControlId::new(),
             expected_revision: store.session_revision(&f.run.session_id).await.unwrap(),
@@ -199,23 +202,26 @@ async fn unrelated_nul_payload_does_not_break_immutable_source_selection() {
         })
         .await
         .unwrap();
-    f.batch.expected_revision = store.session_revision(&f.run.session_id).await.unwrap();
-    f.execution
-        .suspend_for_approval(f.batch.clone(), f.owner)
-        .await
-        .unwrap();
-    assert!(
-        store
-            .approval_snapshot(&f.run.session_id, &f.run.id)
+        f.batch.expected_revision = store.session_revision(&f.run.session_id).await.unwrap();
+        f.execution
+            .suspend_for_approval(f.batch.clone(), f.owner)
             .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(matches!(
-        store
-            .public_session_snapshot(crate::public_session::tests::request(f.run.session_id))
-            .await
-            .unwrap(),
-        crate::PublicSessionOutcome::Page(_)
-    ));
+            .unwrap();
+        assert!(
+            store
+                .approval_snapshot(&f.run.session_id, &f.run.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(matches!(
+            store
+                .public_session_snapshot(crate::public_session::tests::request(f.run.session_id))
+                .await
+                .unwrap(),
+            crate::PublicSessionOutcome::Page(_)
+        ));
+    })
+    .await
+    .unwrap();
 }

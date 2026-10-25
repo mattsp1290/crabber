@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Normal builds retain this executable; required CLI checks stay enabled.
+# Keep unit tests in library or integration targets.
+[[bin]]
+name = "agents-md-middleware"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 crabber = { path = "../../crates/crabber" }
 crabber-middleware = { path = "../../crates/crabber-middleware" }

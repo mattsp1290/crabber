@@ -4,102 +4,106 @@ use crate::{Store, public_session::v2::proof::Proof};
 use std::sync::{Arc, atomic::Ordering};
 #[tokio::test]
 async fn prepared_expired_fresh_and_replay_use_one_exact_proof() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    let pending = Box::pin(crate::run_control_contract::expired::pending(
-        &store, &clock,
-    ))
-    .await;
-    let receipt = Box::pin(fresh_with_budget(&store, &pending)).await;
-    Box::pin(replay_with_budget(&store, &pending, &receipt, &clock)).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        let pending = Box::pin(crate::run_control_contract::expired::pending(
+            &store, &clock,
+        ))
+        .await;
+        let receipt = Box::pin(fresh_with_budget(&store, &pending)).await;
+        Box::pin(replay_with_budget(&store, &pending, &receipt, &clock)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn expired_context_authenticates_released_history_under_same_remaining_proof() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crabber_core::Clock;
     let clock = Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let store = store.with_clock(clock.clone());
-    let (request, original_cursor) = released_history_request(&store, &clock).await;
-    let before = store.session_revision(&request.session_id).await.unwrap();
-    let history = store
-        .list_events(&request.session_id, None, 1000)
-        .await
-        .unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let mut proof = Proof::bounded(32 << 20);
-    proof.charge(31).unwrap();
-    super::context_with_proof(&mut tx, request.clone(), clock.now(), &mut proof)
-        .await
-        .unwrap();
-    let n = proof.used();
-    tx.rollback().await.unwrap();
-    for cap in [n - 1, n] {
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let store = store.with_clock(clock.clone());
+        let (request, original_cursor) = released_history_request(&store, &clock).await;
+        let before = store.session_revision(&request.session_id).await.unwrap();
+        let history = store
+            .list_events(&request.session_id, None, 1000)
+            .await
+            .unwrap();
         let mut tx = crate::postgres::transaction::begin(&store.pool)
             .await
             .unwrap();
-        let mut proof = Proof::bounded(cap);
+        let mut proof = Proof::bounded(32 << 20);
         proof.charge(31).unwrap();
-        let result =
-            super::context_with_proof(&mut tx, request.clone(), clock.now(), &mut proof).await;
-        tx.rollback().await.unwrap();
-        assert_eq!(result.is_ok(), cap == n);
-        if cap == n {
-            assert_eq!(proof.used(), n);
-        } else {
-            assert!(proof.charge(0).is_err());
-        }
-    }
-    // Intact Released metadata cannot replace an erased independent original payload.
-    // Keep the referenced row so the relational foreign key remains valid.
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE events SET data='null' WHERE session_id=$1 AND seq=$2")
-        .bind(&request.session_id.0)
-        .bind(i64::try_from(original_cursor.0).unwrap())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    let result = super::context_with_proof(
-        &mut tx,
-        request.clone(),
-        clock.now(),
-        &mut Proof::bounded(32 << 20),
-    )
-    .await;
-    tx.rollback().await.unwrap();
-    assert!(result.is_err());
-    assert_eq!(
-        store.session_revision(&request.session_id).await.unwrap(),
-        before
-    );
-    assert_eq!(
-        store
-            .list_events(&request.session_id, None, 1000)
+        super::context_with_proof(&mut tx, request.clone(), clock.now(), &mut proof)
             .await
-            .unwrap(),
-        history
-    );
+            .unwrap();
+        let n = proof.used();
+        tx.rollback().await.unwrap();
+        for cap in [n - 1, n] {
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
+            let mut proof = Proof::bounded(cap);
+            proof.charge(31).unwrap();
+            let result =
+                super::context_with_proof(&mut tx, request.clone(), clock.now(), &mut proof).await;
+            tx.rollback().await.unwrap();
+            assert_eq!(result.is_ok(), cap == n);
+            if cap == n {
+                assert_eq!(proof.used(), n);
+            } else {
+                assert!(proof.charge(0).is_err());
+            }
+        }
+        // Intact Released metadata cannot replace an erased independent original payload.
+        // Keep the referenced row so the relational foreign key remains valid.
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE events SET data='null' WHERE session_id=$1 AND seq=$2")
+            .bind(&request.session_id.0)
+            .bind(i64::try_from(original_cursor.0).unwrap())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let result = super::context_with_proof(
+            &mut tx,
+            request.clone(),
+            clock.now(),
+            &mut Proof::bounded(32 << 20),
+        )
+        .await;
+        tx.rollback().await.unwrap();
+        assert!(result.is_err());
+        assert_eq!(
+            store.session_revision(&request.session_id).await.unwrap(),
+            before
+        );
+        assert_eq!(
+            store
+                .list_events(&request.session_id, None, 1000)
+                .await
+                .unwrap(),
+            history
+        );
+    })
+    .await
+    .unwrap();
 }
 
 async fn fresh_with_budget(

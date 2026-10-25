@@ -26,38 +26,77 @@ enum BatchKind {
     Mixed,
 }
 
-async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
-    for frontend in [false, true] {
-        for recovery in [false, true] {
-            for unkeyed in [false, true] {
-                Box::pin(same_task(
-                    store.clone(),
-                    &clock,
-                    if frontend {
-                        BatchKind::Frontend
-                    } else {
-                        BatchKind::Tool
-                    },
-                    recovery,
-                    unkeyed,
-                ))
-                .await;
-                if frontend {
-                    Box::pin(same_task(
-                        store.clone(),
-                        &clock,
-                        BatchKind::Mixed,
-                        recovery,
-                        unkeyed,
-                    ))
-                    .await;
-                }
-            }
-            Box::pin(faults::contract(store.clone(), &clock, frontend, recovery)).await;
-            Box::pin(cleanup::blocked(store.clone(), &clock, frontend, recovery)).await;
+#[derive(Clone, Copy)]
+enum Family {
+    SuccessReplay,
+    HeldAck,
+    MalformedReplay,
+    Cleanup,
+}
+
+async fn contract<S: Store + 'static>(
+    store: Arc<S>,
+    clock: Arc<ManualClock>,
+    frontend: bool,
+    recovery: bool,
+    exhaustive_validation: bool,
+    family: Family,
+) {
+    match family {
+        Family::HeldAck => {
+            Box::pin(faults::held_contract(
+                store,
+                &clock,
+                frontend,
+                recovery,
+                exhaustive_validation,
+            ))
+            .await;
+            return;
+        }
+        Family::MalformedReplay => {
+            Box::pin(faults::malformed_contract(
+                store,
+                &clock,
+                frontend,
+                recovery,
+                exhaustive_validation,
+            ))
+            .await;
+            return;
+        }
+        Family::Cleanup => {
+            Box::pin(cleanup::blocked(store, &clock, frontend, recovery)).await;
+            return;
+        }
+        Family::SuccessReplay => (),
+    }
+    for unkeyed in [false, true] {
+        Box::pin(same_task(
+            store.clone(),
+            &clock,
+            if frontend {
+                BatchKind::Frontend
+            } else {
+                BatchKind::Tool
+            },
+            recovery,
+            unkeyed,
+        ))
+        .await;
+        if frontend {
+            Box::pin(same_task(
+                store.clone(),
+                &clock,
+                BatchKind::Mixed,
+                recovery,
+                unkeyed,
+            ))
+            .await;
         }
     }
 }
+
 async fn same_task<S: Store + 'static>(
     store: Arc<S>,
     clock: &ManualClock,
@@ -134,54 +173,136 @@ async fn same_task<S: Store + 'static>(
     assert_eq!(observed.replayed(), Some(&metadata));
     owner.wait_for_supervision().await;
 }
-#[tokio::test]
-async fn memory_pending_tool_same_task() {
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(crate::MemoryStore::with_clock(clock.clone())),
-        clock,
-    ))
-    .await;
-}
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn sqlite_pending_tool_same_task() {
-    let path = tempfile::tempdir().unwrap();
-    let database = path.path().join("pending-tool.sqlite");
-    crate::SqliteStore::migrate(&database).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(
-            crate::SqliteStore::connect(database)
+// Each family begins with a fresh Store; histories inside a family retain their
+// original task identity, faults, replay and cleanup order.
+macro_rules! cases {
+    ($memory:ident, $sqlite:ident, $postgres:ident, $frontend:literal, $recovery:literal, $family:ident) => {
+        #[tokio::test]
+        async fn $memory() {
+            let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+            Box::pin(contract(
+                Arc::new(crate::MemoryStore::with_clock(clock.clone())),
+                clock,
+                $frontend,
+                $recovery,
+                true,
+                Family::$family,
+            ))
+            .await;
+        }
+        #[cfg(feature = "sqlite")]
+        #[tokio::test]
+        async fn $sqlite() {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("pending-tool.sqlite");
+            crate::SqliteStore::migrate(&path).await.unwrap();
+            let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+            let store = crate::SqliteStore::connect(path)
                 .await
                 .unwrap()
-                .with_clock(clock.clone()),
-        ),
-        clock,
-    ))
-    .await;
-}
-#[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_pending_tool_same_task() {
-    let _guard = crate::postgres::pending_initial_test_lock().await;
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
+                .with_clock(clock.clone());
+            Box::pin(contract(
+                Arc::new(store),
+                clock,
+                $frontend,
+                $recovery,
+                false,
+                Family::$family,
+            ))
+            .await;
+        }
+        #[cfg(feature = "postgres")]
+        #[tokio::test]
+        async fn $postgres() {
+            use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+            TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+                let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+                let store = crate::PostgresStore::connect(&url)
+                    .await
+                    .unwrap()
+                    .with_clock(clock.clone());
+                Box::pin(contract(
+                    Arc::new(store),
+                    clock,
+                    $frontend,
+                    $recovery,
+                    false,
+                    Family::$family,
+                ))
+                .await;
+            })
+            .await
+            .unwrap();
+        }
     };
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    Box::pin(contract(
-        Arc::new(
-            crate::PostgresStore::connect(&url)
-                .await
-                .unwrap()
-                .with_clock(clock.clone()),
-        ),
-        clock,
-    ))
-    .await;
 }
+cases!(
+    memory_pending_tool_claim,
+    sqlite_pending_tool_claim,
+    postgres_pending_tool_claim,
+    false,
+    false,
+    SuccessReplay
+);
+cases!(
+    memory_pending_tool_recovery,
+    sqlite_pending_tool_recovery,
+    postgres_pending_tool_recovery,
+    false,
+    true,
+    SuccessReplay
+);
+cases!(
+    memory_pending_frontend_claim,
+    sqlite_pending_frontend_claim,
+    postgres_pending_frontend_claim,
+    true,
+    false,
+    SuccessReplay
+);
+cases!(
+    memory_pending_frontend_recovery,
+    sqlite_pending_frontend_recovery,
+    postgres_pending_frontend_recovery,
+    true,
+    true,
+    SuccessReplay
+);
+
+// Every independent family gets its own migrated Store and clock. A held ACK,
+// exact replay or cleanup story remains internally sequential in its old helper.
+macro_rules! fault_families {
+    ($module:ident, $frontend:literal, $recovery:literal) => {
+        mod $module {
+            use super::*;
+            cases!(
+                memory_pending_held_ack,
+                sqlite_pending_held_ack,
+                postgres_pending_held_ack,
+                $frontend,
+                $recovery,
+                HeldAck
+            );
+            cases!(
+                memory_pending_malformed_replay,
+                sqlite_pending_malformed_replay,
+                postgres_pending_malformed_replay,
+                $frontend,
+                $recovery,
+                MalformedReplay
+            );
+            cases!(
+                memory_pending_cleanup,
+                sqlite_pending_cleanup,
+                postgres_pending_cleanup,
+                $frontend,
+                $recovery,
+                Cleanup
+            );
+        }
+    };
+}
+fault_families!(tool_claim, false, false);
+fault_families!(tool_recovery, false, true);
+fault_families!(frontend_claim, true, false);
+fault_families!(frontend_recovery, true, true);

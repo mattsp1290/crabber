@@ -66,7 +66,7 @@ async fn lost_attempt_operations_ack_reconcile_in_fresh_process() {
         process::spawn(
             "sqlite::attempt::tests::process_helper",
             &fixture,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[],
         )
         .wait()
@@ -91,7 +91,7 @@ async fn killed_attempt_operations_before_commit_leave_no_partial_transition() {
         let mut child = process::spawn(
             "sqlite::attempt::tests::process_helper",
             &fixture,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[
                 ("CRABBER_ATTEMPT_WRITE", "1".into()),
                 ("CRABBER_ATTEMPT_BARRIER", marker.to_str().unwrap().into()),

@@ -20,21 +20,17 @@ pub fn memory() -> Stores {
 }
 
 #[cfg(feature = "postgres")]
-pub async fn postgres(migrate: bool) -> Stores {
-    let url = std::env::var("CRABBER_TEST_POSTGRES_URL")
-        .expect("CRABBER_TEST_POSTGRES_URL is required for PostgreSQL");
+pub async fn postgres(url: &str, migrate: bool) -> Stores {
     if migrate {
-        crabber::session::PostgresStore::migrate(&url)
-            .await
-            .unwrap();
+        crabber::session::PostgresStore::migrate(url).await.unwrap();
     }
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     // Separate connect calls create independent pools, not Store clones.
-    let reader = crabber::session::PostgresStore::connect(&url)
+    let reader = crabber::session::PostgresStore::connect(url)
         .await
         .unwrap()
         .with_clock(clock.clone());
-    let writer = crabber::session::PostgresStore::connect(&url)
+    let writer = crabber::session::PostgresStore::connect(url)
         .await
         .unwrap()
         .with_clock(clock);
@@ -260,8 +256,8 @@ pub fn source(require_clean: bool) -> Source {
 #[derive(Clone)]
 pub enum ChildMode {
     None,
-    Demo(bool),
-    Test,
+    Demo(String, bool, Option<String>),
+    Test(Vec<(&'static str, String)>),
     #[cfg(feature = "sqlite")]
     SqliteTest(std::path::PathBuf),
     #[cfg(feature = "sqlite")]
@@ -279,15 +275,20 @@ fn verify_child(
     let encoded = serde_json::to_string(query).unwrap();
     match mode {
         ChildMode::None => return,
-        ChildMode::Demo(check) => {
+        ChildMode::Demo(url, check, identity) => {
             command
                 .arg("--postgres-child")
+                .env("CRABBER_TEST_POSTGRES_URL", url)
                 .env("CRABBER_BOUNDED_CHILD", &encoded);
+            if let Some(identity) = identity {
+                command.env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", identity);
+            }
             if *check {
                 command.env("CRABBER_BOUNDED_CHECK", "1");
             }
         }
-        ChildMode::Test => {
+        ChildMode::Test(environment) => {
+            command.envs(environment.iter().cloned());
             command.env("CRABBER_BOUNDED_CHECK", "1");
             command
                 .args(["--exact", "postgres_snapshot_child_process", "--nocapture"])
@@ -384,7 +385,9 @@ fn child_output(mut command: Command) -> std::process::Output {
 }
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub async fn child() {
+pub async fn child(postgres_url: Option<&str>) {
+    #[cfg(not(feature = "postgres"))]
+    let _ = postgres_url;
     #[cfg(feature = "sqlite")]
     if let Some(path) = std::env::var_os("CRABBER_SQLITE_CHILD_PATH") {
         let (reader, _) = sqlite(std::path::Path::new(&path), false).await;
@@ -399,7 +402,11 @@ pub async fn child() {
     }
     #[cfg(feature = "postgres")]
     {
-        let (reader, _) = postgres(false).await;
+        let (reader, _) = postgres(
+            postgres_url.expect("explicit parent PostgreSQL endpoint"),
+            false,
+        )
+        .await;
         child_pages(
             reader,
             std::env::var("CRABBER_BOUNDED_CHILD").expect("child request required"),
@@ -456,8 +463,24 @@ async fn tail(reader: &dyn Store, session: &SessionId, h: EventCursor) -> Vec<Ev
     ids
 }
 
-#[allow(clippy::too_many_lines)]
 pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: ChildMode) {
+    journey_with_messages(stores, backend, source, mode, 1024).await;
+}
+
+/// CLI wiring keeps a real continuation and cold child; the facade tests own
+/// the full history and allocation proofs through `journey` above.
+pub async fn smoke(stores: Stores, backend: &str, source: &Source, mode: ChildMode) {
+    journey_with_messages(stores, backend, source, mode, 8).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn journey_with_messages(
+    stores: Stores,
+    backend: &str,
+    source: &Source,
+    mode: ChildMode,
+    fixture_messages: usize,
+) {
     let (reader, writer) = stores;
     let session = SessionId::from(format!("bounded-{backend}-{}", std::process::id()));
     let admitted = admit(&*writer, &session, "fake").await;
@@ -466,7 +489,7 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
     // Large fixture; expectation derives solely from construction, never from an
     // unbounded Store read. The host retains only IDs while walking pages.
     let mut expected = vec![MessageId::from(format!("{session}:user"))];
-    for index in 0..1024 {
+    for index in 0..fixture_messages {
         let id = format!("fake-{index}");
         execution
             .append_message(text(&session, Some(run.clone()), &id, "é fake reasoning"))

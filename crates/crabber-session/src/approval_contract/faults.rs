@@ -30,7 +30,7 @@ impl Operation {
             Self::Terminate(c) => c.id.clone(),
         }
     }
-    async fn execute(&self, store: &impl Store, f: &Fixture) -> Result<ApprovalReceipt, Error> {
+    async fn execute(&self, store: &dyn Store, f: &Fixture) -> Result<ApprovalReceipt, Error> {
         match self {
             Self::Terminate(c) => store.terminate_approval(c.clone()).await,
             Self::Suspend => {
@@ -54,6 +54,10 @@ pub async fn run_fault_contract(
     clock: &ManualClock,
     inject: impl Fn(FaultPoint),
 ) {
+    fault_history(store, clock, inject).await;
+}
+
+async fn fault_history(store: &dyn Store, clock: &ManualClock, inject: impl Fn(FaultPoint)) {
     super::recovery::fault_contract(store, clock, &inject).await;
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
     for case in [
@@ -141,7 +145,7 @@ pub async fn run_fault_contract(
         }
     }
 }
-async fn pending(store: &impl Store, clock: &ManualClock, case: Case) -> (Fixture, Operation) {
+async fn pending(store: &dyn Store, clock: &ManualClock, case: Case) -> (Fixture, Operation) {
     let f = staged(store, clock).await;
     if matches!(case, Case::Suspend) {
         return (f, Operation::Suspend);

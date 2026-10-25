@@ -6,7 +6,7 @@ use super::{
 };
 use crabber_core::{AttemptGeneration, AttemptId, Usage};
 pub(super) async fn start_attempt(
-    store: &impl Store,
+    store: &dyn Store,
     admitted: &AdmitOutcome,
 ) -> (Box<dyn ExecutionStore>, AttemptAuthority, AttemptTarget) {
     let execution = store.execution(admitted.fence.clone()).await.unwrap();

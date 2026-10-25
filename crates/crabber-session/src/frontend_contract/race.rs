@@ -1,7 +1,7 @@
 use super::{Store, fixture};
 use crate::*;
 use crabber_core::ControlId;
-pub(crate) async fn run(store: &impl Store) {
+pub(crate) async fn run(store: &dyn Store) {
     let (f, batch, paused) = fixture::paused(store).await;
     let claim = fixture::external_claim(&f.request, &batch, paused.revision);
     let (a, b) = tokio::join!(

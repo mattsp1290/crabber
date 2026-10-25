@@ -1,28 +1,115 @@
 //! Local development commands, invoked with `cargo xtask`.
 
 use sha2::Digest;
-use std::io::{self, Write as _};
 use std::{env, fmt::Write, fs, path::Path, process::Command};
 
 mod agui;
+#[cfg(target_os = "linux")]
+mod budget;
+mod checks;
+#[cfg(feature = "postgres-check")]
+mod complete;
 mod datadog;
+mod inventory;
+mod lease;
+mod native_artifacts;
+mod nextest;
+#[cfg(feature = "postgres-check")]
+mod postgres;
 mod probes;
+mod process;
 mod standard_tools;
 mod telemetry_messages;
+mod timings;
 
 const GLUE_START: &str = "crabber:glue-start";
 const GLUE_END: &str = "crabber:glue-end";
 const GLUE_LIMIT: usize = 60;
 
 fn main() {
-    let mut args = env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("check"), None) => check(),
-        (Some("build-fixtures"), None) => build_fixtures(),
-        (Some("verify-datadog"), None) => datadog::verify(),
-        (Some("check-probes"), None) => probes::check(workspace()),
+    let root = workspace().canonicalize();
+    let invocation = env::current_dir().and_then(fs::canonicalize);
+    if !matches!((root, invocation), (Ok(root), Ok(invocation)) if invocation.starts_with(&root)
+        && !invocation
+            .ancestors()
+            .take_while(|path| *path != root.as_path())
+            .any(|path| path.join(".git").exists()))
+    {
+        eprintln!(
+            "xtask belongs to a different workspace; run `cargo clean -p xtask` in this checkout and retry"
+        );
+        std::process::exit(2);
+    }
+    let args: Vec<String> = env::args().skip(1).collect();
+    // A partial fixture command replaces this process before any owner,
+    // signal handler or budget thread exists. The enabled binary owns cleanup.
+    #[cfg(all(
+        feature = "postgres-check",
+        not(feature = "session-fixtures"),
+        target_os = "linux"
+    ))]
+    if let Some(code) = postgres::session::delegate(&args) {
+        std::process::exit(code);
+    }
+    #[cfg(target_os = "linux")]
+    if !(args.first().map(String::as_str) == Some("check")
+        && args.iter().skip(1).any(|arg| arg == "--list"))
+        && let Err(error) = process::enable_tree_supervision()
+    {
+        eprintln!("cannot enable Linux child supervision: {error}");
+        std::process::exit(1);
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = process::cancellation().and_then(budget::watch) {
+        eprintln!("cannot supervise complete-check budget: {error}");
+        std::process::exit(1);
+    }
+    match args.first().map(String::as_str) {
+        Some("check") => {
+            let options = checks::Options::parse(&args[1..]).unwrap_or_else(|error| {
+                eprintln!("{error}");
+                std::process::exit(2);
+            });
+            if options.offline {
+                std::process::exit(check().execute(&options));
+            }
+            #[cfg(feature = "postgres-check")]
+            std::process::exit(postgres::complete(options));
+            #[cfg(not(feature = "postgres-check"))]
+            {
+                eprintln!("the complete check requires postgres-check; use cargo xtask check");
+                std::process::exit(2);
+            }
+        }
+        #[cfg(feature = "session-fixtures")]
+        Some("postgres-template-migrate") if args.len() == 1 => {
+            std::process::exit(postgres::session::migrate())
+        }
+        #[cfg(feature = "postgres-check")]
+        Some("postgres-fixture-helper") => {
+            std::process::exit(postgres::child::main(args.get(1).map(String::as_str)))
+        }
+        #[cfg(feature = "postgres-check")]
+        Some("check-postgres") => std::process::exit(postgres::check(&args[1..])),
+        #[cfg(not(feature = "postgres-check"))]
+        Some("check-postgres") => {
+            eprintln!("use cargo run -p xtask --features postgres-check -- check-postgres");
+            std::process::exit(2);
+        }
+        Some("inventory-tests") if args.len() == 1 => println!(
+            "{}",
+            serde_json::to_string_pretty(&inventory::tests(workspace())).unwrap()
+        ),
+        Some("build-fixtures") if args.len() == 1 => build_fixtures(),
+        Some("verify-datadog") if args.len() == 1 => datadog::verify(),
+        Some("check-probes") if args.len() == 1 => probes::check(workspace()),
+        Some("qualify-nextest") if args.len() == 1 => {
+            std::process::exit(nextest::qualify_failure(workspace()));
+        }
         _ => {
-            eprintln!("usage: cargo xtask <check|build-fixtures|verify-datadog|check-probes>");
+            eprintln!(
+                "usage: cargo xtask check [--list] [--timings <path>] | build-fixtures | verify-datadog | check-probes | inventory-tests"
+            );
             std::process::exit(2);
         }
     }
@@ -32,37 +119,72 @@ fn workspace() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
-fn check() {
+fn check_workspace(workspace: &Path, gates: &mut checks::Checks) {
+    gates.cargo(workspace, &["fmt", "--all", "--", "--check"]);
+    gates.internal("standard-tool-prerequisites", workspace, |_| {
+        standard_tools::check_tool_prerequisites();
+    });
+    gates.internal(
+        "live-tests-ignored",
+        workspace,
+        check_live_tests_are_ignored,
+    );
+    gates.internal("telemetry-messages", workspace, telemetry_messages::check);
+    gates.internal("agui-pins", workspace, agui::check);
+    gates.internal("wit-copies", workspace, check_wit);
+    let mut wit = Command::new("wasm-tools");
+    wit.args(["component", "wit", "wit", "-o", "/dev/null"])
+        .current_dir(workspace);
+    gates.command(workspace, wit, "WIT contract validation");
+    gates.internal("minimal-embed-glue", workspace, check_glue);
+    nextest::version_gate(workspace, gates);
+}
+
+fn check() -> checks::Checks {
+    let mut gates = checks::Checks::offline();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask belongs directly under the workspace root");
 
-    standard_tools::check_tool_prerequisites();
-    telemetry_messages::check(workspace);
-    agui::check(workspace);
-    probes::check(workspace);
-    check_wit(workspace);
-    build_fixtures();
-    run(workspace, &["fmt", "--all", "--", "--check"]);
-    check_server_host(workspace);
-    check_custom_http(workspace);
-    check_provider_features(workspace);
-    run(
-        workspace,
-        &[
+    check_workspace(workspace, &mut gates);
+    probes::schedule(workspace, &mut gates);
+    let fixture_lease = schedule_fixtures(workspace, &mut gates);
+    check_server_host(workspace, &mut gates, true);
+    check_custom_http(workspace, &mut gates);
+    for (target, filter) in [
+        ("facade_contracts", Some("typed_input::")),
+        ("typed_output", None),
+    ] {
+        let mut args = vec![
             "test",
             "-p",
             "crabber",
             "--features",
             "wasm,sqlite,postgres,custom-http",
             "--test",
-            "typed_input",
-            "--test",
-            "typed_output",
-        ],
-    );
-    check_sqlite(workspace);
-    run(
+            target,
+        ];
+        args.extend(filter);
+        gates.cargo(workspace, &args);
+    }
+    check_sqlite(workspace, &mut gates);
+    for features in ["wasm", "wasm,sqlite"] {
+        gates.cargo(
+            workspace,
+            &[
+                "check",
+                "-p",
+                "crabber",
+                "--features",
+                features,
+                "--test",
+                "wasm_state",
+                "--test",
+                "wasm_roles",
+            ],
+        );
+    }
+    gates.cargo(
         workspace,
         &[
             "clippy",
@@ -73,13 +195,23 @@ fn check() {
             "warnings",
         ],
     );
-    standard_tools::check_workspace_tests(workspace);
-    standard_tools::check(workspace);
-    run(
+    // Workspace owns common behavior, including both explicit probe backends.
+    // Minimal feature builds below retain absence/boundary compilation checks.
+    gates.cargo(
+        workspace,
+        &[
+            "test",
+            "--workspace",
+            "--features",
+            nextest::WORKSPACE_FEATURES,
+        ],
+    );
+    nextest::group_gate(workspace, &mut gates);
+    gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "agui-sse", "--", "--check"],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -91,96 +223,87 @@ fn check() {
             "opencode_go_chat",
         ],
     );
-    check_anthropic(workspace);
-    check_observability(workspace);
-    check_journeys(workspace);
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm",
-            "--test",
-            "wasm_state",
-        ],
-    );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm",
-            "--test",
-            "wasm_roles",
-        ],
-    );
-    run_script(
+    standard_tools::schedule(workspace, &mut gates);
+    check_provider_features(workspace, &mut gates);
+    check_observability(workspace, &mut gates);
+    check_journeys(workspace, &mut gates);
+    gates.script(
         workspace,
         "external consumer check",
         "testdata/external-consumer/check.sh",
     );
-    check_glue(workspace);
+    gates.internal("release-wasm-fixture-output", workspace, move |_| {
+        fixture_lease.release();
+    });
+    gates
 }
 
 // This local adoption probe deliberately needs no network provider or AG-UI SDK.
-fn check_server_host(workspace: &Path) {
-    // check() builds the actual local component fixtures before this gate.
-    run(
+fn check_server_host(workspace: &Path, gates: &mut checks::Checks, run_cli: bool) {
+    for features in ["wasm", "sqlite"] {
+        gates.cargo(
+            workspace,
+            &[
+                "check",
+                "-p",
+                "server-host-probe",
+                "--features",
+                features,
+                "--bin",
+                "server-host-probe",
+            ],
+        );
+    }
+    gates.cargo(
         workspace,
         &[
-            "test",
+            "check",
             "-p",
-            "server-host-probe",
-            "--features",
-            "wasm",
-            "--test",
-            "shared_wasm",
-        ],
-    );
-    run(
-        workspace,
-        &["test", "-p", "server-host-probe", "--features", "sqlite"],
-    );
-    run(
-        workspace,
-        &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
-    );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
+            "workspace-context-probe",
             "--features",
             "sqlite",
-            "--test",
-            "server_host",
-            "--test",
-            "durable_interactions",
-            "--test",
-            "durable_controls",
-            "--test",
-            "session_management",
+            "--lib",
         ],
     );
-    run_script(
+    if run_cli {
+        gates.cargo(
+            workspace,
+            &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
+        );
+    }
+    gates.script(
         workspace,
         "locked server-host consumer",
         "testdata/server-host-consumer/check.sh",
     );
 }
 
-fn check_sqlite(workspace: &Path) {
-    run(
+fn check_sqlite(workspace: &Path, gates: &mut checks::Checks) {
+    // The facade already has a raw PostgreSQL SQLx dev dependency. Keep this
+    // driver-free boundary separate from its otherwise compatible Clippy pass.
+    gates.cargo(
+        workspace,
+        &[
+            "check",
+            "-p",
+            "crabber-session",
+            "-p",
+            "crabber-runtime",
+            "--features",
+            "sqlite",
+            "--all-targets",
+        ],
+    );
+    gates.cargo(
         workspace,
         &[
             "clippy",
             "-p",
             "crabber-session",
+            "-p",
+            "crabber-runtime",
+            "-p",
+            "crabber",
             "--features",
             "sqlite",
             "--all-targets",
@@ -189,50 +312,7 @@ fn check_sqlite(workspace: &Path) {
             "warnings",
         ],
     );
-    run(
-        workspace,
-        &["test", "-p", "crabber-session", "--features", "sqlite"],
-    );
-
-    for package in ["crabber", "crabber-runtime"] {
-        run(
-            workspace,
-            &[
-                "clippy",
-                "-p",
-                package,
-                "--features",
-                "sqlite",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        );
-    }
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "sqlite",
-            "--test",
-            "admission_receipts",
-            "--test",
-            "bounded_snapshots",
-            "--test",
-            "fenced_abandon",
-            "--test",
-            "result_transform_interrupt",
-            "--test",
-            "unknown_tool_depth",
-            "--test",
-            "sqlite_builder",
-        ],
-    );
-    run(
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -244,47 +324,10 @@ fn check_sqlite(workspace: &Path) {
             "trace_context",
         ],
     );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm,sqlite",
-            "--test",
-            "wasm_roles",
-        ],
-    );
-    for package in ["crabber-runtime", "workspace-context-probe"] {
-        run(workspace, &["test", "-p", package, "--features", "sqlite"]);
-    }
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "minimal-embed",
-            "sqlite_interrupt_then_fresh_process_continues_session",
-        ],
-    );
 }
 
-fn check_custom_http(workspace: &Path) {
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--no-default-features",
-            "--features",
-            "custom-http",
-            "--test",
-            "custom_chat",
-        ],
-    );
-    run(
+fn check_custom_http(workspace: &Path, gates: &mut checks::Checks) {
+    gates.cargo(
         workspace,
         &[
             "check",
@@ -297,12 +340,12 @@ fn check_custom_http(workspace: &Path) {
     );
     // This script includes the positive probe manifest check before exercising
     // the negative feature-boundary and raw-escape probes.
-    run_script(
+    gates.script(
         workspace,
         "custom HTTP positive and negative feature-boundary probe",
         "testdata/custom-http-feature-probe/check.sh",
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "clippy",
@@ -316,7 +359,7 @@ fn check_custom_http(workspace: &Path) {
             "warnings",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -329,7 +372,7 @@ fn check_custom_http(workspace: &Path) {
             "custom_http",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -341,10 +384,9 @@ fn check_custom_http(workspace: &Path) {
     );
 }
 
-// Each provider feature alone must compile cleanly, so cfg-gated items stay used.
-fn check_provider_features(workspace: &Path) {
+fn check_provider_features(workspace: &Path, gates: &mut checks::Checks) {
     for feature in ["anthropic", "openai", "codex", "opencode-go"] {
-        run(
+        gates.cargo(
             workspace,
             &[
                 "clippy",
@@ -360,23 +402,7 @@ fn check_provider_features(workspace: &Path) {
             ],
         );
     }
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber-providers",
-            "--no-default-features",
-            "--features",
-            "anthropic",
-        ],
-    );
-}
-
-// The live suite is only compiled here; it runs solely on an operator's
-// explicit request, so this gate never needs network access or credentials.
-fn check_anthropic(workspace: &Path) {
-    run(
+    gates.cargo(
         workspace,
         &[
             "clippy",
@@ -390,36 +416,8 @@ fn check_anthropic(workspace: &Path) {
             "warnings",
         ],
     );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "anthropic",
-            "--test",
-            "anthropic_messages",
-        ],
-    );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "anthropic",
-            "--test",
-            "anthropic_live",
-            "--no-run",
-        ],
-    );
-    check_live_tests_are_ignored(workspace);
 }
 
-// Every test in a `crates/*/tests/*_live.rs` file needs credentials, so each
-// one's own attribute block must carry `#[ignore`.
 fn check_live_tests_are_ignored(workspace: &Path) {
     let mut files = Vec::new();
     for krate in fs::read_dir(workspace.join("crates")).expect("failed to read crates") {
@@ -481,12 +479,12 @@ fn live_tests_are_ignored(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_journeys(workspace: &Path) {
-    run(
+fn check_journeys(workspace: &Path, gates: &mut checks::Checks) {
+    gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "host-trace", "--", "memory"],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "run",
@@ -497,7 +495,7 @@ fn check_journeys(workspace: &Path) {
             "--memory",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "run",
@@ -509,7 +507,7 @@ fn check_journeys(workspace: &Path) {
             "--check",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "run",
@@ -539,7 +537,7 @@ fn check_journeys(workspace: &Path) {
         if package == "bounded-snapshot" {
             arguments.push("--check");
         }
-        run(workspace, &arguments);
+        gates.cargo(workspace, &arguments);
     }
 }
 
@@ -561,31 +559,55 @@ fn check_wit(workspace: &Path) {
             );
         }
     }
-    let status = Command::new("wasm-tools")
-        .args(["component", "wit", "wit", "-o", "/dev/null"])
-        .current_dir(workspace)
-        .status()
-        .expect("install wasm-tools to validate the WIT contract");
-    assert!(status.success(), "WIT contract is invalid");
 }
 
 fn build_fixtures() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut gates = checks::Checks::default();
+    let lease = schedule_fixtures(workspace(), &mut gates);
+    gates.internal("release-wasm-fixture-output", workspace(), move |_| {
+        lease.release();
+    });
+    let code = gates.execute(&checks::Options::default());
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+fn schedule_fixtures(workspace: &Path, gates: &mut checks::Checks) -> lease::Lease {
     let fixtures = workspace.join("fixtures/wasm");
     let target = fixtures.join("target");
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "--workspace",
-            "--target",
-            "wasm32-wasip2",
-            "--release",
-        ])
+    let lease = lease::Lease::default();
+    let acquire = lease.clone();
+    let lock = target.join(".fixture-output.lock");
+    gates.internal("acquire-wasm-fixture-output", workspace, move |_| {
+        acquire.acquire(&lock);
+    });
+    let arguments = [
+        "build",
+        "--workspace",
+        "--target",
+        "wasm32-wasip2",
+        "--release",
+    ];
+    let mut positive = Command::new("cargo");
+    positive
+        .args(arguments)
         .env("CARGO_TARGET_DIR", &target)
-        .current_dir(&fixtures)
-        .status()
-        .expect("install the wasm32-wasip2 Rust target");
-    assert!(status.success(), "fixture build failed");
+        .current_dir(&fixtures);
+    gates.command(&fixtures, positive, "positive WASM fixtures compile");
+    gates.internal("wasm-fixture-aliases", workspace, copy_fixture_aliases);
+    let negative_root = workspace.join("fixtures/wasm-negative");
+    let mut negative = Command::new("cargo");
+    negative
+        .args(arguments)
+        .env("CARGO_TARGET_DIR", target)
+        .current_dir(&negative_root);
+    gates.command(&negative_root, negative, "negative WASM fixtures compile");
+    lease
+}
+
+fn copy_fixture_aliases(workspace: &Path) {
+    let fixtures = workspace.join("fixtures/wasm");
     let output = fixtures.join("target/wasm32-wasip2/release");
     let mut manifest = String::new();
     for entry in fs::read_dir(&output).expect("fixture output") {
@@ -615,44 +637,6 @@ fn build_fixtures() {
         }
     }
     fs::write(fixtures.join("manifest.sha256"), manifest).expect("fixture manifest");
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "--workspace",
-            "--target",
-            "wasm32-wasip2",
-            "--release",
-        ])
-        .env("CARGO_TARGET_DIR", target)
-        .current_dir(workspace.join("fixtures/wasm-negative"))
-        .status()
-        .expect("build negative fixtures");
-    assert!(status.success(), "negative fixture build failed");
-}
-
-fn run(workspace: &Path, args: &[&str]) {
-    println!("$ cargo {}", args.join(" "));
-    let status = Command::new("cargo")
-        .args(args)
-        .current_dir(workspace)
-        .status()
-        .expect("failed to launch cargo");
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
-}
-
-fn run_script(workspace: &Path, label: &str, relative: &str) {
-    println!("$ {relative} # {label}");
-    let script = workspace.join(relative);
-    let status = Command::new(&script)
-        .current_dir(workspace)
-        .status()
-        .unwrap_or_else(|error| panic!("failed to launch {label} ({relative}): {error}"));
-    if !status.success() {
-        eprintln!("{label} failed ({relative})");
-        std::process::exit(status.code().unwrap_or(1));
-    }
 }
 
 fn check_glue(workspace: &Path) {
@@ -719,18 +703,7 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
 }
 
 // Exercise both the unconfigured export path and the host stderr recipe.
-fn check_datadog_offline(workspace: &Path) {
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "-p", "datadog-export"])
-        .current_dir(workspace)
-        .env_remove("DD_API_KEY")
-        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        .env("CRABBER_LOG_STDERR", "1")
-        .env("RUST_LOG", "info")
-        .output()
-        .expect("run offline Datadog fixture");
-    assert!(output.status.success(), "offline Datadog fixture failed");
+fn check_datadog_offline(output: &std::process::Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains("status=Completed"));
@@ -751,8 +724,8 @@ fn check_datadog_offline(workspace: &Path) {
     println!("offline Datadog fixture completed with redacted stderr");
 }
 
-fn check_observability(workspace: &Path) {
-    run(
+fn check_observability(workspace: &Path, gates: &mut checks::Checks) {
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -764,11 +737,11 @@ fn check_observability(workspace: &Path) {
             "trace_context",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &["test", "-p", "crabber-obs", "--features", "otlp"],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "clippy",
@@ -782,7 +755,7 @@ fn check_observability(workspace: &Path) {
             "warnings",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -794,7 +767,7 @@ fn check_observability(workspace: &Path) {
             "trace_context",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "test",
@@ -806,35 +779,21 @@ fn check_observability(workspace: &Path) {
             "telemetry",
         ],
     );
-    check_datadog_offline(workspace);
-}
-
-fn run_env(
-    workspace: &Path,
-    args: &[&str],
-    set: &[(&str, &str)],
-    remove: &[&str],
-) -> std::process::Output {
-    println!("$ cargo {}", args.join(" "));
     let mut command = Command::new("cargo");
     command
-        .args(args)
+        .args(["run", "--quiet", "-p", "datadog-export"])
         .current_dir(workspace)
-        .envs(set.iter().copied());
-    for name in remove {
-        command.env_remove(name);
-    }
-    let output = command.output().expect("failed to launch cargo");
-    io::stdout()
-        .write_all(&output.stdout)
-        .expect("write cargo stdout");
-    io::stderr()
-        .write_all(&output.stderr)
-        .expect("write cargo stderr");
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
-    }
-    output
+        .env_remove("DD_API_KEY")
+        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .env("CRABBER_LOG_STDERR", "1")
+        .env("RUST_LOG", "info");
+    gates.captured(
+        workspace,
+        command,
+        "Completed; retry diagnostic on stderr; no fixture secrets",
+        check_datadog_offline,
+    );
 }
 
 #[cfg(test)]

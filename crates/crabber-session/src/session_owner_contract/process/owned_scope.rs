@@ -4,6 +4,7 @@ use crate::session_owner::owned_scope::{
     OwnedCleanupTask, OwnedScopeActivation, OwnedScopeActivationOutcome, OwnedScopeSource,
     OwnedTaskRegistration,
 };
+use crabber_test_support::ChildDatabase;
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Metadata {
     pub activation: OwnedScopeActivation,
@@ -12,7 +13,7 @@ pub(crate) struct Metadata {
 fn sidecar(marker: &Path) -> std::path::PathBuf {
     marker.with_extension("scope")
 }
-pub(super) async fn act(store: &impl Store, reserve: ReserveSessionOwner, joining: bool) {
+pub(super) async fn act(store: &dyn Store, reserve: ReserveSessionOwner, joining: bool) {
     let (reserved, authority) = applied(store.reserve_session_owner(reserve, None).await.unwrap());
     let authority = authority.unwrap();
     let command = mutation(&reserved.owner, SessionOwnerCommand::Begin);
@@ -70,7 +71,7 @@ pub(super) async fn act(store: &impl Store, reserve: ReserveSessionOwner, joinin
         store.join_owned_scope(proof, authority).await.unwrap();
     }
 }
-pub(super) async fn verify(store: &impl Store, metadata: Metadata, committed: bool) {
+pub(super) async fn verify(store: &dyn Store, metadata: Metadata, committed: bool) {
     let activation = metadata.activation;
     let session = activation.session_id();
     let key = metadata.join.as_ref().unwrap_or(activation.operation_id());
@@ -113,7 +114,7 @@ pub(super) async fn verify(store: &impl Store, metadata: Metadata, committed: bo
     }
     assert!(store.get_session(session).await.unwrap().is_none());
 }
-pub(super) async fn run(helper: &str, path: Option<&Path>) {
+pub(super) async fn run(helper: &str, path: ChildDatabase<'_>) {
     for joining in [false, true] {
         for committed in [false, true] {
             let mut request = reservation(SessionId::new());

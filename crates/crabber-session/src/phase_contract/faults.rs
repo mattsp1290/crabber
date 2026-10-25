@@ -25,6 +25,10 @@ enum Action {
 /// # Panics
 /// Panics when an adapter exposes partial state or grants authority on replay.
 pub async fn run_fault_contract(store: &impl Store, set_fault: impl Fn(FaultPoint)) {
+    fault_history(store, set_fault).await;
+}
+
+async fn fault_history(store: &dyn Store, set_fault: impl Fn(FaultPoint)) {
     for action in [
         Action::Claim,
         Action::Begin,
@@ -42,7 +46,7 @@ pub async fn run_fault_contract(store: &impl Store, set_fault: impl Fn(FaultPoin
     super::resolution::fault_contract(store, &set_fault).await;
 }
 async fn run_case(
-    store: &impl Store,
+    store: &dyn Store,
     set_fault: &impl Fn(FaultPoint),
     action: Action,
     point: FaultPoint,

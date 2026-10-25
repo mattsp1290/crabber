@@ -35,7 +35,7 @@ async fn sqlite_initial_consumer_actual_conclusion_worker_lost_ack_is_paired_clo
     crate::SqliteStore::migrate(&path).await.unwrap();
     let store = Arc::new(crate::SqliteStore::connect(&path).await.unwrap());
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },

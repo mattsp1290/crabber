@@ -8,7 +8,7 @@ use crate::{
 };
 use crabber_core::ToolCallStatus;
 pub(crate) async fn fixture(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (
     ReserveSessionOwner,
     SessionOwnerParentAuthority,
@@ -84,7 +84,7 @@ pub(crate) async fn fixture(
         .unwrap();
     (request, parent, admitted, execution)
 }
-pub(crate) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(crate) async fn run(store: &dyn Store, clock: &ManualClock) {
     owned_scope::run(store, clock).await;
     let (request, parent, admitted, execution) = fixture(store).await;
     let (receipt, authority) = applied(

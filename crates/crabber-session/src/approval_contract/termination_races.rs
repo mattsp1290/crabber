@@ -3,13 +3,13 @@ use super::fixture::{answer, claim, staged};
 use crate::{ApprovalClaimOutcome, ApprovalError, ApprovalReply, Store};
 use crabber_core::{Clock, ManualClock, RunStatus};
 
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
     answer_race(store, clock).await;
     claim_race(store, clock).await;
     mixed_deadlines(store, clock).await;
 }
-async fn answer_race(store: &impl Store, clock: &ManualClock) {
+async fn answer_race(store: &dyn Store, clock: &ManualClock) {
     let f = staged(store, clock).await;
     f.execution
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
@@ -38,7 +38,7 @@ async fn answer_race(store: &impl Store, clock: &ManualClock) {
         assert!(snapshot.termination.is_some());
     }
 }
-async fn claim_race(store: &impl Store, clock: &ManualClock) {
+async fn claim_race(store: &dyn Store, clock: &ManualClock) {
     let f = staged(store, clock).await;
     f.execution
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
@@ -77,7 +77,7 @@ async fn claim_race(store: &impl Store, clock: &ManualClock) {
         assert!(snapshot.interactions.iter().all(|q| !q.consumed));
     }
 }
-async fn mixed_deadlines(store: &impl Store, clock: &ManualClock) {
+async fn mixed_deadlines(store: &dyn Store, clock: &ManualClock) {
     let mut f = staged(store, clock).await;
     let crate::CallApproval::Ask { description, .. } = &mut f.batch.calls[0].decision else {
         panic!("question")

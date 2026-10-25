@@ -123,7 +123,7 @@ async fn state(store: &impl FixtureStore, run_id: &RunId, phase: Option<&PhaseTa
     };
     json!({
         "run": run,
-        "calls": store.calls(run_id).await,
+        "calls": store.calls(run_id, None).await,
         "messages": store.list_all_messages(&run.session_id).await.unwrap(),
         "events": store.list_events(&run.session_id, None, 1000).await.unwrap(),
         "revision": store.session_revision(&run.session_id).await.unwrap(),

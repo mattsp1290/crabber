@@ -30,37 +30,39 @@ async fn check(
 }
 #[tokio::test]
 async fn detached_owner_coverage_requires_original_declaration_activation_and_parent() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    for (mode, unknown_history) in [
-        (Mode::Declared, false),
-        (Mode::ActivatedNoDispatch, false),
-        (Mode::Legacy, true),
-        (Mode::Claim, true),
-        (Mode::NoActivation, true),
-    ] {
-        let (session, _) = fixture(&store, mode).await;
-        let (result, used) = check(&store, &session, 32 * 1024 * 1024).await;
-        let owners = result.unwrap();
-        assert_eq!(owners.live.len(), 0);
-        assert_eq!(owners.unclassified, unknown_history);
-        assert!(matches!(
-            check(&store, &session, 1).await.0,
-            Err(Failure::Limited(_))
-        ));
-        if !unknown_history {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        for (mode, unknown_history) in [
+            (Mode::Declared, false),
+            (Mode::ActivatedNoDispatch, false),
+            (Mode::Legacy, true),
+            (Mode::Claim, true),
+            (Mode::NoActivation, true),
+        ] {
+            let (session, _) = fixture(&store, mode).await;
+            let (result, used) = check(&store, &session, 32 * 1024 * 1024).await;
+            let owners = result.unwrap();
+            assert_eq!(owners.live.len(), 0);
+            assert_eq!(owners.unclassified, unknown_history);
             assert!(matches!(
-                check(&store, &session, used - 1).await.0,
+                check(&store, &session, 1).await.0,
                 Err(Failure::Limited(_))
             ));
-            corrupt_issuer(&store, &session).await;
-            corrupt_all_owner_parent_copies(&store, &session).await;
+            if !unknown_history {
+                assert!(matches!(
+                    check(&store, &session, used - 1).await.0,
+                    Err(Failure::Limited(_))
+                ));
+                corrupt_issuer(&store, &session).await;
+                corrupt_all_owner_parent_copies(&store, &session).await;
+            }
         }
-    }
+    })
+    .await
+    .unwrap();
 }
 async fn corrupt_issuer(store: &PostgresStore, session: &SessionId) {
     let row = sqlx::query("SELECT run_id,sequence,data_json FROM native_run_issuances WHERE session_id=$1 ORDER BY sequence LIMIT 1")
@@ -148,35 +150,37 @@ async fn corrupt_all_owner_parent_copies(store: &PostgresStore, session: &Sessio
 
 #[tokio::test]
 async fn legacy_native_parent_remains_usable_but_unclassified() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::session_owner::coverage::contract::{fixture_from_parent, native_parent};
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
-    let (request, parent) = native_parent(&store).await;
-    let session = request.binding.session_id.clone();
-    let original: String = sqlx::query_scalar(
-        "SELECT data_json FROM native_parent_witnesses WHERE session_id=$1 AND kind='phase'",
-    )
-    .bind(&session.0)
-    .fetch_one(&store.pool)
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let (request, parent) = native_parent(&store).await;
+        let session = request.binding.session_id.clone();
+        let original: String = sqlx::query_scalar(
+            "SELECT data_json FROM native_parent_witnesses WHERE session_id=$1 AND kind='phase'",
+        )
+        .bind(&session.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let mut old: serde_json::Value = serde_json::from_str(&original).unwrap();
+        old["version"] = serde_json::json!(1);
+        old.as_object_mut().unwrap().remove("run_issuance_digest");
+        sqlx::query(
+            "UPDATE native_parent_witnesses SET data_json=$1 WHERE session_id=$2 AND kind='phase'",
+        )
+        .bind(old.to_string())
+        .bind(&session.0)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        fixture_from_parent(&store, Mode::Declared, request, parent).await;
+        let owners = check(&store, &session, 32 * 1024 * 1024).await.0.unwrap();
+        assert_eq!(owners.live.len(), 0);
+        assert!(owners.unclassified);
+    })
     .await
     .unwrap();
-    let mut old: serde_json::Value = serde_json::from_str(&original).unwrap();
-    old["version"] = serde_json::json!(1);
-    old.as_object_mut().unwrap().remove("run_issuance_digest");
-    sqlx::query(
-        "UPDATE native_parent_witnesses SET data_json=$1 WHERE session_id=$2 AND kind='phase'",
-    )
-    .bind(old.to_string())
-    .bind(&session.0)
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    fixture_from_parent(&store, Mode::Declared, request, parent).await;
-    let owners = check(&store, &session, 32 * 1024 * 1024).await.0.unwrap();
-    assert_eq!(owners.live.len(), 0);
-    assert!(owners.unclassified);
 }

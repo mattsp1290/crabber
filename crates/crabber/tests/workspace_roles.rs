@@ -18,3 +18,26 @@ mod queue;
 mod reads;
 #[path = "workspace_roles/recovery.rs"]
 mod recovery;
+
+#[path = "workspace_roles/cold_snapshot.rs"]
+mod cold_snapshot;
+#[path = "../../../examples/bounded-snapshot/src/journey.rs"]
+#[allow(dead_code)]
+mod snapshot_journey;
+
+#[test]
+fn postgres_snapshot_child_process() {
+    if std::env::var_os("CRABBER_BOUNDED_CHILD").is_none() {
+        return;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let url = crabber_test_support::postgres::TestDatabase::attached_url()
+            .await
+            .unwrap();
+        snapshot_journey::child(Some(&url)).await;
+    });
+}

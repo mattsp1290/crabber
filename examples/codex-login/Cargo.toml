@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Normal builds retain this executable; required CLI checks stay enabled.
+# Keep unit tests in library or integration targets.
+[[bin]]
+name = "codex-login"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 crabber-auth = { path = "../../crates/crabber-auth" }

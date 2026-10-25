@@ -6,7 +6,7 @@ use crate::{
 };
 use crabber_core::{Clock, EventKind, EventRecord, ManualClock, SessionId};
 
-pub(super) async fn admit(store: &impl Store, now: time::OffsetDateTime) -> crate::AdmitOutcome {
+pub(super) async fn admit(store: &dyn Store, now: time::OffsetDateTime) -> crate::AdmitOutcome {
     let mut fixture =
         crate::typed_admission_contract::fixture(&SessionId::new(), now, "bound-start");
     fixture.keyed.request.session_id = None;
@@ -25,7 +25,7 @@ pub(super) fn request(revision: crabber_core::SessionRevision) -> AttemptMutatio
     };
     request
 }
-pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     let admitted = admit(store, clock.now()).await;
     let execution = store.execution(admitted.fence).await.unwrap();
     let request = request(store.session_revision(&admitted.session.id).await.unwrap());
@@ -74,7 +74,7 @@ enum Dirty {
     Message,
     Call,
 }
-async fn rejects_dirty(store: &impl Store, clock: &ManualClock, dirty: Dirty) {
+async fn rejects_dirty(store: &dyn Store, clock: &ManualClock, dirty: Dirty) {
     let admitted = if matches!(dirty, Dirty::Unbound) {
         crate::public_state_contract::admit(store, clock.now()).await
     } else {

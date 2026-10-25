@@ -90,14 +90,13 @@ async fn sqlite_initial_completion_register_begin_share_actual_task() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_initial_completion_register_begin_share_actual_task() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let store = crabber_session::PostgresStore::connect(&url).await.unwrap();
-    contract(Arc::new(store), "postgres").await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        let store = crabber_session::PostgresStore::connect(&url).await.unwrap();
+        contract(Arc::new(store), "postgres").await;
+    })
+    .await
+    .unwrap();
 }

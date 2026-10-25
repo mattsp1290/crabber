@@ -1,0 +1,46 @@
+{
+  "status": "passed",
+  "scope": "Quiet scheduler experiment; Cargo bootstrap excluded; actual Cargo test builds and PostgreSQL service retained",
+  "settings": [
+    {
+      "slots": 1,
+      "test_execution_seconds": 596.999,
+      "managed_command_wall_seconds": 796.3646492369007,
+      "cpu_user_seconds": 431.42636600000003,
+      "cpu_system_seconds": 76.764097,
+      "peak_threads": 31,
+      "peak_client_connections": 5,
+      "peak_process_rss_bytes": 5340246016,
+      "longest_case_seconds": 101.149
+    },
+    {
+      "slots": 2,
+      "test_execution_seconds": 457.22299999999996,
+      "managed_command_wall_seconds": 473.6582640489796,
+      "cpu_user_seconds": 229.246207,
+      "cpu_system_seconds": 54.112221,
+      "peak_threads": 32,
+      "peak_client_connections": 7,
+      "peak_process_rss_bytes": 761470976,
+      "longest_case_seconds": 86.311
+    },
+    {
+      "slots": 4,
+      "test_execution_seconds": 213.574,
+      "managed_command_wall_seconds": 229.2633270539809,
+      "cpu_user_seconds": 224.657401,
+      "cpu_system_seconds": 47.046106,
+      "peak_threads": 39,
+      "peak_client_connections": 13,
+      "peak_process_rss_bytes": 479981568,
+      "longest_case_seconds": 83.023
+    }
+  ],
+  "source_revision": "190e73356044529fd599e21dac26fe6e5296ee0a",
+  "xtask_sha256": "d30cc206996f88592c2ce625a8e8afa137ce458f788b71eee03ba06b27a0a148",
+  "selected_slots": 4,
+  "selection_basis": "Nextest execution wall time across the same 12 changed cases; four slots also passed five complete repetitions",
+  "measurement_limits": "The first setting rebuilt artifacts. Managed command wall, CPU and RSS include those builds; use test execution wall for scheduler comparison. This is not the final complete-gate benchmark.",
+  "normal_durability": true,
+  "retries": 0
+}

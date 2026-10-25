@@ -52,7 +52,7 @@ async fn lost_acknowledgements_reconcile_in_fresh_process() {
         process::child::spawn(
             "sqlite::approval::process_tests::process_helper",
             &fixture,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[],
         )
         .wait()
@@ -75,7 +75,7 @@ async fn killed_writer_rolls_back_suspend_answer_and_claim() {
         let mut child = process::child::spawn(
             "sqlite::approval::process_tests::process_helper",
             &fixture,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             &[
                 ("CRABBER_APPROVAL_WRITE", "1".into()),
                 ("CRABBER_APPROVAL_BARRIER", marker.to_str().unwrap().into()),

@@ -31,27 +31,29 @@ async fn sqlite_default_selection_contract() {
     let native = crabber::session::SqliteStore::connect(&path).await.unwrap();
     let native = Arc::new(native);
     Box::pin(contract::run(native.clone())).await;
-    process::run(native, Some(path)).await;
+    process::run(native, crabber_test_support::ChildDatabase::Sqlite(&path)).await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_default_selection_contract() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(
-            std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none(),
-            "required PostgreSQL URL missing"
-        );
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let native = crabber::session::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    let native = Arc::new(native);
-    Box::pin(contract::run(native.clone())).await;
-    process::run(native, None).await;
+#[test]
+fn postgres_default_selection_contract() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_with_runtime(
+        DatabaseMode::Current,
+        tokio::runtime::Builder::new_current_thread(),
+        async move |url| {
+            crabber::session::PostgresStore::migrate(&url)
+                .await
+                .unwrap();
+            let native = crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap();
+            let native = Arc::new(native);
+            Box::pin(contract::run(native.clone())).await;
+            process::run(native, crabber_test_support::ChildDatabase::Postgres(&url)).await;
+        },
+    )
+    .unwrap();
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

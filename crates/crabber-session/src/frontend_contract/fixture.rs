@@ -9,7 +9,7 @@ pub(crate) struct Fixture {
     pub authority: AttemptAuthority,
     pub request: FrontendCallStaging,
 }
-pub(crate) async fn fixture(store: &impl Store) -> Fixture {
+pub(crate) async fn fixture(store: &dyn Store) -> Fixture {
     let now = OffsetDateTime::UNIX_EPOCH;
     let mut prepared = crate::typed_admission_contract::fixture(&SessionId::new(), now, "frontend");
     let descriptor = descriptor();
@@ -43,7 +43,7 @@ pub(crate) fn descriptor() -> FrontendTool {
 }
 
 pub(crate) async fn fixture_on(
-    store: &impl Store,
+    store: &dyn Store,
     admitted: AdmitOutcome,
     descriptor: FrontendTool,
 ) -> Fixture {
@@ -102,7 +102,7 @@ pub(crate) async fn fixture_on(
     }
 }
 pub(crate) async fn suspension(
-    store: &impl Store,
+    store: &dyn Store,
     request: &FrontendCallStaging,
 ) -> ToolContinuationSuspension {
     let next_attempt = crate::AttemptTarget {
@@ -193,7 +193,7 @@ pub(crate) fn external_claim(
     }
 }
 pub(crate) async fn paused(
-    store: &impl Store,
+    store: &dyn Store,
 ) -> (Fixture, ToolContinuationSuspension, ToolContinuationReceipt) {
     let f = fixture(store).await;
     f.execution

@@ -13,8 +13,7 @@ Commit changes, then run from the invocation source checkout:
 
 ```sh
 cargo run -p bounded-snapshot -- --memory
-# CRABBER_TEST_POSTGRES_URL identifies a disposable dedicated PostgreSQL 14+ database.
-CRABBER_REQUIRE_POSTGRES=1 cargo run -p bounded-snapshot --features postgres -- --postgres
+cargo run -p xtask --features postgres-check -- check-postgres --package bounded-snapshot
 cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
 ```
 
@@ -129,7 +128,7 @@ Follow the [backup and restore procedure](sqlite-store.md#backup-and-restore);
 
 ## PostgreSQL maintenance
 
-`PostgresStore::connect` checks the current schema version 5 and performs no migration writes.
+`PostgresStore::connect` checks the current schema version and performs no migration writes.
 Call `PostgresStore::migrate` explicitly during a maintenance window before opening
 application traffic. The upgrade takes exclusive table locks and adds canonical
 record storage alongside existing JSONB columns, increasing storage usage. It
@@ -153,14 +152,16 @@ from ordinary bounded snapshot read guarantees.
 | Custom Store / external host | `external-host::bounded_snapshots::run`, compiled outside the workspace and run by `cargo xtask check`, covers fail-closed and delegated implementations |
 | Required verification | `cargo xtask check` retains fmt/Clippy/workspace/WASM/external/glue gates and executes Memory demo; CI PostgreSQL job requires backend suite, public facade journey/fresh child and executable PostgreSQL demo |
 
-Required PostgreSQL gates never silently skip when `CRABBER_REQUIRE_POSTGRES=1`:
+Required PostgreSQL gates use the managed fixture runner and never silently
+skip a missing prerequisite. Install the [pinned test tools](test-performance.md) first:
 
 ```sh
-CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber-session --features postgres
-CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features postgres --test bounded_snapshots -- --nocapture
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber-session
+cargo run -p xtask --features postgres-check -- check-postgres --package crabber --test bounded_snapshots
 cargo xtask check
 ```
 
-Set `CRABBER_TEST_POSTGRES_URL` in the environment for those required gates. Tests
-run without provider credentials. HTTP/SSE, AG-UI projection, application FIFO/outbox
+The runner owns test URLs and child handoffs. To use an existing dedicated test
+server instead of Docker, configure `CRABBER_TEST_POSTGRES_ADMIN_URL` as described
+in [the fixture guide](test-performance.md). Tests run without provider credentials. HTTP/SSE, AG-UI projection, application FIFO/outbox
 and consumer worker migration are host concerns outside this storage contract.

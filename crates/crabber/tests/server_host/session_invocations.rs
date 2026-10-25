@@ -532,19 +532,21 @@ async fn sqlite_detached_job_outlives_parent_and_archival() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_detached_job_outlives_parent_and_archival() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    let store = crabber::session::PostgresStore::connect(&url)
-        .await
-        .unwrap();
-    for archived in [false, true] {
-        journey_archived(Arc::new(store.clone()), archived).await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        let store = crabber::session::PostgresStore::connect(&url)
+            .await
+            .unwrap();
+        for archived in [false, true] {
+            journey_archived(Arc::new(store.clone()), archived).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 #[path = "session_invocations/cancellation.rs"]
 mod cancellation;

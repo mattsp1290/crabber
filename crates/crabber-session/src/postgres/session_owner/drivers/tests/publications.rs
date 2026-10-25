@@ -3,10 +3,10 @@ use super::super::{proof, source};
 use crate::public_session::v2::proof::Proof;
 #[tokio::test]
 async fn driver_original_publication_refuses_valid_projection_rewrites() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     for unkeyed in [false, true] {
@@ -95,6 +95,8 @@ async fn driver_original_publication_refuses_valid_projection_rewrites() {
             .unwrap();
         tx.rollback().await.unwrap();
     }
+
+    }).await.unwrap();
 }
 fn allowance() -> Proof {
     Proof::bounded(32 * 1024 * 1024)

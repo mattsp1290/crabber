@@ -27,31 +27,38 @@ fn memory_embedding_pages_settled_relations_then_resumes_events() {
 #[cfg(feature = "postgres")]
 #[test]
 fn postgres_embedding_independent_pools_and_fresh_process() {
-    if std::env::var("CRABBER_TEST_POSTGRES_URL").is_err() {
-        assert!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").is_err(),
-            "required PostgreSQL environment missing"
-        );
-        eprintln!("PostgreSQL facade journey skipped: CRABBER_TEST_POSTGRES_URL unset");
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    if !TestDatabase::available().unwrap() {
         return;
     }
     let runtime = runtime();
-    let stores = runtime.block_on(journey::postgres(true));
-    let source = journey::source(false);
-    runtime.block_on(journey::journey(
-        stores.clone(),
-        "postgres",
-        &source,
-        journey::ChildMode::Test,
-    ));
-    journey::allocation_proof(&runtime, &stores, "postgres", &source);
+    let database = runtime
+        .block_on(TestDatabase::create(DatabaseMode::Current))
+        .unwrap();
+    {
+        let url = database.url();
+        let stores = runtime.block_on(journey::postgres(&url, true));
+        let source = journey::source(false);
+        runtime.block_on(journey::journey(
+            stores.clone(),
+            "postgres",
+            &source,
+            journey::ChildMode::Test(TestDatabase::child_environment(&url).unwrap().to_vec()),
+        ));
+        journey::allocation_proof(&runtime, &stores, "postgres", &source);
+    }
+    runtime.block_on(database.finish()).unwrap();
 }
 
 #[cfg(feature = "postgres")]
 #[test]
 fn postgres_snapshot_child_process() {
     if std::env::var("CRABBER_BOUNDED_CHILD").is_ok() {
-        runtime().block_on(journey::child());
+        let runtime = runtime();
+        let url = runtime
+            .block_on(crabber_test_support::postgres::TestDatabase::attached_url())
+            .unwrap();
+        runtime.block_on(journey::child(Some(&url)));
     }
 }
 
@@ -76,6 +83,6 @@ fn sqlite_embedding_independent_stores_and_fresh_process() {
 #[test]
 fn sqlite_snapshot_child_process() {
     if std::env::var_os("CRABBER_SQLITE_CHILD_PATH").is_some() {
-        runtime().block_on(journey::child());
+        runtime().block_on(journey::child(None));
     }
 }

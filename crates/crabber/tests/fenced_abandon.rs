@@ -1,8 +1,17 @@
 #[path = "../../crabber-session/src/event_persistence.rs"]
 mod event_persistence;
+// Facade-only abandonment journeys run in the source-embedding harness.
+macro_rules! facade_only_test_items {
+    ($($item:item)*) => { $($item)* };
+}
 // The source-embedding adapter retains the canonical read and negative domains.
 // Genuine opaque Pending transport remains native-crate-only.
 macro_rules! native_pending_initial_items {
+    ($($item:item)*) => {};
+}
+// Generic queue limits run on the canonical MemoryStore and both real SQL
+// implementations; this adapter retains its own fenced public histories.
+macro_rules! native_store_unit_tests {
     ($($item:item)*) => {};
 }
 mod pending_initial_test_state {
@@ -662,13 +671,19 @@ fn agent(store: Arc<dyn Store>, counters: Arc<AtomicUsize>) -> Agent {
 #[tokio::test]
 async fn public_memory_abandon_running_and_paused_without_execution() {
     let clock = Arc::new(ManualClock::new(SystemClock.now()));
-    facade_matrix(Arc::new(MemoryStore::with_clock(clock.clone())), clock).await;
+    facade_matrix(
+        Arc::new(MemoryStore::with_clock(clock.clone())),
+        clock,
+        None,
+    )
+    .await;
 }
 
 #[allow(clippy::too_many_lines)]
 async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
     store: Arc<S>,
     clock: Arc<ManualClock>,
+    fixture_url: Option<&str>,
 ) {
     for authority in [
         AbandonAuthority::ExpiredLease,
@@ -775,9 +790,18 @@ async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
                 input_tokens: 123,
                 output_tokens: 45,
             };
-            abandonment_contract::FixtureStore::seed_run(store.as_ref(), seeded.clone()).await;
-            let original_calls =
-                abandonment_contract::FixtureStore::calls(store.as_ref(), &admitted.run.id).await;
+            abandonment_contract::FixtureStore::seed_run(
+                store.as_ref(),
+                seeded.clone(),
+                fixture_url,
+            )
+            .await;
+            let original_calls = abandonment_contract::FixtureStore::calls(
+                store.as_ref(),
+                &admitted.run.id,
+                fixture_url,
+            )
+            .await;
             if paused {
                 assert_eq!(
                     store
@@ -823,8 +847,12 @@ async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
             assert_eq!(outcome.run.status, RunStatus::Interrupted);
             assert_eq!(outcome.run.usage, seeded.usage);
             assert_eq!(outcome.run.checkpoint, seeded.checkpoint);
-            let settled_calls =
-                abandonment_contract::FixtureStore::calls(store.as_ref(), &admitted.run.id).await;
+            let settled_calls = abandonment_contract::FixtureStore::calls(
+                store.as_ref(),
+                &admitted.run.id,
+                fixture_url,
+            )
+            .await;
             for prior in &original_calls {
                 if matches!(
                     prior.status,
@@ -932,8 +960,12 @@ async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
                 );
             }
             assert_eq!(
-                abandonment_contract::FixtureStore::unconsumed_inbox(store.as_ref(), &session)
-                    .await,
+                abandonment_contract::FixtureStore::unconsumed_inbox(
+                    store.as_ref(),
+                    &session,
+                    fixture_url
+                )
+                .await,
                 2
             );
             let next = store

@@ -75,7 +75,7 @@ pub(crate) async fn request(
 }
 
 async fn recovery(
-    store: &impl Store,
+    store: &dyn Store,
     admitted: &crate::AdmitOutcome,
     mut bound: crate::BoundKeyedAdmitRequest,
 ) -> JoinedPreparation {

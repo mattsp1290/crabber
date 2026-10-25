@@ -34,17 +34,19 @@ async fn sqlite_durable_controls() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_durable_controls() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    contract::run(Arc::new(
-        crabber::session::PostgresStore::connect(&url)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
             .await
-            .unwrap(),
-    ))
-    .await;
+            .unwrap();
+        contract::run(Arc::new(
+            crabber::session::PostgresStore::connect(&url)
+                .await
+                .unwrap(),
+        ))
+        .await;
+    })
+    .await
+    .unwrap();
 }

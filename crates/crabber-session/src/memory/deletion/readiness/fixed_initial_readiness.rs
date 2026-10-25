@@ -29,7 +29,7 @@ pub(in crate::memory::deletion) async fn completed(
     for turn in 0..turns {
         let revision = host.store().session_revision(&session).await.unwrap();
         let source = crabber_extension::LibraryScriptedSource::new(
-            crabber::Selection {
+            crabber_providers::Selection {
                 provider_id: "library".into(),
                 model_id: "text".into(),
             },

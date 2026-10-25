@@ -92,7 +92,35 @@ framing, and security contract](docs/middleware.md), then run
 `crabber-middleware` is currently distributed as a workspace/path dependency rather
 than as a standalone crates.io package.
 
-Run the full workspace quality gate with `cargo xtask check`. It checks formatting, Clippy, tests, and that the example's marked embedding glue stays within 60 lines.
+Install the pinned tools and run the complete check with Rust 1.99.0 and Docker:
+
+```sh
+rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+rustup target add --toolchain 1.99.0 wasm32-wasip2
+cargo install wasm-tools --version 1.261.0 --locked
+python3 -I -S .github/scripts/install-nextest.py target/test-tools
+export PATH="$PWD/target/test-tools:$PATH"
+python3 -I -S .github/scripts/check.py
+```
+
+The gate checks formatting, Clippy, nextest unit/integration coverage, explicit
+Cargo doctests, WASM and consumer boundaries, demos and the 60-line embedding
+glue limit, including an owned PostgreSQL 14 fixture. The launcher counts Cargo
+compilation and cleanup within its 600-second budget; final performance
+qualification is pending. `cargo xtask check` runs the same complete schedule.
+For explicitly partial developer checks:
+
+```sh
+cargo xtask check --lane offline
+cargo run -p xtask --features postgres-check -- check-postgres
+```
+
+Docker is required in managed mode; tests use fake providers and require no
+provider credentials. Each history owns its database and children attach to it.
+See [test execution and performance](docs/test-performance.md) for service setup,
+Cargo fallback, bounded scheduler settings and timing evidence. Concurrent lanes
+in one checkout must use distinct `CARGO_TARGET_DIR` values; keep sources fixed
+while qualification runs.
 
 ## PostgreSQL persistence
 
@@ -111,8 +139,7 @@ Run the noninteractive, credential-free fake-provider journey:
 
 ```sh
 cargo run -p admission-receipt -- --memory
-# Set CRABBER_TEST_POSTGRES_URL to a disposable dedicated PostgreSQL 14+ database.
-cargo run -p admission-receipt --features postgres -- --postgres
+cargo run -p xtask --features postgres-check -- check-postgres --package admission-receipt
 ```
 
 Both modes assert one provider execution, one user message and identical receipts
@@ -211,8 +238,7 @@ once the snapshot is complete. `Limited` supports same-position retry;
 
 ```sh
 cargo run -p bounded-snapshot -- --memory
-# Set CRABBER_TEST_POSTGRES_URL to a disposable dedicated PostgreSQL 14+ database.
-cargo run -p bounded-snapshot --features postgres -- --postgres
+cargo run -p xtask --features postgres-check -- check-postgres --package bounded-snapshot
 cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
 ```
 

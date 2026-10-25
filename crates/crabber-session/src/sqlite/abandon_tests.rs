@@ -7,13 +7,13 @@ use time::OffsetDateTime;
 
 #[async_trait]
 impl FixtureStore for SqliteStore {
-    async fn seed_run(&self, run: Run) {
+    async fn seed_run(&self, run: Run, _fixture_url: Option<&str>) {
         let mut tx = self.begin_write().await.unwrap();
         load_run(&mut tx, &run.id).await.unwrap();
         save_run(&mut tx, &run).await.unwrap();
         tx.commit().await.unwrap();
     }
-    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
+    async fn calls(&self, run: &RunId, _fixture_url: Option<&str>) -> Vec<ToolCallRecord> {
         sqlx::query("SELECT data FROM tool_calls WHERE run_id=$1 ORDER BY id")
             .bind(&run.0)
             .fetch_all(&self.readers)
@@ -23,7 +23,7 @@ impl FixtureStore for SqliteStore {
             .map(|row| decode_row(&row, "data").unwrap())
             .collect()
     }
-    async fn unconsumed_inbox(&self, session: &SessionId) -> usize {
+    async fn unconsumed_inbox(&self, session: &SessionId, _fixture_url: Option<&str>) -> usize {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL",
         )
@@ -163,7 +163,7 @@ async fn rollback_unknown_response_and_fresh_process_replay() {
         .list_events(&admitted.run.session_id, None, 100)
         .await
         .unwrap();
-    let calls = store.calls(&admitted.run.id).await;
+    let calls = store.calls(&admitted.run.id, None).await;
     store.abandon_fault.store(1, Ordering::SeqCst);
     assert!(matches!(
         store.abandon_run(request.clone()).await,
@@ -188,7 +188,7 @@ async fn rollback_unknown_response_and_fresh_process_replay() {
             .unwrap(),
         events
     );
-    assert_eq!(fresh.calls(&admitted.run.id).await, calls);
+    assert_eq!(fresh.calls(&admitted.run.id, None).await, calls);
     store.abandon_fault.store(2, Ordering::SeqCst);
     assert!(matches!(
         store.abandon_run(request.clone()).await,

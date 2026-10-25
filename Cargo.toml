@@ -16,3 +16,22 @@ pedantic = "warn"
 
 [patch.crates-io]
 ag-ui-core = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "705303b26b6b900cdf9bdfa456fbd92a7003ca6b" }
+
+# Cached codecs and validators dominate several CPU-heavy debug contracts.
+# Keep most dev compilation unoptimized and retain debug/overflow checks.
+# The test profile inherits these dev-package overrides.
+[profile.dev.package.serde_json]
+opt-level = 1
+
+[profile.dev.package.sha2]
+opt-level = 1
+
+[profile.dev.package.jsonschema]
+opt-level = 1
+
+# Keep Core validation fast while retaining development checks.
+[profile.dev.package.crabber-core]
+opt-level = 1
+
+[profile.dev.package.cranelift-codegen]
+opt-level = 1

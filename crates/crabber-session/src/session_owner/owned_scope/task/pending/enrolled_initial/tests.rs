@@ -103,20 +103,18 @@ async fn genuine_birth_open_unbound_join_and_seal_sqlite() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn genuine_birth_open_unbound_join_and_seal_postgres() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
-    let sessions = genuine(store.clone()).await;
-    for session in sessions {
-        store.purge_pending_initial_fixture(&session).await.unwrap();
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+        let sessions = genuine(store.clone()).await;
+        for session in sessions {
+            store.purge_pending_initial_fixture(&session).await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[derive(Clone, Copy)]

@@ -2,10 +2,10 @@
 use super::*;
 #[tokio::test]
 async fn unkeyed_history_authenticates_original_capsule_before_policy() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let admitted =
@@ -77,6 +77,8 @@ async fn unkeyed_history_authenticates_original_capsule_before_policy() {
         Err(Failure::Error(DeletionError::UnknownStoreOutcome))
     ));
     tx.rollback().await.unwrap();
+
+    }).await.unwrap();
 }
 async fn read_original(
     tx: &mut Transaction<'_, Postgres>,
@@ -100,57 +102,61 @@ async fn read_original(
 
 #[tokio::test]
 async fn unkeyed_legacy_absence_never_authenticates_an_owned_initial_source() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let admitted =
-        crate::public_state_contract::admit(&store, time::OffsetDateTime::now_utc()).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let (verified, _) = read_original(&mut tx, &admitted, MAX_PROOF_BYTES)
-        .await
-        .unwrap_or_else(|_| panic!("genuine legacy unkeyed metadata"));
-    assert!(!verified);
-    tx.rollback().await.unwrap();
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let admitted =
+            crate::public_state_contract::admit(&store, time::OffsetDateTime::now_utc()).await;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let (verified, _) = read_original(&mut tx, &admitted, MAX_PROOF_BYTES)
+            .await
+            .unwrap_or_else(|_| panic!("genuine legacy unkeyed metadata"));
+        assert!(!verified);
+        tx.rollback().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn unkeyed_history_receipt_guard_recognizes_a_genuine_keyed_cohort() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let receipt =
-        crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let receipt =
+            crate::session_owner::preparation_contract::resources::successful(&store, false).await;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let mut proof = Proof::bounded(MAX_PROOF_BYTES);
+        let (initial, _, _) =
+            super::super::super::journal(&mut tx, &receipt.session_id, &receipt.run_id, &mut proof)
+                .await
+                .unwrap_or_else(|_| panic!("genuine keyed issuer"));
+        let original = super::super::admission::verify(
+            &mut tx,
+            &receipt.session_id,
+            &receipt.run_id,
+            initial.as_ref(),
+            &mut proof,
+        )
         .await
-        .unwrap();
-    let mut proof = Proof::bounded(MAX_PROOF_BYTES);
-    let (initial, _, _) =
-        super::super::super::journal(&mut tx, &receipt.session_id, &receipt.run_id, &mut proof)
-            .await
-            .unwrap_or_else(|_| panic!("genuine keyed issuer"));
-    let original = super::super::admission::verify(
-        &mut tx,
-        &receipt.session_id,
-        &receipt.run_id,
-        initial.as_ref(),
-        &mut proof,
-    )
+        .unwrap_or_else(|_| panic!("genuine keyed original"))
+        .expect("genuine owned keyed witness");
+        assert!(!original.is_unkeyed());
+        assert!(
+            super::super::unkeyed::has_keyed_receipt(&mut tx, &original, &mut proof)
+                .await
+                .unwrap_or_else(|_| panic!("keyed receipt lookup"))
+        );
+        tx.rollback().await.unwrap();
+    })
     .await
-    .unwrap_or_else(|_| panic!("genuine keyed original"))
-    .expect("genuine owned keyed witness");
-    assert!(!original.is_unkeyed());
-    assert!(
-        super::super::unkeyed::has_keyed_receipt(&mut tx, &original, &mut proof)
-            .await
-            .unwrap_or_else(|_| panic!("keyed receipt lookup"))
-    );
-    tx.rollback().await.unwrap();
+    .unwrap();
 }

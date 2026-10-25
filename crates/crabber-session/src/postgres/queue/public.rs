@@ -166,11 +166,11 @@ fn aggregate_queue_projection_marker_cannot_alias_original_receipt() {
 #[cfg(test)]
 #[tokio::test]
 async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::{PublicSessionError, Store};
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let mut f = crate::queue_contract::fixture(&store).await;
@@ -210,40 +210,44 @@ async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
         store.public_control_header_v2(request).await.unwrap_err(),
         PublicSessionError::UnknownStoreOutcome
     );
+
+    }).await.unwrap();
 }
 
 #[cfg(test)]
 #[tokio::test]
 async fn actual_receipt_projection_rejects_decoded_markers_in_selected_metadata() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::Store;
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let fixture = crate::queue_contract::fixture(&store).await;
-    let outcome = store.mutate_queue(fixture.enqueue).await.unwrap();
-    let receipt = serde_json::to_value(outcome.receipt()).unwrap();
-    let query = format!("SELECT {}", RECEIPT.replace("a.data_json", "$1"));
-    for marker in ["\u{0}", "\u{1}"] {
-        for path in [
-            "/session_id",
-            "/operation_id",
-            "/summary/session_id",
-            "/summary/queue_id",
-        ] {
-            let mut changed = receipt.clone();
-            *changed.pointer_mut(path).unwrap() = serde_json::Value::String(marker.into());
-            let document = serde_json::json!({"receipt":changed,
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let fixture = crate::queue_contract::fixture(&store).await;
+        let outcome = store.mutate_queue(fixture.enqueue).await.unwrap();
+        let receipt = serde_json::to_value(outcome.receipt()).unwrap();
+        let query = format!("SELECT {}", RECEIPT.replace("a.data_json", "$1"));
+        for marker in ["\u{0}", "\u{1}"] {
+            for path in [
+                "/session_id",
+                "/operation_id",
+                "/summary/session_id",
+                "/summary/queue_id",
+            ] {
+                let mut changed = receipt.clone();
+                *changed.pointer_mut(path).unwrap() = serde_json::Value::String(marker.into());
+                let document = serde_json::json!({"receipt":changed,
                 "ignored":{"nul\u{0}":"private\u{0}"}})
-            .to_string();
-            let projected: String = sqlx::query_scalar(&query)
-                .bind(document)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-            assert!(projected_receipt(&projected).is_err());
+                .to_string();
+                let projected: String = sqlx::query_scalar(&query)
+                    .bind(document)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+                assert!(projected_receipt(&projected).is_err());
+            }
         }
-    }
+    })
+    .await
+    .unwrap();
 }

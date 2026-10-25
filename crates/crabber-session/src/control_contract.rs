@@ -164,7 +164,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     expired::expired_inspection(&store, &clock).await;
     tools::run(&store).await;
 }
-async fn ordered(store: &impl Store, clock: &ManualClock) {
+pub(crate) async fn ordered(store: &impl Store, clock: &ManualClock) {
     let admitted = crate::public_state_contract::admit(store, clock.now()).await;
     let target = RunControlTarget::of(&admitted.run);
     let execution = store.execution(admitted.fence.clone()).await.unwrap();

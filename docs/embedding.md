@@ -336,8 +336,10 @@ writes readiness on its pipe. They inspect durable and live interrupted
 settlement, then hold cleanup before `wait()` to prove the permit remains
 held through reaping. They check the PID is gone (Linux), pipe EOF and restored
 permit after close joins cleanup. Both MemoryStore and PostgreSQL use the same
-assertions. These in-repository PostgreSQL tests can skip without configuration; a live verification
-must set `CRABBER_REQUIRE_POSTGRES=1` as well as `CRABBER_TEST_POSTGRES_URL`.
+assertions. These in-repository PostgreSQL tests can skip without configuration;
+required verification uses `cargo run -p xtask --features postgres-check --
+check-postgres --package crabber --test result_transform_interrupt`. The runner
+provisions and drains per-history databases; see [test setup](test-performance.md).
 
 The [standalone probe](../testdata/result-transform-probe/README.md) repeats
 the consumer-visible part of this coverage through the public facade only, as

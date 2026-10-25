@@ -2,21 +2,23 @@
 use super::*;
 #[tokio::test]
 async fn host_retire_terminal_source_rejects_result_and_relink_forgery() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = store.with_clock(clock);
-    for outcome in [
-        crate::AttemptRetirementOutcome::Failed,
-        crate::AttemptRetirementOutcome::Interrupted,
-    ] {
-        let fixture = crate::attempt_control_contract::terminal::fixture(&store, outcome).await;
-        checked(&store, &fixture).await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = store.with_clock(clock);
+        for outcome in [
+            crate::AttemptRetirementOutcome::Failed,
+            crate::AttemptRetirementOutcome::Interrupted,
+        ] {
+            let fixture = crate::attempt_control_contract::terminal::fixture(&store, outcome).await;
+            checked(&store, &fixture).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 async fn checked(
     store: &crate::PostgresStore,

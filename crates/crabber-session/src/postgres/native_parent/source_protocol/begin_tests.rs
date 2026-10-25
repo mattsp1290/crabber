@@ -3,10 +3,10 @@ use crate::Store;
 use std::sync::Arc;
 #[tokio::test]
 async fn erased_source_tail_and_coherent_private_restore_cannot_issue_fresh_begin() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
 
@@ -92,4 +92,6 @@ async fn erased_source_tail_and_coherent_private_restore_cannot_issue_fresh_begi
         store.session_revision(&run.session_id).await.unwrap(),
         revision
     );
+
+    }).await.unwrap();
 }

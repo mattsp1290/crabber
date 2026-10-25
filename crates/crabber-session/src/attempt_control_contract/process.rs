@@ -1,13 +1,14 @@
 //! Physical writer death and cold receipt recovery for parent controls.
 use super::*;
 use crate::attempt_control::Control;
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Fixture {
     pub control: Control,
     pub before: serde_json::Value,
 }
-pub(crate) async fn evidence(store: &impl Store, control: &Control) -> serde_json::Value {
+pub(crate) async fn evidence(store: &dyn Store, control: &Control) -> serde_json::Value {
     let (session, run, _, _, _) = control.scope();
     let approval = match store.approval_snapshot(session, run).await {
         Ok(snapshot) => serde_json::to_value(snapshot).unwrap(),
@@ -15,7 +16,7 @@ pub(crate) async fn evidence(store: &impl Store, control: &Control) -> serde_jso
     };
     serde_json::json!({"run":store.get_run(run).await.unwrap(),"attempt":store.latest_execution_attempt(run).await.unwrap(),"revision":store.session_revision(session).await.unwrap(),"messages":store.list_all_messages(session).await.unwrap(),"events":store.list_events(session,None,100).await.unwrap(),"calls":read_calls(store,session).await,"approval":approval})
 }
-pub(crate) async fn pending(store: &impl Store, retire: bool) -> Fixture {
+pub(crate) async fn pending(store: &dyn Store, retire: bool) -> Fixture {
     let (admitted, _, _, planned) = crate::phase_contract::fixture(store).await;
     let request = uncertainty(
         &admitted,
@@ -32,7 +33,7 @@ pub(crate) async fn pending(store: &impl Store, retire: bool) -> Fixture {
     Fixture { control, before }
 }
 pub(crate) async fn write(
-    store: &impl Store,
+    store: &dyn Store,
     f: &Fixture,
 ) -> Result<AttemptControlOutcome, AttemptError> {
     match &f.control {
@@ -40,7 +41,7 @@ pub(crate) async fn write(
         Control::Retire(r) => store.retire_attempt(r.clone()).await,
     }
 }
-pub(crate) async fn unchanged(store: &impl Store, f: &Fixture) {
+pub(crate) async fn unchanged(store: &dyn Store, f: &Fixture) {
     assert_eq!(evidence(store, &f.control).await, f.before);
     let (session, _, id, _, _) = f.control.scope();
     assert_eq!(
@@ -48,7 +49,7 @@ pub(crate) async fn unchanged(store: &impl Store, f: &Fixture) {
         None
     );
 }
-pub(crate) async fn verify(store: &impl Store, f: Fixture) {
+pub(crate) async fn verify(store: &dyn Store, f: Fixture) {
     let (session, _, id, _, _) = f.control.scope();
     let saved = store
         .lookup_attempt_mutation(session, id)
@@ -98,7 +99,7 @@ impl Drop for Guard {
 pub(crate) fn spawn(
     helper: &str,
     f: &Fixture,
-    path: Option<&std::path::Path>,
+    path: ChildDatabase<'_>,
     extra: &[(&str, String)],
 ) -> Guard {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
@@ -106,9 +107,7 @@ pub(crate) fn spawn(
         "CRABBER_PARENT_CONTROL_CHILD",
         serde_json::to_string(f).unwrap(),
     );
-    if let Some(path) = path {
-        cmd.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut cmd, "CRABBER_SQLITE_CHILD_PATH");
     for (k, v) in extra {
         cmd.env(k, v);
     }

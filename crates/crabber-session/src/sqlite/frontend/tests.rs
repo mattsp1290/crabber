@@ -41,7 +41,7 @@ async fn frontend_controls_survive_killed_writer() {
     let (_store, database, _directory) = crate::sqlite::tests::temp_store().await;
     crate::tool_continuation_contract::process::journey(
         "sqlite::frontend::tests::frontend_process_helper",
-        Some(&database),
+        crabber_test_support::ChildDatabase::Sqlite(&database),
     )
     .await;
 }

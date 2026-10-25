@@ -193,7 +193,7 @@ async fn validate_binding_with_proof(
 mod tests {
     use super::*;
     use crate::Store;
-    use crate::postgres::tests::{TEST_LOCK, test_url};
+
     use crabber_core::{
         AbandonAuthority, AbandonRequest, ManualClock, RunStatus, SessionId, Usage,
     };
@@ -232,149 +232,162 @@ mod tests {
 
     #[tokio::test]
     async fn claim_and_begin_never_wait_for_locked_session_row() {
-        let Some(url) = test_url() else { return };
-        let _guard = TEST_LOCK.lock().await;
-        PostgresStore::migrate(&url).await.unwrap();
-        let now = OffsetDateTime::now_utc();
-        let clock = Arc::new(ManualClock::new(now));
-        let store = PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone());
-        let (_, admitted, request) = admission(&store, now).await;
-        clock.set(now + time::Duration::seconds(30));
-        let mut session_lock = crate::postgres::transaction::begin(&store.pool)
-            .await
-            .unwrap();
-        sqlx::query("SELECT id FROM sessions WHERE id=$1 FOR UPDATE")
-            .bind(&admitted.session.id.0)
-            .fetch_one(&mut *session_lock)
-            .await
-            .unwrap();
-        let claimed = tokio::time::timeout(
-            Duration::from_secs(2),
-            store.claim_unstarted_admission(request),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let execution = store.execution(claimed.fence).await.unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            execution.begin_admission_execution(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        // Owner writes take the session gate, run, then session row. They may wait on the deliberately
-        // held session, while claim/begin have already released their run lock.
-        let event =
-            crate::abandonment_contract::event(&claimed.run, crabber_core::EventKind::RunSettled);
-        let write = tokio::spawn(async move {
-            execution
-                .settle_run(RunStatus::Completed, None, Usage::default(), event)
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            PostgresStore::migrate(&url).await.unwrap();
+            let now = OffsetDateTime::now_utc();
+            let clock = Arc::new(ManualClock::new(now));
+            let store = PostgresStore::connect(&url)
                 .await
-        });
-        session_lock.rollback().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(2), write)
+                .unwrap()
+                .with_clock(clock.clone());
+            let (_, admitted, request) = admission(&store, now).await;
+            clock.set(now + time::Duration::seconds(30));
+            let mut session_lock = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
+            sqlx::query("SELECT id FROM sessions WHERE id=$1 FOR UPDATE")
+                .bind(&admitted.session.id.0)
+                .fetch_one(&mut *session_lock)
+                .await
+                .unwrap();
+            let claimed = tokio::time::timeout(
+                Duration::from_secs(2),
+                store.claim_unstarted_admission(request),
+            )
             .await
             .unwrap()
+            .unwrap();
+            let execution = store.execution(claimed.fence).await.unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                execution.begin_admission_execution(),
+            )
+            .await
             .unwrap()
             .unwrap();
-        store.pool.close().await;
+            // Owner writes take the session gate, run, then session row. They may wait on the deliberately
+            // held session, while claim/begin have already released their run lock.
+            let event = crate::abandonment_contract::event(
+                &claimed.run,
+                crabber_core::EventKind::RunSettled,
+            );
+            let write = tokio::spawn(async move {
+                execution
+                    .settle_run(RunStatus::Completed, None, Usage::default(), event)
+                    .await
+            });
+            session_lock.rollback().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), write)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            store.pool.close().await;
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn renew_claim_begin_and_abandon_serialize_without_duplicate_authority() {
-        let Some(url) = test_url() else { return };
-        let _guard = TEST_LOCK.lock().await;
-        PostgresStore::migrate(&url).await.unwrap();
-        let now = OffsetDateTime::now_utc();
-        let clock = Arc::new(ManualClock::new(now));
-        let store = PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone());
-        let (_, admitted, request) = admission(&store, now).await;
-        let execution = store.execution(admitted.fence.clone()).await.unwrap();
-        let (renewed, denied) = tokio::join!(
-            execution.renew_lease(now + time::Duration::seconds(60)),
-            store.claim_unstarted_admission(request.clone())
-        );
-        renewed.unwrap();
-        assert_eq!(denied.unwrap_err(), Error::LiveLease);
-        clock.set(now + time::Duration::seconds(60));
-        let abandonment = AbandonRequest {
-            expected: admitted.fence,
-            expected_owner: admitted.run.owner,
-            authority: AbandonAuthority::ExpiredLease,
-        };
-        let (claim_result, abandon_result) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(
-                store.claim_unstarted_admission(request),
-                store.abandon_run(abandonment)
-            )
-        })
-        .await
-        .unwrap();
-        match (claim_result, abandon_result) {
-            (Ok(claimed), Err(crabber_core::AbandonError::StaleOwner)) => {
-                store
-                    .execution(claimed.fence)
-                    .await
-                    .unwrap()
-                    .begin_admission_execution()
-                    .await
-                    .unwrap();
-            }
-            (Err(Error::StaleOwner | Error::AlreadyTerminal), Ok(_)) => (),
-            other => panic!("unexpected race {other:?}"),
-        }
-        // Live administrative abandonment competes with one-shot begin. If begin
-        // wins, abandonment still revokes it; if abandonment wins, begin is denied.
-        clock.set(now);
-        let (_, admitted, _) = admission(&store, now).await;
-        let execution = store.execution(admitted.fence.clone()).await.unwrap();
-        let abandonment = AbandonRequest {
-            expected: admitted.fence,
-            expected_owner: admitted.run.owner,
-            authority: AbandonAuthority::HostStoppedOwner,
-        };
-        let (begin, abandoned) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(
-                execution.begin_admission_execution(),
-                store.abandon_run(abandonment)
-            )
-        })
-        .await
-        .unwrap();
-        abandoned.unwrap();
-        assert!(matches!(
-            begin,
-            Ok(()) | Err(Error::StaleOwner | Error::AlreadyTerminal)
-        ));
-        assert!(
-            store
-                .get_run(&admitted.run.id)
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            PostgresStore::migrate(&url).await.unwrap();
+            let now = OffsetDateTime::now_utc();
+            let clock = Arc::new(ManualClock::new(now));
+            let store = PostgresStore::connect(&url)
                 .await
                 .unwrap()
-                .unwrap()
-                .status
-                .is_terminal()
-        );
-        assert!(execution.begin_admission_execution().await.is_err());
-        store.pool.close().await;
+                .with_clock(clock.clone());
+            let (_, admitted, request) = admission(&store, now).await;
+            let execution = store.execution(admitted.fence.clone()).await.unwrap();
+            let (renewed, denied) = tokio::join!(
+                execution.renew_lease(now + time::Duration::seconds(60)),
+                store.claim_unstarted_admission(request.clone())
+            );
+            renewed.unwrap();
+            assert_eq!(denied.unwrap_err(), Error::LiveLease);
+            clock.set(now + time::Duration::seconds(60));
+            let abandonment = AbandonRequest {
+                expected: admitted.fence,
+                expected_owner: admitted.run.owner,
+                authority: AbandonAuthority::ExpiredLease,
+            };
+            let (claim_result, abandon_result) =
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    tokio::join!(
+                        store.claim_unstarted_admission(request),
+                        store.abandon_run(abandonment)
+                    )
+                })
+                .await
+                .unwrap();
+            match (claim_result, abandon_result) {
+                (Ok(claimed), Err(crabber_core::AbandonError::StaleOwner)) => {
+                    store
+                        .execution(claimed.fence)
+                        .await
+                        .unwrap()
+                        .begin_admission_execution()
+                        .await
+                        .unwrap();
+                }
+                (Err(Error::StaleOwner | Error::AlreadyTerminal), Ok(_)) => (),
+                other => panic!("unexpected race {other:?}"),
+            }
+            // Live administrative abandonment competes with one-shot begin. If begin
+            // wins, abandonment still revokes it; if abandonment wins, begin is denied.
+            clock.set(now);
+            let (_, admitted, _) = admission(&store, now).await;
+            let execution = store.execution(admitted.fence.clone()).await.unwrap();
+            let abandonment = AbandonRequest {
+                expected: admitted.fence,
+                expected_owner: admitted.run.owner,
+                authority: AbandonAuthority::HostStoppedOwner,
+            };
+            let (begin, abandoned) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(
+                    execution.begin_admission_execution(),
+                    store.abandon_run(abandonment)
+                )
+            })
+            .await
+            .unwrap();
+            abandoned.unwrap();
+            assert!(matches!(
+                begin,
+                Ok(()) | Err(Error::StaleOwner | Error::AlreadyTerminal)
+            ));
+            assert!(
+                store
+                    .get_run(&admitted.run.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    .is_terminal()
+            );
+            assert!(execution.begin_admission_execution().await.is_err());
+            store.pool.close().await;
+        })
+        .await
+        .unwrap();
     }
 }
 
 #[cfg(test)]
 #[tokio::test]
 async fn failed_begin_update_rolls_back_started_and_can_be_retried() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::Store;
-    use crate::postgres::tests::{TEST_LOCK, test_url};
+
     use time::OffsetDateTime;
-    let Some(url) = test_url() else { return };
-    let _guard = TEST_LOCK.lock().await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     PostgresStore::migrate(&url).await.unwrap();
     let now = OffsetDateTime::now_utc();
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(now));
@@ -441,6 +454,8 @@ async fn failed_begin_update_rolls_back_started_and_can_be_retried() {
         Error::AlreadyStarted
     );
     store.pool.close().await;
+
+    }).await.unwrap();
 }
 
 #[cfg(test)]

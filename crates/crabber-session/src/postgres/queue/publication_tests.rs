@@ -4,92 +4,94 @@ use crate::{
 };
 #[tokio::test]
 async fn journal_original_generated_authority_is_independent_of_later_current() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let f = crate::queue_contract::fixture(&store).await;
-    store.mutate_queue(f.enqueue.clone()).await.unwrap();
-    crate::queue_contract::claim(&store, &f).await;
-    let data: String = sqlx::query_scalar(
-        "SELECT data_json FROM future_queue WHERE session_id=$1 AND queue_id=$2",
-    )
-    .bind(&f.session.0)
-    .bind(&f.queue.0)
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    let record: Record = decode(&data).unwrap();
-    let claim = record.claim.as_ref().unwrap().operation.clone();
-    let original: String = sqlx::query_scalar(
-        "SELECT data_json FROM future_queue_audit WHERE session_id=$1 AND operation_id=$2",
-    )
-    .bind(&f.session.0)
-    .bind(&claim.0)
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    // A later corrupt current record must not invalidate the selected original.
-    sqlx::query("UPDATE future_queue SET data_json='{}' WHERE session_id=$1 AND queue_id=$2")
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let f = crate::queue_contract::fixture(&store).await;
+        store.mutate_queue(f.enqueue.clone()).await.unwrap();
+        crate::queue_contract::claim(&store, &f).await;
+        let data: String = sqlx::query_scalar(
+            "SELECT data_json FROM future_queue WHERE session_id=$1 AND queue_id=$2",
+        )
         .bind(&f.session.0)
         .bind(&f.queue.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let record: Record = decode(&data).unwrap();
+        let claim = record.claim.as_ref().unwrap().operation.clone();
+        let original: String = sqlx::query_scalar(
+            "SELECT data_json FROM future_queue_audit WHERE session_id=$1 AND operation_id=$2",
+        )
+        .bind(&f.session.0)
+        .bind(&claim.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        // A later corrupt current record must not invalidate the selected original.
+        sqlx::query("UPDATE future_queue SET data_json='{}' WHERE session_id=$1 AND queue_id=$2")
+            .bind(&f.session.0)
+            .bind(&f.queue.0)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .lookup_queue(&f.session, &claim)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(store.retained_queue(&f.session, &f.queue).await.is_err());
+        sqlx::query("UPDATE future_queue SET data_json=$3 WHERE session_id=$1 AND queue_id=$2")
+            .bind(&f.session.0)
+            .bind(&f.queue.0)
+            .bind(data)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut audit: Audit = decode(&original).unwrap();
+        audit.authority.as_mut().unwrap().token.push_str("changed");
+        // The generated authority isn't in the semantic request fingerprint.
+        sqlx::query(
+            "UPDATE future_queue_audit SET data_json=$3 WHERE session_id=$1 AND operation_id=$2",
+        )
+        .bind(&f.session.0)
+        .bind(&claim.0)
+        .bind(encode(&audit).unwrap())
         .execute(&store.pool)
         .await
         .unwrap();
-    assert!(
-        store
-            .lookup_queue(&f.session, &claim)
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(store.retained_queue(&f.session, &f.queue).await.is_err());
-    sqlx::query("UPDATE future_queue SET data_json=$3 WHERE session_id=$1 AND queue_id=$2")
+        assert!(store.lookup_queue(&f.session, &claim).await.is_err());
+        assert!(store.retained_queue(&f.session, &f.queue).await.is_err());
+        sqlx::query(
+            "UPDATE future_queue_audit SET data_json=$3 WHERE session_id=$1 AND operation_id=$2",
+        )
         .bind(&f.session.0)
-        .bind(&f.queue.0)
-        .bind(data)
+        .bind(&claim.0)
+        .bind(original)
         .execute(&store.pool)
         .await
         .unwrap();
-    let mut audit: Audit = decode(&original).unwrap();
-    audit.authority.as_mut().unwrap().token.push_str("changed");
-    // The generated authority isn't in the semantic request fingerprint.
-    sqlx::query(
-        "UPDATE future_queue_audit SET data_json=$3 WHERE session_id=$1 AND operation_id=$2",
-    )
-    .bind(&f.session.0)
-    .bind(&claim.0)
-    .bind(encode(&audit).unwrap())
-    .execute(&store.pool)
+        assert!(
+            store
+                .lookup_queue(&f.session, &claim)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    })
     .await
     .unwrap();
-    assert!(store.lookup_queue(&f.session, &claim).await.is_err());
-    assert!(store.retained_queue(&f.session, &f.queue).await.is_err());
-    sqlx::query(
-        "UPDATE future_queue_audit SET data_json=$3 WHERE session_id=$1 AND operation_id=$2",
-    )
-    .bind(&f.session.0)
-    .bind(&claim.0)
-    .bind(original)
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    assert!(
-        store
-            .lookup_queue(&f.session, &claim)
-            .await
-            .unwrap()
-            .is_some()
-    );
 }
 #[tokio::test]
 async fn journal_identity_and_publications_are_append_only_and_share_proof() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let f = crate::queue_contract::fixture(&store).await;
@@ -183,13 +185,15 @@ async fn journal_identity_and_publications_are_append_only_and_share_proof() {
         5
     );
     assert!(proof.used() > before);
+
+    }).await.unwrap();
 }
 #[tokio::test]
 async fn predecessor_queue_controls_never_enroll_originals() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let (f, record, audit) = crate::queue_contract::publications::legacy_rows(&store).await;
@@ -254,69 +258,74 @@ async fn predecessor_queue_controls_never_enroll_originals() {
         .await
         .is_err()
     );
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn journal_context_precharges_workspace_and_preserves_historical_selection() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::public_session::v2::proof::{Proof, ReadError};
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let f = crate::queue_contract::fixture(&store).await;
-    store.mutate_queue(f.enqueue.clone()).await.unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let mut measured = Proof::bounded(32 << 20);
-    super::reads::current_with_proof(&mut tx, &f.session, &mut measured)
-        .await
-        .unwrap()
-        .unwrap();
-    super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(measured.used()))
-        .await
-        .unwrap()
-        .unwrap();
-    let mut shared = Proof::bounded(measured.used() + 17);
-    shared.charge(18).unwrap();
-    assert!(matches!(
-        super::reads::current_with_proof(&mut tx, &f.session, &mut shared).await,
-        Err(ReadError::Budget(_))
-    ));
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE session_management SET workspace_id=$2 WHERE session_id=$1")
-        .bind(&f.session.0)
-        .bind("x".repeat(4096))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    assert!(matches!(
-        super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(1024)).await,
-        Err(ReadError::Budget(_))
-    ));
-    assert!(matches!(
-        super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(32 << 20)).await,
-        Err(ReadError::Domain(_))
-    ));
-    tx.rollback().await.unwrap();
-    // Selected original publication lookup never needs later current metadata.
-    assert!(
-        store
-            .lookup_queue(&f.session, &f.enqueue.id)
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let f = crate::queue_contract::fixture(&store).await;
+        store.mutate_queue(f.enqueue.clone()).await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let mut measured = Proof::bounded(32 << 20);
+        super::reads::current_with_proof(&mut tx, &f.session, &mut measured)
             .await
             .unwrap()
-            .is_some()
-    );
-    assert!(store.queue_session_snapshot(&f.session).await.is_err());
-    sqlx::query("UPDATE session_management SET workspace_id=$2 WHERE session_id=$1")
-        .bind(&f.session.0)
-        .bind("bound-workspace")
-        .execute(&store.pool)
-        .await
-        .unwrap();
+            .unwrap();
+        super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(measured.used()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut shared = Proof::bounded(measured.used() + 17);
+        shared.charge(18).unwrap();
+        assert!(matches!(
+            super::reads::current_with_proof(&mut tx, &f.session, &mut shared).await,
+            Err(ReadError::Budget(_))
+        ));
+        tx.rollback().await.unwrap();
+        sqlx::query("UPDATE session_management SET workspace_id=$2 WHERE session_id=$1")
+            .bind(&f.session.0)
+            .bind("x".repeat(4096))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(1024)).await,
+            Err(ReadError::Budget(_))
+        ));
+        assert!(matches!(
+            super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(32 << 20))
+                .await,
+            Err(ReadError::Domain(_))
+        ));
+        tx.rollback().await.unwrap();
+        // Selected original publication lookup never needs later current metadata.
+        assert!(
+            store
+                .lookup_queue(&f.session, &f.enqueue.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(store.queue_session_snapshot(&f.session).await.is_err());
+        sqlx::query("UPDATE session_management SET workspace_id=$2 WHERE session_id=$1")
+            .bind(&f.session.0)
+            .bind("bound-workspace")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    })
+    .await
+    .unwrap();
 }

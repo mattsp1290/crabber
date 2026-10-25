@@ -1,5 +1,6 @@
 //! Cold processes prove durable claim/preparation/admission receipts are metadata only.
 use super::*;
+use crabber_test_support::ChildDatabase;
 use std::{
     path::Path,
     process::{Child, Command},
@@ -127,7 +128,7 @@ impl Drop for Guard {
 pub(crate) fn spawn(
     helper: &str,
     request: &QueueMutation,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     extras: &[(&str, String)],
 ) -> Guard {
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -135,9 +136,7 @@ pub(crate) fn spawn(
         "CRABBER_QUEUE_CHILD",
         serde_json::to_string(request).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     for (key, value) in extras {
         command.env(key, value);
     }

@@ -77,14 +77,16 @@ async fn sqlite_claim_ack_loss() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_claim_ack_loss() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    admission_boundary(BackendKind::Postgres(url), "unstarted-claim-loss").await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        admission_boundary(BackendKind::Postgres(url), "unstarted-claim-loss").await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]
@@ -95,14 +97,16 @@ async fn sqlite_claim_worker_death_before_admission_begin() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_claim_worker_death_before_admission_begin() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    admission_boundary(BackendKind::Postgres(url), "unstarted-before-begin").await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        admission_boundary(BackendKind::Postgres(url), "unstarted-before-begin").await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]
@@ -113,14 +117,16 @@ async fn sqlite_admission_begin_failure() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_admission_begin_failure() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    admission_boundary(BackendKind::Postgres(url), "unstarted-begin-fail").await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        admission_boundary(BackendKind::Postgres(url), "unstarted-begin-fail").await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]
@@ -131,14 +137,16 @@ async fn sqlite_admission_begin_ack_loss() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_admission_begin_ack_loss() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    admission_boundary(BackendKind::Postgres(url), "unstarted-begin-loss").await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        admission_boundary(BackendKind::Postgres(url), "unstarted-begin-loss").await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]
@@ -149,14 +157,16 @@ async fn sqlite_worker_death_after_admission_begin() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_worker_death_after_admission_begin() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    admission_boundary(BackendKind::Postgres(url), "unstarted-after-begin").await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        admission_boundary(BackendKind::Postgres(url), "unstarted-after-begin").await;
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "sqlite")]
@@ -167,12 +177,14 @@ async fn sqlite_started_provider_refuses_reexecution() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_started_provider_refuses_reexecution() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Some(url) = test_url() else {
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    provider_started(BackendKind::Postgres(url)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        provider_started(BackendKind::Postgres(url)).await;
+    })
+    .await
+    .unwrap();
 }

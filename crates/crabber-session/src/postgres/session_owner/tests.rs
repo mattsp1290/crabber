@@ -1,33 +1,35 @@
 use crate::session_owner_contract;
 #[tokio::test]
 async fn session_owner_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    session_owner_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    session_owner_contract::faults::run(&store, &clock, |value| {
-        store
-            .session_owner_fault
-            .store(value, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        session_owner_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        session_owner_contract::faults::run(&store, &clock, |value| {
+            store
+                .session_owner_fault
+                .store(value, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        clock.set(time::OffsetDateTime::UNIX_EPOCH);
+        session_owner_contract::parent::run(&store, &clock).await;
+        clock.set(time::OffsetDateTime::UNIX_EPOCH);
+        super::corruption::run(&store).await;
+        session_owner_contract::process::run(
+            &store,
+            "postgres::session_owner::tests::session_owner_process_helper",
+            crabber_test_support::ChildDatabase::Postgres(&url),
+        )
+        .await;
     })
-    .await;
-    clock.set(time::OffsetDateTime::UNIX_EPOCH);
-    session_owner_contract::parent::run(&store, &clock).await;
-    clock.set(time::OffsetDateTime::UNIX_EPOCH);
-    super::corruption::run(&store).await;
-    session_owner_contract::process::run(
-        &store,
-        "postgres::session_owner::tests::session_owner_process_helper",
-        None,
-    )
-    .await;
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -35,7 +37,9 @@ async fn session_owner_process_helper() {
     let Some(command) = session_owner_contract::process::command() else {
         return;
     };
-    let url = crate::postgres::tests::test_url().unwrap();
+    let url = crabber_test_support::postgres::TestDatabase::attached_url()
+        .await
+        .unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(10),
@@ -45,68 +49,75 @@ async fn session_owner_process_helper() {
 
 #[tokio::test]
 async fn preparation_protocol_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    Box::pin(crate::session_owner::preparation_contract::run(&store)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        Box::pin(crate::session_owner::preparation_contract::run(&store)).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn preparation_protocol_commit_faults() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::session_owner::preparation_contract::faults::run(
-        &store,
-        |point| {
-            store
-                .session_owner_fault
-                .store(point, std::sync::atomic::Ordering::SeqCst);
-        },
-        |point| {
-            store
-                .binding_fault
-                .store(point, std::sync::atomic::Ordering::SeqCst);
-        },
-    )
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::session_owner::preparation_contract::faults::run(
+            &store,
+            |point| {
+                store
+                    .session_owner_fault
+                    .store(point, std::sync::atomic::Ordering::SeqCst);
+            },
+            |point| {
+                store
+                    .binding_fault
+                    .store(point, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+        .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn preparation_absent_order_rejects_deleted_history_plus_foreign_publication() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let (grant, bound, old) =
-        crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
-    assert_eq!(
-        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
-            .bind(&bound.binding.request.session_id.0)
-            .bind(&old.0)
-            .execute(&store.pool)
-            .await
-            .unwrap()
-            .rows_affected(),
-        1
-    );
-    crate::session_owner::preparation_contract::absent::foreign_refuses(&store, grant, bound).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let (grant, bound, old) =
+            crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
+        assert_eq!(
+            sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+                .bind(&bound.binding.request.session_id.0)
+                .bind(&old.0)
+                .execute(&store.pool)
+                .await
+                .unwrap()
+                .rows_affected(),
+            1
+        );
+        crate::session_owner::preparation_contract::absent::foreign_refuses(&store, grant, bound)
+            .await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn preparation_absent_order_rejects_foreign_join_relabeled_renew() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let (grant, bound, join) =
@@ -124,215 +135,227 @@ async fn preparation_absent_order_rejects_foreign_join_relabeled_renew() {
     );
     tx.rollback().await.unwrap();
     crate::session_owner::preparation_contract::absent::relabel_refuses(&store, grant, bound).await;
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn owner_cancellation_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    crate::session_owner::cancellation_contract::run(&store, &clock).await;
-    super::cancellation_tests::corruption(&store).await;
-    crate::session_owner::cancellation_contract::faults::run(&store, |point| {
-        store
-            .session_owner_fault
-            .store(point, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        crate::session_owner::cancellation_contract::run(&store, &clock).await;
+        super::cancellation_tests::corruption(&store).await;
+        crate::session_owner::cancellation_contract::faults::run(&store, |point| {
+            store
+                .session_owner_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        crate::session_owner_contract::process::run_cancellation(
+            &store,
+            "postgres::session_owner::tests::session_owner_process_helper",
+            crabber_test_support::ChildDatabase::Postgres(&url),
+        )
+        .await;
     })
-    .await;
-    crate::session_owner_contract::process::run_cancellation(
-        &store,
-        "postgres::session_owner::tests::session_owner_process_helper",
-        None,
-    )
-    .await;
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn preparation_resource_contract() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::session_owner::preparation_contract::resources::guards;
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
-        time::OffsetDateTime::UNIX_EPOCH,
-    ));
-    let store = store.with_clock(clock.clone());
-    crate::session_owner::preparation_contract::resources::run(&store).await;
-    crate::session_owner::preparation_contract::resources::faults(
-        &store,
-        |point| {
-            store
-                .session_owner_fault
-                .store(point, std::sync::atomic::Ordering::SeqCst);
-        },
-        |point| {
-            store
-                .binding_fault
-                .store(point, std::sync::atomic::Ordering::SeqCst);
-        },
-    )
-    .await;
-    guards::run(&store, &clock).await;
-    let (grant, bound, original_begin) = guards::source_fixture(&store).await;
-    assert_eq!(
-        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
-            .bind(&bound.binding.request.session_id.0)
-            .bind(&original_begin.0)
-            .execute(&store.pool)
-            .await
-            .unwrap()
-            .rows_affected(),
-        1
-    );
-    guards::source_refuses(&store, grant, bound).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = store.with_clock(clock.clone());
+        crate::session_owner::preparation_contract::resources::run(&store).await;
+        crate::session_owner::preparation_contract::resources::faults(
+            &store,
+            |point| {
+                store
+                    .session_owner_fault
+                    .store(point, std::sync::atomic::Ordering::SeqCst);
+            },
+            |point| {
+                store
+                    .binding_fault
+                    .store(point, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+        .await;
+        guards::run(&store, &clock).await;
+        let (grant, bound, original_begin) = guards::source_fixture(&store).await;
+        assert_eq!(
+            sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+                .bind(&bound.binding.request.session_id.0)
+                .bind(&original_begin.0)
+                .execute(&store.pool)
+                .await
+                .unwrap()
+                .rows_affected(),
+            1
+        );
+        guards::source_refuses(&store, grant, bound).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn preparation_handoff_marker_is_bound_to_original_join_digest() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::session_owner::preparation_contract::resources::guards;
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for native in [false, true] {
-        let (grant, bound) = guards::handoff_fixture(&store, native).await;
-        let metadata = grant.reconciliation().unwrap();
-        let target = if native {
-            serde_json::Value::Null
-        } else {
-            serde_json::to_value(grant.retained_resources_authority().unwrap().target()).unwrap()
-        };
-        for (table, field, id) in [
-            ("session_owner_current", "owner_id", &metadata.owner.id.0),
-            ("session_owner_audits", "operation_id", &metadata.join_id.0),
-        ] {
-            let query = format!("SELECT data_json FROM {table} WHERE session_id=$1 AND {field}=$2");
-            let data: String = sqlx::query_scalar(&query)
-                .bind(&metadata.session_id.0)
-                .bind(id)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-            let mut data: serde_json::Value = serde_json::from_str(&data).unwrap();
-            let record = if table == "session_owner_current" {
-                &mut data
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        for native in [false, true] {
+            let (grant, bound) = guards::handoff_fixture(&store, native).await;
+            let metadata = grant.reconciliation().unwrap();
+            let target = if native {
+                serde_json::Value::Null
             } else {
-                &mut data["record"]
+                serde_json::to_value(grant.retained_resources_authority().unwrap().target())
+                    .unwrap()
             };
-            if native {
-                record.as_object_mut().unwrap().remove("retained_resources");
-            } else {
-                record["retained_resources"] = target.clone();
+            for (table, field, id) in [
+                ("session_owner_current", "owner_id", &metadata.owner.id.0),
+                ("session_owner_audits", "operation_id", &metadata.join_id.0),
+            ] {
+                let query =
+                    format!("SELECT data_json FROM {table} WHERE session_id=$1 AND {field}=$2");
+                let data: String = sqlx::query_scalar(&query)
+                    .bind(&metadata.session_id.0)
+                    .bind(id)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+                let mut data: serde_json::Value = serde_json::from_str(&data).unwrap();
+                let record = if table == "session_owner_current" {
+                    &mut data
+                } else {
+                    &mut data["record"]
+                };
+                if native {
+                    record.as_object_mut().unwrap().remove("retained_resources");
+                } else {
+                    record["retained_resources"] = target.clone();
+                }
+                let query =
+                    format!("UPDATE {table} SET data_json=$1 WHERE session_id=$2 AND {field}=$3");
+                sqlx::query(&query)
+                    .bind(serde_json::to_string(&data).unwrap())
+                    .bind(&metadata.session_id.0)
+                    .bind(id)
+                    .execute(&store.pool)
+                    .await
+                    .unwrap();
             }
-            let query =
-                format!("UPDATE {table} SET data_json=$1 WHERE session_id=$2 AND {field}=$3");
-            sqlx::query(&query)
-                .bind(serde_json::to_string(&data).unwrap())
-                .bind(&metadata.session_id.0)
-                .bind(id)
-                .execute(&store.pool)
-                .await
-                .unwrap();
+            guards::handoff_refuses(&store, grant, bound).await;
         }
-        guards::handoff_refuses(&store, grant, bound).await;
-    }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn owned_scope_sources_and_join_hash_are_independent() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::session_owner::preparation_contract::resources::scope_integrity as check;
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for original_begin in [false, true] {
-        let fixture = check::fixture(&store).await;
-        let key = if original_begin {
-            &fixture.activation.source.begin
-        } else {
-            fixture.activation.operation_id()
-        };
-        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
-            .bind(&fixture.child.session_id().0)
-            .bind(&key.0)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        check::source_refuses(&store, fixture, original_begin).await;
-    }
-    for owned in [false, true] {
-        let fixture = check::fixture(&store).await;
-        check::join_source(&store, &fixture, owned).await;
-        let join = fixture.proof.request().unwrap();
-        for (table, column, identity) in [
-            (
-                "session_owner_current",
-                "owner_id",
-                fixture.child.target().id.0.clone(),
-            ),
-            ("session_owner_audits", "operation_id", join.id.0),
-        ] {
-            let text: String = sqlx::query_scalar(&format!(
-                "SELECT data_json FROM {table} WHERE session_id=$1 AND {column}=$2"
-            ))
-            .bind(&fixture.child.session_id().0)
-            .bind(&identity)
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
-            let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
-            let record = if table == "session_owner_audits" {
-                &mut value["record"]
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        for original_begin in [false, true] {
+            let fixture = check::fixture(&store).await;
+            let key = if original_begin {
+                &fixture.activation.source.begin
             } else {
-                &mut value
+                fixture.activation.operation_id()
             };
-            if owned {
-                record.as_object_mut().unwrap().remove("owned_join");
-            } else {
-                record["owned_join"] = serde_json::to_value(fixture.proof.inspection()).unwrap();
-            }
-            sqlx::query(&format!(
-                "UPDATE {table} SET data_json=$1 WHERE session_id=$2 AND {column}=$3"
-            ))
-            .bind(value.to_string())
-            .bind(&fixture.child.session_id().0)
-            .bind(&identity)
-            .execute(&store.pool)
-            .await
-            .unwrap();
+            sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+                .bind(&fixture.child.session_id().0)
+                .bind(&key.0)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            check::source_refuses(&store, fixture, original_begin).await;
         }
-        check::marker_refuses(&store, fixture).await;
-    }
+        for owned in [false, true] {
+            let fixture = check::fixture(&store).await;
+            check::join_source(&store, &fixture, owned).await;
+            let join = fixture.proof.request().unwrap();
+            for (table, column, identity) in [
+                (
+                    "session_owner_current",
+                    "owner_id",
+                    fixture.child.target().id.0.clone(),
+                ),
+                ("session_owner_audits", "operation_id", join.id.0),
+            ] {
+                let text: String = sqlx::query_scalar(&format!(
+                    "SELECT data_json FROM {table} WHERE session_id=$1 AND {column}=$2"
+                ))
+                .bind(&fixture.child.session_id().0)
+                .bind(&identity)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+                let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let record = if table == "session_owner_audits" {
+                    &mut value["record"]
+                } else {
+                    &mut value
+                };
+                if owned {
+                    record.as_object_mut().unwrap().remove("owned_join");
+                } else {
+                    record["owned_join"] =
+                        serde_json::to_value(fixture.proof.inspection()).unwrap();
+                }
+                sqlx::query(&format!(
+                    "UPDATE {table} SET data_json=$1 WHERE session_id=$2 AND {column}=$3"
+                ))
+                .bind(value.to_string())
+                .bind(&fixture.child.session_id().0)
+                .bind(&identity)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            }
+            check::marker_refuses(&store, fixture).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn active_preparation_cannot_be_hidden_by_joined_index_route() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let (grant, _, _) =
-        crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
-    let request = grant.original_reservation();
-    let session = &request.owner.binding.session_id;
-    let begin = request.reconciliation().unwrap().begin_id;
-    assert_eq!(
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let (grant, _, _) =
+            crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
+        let request = grant.original_reservation();
+        let session = &request.owner.binding.session_id;
+        let begin = request.reconciliation().unwrap().begin_id;
+        assert_eq!(
         sqlx::query(
             "UPDATE session_owner_audits SET state='Joined' WHERE session_id=$1 AND operation_id=$2"
         )
@@ -344,32 +367,37 @@ async fn active_preparation_cannot_be_hidden_by_joined_index_route() {
         .rows_affected(),
         1
     );
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    assert!(
-        super::reads::has_preparation(&mut tx, session)
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
             .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
+            .unwrap();
+        assert!(
+            super::reads::has_preparation(&mut tx, session)
+                .await
+                .unwrap()
+        );
+        tx.rollback().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn session_service_dependency_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    crate::session_owner_contract::services::handoff(std::sync::Arc::new(store.clone())).await;
-    crate::session_owner_contract::services::cohort(std::sync::Arc::new(store.clone())).await;
-    crate::session_owner_contract::services::lifecycle(&store).await;
-    crate::session_owner_contract::services::faults(&store, |value| {
-        store
-            .session_owner_fault
-            .store(value, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        crate::session_owner_contract::services::handoff(std::sync::Arc::new(store.clone())).await;
+        crate::session_owner_contract::services::cohort(std::sync::Arc::new(store.clone())).await;
+        crate::session_owner_contract::services::lifecycle(&store).await;
+        crate::session_owner_contract::services::faults(&store, |value| {
+            store
+                .session_owner_fault
+                .store(value, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }

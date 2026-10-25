@@ -2,7 +2,7 @@
 #[path = "atomic_recovery.rs"]
 mod atomic_recovery;
 use super::*;
-pub(super) async fn run(store: &impl Store, clock: &Arc<ManualClock>) {
+pub(super) async fn run(store: &dyn Store, clock: &Arc<ManualClock>) {
     let now = clock.now();
     let session = SessionId::new();
     let original =
@@ -45,7 +45,7 @@ pub(super) async fn run(store: &impl Store, clock: &Arc<ManualClock>) {
 }
 
 async fn inspect_recovery_is_observation(
-    store: &impl Store,
+    store: &dyn Store,
     request: &ClaimUnstartedAdmissionRequest,
     original: &Run,
 ) {
@@ -106,7 +106,7 @@ async fn inspect_recovery_is_observation(
     );
 }
 
-async fn rotation_before_reserve_refuses(store: &impl Store, clock: &Arc<ManualClock>) {
+async fn rotation_before_reserve_refuses(store: &dyn Store, clock: &Arc<ManualClock>) {
     let now = clock.now();
     let session = SessionId::new();
     let bound = crate::execution_binding_contract::fixture(&session, now, "source-rotation", 'b');

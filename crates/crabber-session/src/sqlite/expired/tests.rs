@@ -182,7 +182,7 @@ async fn expired_preparation_process_boundaries() {
         let key = process::kill(
             "sqlite::expired::tests::expired_preparation_process_boundaries",
             stage,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             directory.path(),
         );
         let cold = SqliteStore::connect(&path).await.unwrap();
@@ -191,7 +191,7 @@ async fn expired_preparation_process_boundaries() {
         let key = process::kill_unkeyed(
             "sqlite::expired::tests::expired_preparation_process_boundaries",
             stage,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             unkeyed.path(),
         );
         process::verify(&cold, key, stage == "after").await;
@@ -199,7 +199,7 @@ async fn expired_preparation_process_boundaries() {
         let key = process::kill_unstarted(
             "sqlite::expired::tests::expired_preparation_process_boundaries",
             stage,
-            Some(&path),
+            crabber_test_support::ChildDatabase::Sqlite(&path),
             parent.path(),
         );
         process::verify(&cold, key, stage == "after").await;

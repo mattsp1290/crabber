@@ -2,7 +2,7 @@ use super::{evidence, fresh, mixed_output, prepare};
 use crate::phase_contract::FaultPoint;
 use crate::{PhaseError, PhaseQuiescence, PhaseResolutionOutcome, Store, UncertainPhaseChoice};
 
-pub(super) async fn run(store: &impl Store, set_fault: &impl Fn(FaultPoint)) {
+pub(super) async fn run(store: &dyn Store, set_fault: &impl Fn(FaultPoint)) {
     for choice in [
         UncertainPhaseChoice::Success {
             output: mixed_output(),

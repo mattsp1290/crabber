@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Normal builds retain this executable; required CLI checks stay enabled.
+# Keep unit tests in library or integration targets.
+[[bin]]
+name = "bounded-snapshot"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 tempfile = { version = "3", optional = true }
 crabber = { path = "../../crates/crabber" }
@@ -14,8 +21,14 @@ tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 [features]
 default = []
-postgres = ["crabber/postgres"]
+postgres = ["crabber/postgres", "dep:sqlx"]
 sqlite = ["crabber/sqlite", "dep:tempfile"]
+
+[dependencies.sqlx]
+version = "0.8"
+default-features = false
+features = ["runtime-tokio", "postgres", "tls-rustls"]
+optional = true
 
 [lints]
 workspace = true

@@ -93,15 +93,13 @@ async fn sqlite_scoped_factory_and_actual_cleanup_journey() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_scoped_factory_and_actual_cleanup_journey() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1"),
-            "required PostgreSQL test URL missing"
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let store = crabber_session::PostgresStore::connect(&url).await.unwrap();
-    journey(Arc::new(store)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        let store = crabber_session::PostgresStore::connect(&url).await.unwrap();
+        journey(Arc::new(store)).await;
+    })
+    .await
+    .unwrap();
 }

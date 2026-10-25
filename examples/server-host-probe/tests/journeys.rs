@@ -30,14 +30,21 @@ async fn sqlite_public_host() -> Result<(), Error> {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn postgres_public_host() -> Result<(), Error> {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    if !TestDatabase::available()? {
         return Ok(());
-    };
-    crabber::session::PostgresStore::migrate(&url).await?;
-    run(Arc::new(AuditedStore::new(Arc::new(
-        crabber::session::PostgresStore::connect(&url).await?,
-    ))))
-    .await?;
-    Ok(())
+    }
+    let database = TestDatabase::create(DatabaseMode::Current).await?;
+    let result: Result<(), Error> = async {
+        let url = database.url();
+        crabber::session::PostgresStore::migrate(&url).await?;
+        run(Arc::new(AuditedStore::new(Arc::new(
+            crabber::session::PostgresStore::connect(&url).await?,
+        ))))
+        .await?;
+        Ok(())
+    }
+    .await;
+    database.finish().await?;
+    result
 }

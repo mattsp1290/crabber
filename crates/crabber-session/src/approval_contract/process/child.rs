@@ -1,5 +1,6 @@
 use super::Fixture;
-use std::{path::Path, process::Command, time::Duration};
+use crabber_test_support::ChildDatabase;
+use std::{process::Command, time::Duration};
 
 pub(crate) fn fixture() -> Option<Fixture> {
     std::env::var("CRABBER_APPROVAL_CHILD")
@@ -40,7 +41,7 @@ impl Child {
 pub(crate) fn spawn(
     helper: &str,
     fixture: &Fixture,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     extra: &[(&str, String)],
 ) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -48,9 +49,7 @@ pub(crate) fn spawn(
         "CRABBER_APPROVAL_CHILD",
         serde_json::to_string(fixture).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     for (key, value) in extra {
         command.env(key, value);
     }

@@ -8,14 +8,14 @@ use crate::session_owner::{
     preparation::PreparationResourceOutcome,
 };
 pub(crate) async fn observe(
-    store: &impl Store,
+    store: &dyn Store,
     root: PreparationGrant,
     operation: PreparedOperation,
 ) -> JoinedPreparation {
     observe_counted(store, root, operation, std::sync::Arc::default()).await
 }
 pub(super) async fn observe_counted(
-    store: &impl Store,
+    store: &dyn Store,
     root: PreparationGrant,
     operation: PreparedOperation,
     effects: std::sync::Arc<std::sync::atomic::AtomicUsize>,

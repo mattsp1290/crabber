@@ -2,6 +2,7 @@
 use super::fixture;
 use crate::{BoundAdmitRequest, KeyedAdmitOutcome, Store};
 use crabber_core::SessionId;
+use crabber_test_support::ChildDatabase;
 use serde::{Deserialize, Serialize};
 use std::{path::Path, process::Command, time::Duration};
 
@@ -147,7 +148,7 @@ impl Child {
 pub(crate) fn spawn(
     helper: &str,
     target: &Fixture,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     write: bool,
     marker: Option<&Path>,
 ) -> Child {
@@ -156,9 +157,7 @@ pub(crate) fn spawn(
         "CRABBER_BINDING_CHILD",
         serde_json::to_string(target).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     if write {
         command.env("CRABBER_BINDING_WRITE", "1");
     }

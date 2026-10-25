@@ -15,25 +15,17 @@ use crabber_core::{RunStatus, ToolCallId};
 use std::sync::Arc;
 
 #[cfg(feature = "postgres")]
-fn url() -> Option<String> {
-    if let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        return Some(url);
-    }
-    assert!(
-        std::env::var("CRABBER_REQUIRE_POSTGRES").is_err(),
-        "required PostgreSQL environment missing"
-    );
-    eprintln!("PostgreSQL unknown-tool depth test skipped: CRABBER_TEST_POSTGRES_URL unset");
-    None
-}
-
-#[cfg(feature = "postgres")]
 #[tokio::test]
 async fn deeply_nested_unknown_tool_arguments_settle_and_stay_decodable() {
-    let Some(url) = url() else { return };
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
-    unknown_tool_depth(store).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        unknown_tool_depth(store).await;
+    })
+    .await
+    .unwrap();
 }
 
 async fn unknown_tool_depth(store: Arc<dyn Store>) {

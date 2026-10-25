@@ -1,3 +1,6 @@
+#[cfg(feature = "postgres")]
+#[path = "../../postgres-fixture.rs"]
+mod postgres_fixture;
 use async_trait::async_trait;
 use crabber::core::{
     Clock, EventKind, EventRecord, Message, MessageId, Role, Run, RunStatus, SessionId,
@@ -249,6 +252,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if !matches!(mode, Mode::Memory) {
         let mut command = Command::new(std::env::current_exe()?);
         command.arg(mode.argument());
+        #[cfg(feature = "postgres")]
+        if matches!(mode, Mode::Postgres) {
+            let url = std::env::var("CRABBER_POSTGRES_URL")
+                .map_err(|_| "CRABBER_POSTGRES_URL is required")?;
+            command.env("CRABBER_POSTGRES_URL", url);
+            if let Ok(identity) = std::env::var("CRABBER_TEST_POSTGRES_CHILD_DATABASE") {
+                command.env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", identity);
+            }
+        }
         #[cfg(feature = "sqlite")]
         if let Mode::Sqlite(path) = &mode {
             command.env("CRABBER_SQLITE_CHILD_PATH", path);
@@ -312,6 +324,7 @@ async fn connect(mode: &Mode) -> Result<Arc<dyn Store>, Box<dyn Error>> {
             {
                 let url = std::env::var("CRABBER_POSTGRES_URL")
                     .map_err(|_| "CRABBER_POSTGRES_URL is required")?;
+                postgres_fixture::verify(&url).await;
                 crabber::session::PostgresStore::migrate(&url).await?;
                 Ok(Arc::new(
                     crabber::session::PostgresStore::connect(&url).await?,

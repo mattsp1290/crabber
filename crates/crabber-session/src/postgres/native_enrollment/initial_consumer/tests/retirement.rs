@@ -11,28 +11,26 @@ use crate::public_session::v2::proof::Proof;
 use std::sync::atomic::{AtomicBool, AtomicU8};
 #[tokio::test]
 async fn postgres_initial_driver_retirement_original_register_activate_and_paired_ack_faults() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
-    for keyed in [false, true] {
-        for (kind, mode, expected) in [
-            (CallKind::Register, 1, 0),
-            (CallKind::Register, 2, 1),
-            (CallKind::Register, 4, 1),
-            (CallKind::Activate, 1, 1),
-            (CallKind::Activate, 2, 2),
-            (CallKind::Conclude, 3, 2),
-        ] {
-            Box::pin(fault_case(store.clone(), keyed, (kind, mode, expected))).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+        for keyed in [false, true] {
+            for (kind, mode, expected) in [
+                (CallKind::Register, 1, 0),
+                (CallKind::Register, 2, 1),
+                (CallKind::Register, 4, 1),
+                (CallKind::Activate, 1, 1),
+                (CallKind::Activate, 2, 2),
+                (CallKind::Conclude, 3, 2),
+            ] {
+                Box::pin(fault_case(store.clone(), keyed, (kind, mode, expected))).await;
+            }
         }
-    }
+    })
+    .await
+    .unwrap();
 }
 
 async fn orphan_without_driver(
@@ -73,7 +71,7 @@ async fn older_driver_new_no_opened(
     session: &crabber_core::SessionId,
 ) {
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },
@@ -192,7 +190,7 @@ async fn fault_case(store: Arc<crate::PostgresStore>, keyed: bool, case: (CallKi
     ));
     let store = Arc::new(store.as_ref().clone().with_clock(clock.clone()));
     let source = crabber_extension::LibraryScriptedSource::new(
-        crabber::Selection {
+        crabber_providers::Selection {
             provider_id: "library".into(),
             model_id: "text".into(),
         },

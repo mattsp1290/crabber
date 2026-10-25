@@ -23,7 +23,7 @@ async fn public_sqlite_pending_running_paused_zero_execution() {
     let clock = Arc::new(ManualClock::new(SystemClock.now()));
     let fixture = Arc::get_mut(&mut store).unwrap();
     fixture.store = fixture.store.clone().with_clock(clock.clone());
-    facade_matrix(store, clock).await;
+    facade_matrix(store, clock, None).await;
 }
 async fn fixture(store: &dyn Store) -> (crabber::session::AdmitOutcome, AbandonRequest) {
     let admitted = store

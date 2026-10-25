@@ -1,6 +1,9 @@
 mod durable;
 mod export;
 mod journey;
+#[cfg(feature = "postgres")]
+#[path = "../../postgres-fixture.rs"]
+mod postgres_fixture;
 mod span_capture;
 use tracing_subscriber::prelude::*;
 
@@ -37,6 +40,7 @@ async fn main() {
         {
             let url = std::env::var("CRABBER_TEST_POSTGRES_URL")
                 .expect("CRABBER_TEST_POSTGRES_URL required");
+            postgres_fixture::verify(&url).await;
             let store = std::sync::Arc::new(
                 crabber::session::PostgresStore::connect(&url)
                     .await
@@ -65,11 +69,17 @@ async fn main() {
             {
                 let url = std::env::var("CRABBER_TEST_POSTGRES_URL")
                     .expect("CRABBER_TEST_POSTGRES_URL required");
+                postgres_fixture::verify(&url).await;
                 crabber::session::PostgresStore::migrate(&url)
                     .await
                     .unwrap();
                 let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
-                command.env_remove("CRABBER_SQLITE_CHILD_PATH");
+                command
+                    .env_remove("CRABBER_SQLITE_CHILD_PATH")
+                    .env("CRABBER_TEST_POSTGRES_URL", &url);
+                if let Ok(identity) = std::env::var("CRABBER_TEST_POSTGRES_CHILD_DATABASE") {
+                    command.env("CRABBER_TEST_POSTGRES_CHILD_DATABASE", identity);
+                }
                 workers(&path, command).await;
             }
             #[cfg(not(feature = "postgres"))]

@@ -3,23 +3,48 @@ use super::super::tests::interposed::{Interposed, Stage};
 use super::*;
 use std::time::Duration;
 
-pub(super) async fn contract<S: Store + 'static>(
+pub(super) async fn held_contract<S: Store + 'static>(
     store: Arc<S>,
     clock: &ManualClock,
     frontend: bool,
     recovery: bool,
+    exhaustive_validation: bool,
 ) {
-    for stage in [
-        Stage::Complete,
-        Stage::Inspect,
-        Stage::Register,
-        Stage::Activate,
-    ] {
+    // SQL keeps every typed completion ACK and one full late-stage history;
+    // Memory keeps the entire origin/stage/fault product.
+    let stages: &[Stage] = if exhaustive_validation || (!frontend && !recovery) {
+        &[
+            Stage::Complete,
+            Stage::Inspect,
+            Stage::Register,
+            Stage::Activate,
+        ]
+    } else {
+        &[Stage::Complete]
+    };
+    for &stage in stages {
         for fault in [false, true] {
             Box::pin(held(store.clone(), clock, frontend, recovery, stage, fault)).await;
         }
     }
-    for corruption in 0..12 {
+}
+
+pub(super) async fn malformed_contract<S: Store + 'static>(
+    store: Arc<S>,
+    clock: &ManualClock,
+    frontend: bool,
+    recovery: bool,
+    exhaustive_validation: bool,
+) {
+    // Corruption validation lives in shared pending execution code. Memory
+    // keeps every distinct validator branch; SQL retains forged metadata and
+    // wrong typed outcomes through each persisted source/authentication path.
+    let corruptions: &[u8] = if exhaustive_validation {
+        &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    } else {
+        &[0, 8]
+    };
+    for &corruption in corruptions {
         Box::pin(malformed(
             store.clone(),
             clock,

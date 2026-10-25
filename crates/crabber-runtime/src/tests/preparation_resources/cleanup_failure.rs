@@ -26,7 +26,7 @@ pub(super) async fn contract(store: Arc<dyn Store>) {
         handle.done().await.unwrap();
         h.provider.cleanup_started.notified().await;
         h.provider.cleanup_release.notify_one();
-        wait_local_failure(&h, &descriptor).await;
+        wait_local_failure(&h, &descriptor, failure, fault, "initial cleanup").await;
         assert_eq!(
             h.child_state(&descriptor).await,
             if fault == 1 {
@@ -41,7 +41,7 @@ pub(super) async fn contract(store: Arc<dyn Store>) {
             .cleanup_retained_preparation(&descriptor)
             .await
             .unwrap();
-        wait_local_failure(&h, &descriptor).await;
+        wait_local_failure(&h, &descriptor, failure, fault, "uncertainty retry").await;
         assert_eq!(
             h.child_state(&descriptor).await,
             SessionOwnerState::Uncertain
@@ -68,7 +68,7 @@ pub(super) async fn contract(store: Arc<dyn Store>) {
             .cleanup_retained_preparation(&descriptor)
             .await
             .unwrap();
-        wait_local_failure(&h, &descriptor).await;
+        wait_local_failure(&h, &descriptor, failure, fault, "receipt replay").await;
         assert_eq!(
             h.memory
                 .session_revision(&descriptor.session_id)
@@ -100,7 +100,13 @@ pub(super) async fn contract(store: Arc<dyn Store>) {
     }
 }
 
-async fn wait_local_failure(h: &Harness, descriptor: &PreparationReconciliation) {
+async fn wait_local_failure(
+    h: &Harness,
+    descriptor: &PreparationReconciliation,
+    failure: usize,
+    fault: usize,
+    phase: &str,
+) {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if h.runtime
@@ -112,11 +118,19 @@ async fn wait_local_failure(h: &Harness, descriptor: &PreparationReconciliation)
             {
                 break;
             }
-            tokio::task::yield_now().await;
+            // Yielding can immediately reschedule this poll instead of driving
+            // the SQL cleanup's I/O. Keep the same deadline while giving the
+            // current-thread runtime a timer boundary between observations.
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|error| {
+        panic!(
+            "{phase} did not retain uncertainty: failure={failure} fault={fault}: {error}; statuses={:?}",
+            h.runtime.retained_preparation_status(&descriptor.session_id)
+        )
+    });
 }
 
 #[tokio::test]
@@ -164,7 +178,7 @@ async fn cancelled_factory_with_actual_failed_cleanup_stays_uncertain() {
         .unwrap();
     h.provider.cleanup_started.notified().await;
     h.provider.cleanup_release.notify_one();
-    wait_local_failure(&h, &descriptor).await;
+    wait_local_failure(&h, &descriptor, 1, 0, "cancelled factory cleanup").await;
     assert_eq!(
         h.child_state(&descriptor).await,
         SessionOwnerState::Uncertain

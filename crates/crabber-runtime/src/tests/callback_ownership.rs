@@ -301,19 +301,18 @@ async fn sqlite_callback_quiescence() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_callback_quiescence() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let store: Arc<dyn Store> =
-        Arc::new(crabber_session::PostgresStore::connect(&url).await.unwrap());
-    phase_contract(store.clone()).await;
-    failure::contract(store.clone()).await;
-    for exceed_join_bound in [false, true] {
-        worker_contract(store.clone(), exceed_join_bound).await;
-    }
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        let store: Arc<dyn Store> =
+            Arc::new(crabber_session::PostgresStore::connect(&url).await.unwrap());
+        phase_contract(store.clone()).await;
+        failure::contract(store.clone()).await;
+        for exceed_join_bound in [false, true] {
+            worker_contract(store.clone(), exceed_join_bound).await;
+        }
+    })
+    .await
+    .unwrap();
 }

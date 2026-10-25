@@ -2,10 +2,10 @@
 use super::*;
 #[tokio::test]
 async fn postgres_consumer_scope_preserves_private_nul_and_every_backslash_parity() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::pending_initial_test_lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     // This is routing selection only. The normal fixture separately authenticates
@@ -57,4 +57,6 @@ async fn postgres_consumer_scope_preserves_private_nul_and_every_backslash_parit
             "private projection marker cannot alias a real routing ID"
         );
     }
+
+    }).await.unwrap();
 }

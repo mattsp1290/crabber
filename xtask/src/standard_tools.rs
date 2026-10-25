@@ -1,5 +1,5 @@
 //! Gates for the standard tools and native extensions.
-use super::{run, run_env};
+use crate::checks::Checks;
 use std::{path::Path, process::Command};
 
 const PREREQUISITES: &str =
@@ -48,28 +48,21 @@ pub(crate) fn check_tool_prerequisites() {
     println!("{}", version.lines().next().unwrap_or_default());
 }
 
-pub(crate) fn check_workspace_tests(workspace: &Path) {
-    println!("$ cargo test --workspace");
-    let mut command = Command::new("cargo");
-    command.args(["test", "--workspace"]).current_dir(workspace);
+pub(crate) fn require_subprocess_tools(command: &mut Command) {
     if cfg!(target_os = "linux") {
         command.env("CRABBER_TOOLS_REQUIRE_LOGIN_PROFILE", "1");
     }
     command
         .env("BACKGROUND_JOBS_REQUIRE_SHELL", "1")
         .env("PYTHON_REPL_REQUIRE_PYTHON", "1");
-    let status = command.status().expect("launch workspace tests");
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
 }
 
-pub(crate) fn check(workspace: &Path) {
-    run(
+pub(crate) fn schedule(workspace: &Path, gates: &mut Checks) {
+    gates.cargo(
         workspace,
         &["run", "--quiet", "-p", "mount-standard", "--", "--check"],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "run",
@@ -80,7 +73,7 @@ pub(crate) fn check(workspace: &Path) {
             "protected_workspace",
         ],
     );
-    run(
+    gates.cargo(
         workspace,
         &[
             "clippy",
@@ -93,44 +86,43 @@ pub(crate) fn check(workspace: &Path) {
             "warnings",
         ],
     );
-    run_env(
+    let mut docs = Command::new("cargo");
+    docs.args(["doc", "--workspace", "--no-deps"])
+        .current_dir(workspace)
+        .env("RUSTDOCFLAGS", "-D warnings");
+    gates.command(workspace, docs, "workspace rustdoc is warning-free");
+    let mut live = Command::new("cargo");
+    live.args([
+        "test",
+        "-p",
+        "crabber-extensions",
+        "--features",
+        "live-opencode-go",
+        "--test",
+        "delegate_task_live",
+        "--",
+        "--ignored",
+        "--nocapture",
+    ])
+    .current_dir(workspace)
+    .env_remove("OPENCODE_GO_API_KEY")
+    .env_remove("DELEGATE_TASK_REQUIRE_OPENCODE_GO");
+    gates.captured(
         workspace,
-        &["doc", "--workspace", "--no-deps"],
-        &[("RUSTDOCFLAGS", "-D warnings")],
-        &[],
-    );
-    check_live_skip(workspace);
-}
-
-fn check_live_skip(workspace: &Path) {
-    // This gate deliberately qualifies the credential-free branch even when a
-    // host normally requires live-provider acceptance in its shell environment.
-    let output = run_env(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber-extensions",
-            "--features",
-            "live-opencode-go",
-            "--test",
-            "delegate_task_live",
-            "--",
-            "--ignored",
-            "--nocapture",
-        ],
-        &[],
-        &["OPENCODE_GO_API_KEY", "DELEGATE_TASK_REQUIRE_OPENCODE_GO"],
-    );
-    let message = "skipping live OpenCode Go suite";
-    let skips = String::from_utf8_lossy(&output.stdout)
-        .matches(message)
-        .count()
-        + String::from_utf8_lossy(&output.stderr)
-            .matches(message)
-            .count();
-    assert_eq!(
-        skips, 2,
-        "both live suites must prove their credential-free skip path"
+        live,
+        "both live suites prove credential-free skip",
+        |output| {
+            let message = "skipping live OpenCode Go suite";
+            let skips = String::from_utf8_lossy(&output.stdout)
+                .matches(message)
+                .count()
+                + String::from_utf8_lossy(&output.stderr)
+                    .matches(message)
+                    .count();
+            assert_eq!(
+                skips, 2,
+                "both live suites must prove their credential-free skip path"
+            );
+        },
     );
 }

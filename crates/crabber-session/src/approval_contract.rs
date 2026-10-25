@@ -52,7 +52,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     termination::run(&store, &clock).await;
     termination_races::run(&store, &clock).await;
 }
-async fn lifecycle(store: &impl Store, clock: &ManualClock) {
+async fn lifecycle(store: &dyn Store, clock: &ManualClock) {
     let mut f = staged(store, clock).await;
     let suspended = presentation::suspend(store, clock, &mut f).await;
     assert_eq!(
@@ -148,7 +148,7 @@ async fn lifecycle(store: &impl Store, clock: &ManualClock) {
     finish::complete(store, clock, &f, execution.as_ref(), &grant).await;
     assert_eq!(store.answer_approval(first).await.unwrap(), first_receipt);
 }
-async fn expiration(store: &impl Store, clock: &ManualClock) {
+async fn expiration(store: &dyn Store, clock: &ManualClock) {
     let f = staged(store, clock).await;
     f.execution
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
@@ -186,7 +186,7 @@ async fn expiration(store: &impl Store, clock: &ManualClock) {
 }
 
 async fn resolved_set(
-    store: &impl Store,
+    store: &dyn Store,
     f: &fixture::Fixture,
 ) -> (crate::ApprovalAnswer, crate::ApprovalReceipt) {
     let first = answer(store, f, 0, ApprovalReply::Grant).await;
@@ -222,7 +222,7 @@ async fn resolved_set(
 }
 
 async fn single_claim(
-    store: &impl Store,
+    store: &dyn Store,
     f: &fixture::Fixture,
 ) -> (crate::ApprovalReceipt, Box<crate::ApprovalGrant>) {
     let request = claim(store, f).await;

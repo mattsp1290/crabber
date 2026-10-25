@@ -14,8 +14,8 @@ struct OriginalState {
     receipt: Option<AdmissionReceipt>,
 }
 
-async fn original_state<S: Store>(
-    store: &S,
+async fn original_state(
+    store: &dyn Store,
     original: &KeyedAdmitRequest,
     receipt: &AdmissionReceipt,
 ) -> OriginalState {
@@ -38,13 +38,13 @@ async fn original_state<S: Store>(
     }
 }
 
-async fn unfinished<S: Store>(store: &S) -> Vec<Run> {
+async fn unfinished(store: &dyn Store) -> Vec<Run> {
     let mut runs = store.list_unfinished_runs().await.unwrap();
     runs.sort_by(|left, right| left.id.0.cmp(&right.id.0));
     runs
 }
 
-async fn assert_absent<S: Store>(store: &S, attempted: &KeyedAdmitRequest) {
+async fn assert_absent(store: &dyn Store, attempted: &KeyedAdmitRequest) {
     let session = attempted.request.session_id.as_ref().unwrap();
     assert_eq!(store.get_session(session).await.unwrap(), None);
     assert_eq!(
@@ -73,8 +73,8 @@ enum Collision {
     Part,
 }
 
-pub(super) async fn run<S: Store>(
-    store: &S,
+pub(super) async fn run(
+    store: &dyn Store,
     original: &KeyedAdmitRequest,
     receipt: &AdmissionReceipt,
     now: OffsetDateTime,
@@ -123,8 +123,8 @@ pub(super) async fn run<S: Store>(
     }
 }
 
-async fn assert_unique_admission<S: Store>(
-    store: &S,
+async fn assert_unique_admission(
+    store: &dyn Store,
     session: &SessionId,
     now: OffsetDateTime,
     before_runs: &[Run],

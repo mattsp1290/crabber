@@ -4,35 +4,41 @@ use crate::{
 };
 #[tokio::test]
 async fn management_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::PostgresStore::connect(&url).await.unwrap();
-    management_contract::run_contract(&store).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::PostgresStore::connect(&url).await.unwrap();
+        management_contract::run_contract(&store).await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn management_fault_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::PostgresStore::connect(&url).await.unwrap();
-    management_contract::faults(&store, |point| {
-        store
-            .management_fault
-            .store(point, std::sync::atomic::Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::PostgresStore::connect(&url).await.unwrap();
+        management_contract::faults(&store, |point| {
+            store
+                .management_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
     })
-    .await;
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn process_helper() {
     let Some(request) = process::fixture() else {
         return;
     };
-    let url = crate::postgres::tests::test_url().unwrap();
+    let url = crabber_test_support::postgres::TestDatabase::attached_url()
+        .await
+        .unwrap();
     let store = super::PostgresStore::connect(&url).await.unwrap();
     if std::env::var_os("CRABBER_MANAGEMENT_WRITE").is_some() {
         store.manage_session(request).await.unwrap();
@@ -42,38 +48,40 @@ async fn process_helper() {
 }
 #[tokio::test]
 async fn committed_management_response_loss_survives_fresh_process() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    super::PostgresStore::migrate(&url).await.unwrap();
-    let store = super::PostgresStore::connect(&url).await.unwrap();
-    let request = management_contract::create();
-    store
-        .management_fault
-        .store(2, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(
-        store.manage_session(request.clone()).await.unwrap_err(),
-        crate::ManagementError::UnknownStoreOutcome
-    );
-    store
-        .management_fault
-        .store(0, std::sync::atomic::Ordering::SeqCst);
-    process::spawn(
-        "postgres::management::tests::process_helper",
-        &request,
-        None,
-        &[],
-    )
-    .wait()
-    .await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let store = super::PostgresStore::connect(&url).await.unwrap();
+        let request = management_contract::create();
+        store
+            .management_fault
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            store.manage_session(request.clone()).await.unwrap_err(),
+            crate::ManagementError::UnknownStoreOutcome
+        );
+        store
+            .management_fault
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        process::spawn(
+            "postgres::management::tests::process_helper",
+            &request,
+            crabber_test_support::ChildDatabase::Postgres(&url),
+            &[],
+        )
+        .wait()
+        .await;
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn killed_management_writer_rolls_back_session_metadata_revision_audit_and_receipt() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::PostgresStore::connect(&url).await.unwrap();
     let request = management_contract::create();
@@ -94,19 +102,19 @@ async fn killed_management_writer_rolls_back_session_metadata_revision_audit_and
     let mut child = process::spawn(
         "postgres::management::tests::process_helper",
         &request,
-        None,
+        crabber_test_support::ChildDatabase::Postgres(&url),
         &[("CRABBER_MANAGEMENT_WRITE", "1".into())],
     );
     let waiter=tokio::time::timeout(std::time::Duration::from_secs(10),async {
         loop {
-            let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
+            let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO operation_receipts%'").bind(blocker).fetch_optional(&store.pool).await.unwrap();
             if let Some(pid)=pid { break pid; }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }).await.expect("management must reach receipt precommit barrier");
     process::absent(&store, &request).await;
     child.kill();
-    sqlx::query("SELECT pg_terminate_backend($1)")
+    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()")
         .bind(waiter)
         .execute(&store.pool)
         .await
@@ -125,19 +133,21 @@ async fn killed_management_writer_rolls_back_session_metadata_revision_audit_and
     process::spawn(
         "postgres::management::tests::process_helper",
         &request,
-        None,
+        crabber_test_support::ChildDatabase::Postgres(&url),
         &[],
     )
     .wait()
     .await;
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn incoherent_management_indexes_cannot_bypass_archive_admission() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::PostgresStore::connect(&url).await.unwrap();
     for mismatch in ["archive", "workspace"] {
@@ -154,4 +164,6 @@ async fn incoherent_management_indexes_cannot_bypass_archive_admission() {
         }
         management_contract::corrupt_admission_refused(&store, &saved).await;
     }
+
+    }).await.unwrap();
 }

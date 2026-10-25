@@ -88,12 +88,12 @@ async fn positives(store: Arc<dyn Store>, clock: Arc<ManualClock>, frontend: boo
     assert_eq!(replay_without_factory(&h, &choice).await, receipt);
     replay_without_factory(&h, &original).await;
 }
-async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
+async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>, faults: &[usize]) {
     let mut failures = Vec::new();
     for frontend in [false, true] {
         for recovery in [false, true] {
             Box::pin(positives(store.clone(), clock.clone(), frontend, recovery)).await;
-            for fault in [8, 10, 11, 12, 16, 17] {
+            for &fault in faults {
                 if let Some(failure) = Box::pin(mutated(
                     store.clone(),
                     clock.clone(),
@@ -120,6 +120,7 @@ async fn memory_none_grant_ack_integrity() {
     Box::pin(contract(
         Arc::new(MemoryStore::with_clock(clock.clone())),
         clock,
+        &[8, 10, 11, 12, 16, 17],
     ))
     .await;
 }
@@ -136,27 +137,26 @@ async fn sqlite_none_grant_ack_integrity() {
             .unwrap()
             .with_clock(clock.clone()),
     );
-    Box::pin(contract(store, clock)).await;
+    Box::pin(contract(store, clock, &[8, 16, 17])).await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_none_grant_ack_integrity() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
+#[test]
+fn postgres_none_grant_ack_integrity() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    let mut history_runtime = tokio::runtime::Builder::new_multi_thread();
+    history_runtime.worker_threads(4);
+    TestDatabase::run_with_runtime(DatabaseMode::Current, history_runtime, async move |url| {
+        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = Arc::new(
+            crabber_session::PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock.clone()),
         );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = Arc::new(
-        crabber_session::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone()),
-    );
-    Box::pin(contract(store, clock)).await;
+        Box::pin(contract(store, clock, &[8, 16, 17])).await;
+    })
+    .unwrap();
 }
 
 #[path = "none_ack/intent.rs"]

@@ -88,7 +88,7 @@ async fn cut(dir: &Path, mode: &str, boundary: &str) {
 
 #[tokio::test]
 async fn host_outbox_child() {
-    let Some((backend, dir, mode)) = Backend::child() else {
+    let Some((backend, dir, mode)) = Backend::child().await else {
         return;
     };
     let original: HostRequest = read(&dir.join("original-http-request"));
@@ -344,18 +344,14 @@ async fn sqlite_separate_host_outbox_crash_boundaries() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_separate_host_outbox_crash_boundaries() {
-    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1"),
-            "CRABBER_TEST_POSTGRES_URL required"
-        );
-        eprintln!("skipping host outbox journey: CRABBER_TEST_POSTGRES_URL absent");
-        return;
-    };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
-    journey(BackendKind::Postgres(url)).await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber::session::PostgresStore::migrate(&url)
+            .await
+            .unwrap();
+        journey(BackendKind::Postgres(url)).await;
+    })
+    .await
+    .unwrap();
 }

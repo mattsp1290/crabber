@@ -4,10 +4,10 @@ use crate::Store;
 use crabber_core::SessionId;
 #[tokio::test]
 async fn execution_sources_are_atomic_immutable_and_reject_state_rollback() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::super::PostgresStore::connect(&url).await.unwrap();
     let now = time::OffsetDateTime::now_utc();
@@ -70,16 +70,18 @@ async fn execution_sources_are_atomic_immutable_and_reject_state_rollback() {
             .is_err()
     );
     store.pool.close().await;
+
+    }).await.unwrap();
 }
 
 #[cfg(test)]
 #[tokio::test]
 async fn legacy_execution_cohort_cannot_gain_original_no_effect_sources() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     use crate::Store;
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::super::PostgresStore::connect(&url).await.unwrap();
     let mut keyed = crate::admission_execution_contract::keyed(
@@ -136,14 +138,16 @@ async fn legacy_execution_cohort_cannot_gain_original_no_effect_sources() {
     ));
     tx.rollback().await.unwrap();
     store.pool.close().await;
+
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn oversized_execution_carrier_returns_typed_failure_before_decode() {
-    let Some(url) = super::super::tests::test_url() else {
-        return;
-    };
-    let _guard = super::super::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::super::PostgresStore::connect(&url).await.unwrap();
     let keyed = crate::admission_execution_contract::keyed(
@@ -187,4 +191,6 @@ async fn oversized_execution_carrier_returns_typed_failure_before_decode() {
     ));
     tx.rollback().await.unwrap();
     store.pool.close().await;
+
+    }).await.unwrap();
 }

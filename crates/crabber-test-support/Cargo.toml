@@ -1,0 +1,22 @@
+[package]
+name = "crabber-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Workspace-root builds select the driver directly; dev-only feature forwarding
+# otherwise enables the cfg without its optional dependencies in the workspace.
+# Every consumer disables defaults so SQLite-only graphs remain driver-free.
+default = ["postgres"]
+postgres = ["dep:sqlx", "dep:tokio", "dep:url", "dep:uuid"]
+
+[dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls"], optional = true }
+tokio = { version = "1", features = ["rt", "time"], optional = true }
+url = { version = "2", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[lints]
+workspace = true

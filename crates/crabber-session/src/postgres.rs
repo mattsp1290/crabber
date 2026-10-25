@@ -874,11 +874,6 @@ impl PostgresStore {
 }
 
 #[cfg(test)]
-pub(crate) fn test_lock() -> &'static tokio::sync::Mutex<()> {
-    &tests::TEST_LOCK
-}
-
-#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -890,11 +885,6 @@ mod snapshot;
 mod abandon_tests;
 #[cfg(test)]
 mod snapshot_tests;
-
-#[cfg(test)]
-pub(crate) async fn pending_initial_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    tests::TEST_LOCK.lock().await
-}
 
 #[cfg(test)]
 mod pending_initial_fixture;

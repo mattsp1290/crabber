@@ -7,87 +7,89 @@ fn proof() -> Proof {
 
 #[tokio::test]
 async fn raw_birth_original_source_is_bounded_immutable_and_independent_of_current_run() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let session = SessionId::new();
-    let request =
-        crate::admission_execution_contract::keyed(&session, time::OffsetDateTime::now_utc());
-    let KeyedAdmitOutcome::Started { admitted, .. } =
-        store.admit_keyed_run(request.clone()).await.unwrap()
-    else {
-        panic!("fresh admission")
-    };
-    let run = &admitted.run.id;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let mut measured = proof();
-    assert_eq!(
-        original(&mut tx, &session, run, &mut measured)
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let session = SessionId::new();
+        let request =
+            crate::admission_execution_contract::keyed(&session, time::OffsetDateTime::now_utc());
+        let KeyedAdmitOutcome::Started { admitted, .. } =
+            store.admit_keyed_run(request.clone()).await.unwrap()
+        else {
+            panic!("fresh admission")
+        };
+        let run = &admitted.run.id;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
             .await
-            .unwrap(),
-        Status::Unclassified
-    );
-    assert_eq!(
-        original(&mut tx, &session, run, &mut Proof::bounded(measured.used()))
-            .await
-            .unwrap(),
-        Status::Unclassified
-    );
-    assert!(matches!(
-        original(
-            &mut tx,
-            &session,
-            run,
-            &mut Proof::bounded(measured.used() - 1)
-        )
-        .await,
-        Err(Failure::Limited(_))
-    ));
-    let before: String =
-        sqlx::query_scalar("SELECT data FROM native_execution_unclassified WHERE run_id=$1")
+            .unwrap();
+        let mut measured = proof();
+        assert_eq!(
+            original(&mut tx, &session, run, &mut measured)
+                .await
+                .unwrap(),
+            Status::Unclassified
+        );
+        assert_eq!(
+            original(&mut tx, &session, run, &mut Proof::bounded(measured.used()))
+                .await
+                .unwrap(),
+            Status::Unclassified
+        );
+        assert!(matches!(
+            original(
+                &mut tx,
+                &session,
+                run,
+                &mut Proof::bounded(measured.used() - 1)
+            )
+            .await,
+            Err(Failure::Limited(_))
+        ));
+        let before: String =
+            sqlx::query_scalar("SELECT data FROM native_execution_unclassified WHERE run_id=$1")
+                .bind(&run.0)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        // Current projections cannot replace or invalidate exact original negative metadata.
+        sqlx::query("UPDATE runs SET claim_token=$2 WHERE id=$1")
             .bind(&run.0)
+            .bind("changed-current-token")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            original(&mut tx, &session, run, &mut proof())
+                .await
+                .unwrap(),
+            Status::Unclassified
+        );
+        let corrupt: bool = sqlx::query_scalar(crate::sql_deletion::CROSS_SCOPE)
+            .bind(&session.0)
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-    // Current projections cannot replace or invalidate exact original negative metadata.
-    sqlx::query("UPDATE runs SET claim_token=$2 WHERE id=$1")
-        .bind(&run.0)
-        .bind("changed-current-token")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(
-        original(&mut tx, &session, run, &mut proof())
-            .await
-            .unwrap(),
-        Status::Unclassified
-    );
-    let corrupt: bool = sqlx::query_scalar(crate::sql_deletion::CROSS_SCOPE)
-        .bind(&session.0)
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap();
-    assert!(!corrupt);
-    tx.rollback().await.unwrap();
-    immutable(&store, run).await;
-    Box::pin(reserved_kind_is_not_supported(&store, &admitted.run)).await;
-    assert!(matches!(
-        store.admit_keyed_run(request).await.unwrap(),
-        KeyedAdmitOutcome::Replayed(_)
-    ));
-    let after: String =
-        sqlx::query_scalar("SELECT data FROM native_execution_unclassified WHERE run_id=$1")
-            .bind(&run.0)
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
-    assert_eq!(before, after);
-    assert_eq!(count(&store, &session).await, (1, 1, 1));
+        assert!(!corrupt);
+        tx.rollback().await.unwrap();
+        immutable(&store, run).await;
+        Box::pin(reserved_kind_is_not_supported(&store, &admitted.run)).await;
+        assert!(matches!(
+            store.admit_keyed_run(request).await.unwrap(),
+            KeyedAdmitOutcome::Replayed(_)
+        ));
+        let after: String =
+            sqlx::query_scalar("SELECT data FROM native_execution_unclassified WHERE run_id=$1")
+                .bind(&run.0)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(count(&store, &session).await, (1, 1, 1));
+    })
+    .await
+    .unwrap();
 }
 
 async fn immutable(store: &crate::PostgresStore, run: &RunId) {
@@ -124,51 +126,53 @@ async fn count(store: &crate::PostgresStore, session: &SessionId) -> (i64, i64, 
 
 #[tokio::test]
 async fn raw_birth_before_and_after_commit_faults_keep_exact_atomic_sources() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for stage in [1, 2] {
-        let session = SessionId::new();
-        let request = crate::execution_binding_contract::fixture(
-            &session,
-            time::OffsetDateTime::now_utc(),
-            "enrollment-fault",
-            'b',
-        );
-        store
-            .binding_fault
-            .store(stage, std::sync::atomic::Ordering::SeqCst);
-        assert!(store.admit_bound_keyed_run(request.clone()).await.is_err());
-        assert_eq!(
-            count(&store, &session).await,
-            if stage == 1 { (0, 0, 0) } else { (1, 1, 1) }
-        );
-        let outcome = store.admit_bound_keyed_run(request).await.unwrap();
-        let receipt = match outcome {
-            KeyedAdmitOutcome::Started { receipt, .. } => {
-                assert_eq!(stage, 1);
-                receipt
-            }
-            KeyedAdmitOutcome::Replayed(receipt) => {
-                assert_eq!(stage, 2);
-                receipt
-            }
-        };
-        assert_eq!(count(&store, &session).await, (1, 1, 1));
-        let mut tx = crate::postgres::transaction::begin(&store.pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            original(&mut tx, &session, &receipt.run_id, &mut proof())
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        for stage in [1, 2] {
+            let session = SessionId::new();
+            let request = crate::execution_binding_contract::fixture(
+                &session,
+                time::OffsetDateTime::now_utc(),
+                "enrollment-fault",
+                'b',
+            );
+            store
+                .binding_fault
+                .store(stage, std::sync::atomic::Ordering::SeqCst);
+            assert!(store.admit_bound_keyed_run(request.clone()).await.is_err());
+            assert_eq!(
+                count(&store, &session).await,
+                if stage == 1 { (0, 0, 0) } else { (1, 1, 1) }
+            );
+            let outcome = store.admit_bound_keyed_run(request).await.unwrap();
+            let receipt = match outcome {
+                KeyedAdmitOutcome::Started { receipt, .. } => {
+                    assert_eq!(stage, 1);
+                    receipt
+                }
+                KeyedAdmitOutcome::Replayed(receipt) => {
+                    assert_eq!(stage, 2);
+                    receipt
+                }
+            };
+            assert_eq!(count(&store, &session).await, (1, 1, 1));
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
                 .await
-                .unwrap(),
-            Status::Unclassified
-        );
-        tx.rollback().await.unwrap();
-    }
+                .unwrap();
+            assert_eq!(
+                original(&mut tx, &session, &receipt.run_id, &mut proof())
+                    .await
+                    .unwrap(),
+                Status::Unclassified
+            );
+            tx.rollback().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 /// The current bootstrap rejects the old Pending-label-only insert. A separate

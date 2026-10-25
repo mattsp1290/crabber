@@ -8,10 +8,10 @@ use time::OffsetDateTime;
 
 #[tokio::test]
 async fn host_resolution_rejects_changed_authoritative_call_binding_without_writes() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     super::PostgresStore::migrate(&url).await.unwrap();
     let store = super::PostgresStore::connect(&url).await.unwrap();
     let store = store.with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
@@ -99,6 +99,8 @@ async fn host_resolution_rejects_changed_authoritative_call_binding_without_writ
         };
         assert_rejected_without_writes(&store, &request).await;
     }
+
+    }).await.unwrap();
 }
 
 async fn assert_rejected_without_writes(store: &super::PostgresStore, request: &PhaseResolution) {

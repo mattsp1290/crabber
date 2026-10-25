@@ -12,7 +12,7 @@ pub(crate) struct Fixture {
     pub receipt: PhaseReceipt,
     pub output: ToolOutput,
 }
-pub(crate) async fn completed(store: &impl Store) -> Fixture {
+pub(crate) async fn completed(store: &dyn Store) -> Fixture {
     let (admitted, execution, owner, claim) = fixture(store).await;
     let (claimed, _) = applied(
         execution
@@ -69,7 +69,7 @@ pub(crate) async fn completed(store: &impl Store) -> Fixture {
         output,
     }
 }
-pub(crate) async fn isolated_receipt(store: &impl Store, fixture: &Fixture) {
+pub(crate) async fn isolated_receipt(store: &dyn Store, fixture: &Fixture) {
     let receipt = store
         .lookup_phase_mutation(&fixture.admitted.session.id, &fixture.request.id)
         .await
@@ -88,7 +88,7 @@ pub(crate) async fn isolated_receipt(store: &impl Store, fixture: &Fixture) {
         fixture.receipt.revision
     );
 }
-pub(crate) async fn reject_corrupt_receipt(store: &impl Store, fixture: &Fixture) {
+pub(crate) async fn reject_corrupt_receipt(store: &dyn Store, fixture: &Fixture) {
     assert_eq!(
         store
             .lookup_phase_mutation(&fixture.admitted.session.id, &fixture.request.id)

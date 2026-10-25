@@ -1,6 +1,7 @@
 //! Actual controller death while the native successor transaction is open/committed.
 use super::*;
 use crabber_core::{Clock, RunId, SessionId};
+use crabber_test_support::ChildDatabase;
 use std::{
     path::Path,
     process::{Command, Stdio},
@@ -63,7 +64,7 @@ pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
 pub(crate) fn kill(
     test: &str,
     stage: &str,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     directory: &Path,
     admission: bool,
 ) -> (RegisterSuccessorExecutionDriver, time::OffsetDateTime) {
@@ -78,7 +79,7 @@ pub(crate) fn kill(
 pub(crate) fn kill_approval(
     test: &str,
     stage: &str,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     directory: &Path,
     recovery: bool,
 ) -> (RegisterSuccessorExecutionDriver, time::OffsetDateTime) {
@@ -97,7 +98,7 @@ pub(crate) fn kill_approval(
 fn kill_family(
     test: &str,
     stage: &str,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     directory: &Path,
     family: &str,
 ) -> (RegisterSuccessorExecutionDriver, time::OffsetDateTime) {
@@ -113,9 +114,7 @@ fn kill_family(
         .env("CRABBER_SUCCESSOR_FAMILY", family)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if let Some(path) = path {
-        command.env("CRABBER_SUCCESSOR_DATABASE", path);
-    }
+    path.configure(&mut command, "CRABBER_SUCCESSOR_DATABASE");
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     while !marker.exists() {
@@ -138,7 +137,7 @@ fn kill_family(
     (wire.request(), now)
 }
 pub(crate) async fn verify(
-    store: &impl Store,
+    store: &dyn Store,
     request: RegisterSuccessorExecutionDriver,
     committed: bool,
 ) {

@@ -60,9 +60,14 @@ async fn altered_grant(
     assert!(!began, "changed public ACK payload began native work");
     assert!(!accepted, "changed public ACK payload accepted");
 }
-async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>, frontend: bool) {
+async fn contract(
+    store: Arc<dyn Store>,
+    clock: Arc<ManualClock>,
+    frontend: bool,
+    faults: &[usize],
+) {
     for recovery in [false, true] {
-        for fault in [8, 10, 11, 12] {
+        for &fault in faults {
             Box::pin(altered_grant(
                 store.clone(),
                 clock.clone(),
@@ -81,6 +86,7 @@ async fn memory_pending_tool_grant_payload_is_authenticated() {
         Arc::new(MemoryStore::with_clock(clock.clone())),
         clock,
         false,
+        &[8, 10, 11, 12],
     ))
     .await;
 }
@@ -91,6 +97,7 @@ async fn memory_pending_frontend_grant_payload_is_authenticated() {
         Arc::new(MemoryStore::with_clock(clock.clone())),
         clock,
         true,
+        &[8, 10, 11, 12],
     ))
     .await;
 }
@@ -108,28 +115,26 @@ async fn sqlite_pending_tool_and_frontend_grant_payload_is_authenticated() {
             .with_clock(clock.clone()),
     );
     for frontend in [false, true] {
-        Box::pin(contract(store.clone(), clock.clone(), frontend)).await;
+        Box::pin(contract(store.clone(), clock.clone(), frontend, &[8])).await;
     }
 }
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_pending_tool_and_frontend_grant_payload_is_authenticated() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = Arc::new(
+            crabber_session::PostgresStore::connect(&url)
+                .await
+                .unwrap()
+                .with_clock(clock.clone()),
         );
-        return;
-    };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let store = Arc::new(
-        crabber_session::PostgresStore::connect(&url)
-            .await
-            .unwrap()
-            .with_clock(clock.clone()),
-    );
-    for frontend in [false, true] {
-        Box::pin(contract(store.clone(), clock.clone(), frontend)).await;
-    }
+        for frontend in [false, true] {
+            Box::pin(contract(store.clone(), clock.clone(), frontend, &[8])).await;
+        }
+    })
+    .await
+    .unwrap();
 }

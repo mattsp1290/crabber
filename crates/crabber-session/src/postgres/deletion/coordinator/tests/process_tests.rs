@@ -5,16 +5,18 @@ async fn quiet_deletion_process_helper() {
     let Some(request) = process::request() else {
         return;
     };
-    let url = crate::postgres::tests::test_url().unwrap();
+    let url = crabber_test_support::postgres::TestDatabase::attached_url()
+        .await
+        .unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     process::execute(&store, request).await;
 }
 #[tokio::test]
 async fn quiet_deletion_killed_before_and_after_commit() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -24,7 +26,7 @@ async fn quiet_deletion_killed_before_and_after_commit() {
         let mut child = process::spawn(
             "postgres::deletion::coordinator::tests::process_tests::quiet_deletion_process_helper",
             &request,
-            None,
+            crabber_test_support::ChildDatabase::Postgres(&url),
             Some((point, &marker)),
         );
         process::marker(&marker).await;
@@ -70,10 +72,12 @@ async fn quiet_deletion_killed_before_and_after_commit() {
         process::spawn(
             "postgres::deletion::coordinator::tests::process_tests::quiet_deletion_process_helper",
             &request,
-            None,
+            crabber_test_support::ChildDatabase::Postgres(&url),
             None,
         )
         .wait()
         .await;
     }
+
+    }).await.unwrap();
 }

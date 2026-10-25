@@ -15,9 +15,10 @@ workspace = true
 
 [features]
 default = []
-postgres = ["crabber/postgres"]
+postgres = ["crabber-test-support/postgres", "crabber/postgres"]
 sqlite = ["crabber/sqlite"]
 
 [dev-dependencies]
+crabber-test-support = { path = "../../crates/crabber-test-support", default-features = false }
 tempfile = "3"
 time = "0.3"

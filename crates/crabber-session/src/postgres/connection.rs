@@ -3,10 +3,22 @@ use super::{PostgresStore, db, migration, snapshot};
 use crate::StoreError;
 use crabber_core::{ByteLimits, Clock, SystemClock};
 use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tracing::Instrument;
 
 impl PostgresStore {
+    /// Gracefully closes the connections shared by this Store and its clones.
+    /// Complete active executions before closing. This waits for checked-out
+    /// connections, and subsequent database operations fail.
+    pub async fn close(&self) {
+        self.pool.close().await;
+        // A return task can enqueue a connection after SQLx's final close sweep.
+        while self.pool.size() != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            self.pool.close().await;
+        }
+    }
+
     /// Opens an already migrated dedicated database with a worker or host role.
     /// The URL is never included in errors.
     /// # Errors

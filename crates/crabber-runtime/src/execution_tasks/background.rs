@@ -7,6 +7,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 /// A fixed library-owned background task class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerResourceKind {
+    /// Lease renewal and durable-control observations, retained through original joins.
     LeaseHeartbeat,
     /// Durable control I/O progresses independently of synchronous callbacks.
     RunControlObservation,

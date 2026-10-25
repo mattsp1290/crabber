@@ -1,10 +1,13 @@
 use crabber::{core::*, session::*, *};
+use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub(super) struct Fixture {
+    database: TestDatabase,
     pub admin: sqlx::PgPool,
     pub host_url: String,
+    worker_url: String,
     pub host: Agent,
     pub worker: Agent,
     pub native: Arc<PostgresStore>,
@@ -16,14 +19,11 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub async fn new() -> Option<Self> {
-        let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-            assert!(
-                std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none(),
-                "required PostgreSQL URL missing"
-            );
+        if !TestDatabase::available().unwrap() {
             return None;
-        };
-        PostgresStore::migrate(&url).await.unwrap();
+        }
+        let database = TestDatabase::create(DatabaseMode::Current).await.unwrap();
+        let url = database.url();
         let admin = PgPoolOptions::new()
             .max_connections(2)
             .connect(&url)
@@ -63,8 +63,10 @@ impl Fixture {
         let host_provider = provider(64);
         let worker_provider = provider(64);
         Some(Self {
+            database,
             admin,
             host_url: urls[0].clone(),
+            worker_url: urls[1].clone(),
             host: agent(native.clone(), host_provider, &workspace_b),
             worker: agent(worker_native.clone(), worker_provider.clone(), &workspace_a),
             native,
@@ -74,6 +76,15 @@ impl Fixture {
             workspace_b,
             roles,
         })
+    }
+    pub fn worker_url(&self) -> &str {
+        &self.worker_url
+    }
+    pub fn worker_child_environment(&self) -> [(&'static str, String); 3] {
+        let endpoint = url::Url::parse(&self.worker_url).unwrap();
+        self.database
+            .child_environment_as_role(endpoint.username(), endpoint.password().unwrap())
+            .unwrap()
     }
     pub fn context(&self, own: bool) -> ExecutionContext {
         ExecutionContext::new(
@@ -136,23 +147,45 @@ impl Fixture {
         );
     }
     pub async fn cleanup(self) {
-        self.host.close_extensions().await.unwrap();
-        self.worker.close_extensions().await.unwrap();
-        for role in &self.roles {
-            sqlx::query("DELETE FROM crabber_workspace_grants WHERE role_name=$1")
-                .bind(role)
-                .execute(&self.admin)
-                .await
-                .unwrap();
-            sqlx::query(&format!("DROP OWNED BY {role}"))
-                .execute(&self.admin)
-                .await
-                .unwrap();
-            sqlx::query(&format!("DROP ROLE {role}"))
-                .execute(&self.admin)
-                .await
-                .unwrap();
-        }
+        let Self {
+            database,
+            admin,
+            host,
+            worker,
+            native,
+            worker_native,
+            roles,
+            ..
+        } = self;
+        host.close_extensions().await.unwrap();
+        worker.close_extensions().await.unwrap();
+        drop(host);
+        drop(worker);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            native.close().await;
+            worker_native.close().await;
+            drop(native);
+            drop(worker_native);
+            for role in &roles {
+                sqlx::query("DELETE FROM crabber_workspace_grants WHERE role_name=$1")
+                    .bind(role)
+                    .execute(&admin)
+                    .await
+                    .unwrap();
+                sqlx::query(&format!("DROP OWNED BY {role}"))
+                    .execute(&admin)
+                    .await
+                    .unwrap();
+                sqlx::query(&format!("DROP ROLE {role}"))
+                    .execute(&admin)
+                    .await
+                    .unwrap();
+            }
+            admin.close().await;
+            database.finish().await.unwrap();
+        })
+        .await
+        .expect("role fixture connections and teardown did not drain within five seconds");
     }
 }
 pub(super) fn selection() -> Selection {

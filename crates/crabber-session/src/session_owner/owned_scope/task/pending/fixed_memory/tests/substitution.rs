@@ -68,7 +68,7 @@ async fn another_pristine_concrete_recipe_after_actual_binding_is_refused() {
     let hooks = FixedInitialTestHooks::new();
     hooks.substitute_source(
         LibraryScriptedSource::new(
-            crabber::Selection {
+            crabber_providers::Selection {
                 provider_id: "library".into(),
                 model_id: "finite-text".into(),
             },

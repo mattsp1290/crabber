@@ -1,0 +1,1371 @@
+# Installation is pinned by test-tools.json and checked by xtask.
+nextest-version = { required = "0.9.138" }
+
+[test-groups]
+postgres = { max-threads = 4 }
+postgres-ci = { max-threads = 4 }
+postgres-one = { max-threads = 1 }
+postgres-four = { max-threads = 4 }
+wasm = { max-threads = 4 }
+sqlite = { max-threads = 4 }
+
+[profile.default]
+test-threads = 4
+retries = 0
+fail-fast = false
+# Outer hang bound only; original Rust contract deadlines remain unchanged.
+slow-timeout = { period = "60s", terminate-after = 30 }
+
+# Weights account for internal Tokio workers and fresh helper processes.
+[[profile.default.overrides]]
+filter = 'package(crabber-runtime)'
+threads-required = 2
+
+[[profile.default.overrides]]
+filter = 'binary(/wasm/) | test(/wasm/)'
+test-group = 'wasm'
+threads-required = 2
+
+[[profile.default.overrides]]
+filter = 'test(/postgres/)'
+test-group = 'postgres'
+
+[[profile.default.overrides]]
+filter = 'test(/sqlite/)'
+test-group = 'sqlite'
+
+[profile.postgres]
+test-threads = 4
+retries = 0
+fail-fast = false
+
+# Every discovered entrypoint in the required lane is bounded, including future
+# names and helper tests that do not contain "postgres". Cargo demos run later.
+[[profile.postgres.overrides]]
+filter = 'all()'
+test-group = 'postgres'
+
+# Explicit comparison profiles; the measured normal profile uses four slots.
+[profile.postgres-one]
+test-threads = 1
+retries = 0
+fail-fast = false
+[[profile.postgres-one.overrides]]
+filter = 'all()'
+test-group = 'postgres-one'
+
+[profile.postgres-four]
+test-threads = 4
+retries = 0
+fail-fast = false
+[[profile.postgres-four.overrides]]
+filter = 'all()'
+test-group = 'postgres-four'
+
+# One required run: ordinary cases do not consume a PostgreSQL slot.
+[profile.complete]
+test-threads = 16
+retries = 0
+fail-fast = false
+
+# Runtime unit and extension fixtures own MemoryStore or local task state.
+# Exact names leave future and SQL entrypoints under the conservative fallback.
+# Exact source-audited Session tests use private MemoryStore/Ledger fixtures
+# or no backend. SQL tracing fixtures and future unknown tests stay conservative.
+# Exact audited Memory and private HTTP fixtures need no PostgreSQL reservation.
+[[profile.complete.overrides]]
+filter = """
+(package(crabber) & binary(=server_host) & (
+    test(=tool_resources::interrupted_tool_seals_scope_and_joins_cooperative_resources)
+  | test(=tool_resources::resolution::closed_host_resolves_once_and_preserves_incomplete_cleanup)
+  | test(=tool_resources::resource_failure_blocks_worker_success_and_remains_visible_across_drains)
+  | test(=tool_resources::snapshot_drain_does_not_seal_an_active_tool_scope)
+  | test(=tool_resources::incomplete_worker_retains_noncooperative_resource_join_after_timeout)
+))
+| (package(crabber) & binary(=session_management) & (
+    test(=management::management_controls_work_without_factories_and_after_close)
+))
+| (package(crabber) & binary(=trace_context) & (
+    test(=legacy_observers_and_multiple_host_observers_receive_each_callback_once)
+  | test(=malformed_transport_context_is_rejected_before_admission)
+  | test(=predecessor_is_validated_bounded_and_requires_a_new_numeric_trace)
+  | test(=replay_ignores_replacement_context_without_receipt_or_execution_mutation)
+))
+| (package(crabber) & binary(=typed_output) & (
+    test(=http::public_responses_loop_sends_protected_mixed_tool_output)
+  | test(=public_mixed_output_remains_typed_and_error_escalation_is_monotonic)
+))
+| (package(workspace-context-probe) & binary(=memory) & (
+    test(=cancellation_is_available_to_a_running_tool)
+  | test(=drifted_identity_is_rejected_and_the_tool_is_not_invoked)
+  | test(=empty_identity_is_unavailable_not_a_host_default_or_model_argument)
+  | test(=one_empty_field_is_unavailable_while_the_other_is_exposed)
+  | test(=permission_denial_never_invokes_the_executor)
+  | test(=replacement_fence_never_authorizes_pending_approval)
+  | test(=two_sessions_observe_their_own_workspace_across_runs)
+))
+| (package(crabber) & binary(=result_transform_interrupt) & (
+    test(=close_timeout_retains_child_reaper_and_terminal_registry)
+))
+"""
+test-group = '@global'
+
+[[profile.complete.overrides]]
+filter = """
+package(crabber-session) & (
+    test(=admission_journal::materialize::tests::record_view_matches_actual_stored_wire_shape)
+  | test(=approval::validation::tests::missing_or_zero_turn_budget_is_not_legacy_zero)
+  | test(=attempt::records::transition::tests::lifecycle_requires_explicit_begin_finish_and_cleanup)
+  | test(=attempt::records::transition::tests::only_expired_unstarted_attempt_can_rotate_authority)
+  | test(=attempt::records::transition::tests::only_suspended_clean_attempts_can_continue_and_pause_blocks_new_work)
+  | test(=attempt::records::transition::tests::unknown_outcome_and_generation_exhaustion_never_open_next_attempt)
+  | test(=execution_binding::tests::limits_count_encoded_bytes_and_reject_excessive_nesting_before_hashing)
+  | test(=execution_binding::tests::reserved_components_must_bind_exactly_one_descriptor_and_behavior_version)
+  | test(=fork::history::tests::copied_history_redacts_private_state_and_rewrites_only_typed_ids)
+  | test(=fork::history::tests::missing_commit_and_unresolved_interrupt_require_an_explicit_earlier_cut)
+  | test(=fork::history::tests::parallel_group_never_forks_a_partial_result_prefix)
+  | test(=fork::history::tests::presentation_ids_are_opaque_and_redaction_cannot_drop_a_paired_call)
+  | test(=frontend_continuation::declaration_allocation::aggregate_declarations_are_rejected_before_schema_or_plan_materialization)
+  | test(=frontend_continuation::tests::complete_result_set_hash_ignores_order_and_worker_bookkeeping_but_binds_original_data)
+  | test(=frontend_continuation::tests::input_parameters_never_become_an_output_contract)
+  | test(=native_enrollment::origin::tests::original_raw_grant_is_permanent_and_cannot_be_rebound)
+  | test(=native_enrollment::origin::tests::original_verification_uses_the_callers_remaining_proof)
+  | test(=native_enrollment::pending_initial::prefix::historical::tests::shared_identity_recipe_preserves_original_wire_and_exact_bound)
+  | test(=native_parent::run::tests::noninitial_completion_is_a_distinct_strict_format)
+  | test(=native_parent::run::tests::owned_admission_anchor_is_explicit_and_only_valid_on_first_issuance)
+  | test(=native_parent::source_protocol::tests::maximal_scope_is_bounded_and_chain_requires_exact_origin_and_tail)
+  | test(=public_history::tests::tool_record_results_are_recursively_redacted)
+  | test(=public_session::budget::tests::arithmetic_overflow_cannot_reopen_a_maximum_sized_budget)
+  | test(=public_session::budget::tests::serializer_refusal_permanently_exhausts_the_same_budget)
+  | test(=public_state::records::tests::receipt_rejects_changed_event_semantics_and_scope)
+  | test(=public_state::tests::legacy_activity_decode_and_fingerprint_do_not_apply_fresh_write_rules)
+  | test(=session_owner::cancellation::compatibility::cancellation_preserves_old_uncancelled_shape_and_fails_closed_in_old_readers)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::exact_original_role_and_actual_whole_fold_n_minus_one)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::genuine_extra_renew_is_uncovered_even_with_exact_retired_generation)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::genuine_reclaims_preserve_all_original_generations_in_the_fold)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::role_sources_and_current_are_independently_selected_and_restored)
+  | test(=session_owner::ledger::purge_tests::independent_publication_refuses_erased_owner_history_before_joined_filter)
+  | test(=session_owner::ledger::purge_tests::session_purge_keeps_other_owner_sources_and_global_publication_allocation)
+  | test(=session_owner::ledger::tests::aggregate_owner_invalid_sentinel_does_not_become_limited)
+  | test(=session_owner::ledger::tests::aggregate_owner_membership_authenticates_joined_filter_and_sentinel)
+  | test(=session_owner::ledger::tests::aggregate_owner_proof_is_charged_before_private_clone)
+  | test(=session_owner::ledger::tests::cancellation_sources_and_absence_are_independently_authenticated)
+  | test(=session_owner::ledger::tests::erased_session_projection_cannot_reserve_before_factory_effects)
+  | test(=session_owner::ledger::tests::native_context_era_inherits_known_session_and_never_promotes_retained_context)
+  | test(=session_owner::ledger::tests::session_owner_context_preserves_opaque_newlines_and_refuses_nul)
+  | test(=session_owner::ledger::tests::session_owner_deleted_audit_cannot_reuse_independent_publication_key)
+  | test(=session_owner::ledger::tests::session_owner_fresh_reservation_does_not_materialize_unrelated_private_records)
+  | test(=session_owner::ledger::tests::session_owner_missing_or_rolled_back_current_evidence_fails_closed)
+  | test(=session_owner::ledger::tests::session_owner_oversized_current_identity_is_rejected_before_clone)
+  | test(=session_owner::ledger::tests::session_owner_scope_checks_identity_even_when_current_count_matches)
+  | test(=session_owner::owned_scope::task::driver_tests::driver_context_factory_panic_is_observed_on_original_main)
+  | test(=session_owner::owned_scope::task::driver_tests::driver_context_is_delivered_only_inside_actual_fresh_task_gate)
+  | test(=session_owner::owned_scope::task::driver_tests::missing_or_replayed_activation_never_creates_driver_context_factory)
+  | test(=session_owner::owned_scope::task::driver_tests::mixed_grant_metadata_cannot_relabel_actual_native_context)
+  | test(=session_owner::owned_scope::task::driver_tests::wrong_genuine_permit_retains_original_driver_task_gate)
+  | test(=session_owner::owned_scope::task::ingress_tests::actual_main_abort_closes_escaped_context)
+  | test(=session_owner::owned_scope::task::ingress_tests::concurrent_entries_observe_actual_task_closure)
+  | test(=session_owner::owned_scope::task::ingress_tests::constructor_and_future_panic_close_escaped_context)
+  | test(=session_owner::owned_scope::task::ingress_tests::held_local_entry_and_cancelled_wait_do_not_extend_main_lifetime)
+  | test(=session_owner::owned_scope::task::ingress_tests::returned_context_is_closed_before_native_join_ack)
+  | test(=session_owner::owned_scope::task::ingress_tests::unpolled_actual_future_disposal_still_closes_ingress)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::observe::tests::cancelled_observer_notifies_before_contained_literal_drop)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::observe::tests::deadline_is_visible_before_actual_disposal)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::observe::tests::literal_poll_drop_and_semantic_results_are_separate)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::actual_registered_preparations_match_only_their_actual_full_recipe)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::coherent_other_backend_at_the_same_route_is_refused_before_open)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::coherent_unsupported_control_components_and_model_arguments_are_refused)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::genuine_previous_scripted_profile_cannot_gain_retirement_tail)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::original_default_policy_is_preserved_and_cannot_be_refreshed_after_join)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::complete_borrowed_recipe_is_charged_before_description)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::optional_resource_marker_charges_its_complete_encoded_extension)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::recipe_order_boundaries_and_unicode_bytes_are_distinct)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::tail_response_and_route_are_part_of_the_descriptor)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_native_deadline_keeps_actual_blocked_drop_visible_and_retained)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_ready_native_reply_stays_private_through_actual_blocked_drop)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::genuine_birth_open_unbound_join_and_seal_memory)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::genuine_foreign_open_reply_cannot_start_complete)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::literal_child)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::literal_poll_and_drop_children_are_contained)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::never_started_original_is_joined_without_native_call)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::original_task_admission_and_unknown_open_never_start_complete)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::builder::projection::tests::exact_projection_charge_precedes_original_materialization)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::builder::tests::real_value_builder_requires_its_exact_cumulative_allowance)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::fixed_host_refuses_missing_managed_session_without_adopting_it)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::fixed_host_runs_both_admission_kinds_and_shared_root_sessions)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_child_activation_commits_before_lost_ack_and_retires_no_dispatch)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_fixed_output_drop_holds_originals_capacity_and_policy_until_disposed)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_fixed_output_drop_panic_never_publishes_policy_terminal)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_literal_factory_panic_is_joined_and_cannot_open_a_source)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_partial_factory_and_both_handoff_stop_windows_retire_originals)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::parked_fixed_stop_and_drop_perform_no_preparation_io)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::substitution::another_pristine_concrete_recipe_after_actual_binding_is_refused)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::substitution::another_real_fixed_core_is_refused_before_inner_registration)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::substitution::genuine_opaque_preparation_from_another_joined_prelude_is_refused)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::actual_aborted_supervisor_is_failed_not_successfully_joined)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::actual_epilogue_join_and_cached_legacy_output_share_one_capacity_lease)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::actual_supervisor_drop_panic_is_sticky_and_unit_wait_cannot_claim_clean)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::join_error_is_sticky_before_untrusted_panic_payload_disposal)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::literal_original_value_drop_blocks_actual_supervisor_join_and_keeps_capacity)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::sticky_supervisor_failures_are_bounded_by_the_original_64_permits)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::unexpected_observer_abort_retains_original_handle_and_sticky_failure)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::zero_overflow_and_cancelled_reports_preserve_the_same_pending_supervisor)
+  | test(=session_owner::owned_scope::task::pending::tests::actual_panic_is_sticky_while_hostile_payload_disposal_is_blocked)
+  | test(=session_owner::owned_scope::task::pending::tests::cancelled_join_wait_preserves_actual_blocked_business_and_ingress)
+  | test(=session_owner::owned_scope::task::pending::tests::completion_notice_rejects_changed_original_user_message_receipt)
+  | test(=session_owner::owned_scope::task::pending::tests::concurrent_capacity_stays_retained_until_actual_observation_disposal)
+  | test(=session_owner::owned_scope::task::pending::tests::drop_retains_each_original_pending_call_and_disposes_without_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::genuine_first_two_complete_register_activate_and_join_same_main)
+  | test(=session_owner::owned_scope::task::pending::tests::genuine_wrong_permit_and_original_completion_replay_do_not_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::hostile_returned_value_disposal_cannot_forget_observation_or_capacity)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_and_successor_share_one_capacity_and_original_tag_observation)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_changed_keyed_message_receipt_has_no_notice)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_coherently_changed_receipt_version_has_no_notice_or_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_constructor_panic_and_unstarted_drop_preserve_actual_dispositions)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_drop_retains_original_each_pending_call)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_genuine_other_driver_permit_cannot_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_notice_only_after_protected_inspection_before_failed_register_or_activate)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_other_genuine_run_ack_cannot_replace_original_before_commit)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_receipt_changed_original_operation_has_no_notice)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_receipt_malformed_replay_run_has_no_notice)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_same_actual_main_and_metadata_replay_memory)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_drop_retains_each_actual_call_and_capacity)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_genuine_other_queue_ack_cannot_replace_original_completed_source)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_initial_successor_share_exact_capacity_and_keep_original_observer_on_wrong_tag)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_notice_requires_full_ack_and_inspection_before_failed_registration)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_rejects_ordinary_source_and_observes_actual_constructor_panic)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_same_actual_main_original_ids_and_repeated_replay_memory)
+  | test(=session_owner::owned_scope::task::pending::tests::unknown_ack_never_calls_business_or_reconstructs_context)
+  | test(=session_owner::owned_scope::task::pending::tests::unstarted_drop_and_business_panic_have_distinct_actual_observations)
+  | test(=session_owner::owned_scope::task::pending::tool_tests::capacity::pending_tool_families_share_existing_capacity_and_require_capability)
+  | test(=session_owner::owned_scope::tests::absent_resource_contract_preserves_original_reserve_shape_and_digest)
+  | test(=session_owner::owned_scope::tests::actual_cleanup_panic_payload_drop_preserves_repeated_failure)
+  | test(=session_owner::owned_scope::tests::actual_main_panic_payload_drop_preserves_repeated_join_evidence)
+  | test(=session_owner::owned_scope::tests::fresh_exact_permit_invokes_once_and_wrong_nonce_retains_gate)
+  | test(=session_owner::owned_scope::tests::interrupted_main_observation_retains_the_actual_task_and_value)
+  | test(=session_owner::owned_scope::tests::main_panic_has_actual_disposition_and_no_cleanup_inference)
+  | test(=session_owner::owned_scope::tests::unknown_ack_closes_actual_gate_without_invoking_factory)
+  | test(=session_owner::preparation::resource_contract::tests::exact_optional_marker_preserves_legacy_and_rejects_ambiguous_policy)
+  | test(=session_owner::preparation::tool_driver::payload::tests::actual_grant_payload_budget_precedes_materialization)
+  | test(=session_owner::service::tests::cancelled_service_activation_is_known_nondispatch)
+  | test(=session_owner::service::tests::fully_sealed_policy_is_metadata_for_workspace_and_session_dependencies)
+  | test(=session_owner::service::tests::only_exact_service_activation_enters_preparation_lineage)
+  | test(=session_owner::service::tests::oversized_service_generation_is_refused_before_copying)
+  | test(=session_owner::service::tests::removing_current_service_source_cannot_turn_typed_origin_into_generic_owner)
+  | test(=session_owner::service::tests::service_register_requires_resource_activation_and_replays_original_receipts)
+  | test(=session_owner::service::tests::service_scope_and_physical_cleanup_policy_cannot_drift)
+  | test(=session_owner::service::tests::stable_service_keys_do_not_rebind_changed_original_root_or_choice)
+  | test(=sql_snapshot::aggregate_token_tests::aggregate_profile_is_authenticated_and_cross_version_closed)
+  | test(=sql_snapshot::aggregate_token_tests::signed_raw_and_aggregate_boundaries_share_all_offset_bounds)
+  | test(=sql_snapshot::token_tests::another_database_key_cannot_authenticate_a_boundary)
+  | test(=storable::tests::matches_value_reader_depth_boundary)
+  | test(=storable::tests::rejects_nul_without_rejecting_literal_escape)
+  | test(=storable::tests::text_guard_rejects_nul)
+  | test(=successor_driver_contract::guards::oversized_context_refuses_before_clone)
+  | test(=tests::public_history_projection_contract)
+  | test(=tests::public_run_private_allocation_is_bounded)
+  | test(=tests::public_run_state_contract)
+  | test(=tool_continuation::ack::tests::first_seal_accounts_actual_complete_output_before_hashing)
+  | test(=tool_continuation::ack::tests::native_ack_binds_complete_receipt_and_custom_store_constructor)
+  | test(=tool_continuation::ack::tests::native_ack_metering_and_same_parent_phase_substitution)
+  | test(=tool_continuation::ack::tests::original_bare_native_legacy_claim_can_emit_sealed_ack)
+  | test(=tool_continuation::canonical::tests::original_source_rehash_preserves_v1_canonical_bytes)
+)
+"""
+test-group = '@global'
+
+[[profile.complete.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=bound_provider_tests::active_execution_holds_original_implementation_and_limits_across_turns)
+  | test(=bound_provider_tests::compaction_keeps_captured_limits_and_respects_the_request_output_cap)
+  | test(=bound_provider_tests::custom_restore_cannot_substitute_a_different_binding_before_recovery_claim)
+  | test(=bound_provider_tests::host_pre_stage_observes_declared_error_and_cannot_clear_it)
+  | test(=bound_provider_tests::legacy_run_without_binding_cannot_gain_recovery_authority)
+  | test(=bound_provider_tests::opaque_host_behavior_requires_explicit_declaration)
+  | test(=bound_provider_tests::recovery_rejects_changed_backend_before_claim)
+  | test(=execution_events::tests::committed_completion_wins_a_simultaneously_closed_event_channel)
+  | test(=execution_tasks::enrollment_tests::closing_retains_real_descendants_after_original_result_and_ignores_handle_clones)
+  | test(=execution_tasks::enrollment_tests::fresh_reentrant_admission_refuses_and_original_self_close_is_detected)
+  | test(=execution_tasks::enrollment_tests::panic_reaped_before_close_remains_in_actual_join_failure_report)
+  | test(=execution_tasks::tests::cancelled_drain_retains_join_handle_and_concurrent_joiners_reconcile)
+  | test(=execution_tasks::tests::correlation::correlation_refuses_wrong_owner_rebinding_and_observed_join)
+  | test(=execution_tasks::tests::correlation::original_supervisor_binds_run_while_drain_already_awaits_its_join)
+  | test(=execution_tasks::tests::driver_cleanup_closes_every_scope_before_awaiting_cross_scope_joins)
+  | test(=execution_tasks::tests::dropped_waiter_does_not_cancel_work_or_relabel_return_as_join)
+  | test(=execution_tasks::tests::panic_payload_drop_cannot_destroy_retained_join_evidence)
+  | test(=execution_tasks::tests::resource_drain_cannot_hide_a_worker_started_during_its_wait)
+  | test(=execution_tasks::tests::retains_distinct_tasks_for_the_same_run_and_sanitizes_panics)
+  | test(=execution_tasks::tests::session_drain_joins_only_selected_preparation_workers_and_resources)
+  | test(=execution_tasks::tests::session_drain_reports_worker_handoff_during_resource_wait)
+  | test(=extension_tests::around_cannot_replace_authorized_tool_input)
+  | test(=extension_tests::error_result_is_redacted_and_lifecycle_points_fire)
+  | test(=extension_tests::model_controls_context_suffix_and_request_error_dispatch)
+  | test(=model_middleware_tests::model_middleware_bypasses_internal_compaction_then_refreshes_agent_turn)
+  | test(=model_middleware_tests::model_middleware_cancellation_interrupts_blocked_read_and_skips_later_contribution)
+  | test(=model_middleware_tests::model_middleware_optional_missing_file_preserves_baseline_system_bytes)
+  | test(=model_middleware_tests::model_middleware_orders_base_static_and_typed_recipe_deterministically)
+  | test(=model_middleware_tests::model_middleware_reader_and_resolver_failures_are_sanitized_before_provider)
+  | test(=model_middleware_tests::model_middleware_resume_keeps_plan_seal_but_refreshes_host_content)
+  | test(=model_middleware_tests::model_middleware_resume_rejects_every_sealed_descriptor_change_without_advancing)
+  | test(=model_middleware_tests::model_middleware_retry_reresolves_refreshes_and_changes_only_system_text)
+  | test(=model_middleware_tests::model_middleware_scope_and_same_name_shadow_match_generic_contributors)
+  | test(=model_middleware_tests::model_middleware_tool_turn_reresolves_rereads_and_refreshes)
+  | test(=policy::tests::glob_permissions)
+  | test(=prompt_contribution_tests::failures::callback_error_and_panic_are_sanitized)
+  | test(=prompt_contribution_tests::failures::deadline_failure_keeps_spawned_work_tracked)
+  | test(=prompt_contribution_tests::failures::failure_on_retry_makes_no_second_provider_call)
+  | test(=prompt_contribution_tests::failures::interrupt_during_contribution_settles_interrupted)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_failures_are_sanitized_before_provider_dispatch)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_rejects_nonconforming_reader_before_provider_dispatch)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_resolver_denies_forged_context_without_host_dispatch)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_resolver_is_scoped_to_exact_admitted_workspace)
+  | test(=prompt_contribution_tests::failures::oversize_contribution_fails_before_provider)
+  | test(=prompt_contribution_tests::failures::panic_payload_destructor_settles_failed_without_provider_call)
+  | test(=prompt_contribution_tests::lifecycle::lease_lost_during_contribution_makes_no_provider_call)
+  | test(=prompt_contribution_tests::lifecycle::model_stream_handler_cannot_change_assembled_system)
+  | test(=prompt_contribution_tests::lifecycle::mounting_a_contributor_after_pause_refuses_resume)
+  | test(=prompt_contribution_tests::lifecycle::proactive_compaction_sets_after_compaction_on_first_attempt)
+  | test(=prompt_contribution_tests::lifecycle::recovered_run_invokes_contributors)
+  | test(=prompt_contribution_tests::lifecycle::resumed_run_invokes_contributors)
+  | test(=prompt_contribution_tests::refresh::concurrent_sessions_get_their_own_context)
+  | test(=prompt_contribution_tests::refresh::empty_sections_preserve_base_and_no_base_joins_only_current_sections)
+  | test(=prompt_contribution_tests::refresh::later_turn_sees_current_text)
+  | test(=prompt_contribution_tests::refresh::order_is_frozen_by_order_then_name)
+  | test(=prompt_contribution_tests::refresh::plan_without_contributors_sends_base_only)
+  | test(=prompt_contribution_tests::refresh::post_compaction_attempt_refreshes_and_summary_is_excluded)
+  | test(=prompt_contribution_tests::refresh::retry_rebuilds_dynamic_text_once)
+  | test(=prompt_contribution_tests::refresh::session_registration_shadows_global)
+  | test(=session_invocations::close::tests::actual_registry_identity_is_detection_only_and_never_crosses_registries)
+  | test(=session_invocations::close::tests::cut_signals_every_original_before_observing_and_preserves_pending)
+  | test(=session_invocations::close::tests::every_join_observer_publishes_failure_before_unlocked_payload_disposal)
+  | test(=session_invocations::close::tests::failed_original_remains_sticky_after_normal_reap_before_close)
+  | test(=session_services::provider::tests::custom_source_does_not_authorize_provider_constructor)
+)
+"""
+test-group = '@global'
+
+# Orchestrator unit fixtures own MemoryStore or local task state.
+# Exact names leave future and SQL entrypoints under the conservative fallback.
+[[profile.complete.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=orchestrator::continuation::telemetry_tests::invalid_prepared_authority_does_not_record_approved_outcome)
+  | test(=orchestrator::continuation::telemetry_tests::rejected_approval_continuation_records_failed_status)
+  | test(=orchestrator::host_close::coordinator_tests::close_joins_actual_cleanup_enrolled_after_its_first_task_selection)
+  | test(=orchestrator::host_close::coordinator_tests::later_deadline_refreshes_unobserved_short_pass_over_same_actual_original)
+  | test(=orchestrator::host_close::coordinator_tests::original_self_close_does_not_taint_later_callers_shared_observer)
+  | test(=orchestrator::preparation::pending::factory::tests::cleanup_wins_owned_pending_transfer_memory)
+  | test(=orchestrator::preparation::retained::capacity_tests::full_retained_capacity_refuses_before_reserve_and_reuses_actual_release)
+  | test(=orchestrator::preparation::retained::cleanup::supervisor::tests::actual_failed_cleanup_join_is_sticky_before_unlocked_payload_disposal)
+  | test(=orchestrator::preparation::retained::cleanup::supervisor::tests::clean_output_is_not_a_cleanup_join_before_original_epilogue)
+  | test(=orchestrator::reasoning::tests::exact_category_identity_and_signature_association_are_enforced_before_publication)
+  | test(=orchestrator::reasoning::tests::opaque_identity_text_and_signature_share_one_exact_byte_edge)
+  | test(=orchestrator::reasoning::tests::oversized_or_deep_opaque_is_refused_before_retention)
+  | test(=orchestrator::reasoning::tests::reasoning_limit_is_shared_across_items_and_signatures)
+  | test(=orchestrator::recovery_contract_tests::checkpoint_request_requires_present_positive_or_null_cap)
+  | test(=orchestrator::recovery_contract_tests::fixed_unfinished_settlement_bypasses_pre_stage_and_result_chain)
+  | test(=orchestrator::recovery_contract_tests::paused_pending_reexecutes_stored_identity_and_full_chain_without_prepare)
+)
+"""
+test-group = '@global'
+
+# These runtime journey fixtures own private MemoryStore values.
+# Exact names leave future and SQL entrypoints under the conservative fallback.
+[[profile.complete.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=tests::admission_recovery_verifies_turn_limit_before_terminal_replay)
+  | test(=tests::approval_order::generic_pause_transition_to_approval_keeps_the_original_turn)
+  | test(=tests::approval_order::invalid_generic_checkpoint_call_sets_are_rejected_before_claim_or_effects)
+  | test(=tests::approval_order::opaque_reverse_ids_preserve_frozen_executor_and_settlement_order)
+  | test(=tests::approval_recovery::cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget)
+  | test(=tests::approval_recovery::dropping_recovery_observation_retains_the_mutation_and_worker)
+  | test(=tests::approval_recovery::recovery_allows_prior_completed_phases_without_resetting_turn_budget)
+  | test(=tests::ask_policy_waits_for_a_durable_host_decision)
+  | test(=tests::callback_ownership::failure::kernel_callback_disposal_failure_cannot_certify_attempt_cleanup)
+  | test(=tests::callback_ownership::nested::returned_outer_hook_cannot_hide_recorded_pending_nested_callback)
+  | test(=tests::callback_ownership::phase_quiescence_retains_original_tool_callback_disposal)
+  | test(=tests::callback_ownership::settlement_notifications_use_live_worker_after_phase_seal)
+  | test(=tests::callback_ownership::worker_join_retains_original_model_callback_disposal)
+  | test(=tests::compaction::interrupt_cancels_blocked_compaction_summary)
+  | test(=tests::compaction::interrupt_cancels_summary_stream_acquisition)
+  | test(=tests::compaction::overflow_compacts_once_and_retries_open_turn)
+  | test(=tests::compaction::overflow_keeps_recent_tail_in_projected_retry)
+  | test(=tests::compaction::real_size_limit_overflow_summarizes_bounded_input)
+  | test(=tests::compaction::retryable_provider_error_retries_same_turn)
+  | test(=tests::compaction::second_overflow_fails_after_one_epoch)
+  | test(=tests::completed_commit_survives_heartbeat_channel_closing_before_settle_returns)
+  | test(=tests::continuation_source::frontend_two_exchange_and_unsupported_only_fallback_are_truthful)
+  | test(=tests::continuation_source::human_two_exchange_sources_bind_actual_question_turn_attempt_and_parent)
+  | test(=tests::continuations::answer_and_continue_replay_only_the_frozen_batch_once)
+  | test(=tests::continuations::mixed_batch_is_frozen_and_worker_returns_before_any_executor_starts)
+  | test(=tests::enum_and_nested_schema_failures_never_execute_tool)
+  | test(=tests::frontend_replay::frontend_claim_and_recovery_replay_never_read_current_run)
+  | test(=tests::heartbeat::completed_settlement_wins_heartbeat_tick_during_observer_callback)
+  | test(=tests::heartbeat::heartbeat_covers_model_stream_and_ends_at_durable_approval)
+  | test(=tests::heartbeat::heartbeat_interval_requires_margin_inside_lease)
+  | test(=tests::heartbeat::heartbeat_keeps_gated_tool_run_owned_past_initial_lease)
+  | test(=tests::heartbeat::reclaimed_lease_cancels_pending_tool_body)
+  | test(=tests::heartbeat::reclaimed_lease_does_not_authorize_pending_approval)
+  | test(=tests::interruption_during_provider_backoff_is_prompt_and_never_retries)
+  | test(=tests::invalid_tool_arguments_settle_failed_and_continue)
+  | test(=tests::legacy_retry_safe_pending_calls_do_not_grant_native_dispatch)
+  | test(=tests::legacy_running_call_cannot_be_declared_interrupted_by_recovery)
+  | test(=tests::native_attempt::completion_concludes_the_same_started_native_attempt)
+  | test(=tests::native_attempt::expired_pristine_admission_and_unstarted_reservation_enter_the_model_driver_once)
+  | test(=tests::native_attempt::lost_begin_acknowledgment_never_dispatches_or_retries)
+  | test(=tests::native_attempt::suspension_and_resume_use_distinct_native_generations)
+  | test(=tests::native_phase::fresh_phase_claim_must_match_the_authorized_call_binding)
+  | test(=tests::native_phase::postcommit_observer_panic_preserves_the_acknowledged_phase)
+  | test(=tests::native_phase::unknown_phase_start_and_settlement_never_dispatch_or_settle_twice)
+  | test(=tests::operational_observation::operational_cancellation_before_and_after_stream_setup)
+  | test(=tests::operational_observation::operational_extension_setup_rejection_and_omission_are_runtime_errors)
+  | test(=tests::operational_observation::operational_lease_loss_is_local_once_and_does_not_settle_replacement)
+  | test(=tests::operational_observation::operational_ordinary_store_conflict_keeps_runtime_error_and_settlement)
+  | test(=tests::operational_observation::operational_regressing_clock_saturates_to_zero)
+  | test(=tests::operational_observation::operational_startup_midstream_success_and_first_text_boundaries)
+  | test(=tests::operational_observation::operational_store_first_takeover_skips_settlement_initial_and_resume)
+  | test(=tests::operational_observation::operational_tool_failure_remains_distinct_when_run_succeeds)
+  | test(=tests::operational_observation::operational_tool_store_setup_error_is_not_tool_error)
+  | test(=tests::operational_observation::source_contract::cancellation_closes_arguments_and_preserves_partial_identity)
+  | test(=tests::operational_observation::source_contract::identities_correlate_live_durable_and_stored_parallel_rounds)
+  | test(=tests::operational_observation::source_contract::invalid_call_boundaries_fail_and_close_without_dispatch)
+  | test(=tests::operational_observation::source_contract::midstream_lease_loss_drops_future_with_presentation_cleanup_only)
+  | test(=tests::operational_observation::source_contract::retry_keeps_turn_but_allocates_distinct_attempt_message_ids)
+  | test(=tests::operational_observation::source_contract::store_fault_does_not_publish_unpersisted_tool_content)
+  | test(=tests::operational_observation::workspace_context::empty_persisted_fields_are_unavailable_never_defaulted)
+  | test(=tests::operational_observation::workspace_context::parallel_tool_calls_share_the_persisted_identity)
+  | test(=tests::operational_observation::workspace_context::permission_denial_never_reaches_the_executor)
+  | test(=tests::operational_observation::workspace_context::recover_sweep_skips_and_reports_bad_runs_and_recovers_the_rest)
+  | test(=tests::operational_observation::workspace_context::row1_fresh_unkeyed_admission_exposes_persisted_identity)
+  | test(=tests::operational_observation::workspace_context::row2_fresh_keyed_admission_exposes_persisted_identity)
+  | test(=tests::operational_observation::workspace_context::row3_same_session_later_run_sees_identical_identity_and_rejects_drift)
+  | test(=tests::operational_observation::workspace_context::row4_paused_pending_execution_resumed_in_process)
+  | test(=tests::operational_observation::workspace_context::row5_paused_pending_execution_resumed_by_fresh_host)
+  | test(=tests::operational_observation::workspace_context::row6_generic_recovery_of_paused_run_with_checkpoint_request)
+  | test(=tests::operational_observation::workspace_context::row7_legacy_running_run_cannot_authorize_execution_from_context_alone)
+  | test(=tests::operational_observation::workspace_context::row8_keyed_admission_recovery_uses_persisted_identity_and_rejects_drift)
+  | test(=tests::operational_observation::workspace_context::stored_record_conflict_rejects_resume_and_changes_nothing)
+  | test(=tests::parallel_tools_execute_together_and_settle_in_assistant_order)
+  | test(=tests::pipeline_cleanup_is_joined_before_native_phase_settlement)
+  | test(=tests::public_state::interrupt_closes_partial_text_message)
+  | test(=tests::public_state::source_writer::cancelled_publish_with_live_original_worker_cannot_conclude_or_skip_unresolved_cursor)
+  | test(=tests::public_state::source_writer::lost_source_ack_reconciles_before_later_delta_and_exact_retry_does_not_duplicate)
+  | test(=tests::public_state::source_writer::retained_attempt_writer_cannot_emit_or_mutate_after_actual_approval_pause)
+  | test(=tests::public_state::source_writer::simultaneous_exact_tool_publish_is_observed_once_and_sealed_after_terminal)
+  | test(=tests::public_state::steering_and_follow_up_reach_later_requests_and_busy_is_rejected)
+  | test(=tests::public_state::stream_eof_without_completed_fails_without_assistant_commit)
+  | test(=tests::public_state::text_tool_text_has_exact_order_and_three_generated_messages)
+  | test(=tests::reasoning_provenance::distinct_items_persist_privately_and_reach_the_next_provider_without_live_leaks)
+  | test(=tests::reasoning_provenance::interruption_preserves_private_continuity_but_not_in_public_history_or_live_events)
+  | test(=tests::reasoning_provenance::retry_and_provenance_reclassification_cannot_publish_private_reasoning)
+  | test(=tests::recovery_observation::linked_expired_legacy_recovery_cannot_grant_dispatch)
+  | test(=tests::recovery_observation::recovery_selects_current_attempt_per_run_without_ambient_contamination)
+  | test(=tests::resume_lifecycle::interrupting_an_inflight_executor_retains_uncertainty)
+  | test(=tests::resume_lifecycle::paused_call_resumes_from_persisted_input)
+  | test(=tests::resume_lifecycle::recovery_refuses_history_that_drifted_from_the_native_pause)
+  | test(=tests::resume_lifecycle::resumed_tool_stops_when_lease_is_reclaimed)
+  | test(=tests::resume_refuses_run_admitted_under_pre_contract_fingerprint)
+  | test(=tests::suspension_observation::committed_suspensions_wait_for_their_own_ack_not_stale_observers)
+  | test(=tests::suspension_observation::owner_read_finishing_after_quiescent_pause_waits_for_original_ack)
+  | test(=tests::suspension_observation::worker_join_retains_original_heartbeat_renewal_after_main_returns)
+  | test(=tests::terminal_control::own_terminal_control_refusal_does_not_replace_unknown_completion_ack)
+  | test(=tests::terminal_control::own_terminal_control_refusal_waits_for_original_completion_ack)
+  | test(=tests::terminal_outcome::failed_execution_exposes_unknown_terminal_persistence)
+  | test(=tests::terminal_outcome::interruption_requires_acknowledged_terminal_commit)
+  | test(=tests::terminal_outcome::resumed_executor_interruption_does_not_attempt_terminal_settlement)
+  | test(=tests::terminal_outcome::resumed_success_does_not_retry_an_unknown_terminal_write)
+  | test(=tests::terminal_outcome::successful_execution_does_not_retry_an_unknown_terminal_write)
+  | test(=tests::tool_suspension_faults::suspension_distinguishes_definite_refusal_revision_retry_and_unknown_ack)
+  | test(=tests::tracing_spans::approval_suspend_and_continue_spans)
+  | test(=tests::tracing_spans::attempt_id_matches_observer_attempt)
+  | test(=tests::tracing_spans::failed_approval_suspension_records_error_status)
+  | test(=tests::tracing_spans::host_context_is_recorded_on_run_span)
+  | test(=tests::tracing_spans::host_span_closes_after_run_span)
+  | test(=tests::tracing_spans::lease_loss_records_outcome_and_single_warn_source)
+  | test(=tests::tracing_spans::lifecycle_events_are_emitted_under_lifecycle_target_only)
+  | test(=tests::tracing_spans::no_content_fields_anywhere)
+  | test(=tests::tracing_spans::retry_emits_warn_with_finite_kind)
+  | test(=tests::tracing_spans::run_span_is_child_of_caller_span_and_has_model_and_tool_children)
+  | test(=tests::turn_budget::ambiguous_or_invalid_pause_budget_is_refused_before_claim)
+  | test(=tests::turn_budget::ordinary_pause_preserves_the_consumed_model_turn)
+  | test(=tests::turn_budget::repeated_approvals_share_one_total_model_turn_budget)
+  | test(=tests::unstarted_batch::cold_unstarted_continuation_executes_pending_batch_before_another_model_turn)
+  | test(=tests::zero_output_cap_is_rejected_before_admission)
+)
+"""
+test-group = '@global'
+
+# Preparation and driver fixtures construct private MemoryStore values.
+# Exact names keep future and SQL entrypoints under the conservative fallback.
+[[profile.complete.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=tests::preparation_resources::cleanup_failure::cancelled_factory_with_actual_failed_cleanup_stays_uncertain)
+  | test(=tests::preparation_resources::driver::actual_outer_worker_panic_survives_supervisor_join_reporting)
+  | test(=tests::preparation_resources::driver::dropped_handle_retains_original_driver_ack_future_and_dispatches_once)
+  | test(=tests::preparation_resources::driver::faults::activation_store_panics_join_actual_no_dispatch)
+  | test(=tests::preparation_resources::driver::faults::genuine_other_run_driver_grant_cannot_dispatch_this_runs_work)
+  | test(=tests::preparation_resources::driver::faults::isolation::older_worker_cleanup_cannot_close_another_workers_same_run_resources)
+  | test(=tests::preparation_resources::driver::faults::join_store_panics_retry_same_actual_observation)
+  | test(=tests::preparation_resources::driver::faults::late::interrupt_closes_resources_before_main_join_and_covers_late_scopes)
+  | test(=tests::preparation_resources::driver::faults::late::panic_cleanup_cannot_omit_a_late_registered_scope)
+  | test(=tests::preparation_resources::driver::faults::pending::pending_store_poll_survives_cancellation_while_resource_closure_progresses)
+  | test(=tests::preparation_resources::driver::faults::store_poll_panic_retains_actual_main_and_cleanup_until_their_joins)
+  | test(=tests::preparation_resources::driver::native_terminal_does_not_join_driver_while_outer_observer_is_running)
+  | test(=tests::preparation_resources::driver::unknown_driver_activation_joins_actual_no_dispatch_without_model_effects)
+  | test(=tests::preparation_resources::driver::unknown_driver_join_retries_only_original_observation)
+  | test(=tests::preparation_resources::driver::unknown_driver_registration_never_dispatches_the_model)
+  | test(=tests::preparation_resources::faults::cleanup_join_ack_retry_retains_actual_observation_and_never_dispatches)
+  | test(=tests::preparation_resources::faults::explicit_cleanup_after_unknown_native_commit_preserves_original_source)
+  | test(=tests::preparation_resources::faults::malformed_cleanup_ack_retains_original_observation_for_exact_retry)
+  | test(=tests::preparation_resources::faults::running_factory_cancel_is_observed_after_signal_and_waits_for_cleanup)
+  | test(=tests::preparation_resources::faults::unkeyed_unknown_commit_retry_keeps_uncertainty_without_repeating_io)
+  | test(=tests::preparation_resources::faults::unknown_activation_ack_never_opens_factory_and_explicit_cleanup_observes_no_dispatch)
+  | test(=tests::preparation_resources::faults::unknown_completion_cleanup_joins_child_without_forging_root_disposition)
+  | test(=tests::preparation_resources::heartbeat::dropped_legacy_preparation_retry_retains_original_heartbeat)
+  | test(=tests::preparation_resources::heartbeat::stopping_preparation_after_pending_lookup_does_not_start_cancel_observation)
+  | test(=tests::preparation_resources::heartbeat::stopping_preparation_heartbeat_does_not_start_next_authority_io)
+  | test(=tests::preparation_resources::legacy_failure::joined_legacy_failure_reconciles_original_cancelled_ack_without_factory_retry)
+  | test(=tests::preparation_resources::pending_approval::pending_approval_preflight_refusal_precedes_factory_and_begin)
+  | test(=tests::preparation_resources::provider_binding::lost_native_commit_ack_retains_captured_provider_and_never_reacquires_on_retry)
+  | test(=tests::preparation_resources::provider_binding::ordinary_and_keyed_initial_workers_use_captured_owned_provider_once)
+  | test(=tests::preparation_resources::provider_binding::owned_provider_refuses_unscoped_preparation_before_provider_factory)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_fresh_notice_survives_registration_and_activation_failure)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_same_task_and_original_replay_memory)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_unsupported_inspector_refuses_before_factory)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_waiter_drop_and_stop_retain_committed_ack_and_original_plan)
+  | test(=tests::preparation_resources::scoped_plan_lifetime_keeps_child_active_until_actual_cleanup_joins)
+  | test(=tests::preparation_resources::successor::callbacks::pending_first_two_retain_nested_callback_before_native_join)
+  | test(=tests::preparation_resources::unknown_native_commit_retry_observes_without_reminting_authority)
+)
+"""
+test-group = '@global'
+
+# The result-transform harness fixes its Store to a private MemoryStore.
+# Exact names keep future and SQL entrypoints under the conservative fallback.
+[[profile.complete.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=result_transform_tests::binding::parallel_binding_survives_reverse_callback_completion)
+  | test(=result_transform_tests::binding::sequential_binding_preserves_each_calls_context_and_output)
+  | test(=result_transform_tests::cancel::accepted_predecessor_at_next_ordinary_entry_is_discarded)
+  | test(=result_transform_tests::cancel::accepted_value_passes_every_final_after_interrupt)
+  | test(=result_transform_tests::cancel::accepted_value_without_final_is_discarded)
+  | test(=result_transform_tests::cancel::blocked_ordinary_drops_seed)
+  | test(=result_transform_tests::cancel::blocked_pre_stage_is_not_accepted)
+  | test(=result_transform_tests::cancel::final_error_after_interrupt_uses_fixed_interrupted_text)
+  | test(=result_transform_tests::cancel::final_panic_after_interrupt_uses_fixed_interrupted_text)
+  | test(=result_transform_tests::cancel::gate_release_counts_live_receivers_after_a_handler_is_dropped)
+  | test(=result_transform_tests::cancel::in_flight_final_survives_and_remaining_final_protects)
+  | test(=result_transform_tests::cancel::two_finals_share_one_cancellation_deadline)
+  | test(=result_transform_tests::compose::execution_failure_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::compose::permission_denial_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::compose::preparation_failure_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::compose::success_runs_pre_stage_then_reducer_then_final_redactor)
+  | test(=result_transform_tests::compose::unknown_tool_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::context::a_tool_prepare_rewrite_into_a_sentinel_is_a_preparation_failure)
+  | test(=result_transform_tests::context::around_handler_error_and_changed_input_are_execution_failed)
+  | test(=result_transform_tests::context::cancellation_during_pre_stage_discards_output_and_skips_chain)
+  | test(=result_transform_tests::context::deeply_nested_unknown_tool_call_settles_with_the_usual_result)
+  | test(=result_transform_tests::context::executor_error_text_permission_denied_is_still_execution_failed)
+  | test(=result_transform_tests::context::guard_ask_refused_by_the_approver_is_permission_denied)
+  | test(=result_transform_tests::context::input_is_the_post_tool_prepare_arguments)
+  | test(=result_transform_tests::context::permission_denial_by_guard_and_restriction_is_normalized)
+  | test(=result_transform_tests::context::permission_denial_by_policy_and_refused_approval_is_normalized)
+  | test(=result_transform_tests::context::pre_stage_error_is_sanitized_and_skips_result_chain)
+  | test(=result_transform_tests::context::pre_stage_mark_error_is_monotonic_through_extension_chain)
+  | test(=result_transform_tests::context::pre_stage_only_runs_on_success_and_cannot_clear_errors)
+  | test(=result_transform_tests::context::preparation_failures_have_unavailable_input)
+  | test(=result_transform_tests::context::reader_anything_else_rows)
+  | test(=result_transform_tests::context::reader_preparation_failure_rows)
+  | test(=result_transform_tests::context::reader_unknown_tool_rows)
+  | test(=result_transform_tests::context::reserved_sole_key_arguments_are_a_preparation_failure)
+  | test(=result_transform_tests::context::resume_from_the_stored_record_derives_the_same_context)
+  | test(=result_transform_tests::context::success_and_execution_error_are_normalized)
+  | test(=result_transform_tests::context::unknown_tool_input_is_raw_provider_arguments)
+  | test(=result_transform_tests::context::unknown_tool_record_always_decodes_and_reads_back_as_raw)
+  | test(=result_transform_tests::execution_error_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::harness_builder_installs_guard_and_restriction_denials)
+  | test(=result_transform_tests::harness_builder_mounts_extra_extensions_and_runs_in_parallel)
+  | test(=result_transform_tests::harness_gate_parks_only_the_selected_call_and_releases_it_alone)
+  | test(=result_transform_tests::harness_gate_parks_the_result_handler_until_released)
+  | test(=result_transform_tests::interrupted_runtime::accepted_final_redaction_settles_interrupted_with_json_and_notifications)
+  | test(=result_transform_tests::interrupted_runtime::blocked_result_transform_interrupts_with_fixed_text_within_bound)
+  | test(=result_transform_tests::interrupted_runtime::delayed_protected_notifications_read_seeded_state_and_reject_terminal_writes)
+  | test(=result_transform_tests::interrupted_runtime::interrupted_notifications_cannot_block_sibling_settlement_and_retain_plan_lease)
+  | test(=result_transform_tests::interrupted_runtime::owned::interrupted_notification_keeps_actual_join_and_propagates_disposal_failure)
+  | test(=result_transform_tests::interrupted_runtime::parallel_interruption_settles_out_of_order_without_deadlock)
+  | test(=result_transform_tests::paths::execution_failure_cannot_be_cleared_by_unchanged_result)
+  | test(=result_transform_tests::paths::guard_denial_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::pipeline_prepare_failure_has_unavailable_input_and_never_runs_handler)
+  | test(=result_transform_tests::paths::policy_denial_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::refused_approval_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::restriction_denial_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::schema_failure_has_unavailable_input_and_never_prepares)
+  | test(=result_transform_tests::paths::success_uses_post_tool_prepare_input_without_preparing_again)
+  | test(=result_transform_tests::paths::tool_prepare_handler_failure_has_unavailable_input_without_reconstruction)
+  | test(=result_transform_tests::paths::unknown_tool_keeps_raw_provider_values_including_unparseable_text)
+  | test(=result_transform_tests::permission_denial_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::preparation_error_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::recovery::old_contract_fingerprint_is_refused_without_mutation)
+  | test(=result_transform_tests::recovery::public_entrypoints_require_native_suspension_before_replaying_pending_calls)
+  | test(=result_transform_tests::recovery::replay_class_and_input_come_only_from_the_record)
+  | test(=result_transform_tests::result_chain_failures_persist_only_fixed_handler_message)
+  | test(=result_transform_tests::success_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::tamper::deep_normalized_arguments_are_downgraded_before_result_transform)
+  | test(=result_transform_tests::tamper::deep_raw_envelope_is_downgraded_before_result_transform)
+  | test(=result_transform_tests::tamper::denied_calls_cannot_be_rewritten_into_execution_or_success)
+  | test(=result_transform_tests::tamper::every_context_field_is_immutable_and_stops_the_chain)
+  | test(=result_transform_tests::tamper::false_mark_error_cannot_clear_any_error_class)
+  | test(=result_transform_tests::tamper::malformed_replies_errors_and_panics_persist_only_fixed_text)
+  | test(=result_transform_tests::tamper::mark_error_escalates_success_and_later_false_cannot_clear_it)
+  | test(=result_transform_tests::tamper::tampered_run_id_does_not_change_store_fencing)
+  | test(=result_transform_tests::two_calls_one_turn_keep_distinct_authoritative_ids)
+  | test(=result_transform_tests::typed_result_chain_preserves_structured_output_and_error_classes)
+  | test(=result_transform_tests::unknown_tool_path_uses_authoritative_envelope)
+)
+"""
+test-group = '@global'
+
+# Worker ownership fixtures and their path-mapped children use MemoryStore.
+# Exact names keep future and SQL entrypoints under the conservative fallback.
+[[profile.complete.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=tests::owned_execution::abandoned_resume_waiter_leaves_claim_and_work_owned)
+  | test(=tests::owned_execution::done_consumes_actual_join_and_host_drain_can_join_before_result_is_taken)
+  | test(=tests::owned_execution::dropped_run_handle_keeps_worker_owned_until_real_join)
+  | test(=tests::owned_execution::panicked_worker_join_does_not_invent_durable_terminal_outcome)
+  | test(=tests::owned_execution::preparation::abandoned_initial_waiters_keep_late_ordinary_and_keyed_commits_owned)
+  | test(=tests::owned_execution::preparation::abandoned_retained_admission_recovery_waiter_keeps_late_claim_owned)
+  | test(=tests::owned_execution::session_invocations::ack::detached_join_rejects_changed_native_ack_fields_without_repeating_work)
+  | test(=tests::owned_execution::session_invocations::bounds::invocation_drain_overflow_preserves_idle_pending_cancellation_and_failed_cleanup)
+  | test(=tests::owned_execution::session_invocations::detached_owner_ack_loss_never_dispatches_from_metadata)
+  | test(=tests::owned_execution::session_invocations::faults::detached_store_panic_retains_original_main_and_resource_joins)
+  | test(=tests::owned_execution::session_invocations::pending_detached_cancel_before_begin_ack_skips_factory_and_reconciles_observe_ack)
+  | test(=tests::owned_execution::session_invocations::pending_preparation_cancel_before_begin_ack_preserves_blocker_without_factory_or_observe)
+  | test(=tests::owned_execution::session_invocations::scoped::detached_registered_join_waits_for_exact_sealed_cleanup_after_parent_finishes)
+  | test(=tests::owned_execution::session_invocations::unknown_detached_activation_ack_stays_unknown_and_never_dispatches)
+)
+"""
+test-group = '@global'
+
+# These exact consumer fixtures construct only fresh MemoryStore values.
+# They use ordinary worker slots, including their isolated literal child.
+[[profile.complete.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::caller_timeout_and_drop_keep_the_same_supervisor_resource_join_and_capacity) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::every_native_call_remains_in_the_same_original_task) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_child) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_consumer_poll_and_drop_children_are_contained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::native_deadline_after_successful_literal_drop_can_reconcile_paired_close) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement::committed_seal_lost_ack_replays_same_original_and_retains_outputs) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement_witness_keeps_actual_disposition_and_pre_io_activation))'
+test-group = '@global'
+
+# Both killed-worker journeys contain an unchanged real lease-expiry wait.
+# The unprefixed trace case uses PostgreSQL and keeps its backend group.
+[[profile.complete.overrides]]
+filter = 'package(crabber) & binary(=trace_context) & (test(=durable_process::killed_started_worker_refuses_replay_and_preserves_closed_anchor) | test(=durable_process::sqlite_killed_started_worker_refuses_replay_and_preserves_closed_anchor))'
+priority = 30
+
+# Start long independent native histories before shorter cases in their group.
+# Priority alone changes; backend slots, worker weights and deadlines remain.
+[[profile.complete.overrides]]
+filter = 'package(crabber-session) & (test(=memory::queue::tests::queue_bounds) | test(=sqlite::queue::tests::queue_bounds) | test(=postgres::queue::tests::queue_bounds) | test(=sqlite::session_owner::tests::session_owner_contract) | test(=postgres::session_owner::tests::session_owner_contract) | test(=memory::session_owner::tests::session_owner_shared_capacity) | test(=postgres::session_owner::drivers::tests::approval_successor_driver_contract))'
+priority = 30
+
+# These MemoryStore-only blocked-drop histories include real native deadlines.
+# Start them early while retaining the conservative service group and weight.
+[[profile.complete.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_native_deadline_keeps_actual_blocked_drop_visible_and_retained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_ready_native_reply_stays_private_through_actual_blocked_drop))'
+priority = 20
+
+# Service limits take priority even inside a WASM binary. The later WASM
+# override independently retains its two general scheduler reservations.
+# These reconnect journeys compile/register echo WASM but dispatch a native tool.
+# Weight one keeps SQL groups uniform while heavy WASM cases retain weight two.
+[[profile.complete.overrides]]
+filter = 'package(crabber) & binary(=wasm_roles) & (test(=freshly_connected_postgres_agent_resumes_native_and_wasm_plan) | test(=freshly_connected_sqlite_agent_resumes_native_and_wasm_plan))'
+threads-required = 1
+
+[[profile.complete.overrides]]
+filter = 'test(/postgres/)'
+test-group = 'postgres'
+priority = 10
+
+[[profile.complete.overrides]]
+filter = 'test(/sqlite/)'
+test-group = 'sqlite'
+
+[[profile.complete.overrides]]
+filter = 'binary(/wasm/) | test(/wasm/)'
+test-group = 'wasm'
+threads-required = 2
+
+[[profile.complete.overrides]]
+filter = 'test(/(^sqlite::|::sqlite_|^sqlite_)/)'
+test-group = 'sqlite'
+
+[[profile.complete.overrides]]
+filter = 'test(/(^memory::|::memory_|^memory_)/)'
+threads-required = 1
+
+[[profile.complete.overrides]]
+filter = 'not test(/(^memory::|::memory_|^memory_|^sqlite::|::sqlite_|^sqlite_)/) & (package(crabber-session) | package(crabber-runtime) | package(crabber) | package(server-host-probe) | package(workspace-context-probe) | package(crabber-test-support))'
+test-group = 'postgres'
+
+# Override the old partial profile's generic runtime weight; only actual heavy
+# WASM cases above reserve two scheduler threads in the combined run.
+[[profile.complete.overrides]]
+filter = 'all()'
+threads-required = 1
+
+# One required run: ordinary cases do not consume a PostgreSQL slot.
+[profile.complete-ci]
+test-threads = 4
+retries = 0
+fail-fast = false
+
+# Runtime unit and extension fixtures own MemoryStore or local task state.
+# Exact names leave future and SQL entrypoints under the conservative fallback.
+# Exact source-audited Session tests use private MemoryStore/Ledger fixtures
+# or no backend. SQL tracing fixtures and future unknown tests stay conservative.
+# Exact audited Memory and private HTTP fixtures need no PostgreSQL reservation.
+[[profile.complete-ci.overrides]]
+filter = """
+(package(crabber) & binary(=server_host) & (
+    test(=tool_resources::interrupted_tool_seals_scope_and_joins_cooperative_resources)
+  | test(=tool_resources::resolution::closed_host_resolves_once_and_preserves_incomplete_cleanup)
+  | test(=tool_resources::resource_failure_blocks_worker_success_and_remains_visible_across_drains)
+  | test(=tool_resources::snapshot_drain_does_not_seal_an_active_tool_scope)
+  | test(=tool_resources::incomplete_worker_retains_noncooperative_resource_join_after_timeout)
+))
+| (package(crabber) & binary(=session_management) & (
+    test(=management::management_controls_work_without_factories_and_after_close)
+))
+| (package(crabber) & binary(=trace_context) & (
+    test(=legacy_observers_and_multiple_host_observers_receive_each_callback_once)
+  | test(=malformed_transport_context_is_rejected_before_admission)
+  | test(=predecessor_is_validated_bounded_and_requires_a_new_numeric_trace)
+  | test(=replay_ignores_replacement_context_without_receipt_or_execution_mutation)
+))
+| (package(crabber) & binary(=typed_output) & (
+    test(=http::public_responses_loop_sends_protected_mixed_tool_output)
+  | test(=public_mixed_output_remains_typed_and_error_escalation_is_monotonic)
+))
+| (package(workspace-context-probe) & binary(=memory) & (
+    test(=cancellation_is_available_to_a_running_tool)
+  | test(=drifted_identity_is_rejected_and_the_tool_is_not_invoked)
+  | test(=empty_identity_is_unavailable_not_a_host_default_or_model_argument)
+  | test(=one_empty_field_is_unavailable_while_the_other_is_exposed)
+  | test(=permission_denial_never_invokes_the_executor)
+  | test(=replacement_fence_never_authorizes_pending_approval)
+  | test(=two_sessions_observe_their_own_workspace_across_runs)
+))
+| (package(crabber) & binary(=result_transform_interrupt) & (
+    test(=close_timeout_retains_child_reaper_and_terminal_registry)
+))
+"""
+test-group = '@global'
+
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-session) & (
+    test(=admission_journal::materialize::tests::record_view_matches_actual_stored_wire_shape)
+  | test(=approval::validation::tests::missing_or_zero_turn_budget_is_not_legacy_zero)
+  | test(=attempt::records::transition::tests::lifecycle_requires_explicit_begin_finish_and_cleanup)
+  | test(=attempt::records::transition::tests::only_expired_unstarted_attempt_can_rotate_authority)
+  | test(=attempt::records::transition::tests::only_suspended_clean_attempts_can_continue_and_pause_blocks_new_work)
+  | test(=attempt::records::transition::tests::unknown_outcome_and_generation_exhaustion_never_open_next_attempt)
+  | test(=execution_binding::tests::limits_count_encoded_bytes_and_reject_excessive_nesting_before_hashing)
+  | test(=execution_binding::tests::reserved_components_must_bind_exactly_one_descriptor_and_behavior_version)
+  | test(=fork::history::tests::copied_history_redacts_private_state_and_rewrites_only_typed_ids)
+  | test(=fork::history::tests::missing_commit_and_unresolved_interrupt_require_an_explicit_earlier_cut)
+  | test(=fork::history::tests::parallel_group_never_forks_a_partial_result_prefix)
+  | test(=fork::history::tests::presentation_ids_are_opaque_and_redaction_cannot_drop_a_paired_call)
+  | test(=frontend_continuation::declaration_allocation::aggregate_declarations_are_rejected_before_schema_or_plan_materialization)
+  | test(=frontend_continuation::tests::complete_result_set_hash_ignores_order_and_worker_bookkeeping_but_binds_original_data)
+  | test(=frontend_continuation::tests::input_parameters_never_become_an_output_contract)
+  | test(=native_enrollment::origin::tests::original_raw_grant_is_permanent_and_cannot_be_rebound)
+  | test(=native_enrollment::origin::tests::original_verification_uses_the_callers_remaining_proof)
+  | test(=native_enrollment::pending_initial::prefix::historical::tests::shared_identity_recipe_preserves_original_wire_and_exact_bound)
+  | test(=native_parent::run::tests::noninitial_completion_is_a_distinct_strict_format)
+  | test(=native_parent::run::tests::owned_admission_anchor_is_explicit_and_only_valid_on_first_issuance)
+  | test(=native_parent::source_protocol::tests::maximal_scope_is_bounded_and_chain_requires_exact_origin_and_tail)
+  | test(=public_history::tests::tool_record_results_are_recursively_redacted)
+  | test(=public_session::budget::tests::arithmetic_overflow_cannot_reopen_a_maximum_sized_budget)
+  | test(=public_session::budget::tests::serializer_refusal_permanently_exhausts_the_same_budget)
+  | test(=public_state::records::tests::receipt_rejects_changed_event_semantics_and_scope)
+  | test(=public_state::tests::legacy_activity_decode_and_fingerprint_do_not_apply_fresh_write_rules)
+  | test(=session_owner::cancellation::compatibility::cancellation_preserves_old_uncancelled_shape_and_fails_closed_in_old_readers)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::exact_original_role_and_actual_whole_fold_n_minus_one)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::genuine_extra_renew_is_uncovered_even_with_exact_retired_generation)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::genuine_reclaims_preserve_all_original_generations_in_the_fold)
+  | test(=session_owner::ledger::fixed_initial_coverage::tests::role_sources_and_current_are_independently_selected_and_restored)
+  | test(=session_owner::ledger::purge_tests::independent_publication_refuses_erased_owner_history_before_joined_filter)
+  | test(=session_owner::ledger::purge_tests::session_purge_keeps_other_owner_sources_and_global_publication_allocation)
+  | test(=session_owner::ledger::tests::aggregate_owner_invalid_sentinel_does_not_become_limited)
+  | test(=session_owner::ledger::tests::aggregate_owner_membership_authenticates_joined_filter_and_sentinel)
+  | test(=session_owner::ledger::tests::aggregate_owner_proof_is_charged_before_private_clone)
+  | test(=session_owner::ledger::tests::cancellation_sources_and_absence_are_independently_authenticated)
+  | test(=session_owner::ledger::tests::erased_session_projection_cannot_reserve_before_factory_effects)
+  | test(=session_owner::ledger::tests::native_context_era_inherits_known_session_and_never_promotes_retained_context)
+  | test(=session_owner::ledger::tests::session_owner_context_preserves_opaque_newlines_and_refuses_nul)
+  | test(=session_owner::ledger::tests::session_owner_deleted_audit_cannot_reuse_independent_publication_key)
+  | test(=session_owner::ledger::tests::session_owner_fresh_reservation_does_not_materialize_unrelated_private_records)
+  | test(=session_owner::ledger::tests::session_owner_missing_or_rolled_back_current_evidence_fails_closed)
+  | test(=session_owner::ledger::tests::session_owner_oversized_current_identity_is_rejected_before_clone)
+  | test(=session_owner::ledger::tests::session_owner_scope_checks_identity_even_when_current_count_matches)
+  | test(=session_owner::owned_scope::task::driver_tests::driver_context_factory_panic_is_observed_on_original_main)
+  | test(=session_owner::owned_scope::task::driver_tests::driver_context_is_delivered_only_inside_actual_fresh_task_gate)
+  | test(=session_owner::owned_scope::task::driver_tests::missing_or_replayed_activation_never_creates_driver_context_factory)
+  | test(=session_owner::owned_scope::task::driver_tests::mixed_grant_metadata_cannot_relabel_actual_native_context)
+  | test(=session_owner::owned_scope::task::driver_tests::wrong_genuine_permit_retains_original_driver_task_gate)
+  | test(=session_owner::owned_scope::task::ingress_tests::actual_main_abort_closes_escaped_context)
+  | test(=session_owner::owned_scope::task::ingress_tests::concurrent_entries_observe_actual_task_closure)
+  | test(=session_owner::owned_scope::task::ingress_tests::constructor_and_future_panic_close_escaped_context)
+  | test(=session_owner::owned_scope::task::ingress_tests::held_local_entry_and_cancelled_wait_do_not_extend_main_lifetime)
+  | test(=session_owner::owned_scope::task::ingress_tests::returned_context_is_closed_before_native_join_ack)
+  | test(=session_owner::owned_scope::task::ingress_tests::unpolled_actual_future_disposal_still_closes_ingress)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::observe::tests::cancelled_observer_notifies_before_contained_literal_drop)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::observe::tests::deadline_is_visible_before_actual_disposal)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::observe::tests::literal_poll_drop_and_semantic_results_are_separate)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::actual_registered_preparations_match_only_their_actual_full_recipe)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::coherent_other_backend_at_the_same_route_is_refused_before_open)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::coherent_unsupported_control_components_and_model_arguments_are_refused)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::genuine_previous_scripted_profile_cannot_gain_retirement_tail)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::binding_tests::original_default_policy_is_preserved_and_cannot_be_refreshed_after_join)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::complete_borrowed_recipe_is_charged_before_description)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::optional_resource_marker_charges_its_complete_encoded_extension)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::recipe_order_boundaries_and_unicode_bytes_are_distinct)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::scripted_binding::tests::tail_response_and_route_are_part_of_the_descriptor)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_native_deadline_keeps_actual_blocked_drop_visible_and_retained)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_ready_native_reply_stays_private_through_actual_blocked_drop)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::genuine_birth_open_unbound_join_and_seal_memory)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::genuine_foreign_open_reply_cannot_start_complete)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::literal_child)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::literal_poll_and_drop_children_are_contained)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::never_started_original_is_joined_without_native_call)
+  | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::original_task_admission_and_unknown_open_never_start_complete)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::builder::projection::tests::exact_projection_charge_precedes_original_materialization)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::builder::tests::real_value_builder_requires_its_exact_cumulative_allowance)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::fixed_host_refuses_missing_managed_session_without_adopting_it)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::fixed_host_runs_both_admission_kinds_and_shared_root_sessions)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_child_activation_commits_before_lost_ack_and_retires_no_dispatch)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_fixed_output_drop_holds_originals_capacity_and_policy_until_disposed)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_fixed_output_drop_panic_never_publishes_policy_terminal)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_literal_factory_panic_is_joined_and_cannot_open_a_source)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::lifetime::actual_partial_factory_and_both_handoff_stop_windows_retire_originals)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::parked_fixed_stop_and_drop_perform_no_preparation_io)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::substitution::another_pristine_concrete_recipe_after_actual_binding_is_refused)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::substitution::another_real_fixed_core_is_refused_before_inner_registration)
+  | test(=session_owner::owned_scope::task::pending::fixed_memory::tests::substitution::genuine_opaque_preparation_from_another_joined_prelude_is_refused)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::actual_aborted_supervisor_is_failed_not_successfully_joined)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::actual_epilogue_join_and_cached_legacy_output_share_one_capacity_lease)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::actual_supervisor_drop_panic_is_sticky_and_unit_wait_cannot_claim_clean)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::join_error_is_sticky_before_untrusted_panic_payload_disposal)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::literal_original_value_drop_blocks_actual_supervisor_join_and_keeps_capacity)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::sticky_supervisor_failures_are_bounded_by_the_original_64_permits)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::unexpected_observer_abort_retains_original_handle_and_sticky_failure)
+  | test(=session_owner::owned_scope::task::pending::retain::supervision_joins::zero_overflow_and_cancelled_reports_preserve_the_same_pending_supervisor)
+  | test(=session_owner::owned_scope::task::pending::tests::actual_panic_is_sticky_while_hostile_payload_disposal_is_blocked)
+  | test(=session_owner::owned_scope::task::pending::tests::cancelled_join_wait_preserves_actual_blocked_business_and_ingress)
+  | test(=session_owner::owned_scope::task::pending::tests::completion_notice_rejects_changed_original_user_message_receipt)
+  | test(=session_owner::owned_scope::task::pending::tests::concurrent_capacity_stays_retained_until_actual_observation_disposal)
+  | test(=session_owner::owned_scope::task::pending::tests::drop_retains_each_original_pending_call_and_disposes_without_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::genuine_first_two_complete_register_activate_and_join_same_main)
+  | test(=session_owner::owned_scope::task::pending::tests::genuine_wrong_permit_and_original_completion_replay_do_not_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::hostile_returned_value_disposal_cannot_forget_observation_or_capacity)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_and_successor_share_one_capacity_and_original_tag_observation)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_changed_keyed_message_receipt_has_no_notice)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_coherently_changed_receipt_version_has_no_notice_or_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_constructor_panic_and_unstarted_drop_preserve_actual_dispositions)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_drop_retains_original_each_pending_call)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_genuine_other_driver_permit_cannot_dispatch)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_notice_only_after_protected_inspection_before_failed_register_or_activate)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_other_genuine_run_ack_cannot_replace_original_before_commit)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_receipt_changed_original_operation_has_no_notice)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_receipt_malformed_replay_run_has_no_notice)
+  | test(=session_owner::owned_scope::task::pending::tests::initial::initial_same_actual_main_and_metadata_replay_memory)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_drop_retains_each_actual_call_and_capacity)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_genuine_other_queue_ack_cannot_replace_original_completed_source)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_initial_successor_share_exact_capacity_and_keep_original_observer_on_wrong_tag)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_notice_requires_full_ack_and_inspection_before_failed_registration)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_rejects_ordinary_source_and_observes_actual_constructor_panic)
+  | test(=session_owner::owned_scope::task::pending::tests::queue_tests::pending_queue_same_actual_main_original_ids_and_repeated_replay_memory)
+  | test(=session_owner::owned_scope::task::pending::tests::unknown_ack_never_calls_business_or_reconstructs_context)
+  | test(=session_owner::owned_scope::task::pending::tests::unstarted_drop_and_business_panic_have_distinct_actual_observations)
+  | test(=session_owner::owned_scope::task::pending::tool_tests::capacity::pending_tool_families_share_existing_capacity_and_require_capability)
+  | test(=session_owner::owned_scope::tests::absent_resource_contract_preserves_original_reserve_shape_and_digest)
+  | test(=session_owner::owned_scope::tests::actual_cleanup_panic_payload_drop_preserves_repeated_failure)
+  | test(=session_owner::owned_scope::tests::actual_main_panic_payload_drop_preserves_repeated_join_evidence)
+  | test(=session_owner::owned_scope::tests::fresh_exact_permit_invokes_once_and_wrong_nonce_retains_gate)
+  | test(=session_owner::owned_scope::tests::interrupted_main_observation_retains_the_actual_task_and_value)
+  | test(=session_owner::owned_scope::tests::main_panic_has_actual_disposition_and_no_cleanup_inference)
+  | test(=session_owner::owned_scope::tests::unknown_ack_closes_actual_gate_without_invoking_factory)
+  | test(=session_owner::preparation::resource_contract::tests::exact_optional_marker_preserves_legacy_and_rejects_ambiguous_policy)
+  | test(=session_owner::preparation::tool_driver::payload::tests::actual_grant_payload_budget_precedes_materialization)
+  | test(=session_owner::service::tests::cancelled_service_activation_is_known_nondispatch)
+  | test(=session_owner::service::tests::fully_sealed_policy_is_metadata_for_workspace_and_session_dependencies)
+  | test(=session_owner::service::tests::only_exact_service_activation_enters_preparation_lineage)
+  | test(=session_owner::service::tests::oversized_service_generation_is_refused_before_copying)
+  | test(=session_owner::service::tests::removing_current_service_source_cannot_turn_typed_origin_into_generic_owner)
+  | test(=session_owner::service::tests::service_register_requires_resource_activation_and_replays_original_receipts)
+  | test(=session_owner::service::tests::service_scope_and_physical_cleanup_policy_cannot_drift)
+  | test(=session_owner::service::tests::stable_service_keys_do_not_rebind_changed_original_root_or_choice)
+  | test(=sql_snapshot::aggregate_token_tests::aggregate_profile_is_authenticated_and_cross_version_closed)
+  | test(=sql_snapshot::aggregate_token_tests::signed_raw_and_aggregate_boundaries_share_all_offset_bounds)
+  | test(=sql_snapshot::token_tests::another_database_key_cannot_authenticate_a_boundary)
+  | test(=storable::tests::matches_value_reader_depth_boundary)
+  | test(=storable::tests::rejects_nul_without_rejecting_literal_escape)
+  | test(=storable::tests::text_guard_rejects_nul)
+  | test(=successor_driver_contract::guards::oversized_context_refuses_before_clone)
+  | test(=tests::public_history_projection_contract)
+  | test(=tests::public_run_private_allocation_is_bounded)
+  | test(=tests::public_run_state_contract)
+  | test(=tool_continuation::ack::tests::first_seal_accounts_actual_complete_output_before_hashing)
+  | test(=tool_continuation::ack::tests::native_ack_binds_complete_receipt_and_custom_store_constructor)
+  | test(=tool_continuation::ack::tests::native_ack_metering_and_same_parent_phase_substitution)
+  | test(=tool_continuation::ack::tests::original_bare_native_legacy_claim_can_emit_sealed_ack)
+  | test(=tool_continuation::canonical::tests::original_source_rehash_preserves_v1_canonical_bytes)
+)
+"""
+test-group = '@global'
+
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=bound_provider_tests::active_execution_holds_original_implementation_and_limits_across_turns)
+  | test(=bound_provider_tests::compaction_keeps_captured_limits_and_respects_the_request_output_cap)
+  | test(=bound_provider_tests::custom_restore_cannot_substitute_a_different_binding_before_recovery_claim)
+  | test(=bound_provider_tests::host_pre_stage_observes_declared_error_and_cannot_clear_it)
+  | test(=bound_provider_tests::legacy_run_without_binding_cannot_gain_recovery_authority)
+  | test(=bound_provider_tests::opaque_host_behavior_requires_explicit_declaration)
+  | test(=bound_provider_tests::recovery_rejects_changed_backend_before_claim)
+  | test(=execution_events::tests::committed_completion_wins_a_simultaneously_closed_event_channel)
+  | test(=execution_tasks::enrollment_tests::closing_retains_real_descendants_after_original_result_and_ignores_handle_clones)
+  | test(=execution_tasks::enrollment_tests::fresh_reentrant_admission_refuses_and_original_self_close_is_detected)
+  | test(=execution_tasks::enrollment_tests::panic_reaped_before_close_remains_in_actual_join_failure_report)
+  | test(=execution_tasks::tests::cancelled_drain_retains_join_handle_and_concurrent_joiners_reconcile)
+  | test(=execution_tasks::tests::correlation::correlation_refuses_wrong_owner_rebinding_and_observed_join)
+  | test(=execution_tasks::tests::correlation::original_supervisor_binds_run_while_drain_already_awaits_its_join)
+  | test(=execution_tasks::tests::driver_cleanup_closes_every_scope_before_awaiting_cross_scope_joins)
+  | test(=execution_tasks::tests::dropped_waiter_does_not_cancel_work_or_relabel_return_as_join)
+  | test(=execution_tasks::tests::panic_payload_drop_cannot_destroy_retained_join_evidence)
+  | test(=execution_tasks::tests::resource_drain_cannot_hide_a_worker_started_during_its_wait)
+  | test(=execution_tasks::tests::retains_distinct_tasks_for_the_same_run_and_sanitizes_panics)
+  | test(=execution_tasks::tests::session_drain_joins_only_selected_preparation_workers_and_resources)
+  | test(=execution_tasks::tests::session_drain_reports_worker_handoff_during_resource_wait)
+  | test(=extension_tests::around_cannot_replace_authorized_tool_input)
+  | test(=extension_tests::error_result_is_redacted_and_lifecycle_points_fire)
+  | test(=extension_tests::model_controls_context_suffix_and_request_error_dispatch)
+  | test(=model_middleware_tests::model_middleware_bypasses_internal_compaction_then_refreshes_agent_turn)
+  | test(=model_middleware_tests::model_middleware_cancellation_interrupts_blocked_read_and_skips_later_contribution)
+  | test(=model_middleware_tests::model_middleware_optional_missing_file_preserves_baseline_system_bytes)
+  | test(=model_middleware_tests::model_middleware_orders_base_static_and_typed_recipe_deterministically)
+  | test(=model_middleware_tests::model_middleware_reader_and_resolver_failures_are_sanitized_before_provider)
+  | test(=model_middleware_tests::model_middleware_resume_keeps_plan_seal_but_refreshes_host_content)
+  | test(=model_middleware_tests::model_middleware_resume_rejects_every_sealed_descriptor_change_without_advancing)
+  | test(=model_middleware_tests::model_middleware_retry_reresolves_refreshes_and_changes_only_system_text)
+  | test(=model_middleware_tests::model_middleware_scope_and_same_name_shadow_match_generic_contributors)
+  | test(=model_middleware_tests::model_middleware_tool_turn_reresolves_rereads_and_refreshes)
+  | test(=policy::tests::glob_permissions)
+  | test(=prompt_contribution_tests::failures::callback_error_and_panic_are_sanitized)
+  | test(=prompt_contribution_tests::failures::deadline_failure_keeps_spawned_work_tracked)
+  | test(=prompt_contribution_tests::failures::failure_on_retry_makes_no_second_provider_call)
+  | test(=prompt_contribution_tests::failures::interrupt_during_contribution_settles_interrupted)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_failures_are_sanitized_before_provider_dispatch)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_rejects_nonconforming_reader_before_provider_dispatch)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_resolver_denies_forged_context_without_host_dispatch)
+  | test(=prompt_contribution_tests::failures::model_middleware_workspace_resolver_is_scoped_to_exact_admitted_workspace)
+  | test(=prompt_contribution_tests::failures::oversize_contribution_fails_before_provider)
+  | test(=prompt_contribution_tests::failures::panic_payload_destructor_settles_failed_without_provider_call)
+  | test(=prompt_contribution_tests::lifecycle::lease_lost_during_contribution_makes_no_provider_call)
+  | test(=prompt_contribution_tests::lifecycle::model_stream_handler_cannot_change_assembled_system)
+  | test(=prompt_contribution_tests::lifecycle::mounting_a_contributor_after_pause_refuses_resume)
+  | test(=prompt_contribution_tests::lifecycle::proactive_compaction_sets_after_compaction_on_first_attempt)
+  | test(=prompt_contribution_tests::lifecycle::recovered_run_invokes_contributors)
+  | test(=prompt_contribution_tests::lifecycle::resumed_run_invokes_contributors)
+  | test(=prompt_contribution_tests::refresh::concurrent_sessions_get_their_own_context)
+  | test(=prompt_contribution_tests::refresh::empty_sections_preserve_base_and_no_base_joins_only_current_sections)
+  | test(=prompt_contribution_tests::refresh::later_turn_sees_current_text)
+  | test(=prompt_contribution_tests::refresh::order_is_frozen_by_order_then_name)
+  | test(=prompt_contribution_tests::refresh::plan_without_contributors_sends_base_only)
+  | test(=prompt_contribution_tests::refresh::post_compaction_attempt_refreshes_and_summary_is_excluded)
+  | test(=prompt_contribution_tests::refresh::retry_rebuilds_dynamic_text_once)
+  | test(=prompt_contribution_tests::refresh::session_registration_shadows_global)
+  | test(=session_invocations::close::tests::actual_registry_identity_is_detection_only_and_never_crosses_registries)
+  | test(=session_invocations::close::tests::cut_signals_every_original_before_observing_and_preserves_pending)
+  | test(=session_invocations::close::tests::every_join_observer_publishes_failure_before_unlocked_payload_disposal)
+  | test(=session_invocations::close::tests::failed_original_remains_sticky_after_normal_reap_before_close)
+  | test(=session_services::provider::tests::custom_source_does_not_authorize_provider_constructor)
+)
+"""
+test-group = '@global'
+
+# Orchestrator unit fixtures own MemoryStore or local task state.
+# Exact names leave future and SQL entrypoints under the conservative fallback.
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=orchestrator::continuation::telemetry_tests::invalid_prepared_authority_does_not_record_approved_outcome)
+  | test(=orchestrator::continuation::telemetry_tests::rejected_approval_continuation_records_failed_status)
+  | test(=orchestrator::host_close::coordinator_tests::close_joins_actual_cleanup_enrolled_after_its_first_task_selection)
+  | test(=orchestrator::host_close::coordinator_tests::later_deadline_refreshes_unobserved_short_pass_over_same_actual_original)
+  | test(=orchestrator::host_close::coordinator_tests::original_self_close_does_not_taint_later_callers_shared_observer)
+  | test(=orchestrator::preparation::pending::factory::tests::cleanup_wins_owned_pending_transfer_memory)
+  | test(=orchestrator::preparation::retained::capacity_tests::full_retained_capacity_refuses_before_reserve_and_reuses_actual_release)
+  | test(=orchestrator::preparation::retained::cleanup::supervisor::tests::actual_failed_cleanup_join_is_sticky_before_unlocked_payload_disposal)
+  | test(=orchestrator::preparation::retained::cleanup::supervisor::tests::clean_output_is_not_a_cleanup_join_before_original_epilogue)
+  | test(=orchestrator::reasoning::tests::exact_category_identity_and_signature_association_are_enforced_before_publication)
+  | test(=orchestrator::reasoning::tests::opaque_identity_text_and_signature_share_one_exact_byte_edge)
+  | test(=orchestrator::reasoning::tests::oversized_or_deep_opaque_is_refused_before_retention)
+  | test(=orchestrator::reasoning::tests::reasoning_limit_is_shared_across_items_and_signatures)
+  | test(=orchestrator::recovery_contract_tests::checkpoint_request_requires_present_positive_or_null_cap)
+  | test(=orchestrator::recovery_contract_tests::fixed_unfinished_settlement_bypasses_pre_stage_and_result_chain)
+  | test(=orchestrator::recovery_contract_tests::paused_pending_reexecutes_stored_identity_and_full_chain_without_prepare)
+)
+"""
+test-group = '@global'
+
+# These runtime journey fixtures own private MemoryStore values.
+# Exact names leave future and SQL entrypoints under the conservative fallback.
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=tests::admission_recovery_verifies_turn_limit_before_terminal_replay)
+  | test(=tests::approval_order::generic_pause_transition_to_approval_keeps_the_original_turn)
+  | test(=tests::approval_order::invalid_generic_checkpoint_call_sets_are_rejected_before_claim_or_effects)
+  | test(=tests::approval_order::opaque_reverse_ids_preserve_frozen_executor_and_settlement_order)
+  | test(=tests::approval_recovery::cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget)
+  | test(=tests::approval_recovery::dropping_recovery_observation_retains_the_mutation_and_worker)
+  | test(=tests::approval_recovery::recovery_allows_prior_completed_phases_without_resetting_turn_budget)
+  | test(=tests::ask_policy_waits_for_a_durable_host_decision)
+  | test(=tests::callback_ownership::failure::kernel_callback_disposal_failure_cannot_certify_attempt_cleanup)
+  | test(=tests::callback_ownership::nested::returned_outer_hook_cannot_hide_recorded_pending_nested_callback)
+  | test(=tests::callback_ownership::phase_quiescence_retains_original_tool_callback_disposal)
+  | test(=tests::callback_ownership::settlement_notifications_use_live_worker_after_phase_seal)
+  | test(=tests::callback_ownership::worker_join_retains_original_model_callback_disposal)
+  | test(=tests::compaction::interrupt_cancels_blocked_compaction_summary)
+  | test(=tests::compaction::interrupt_cancels_summary_stream_acquisition)
+  | test(=tests::compaction::overflow_compacts_once_and_retries_open_turn)
+  | test(=tests::compaction::overflow_keeps_recent_tail_in_projected_retry)
+  | test(=tests::compaction::real_size_limit_overflow_summarizes_bounded_input)
+  | test(=tests::compaction::retryable_provider_error_retries_same_turn)
+  | test(=tests::compaction::second_overflow_fails_after_one_epoch)
+  | test(=tests::completed_commit_survives_heartbeat_channel_closing_before_settle_returns)
+  | test(=tests::continuation_source::frontend_two_exchange_and_unsupported_only_fallback_are_truthful)
+  | test(=tests::continuation_source::human_two_exchange_sources_bind_actual_question_turn_attempt_and_parent)
+  | test(=tests::continuations::answer_and_continue_replay_only_the_frozen_batch_once)
+  | test(=tests::continuations::mixed_batch_is_frozen_and_worker_returns_before_any_executor_starts)
+  | test(=tests::enum_and_nested_schema_failures_never_execute_tool)
+  | test(=tests::frontend_replay::frontend_claim_and_recovery_replay_never_read_current_run)
+  | test(=tests::heartbeat::completed_settlement_wins_heartbeat_tick_during_observer_callback)
+  | test(=tests::heartbeat::heartbeat_covers_model_stream_and_ends_at_durable_approval)
+  | test(=tests::heartbeat::heartbeat_interval_requires_margin_inside_lease)
+  | test(=tests::heartbeat::heartbeat_keeps_gated_tool_run_owned_past_initial_lease)
+  | test(=tests::heartbeat::reclaimed_lease_cancels_pending_tool_body)
+  | test(=tests::heartbeat::reclaimed_lease_does_not_authorize_pending_approval)
+  | test(=tests::interruption_during_provider_backoff_is_prompt_and_never_retries)
+  | test(=tests::invalid_tool_arguments_settle_failed_and_continue)
+  | test(=tests::legacy_retry_safe_pending_calls_do_not_grant_native_dispatch)
+  | test(=tests::legacy_running_call_cannot_be_declared_interrupted_by_recovery)
+  | test(=tests::native_attempt::completion_concludes_the_same_started_native_attempt)
+  | test(=tests::native_attempt::expired_pristine_admission_and_unstarted_reservation_enter_the_model_driver_once)
+  | test(=tests::native_attempt::lost_begin_acknowledgment_never_dispatches_or_retries)
+  | test(=tests::native_attempt::suspension_and_resume_use_distinct_native_generations)
+  | test(=tests::native_phase::fresh_phase_claim_must_match_the_authorized_call_binding)
+  | test(=tests::native_phase::postcommit_observer_panic_preserves_the_acknowledged_phase)
+  | test(=tests::native_phase::unknown_phase_start_and_settlement_never_dispatch_or_settle_twice)
+  | test(=tests::operational_observation::operational_cancellation_before_and_after_stream_setup)
+  | test(=tests::operational_observation::operational_extension_setup_rejection_and_omission_are_runtime_errors)
+  | test(=tests::operational_observation::operational_lease_loss_is_local_once_and_does_not_settle_replacement)
+  | test(=tests::operational_observation::operational_ordinary_store_conflict_keeps_runtime_error_and_settlement)
+  | test(=tests::operational_observation::operational_regressing_clock_saturates_to_zero)
+  | test(=tests::operational_observation::operational_startup_midstream_success_and_first_text_boundaries)
+  | test(=tests::operational_observation::operational_store_first_takeover_skips_settlement_initial_and_resume)
+  | test(=tests::operational_observation::operational_tool_failure_remains_distinct_when_run_succeeds)
+  | test(=tests::operational_observation::operational_tool_store_setup_error_is_not_tool_error)
+  | test(=tests::operational_observation::source_contract::cancellation_closes_arguments_and_preserves_partial_identity)
+  | test(=tests::operational_observation::source_contract::identities_correlate_live_durable_and_stored_parallel_rounds)
+  | test(=tests::operational_observation::source_contract::invalid_call_boundaries_fail_and_close_without_dispatch)
+  | test(=tests::operational_observation::source_contract::midstream_lease_loss_drops_future_with_presentation_cleanup_only)
+  | test(=tests::operational_observation::source_contract::retry_keeps_turn_but_allocates_distinct_attempt_message_ids)
+  | test(=tests::operational_observation::source_contract::store_fault_does_not_publish_unpersisted_tool_content)
+  | test(=tests::operational_observation::workspace_context::empty_persisted_fields_are_unavailable_never_defaulted)
+  | test(=tests::operational_observation::workspace_context::parallel_tool_calls_share_the_persisted_identity)
+  | test(=tests::operational_observation::workspace_context::permission_denial_never_reaches_the_executor)
+  | test(=tests::operational_observation::workspace_context::recover_sweep_skips_and_reports_bad_runs_and_recovers_the_rest)
+  | test(=tests::operational_observation::workspace_context::row1_fresh_unkeyed_admission_exposes_persisted_identity)
+  | test(=tests::operational_observation::workspace_context::row2_fresh_keyed_admission_exposes_persisted_identity)
+  | test(=tests::operational_observation::workspace_context::row3_same_session_later_run_sees_identical_identity_and_rejects_drift)
+  | test(=tests::operational_observation::workspace_context::row4_paused_pending_execution_resumed_in_process)
+  | test(=tests::operational_observation::workspace_context::row5_paused_pending_execution_resumed_by_fresh_host)
+  | test(=tests::operational_observation::workspace_context::row6_generic_recovery_of_paused_run_with_checkpoint_request)
+  | test(=tests::operational_observation::workspace_context::row7_legacy_running_run_cannot_authorize_execution_from_context_alone)
+  | test(=tests::operational_observation::workspace_context::row8_keyed_admission_recovery_uses_persisted_identity_and_rejects_drift)
+  | test(=tests::operational_observation::workspace_context::stored_record_conflict_rejects_resume_and_changes_nothing)
+  | test(=tests::parallel_tools_execute_together_and_settle_in_assistant_order)
+  | test(=tests::pipeline_cleanup_is_joined_before_native_phase_settlement)
+  | test(=tests::public_state::interrupt_closes_partial_text_message)
+  | test(=tests::public_state::source_writer::cancelled_publish_with_live_original_worker_cannot_conclude_or_skip_unresolved_cursor)
+  | test(=tests::public_state::source_writer::lost_source_ack_reconciles_before_later_delta_and_exact_retry_does_not_duplicate)
+  | test(=tests::public_state::source_writer::retained_attempt_writer_cannot_emit_or_mutate_after_actual_approval_pause)
+  | test(=tests::public_state::source_writer::simultaneous_exact_tool_publish_is_observed_once_and_sealed_after_terminal)
+  | test(=tests::public_state::steering_and_follow_up_reach_later_requests_and_busy_is_rejected)
+  | test(=tests::public_state::stream_eof_without_completed_fails_without_assistant_commit)
+  | test(=tests::public_state::text_tool_text_has_exact_order_and_three_generated_messages)
+  | test(=tests::reasoning_provenance::distinct_items_persist_privately_and_reach_the_next_provider_without_live_leaks)
+  | test(=tests::reasoning_provenance::interruption_preserves_private_continuity_but_not_in_public_history_or_live_events)
+  | test(=tests::reasoning_provenance::retry_and_provenance_reclassification_cannot_publish_private_reasoning)
+  | test(=tests::recovery_observation::linked_expired_legacy_recovery_cannot_grant_dispatch)
+  | test(=tests::recovery_observation::recovery_selects_current_attempt_per_run_without_ambient_contamination)
+  | test(=tests::resume_lifecycle::interrupting_an_inflight_executor_retains_uncertainty)
+  | test(=tests::resume_lifecycle::paused_call_resumes_from_persisted_input)
+  | test(=tests::resume_lifecycle::recovery_refuses_history_that_drifted_from_the_native_pause)
+  | test(=tests::resume_lifecycle::resumed_tool_stops_when_lease_is_reclaimed)
+  | test(=tests::resume_refuses_run_admitted_under_pre_contract_fingerprint)
+  | test(=tests::suspension_observation::committed_suspensions_wait_for_their_own_ack_not_stale_observers)
+  | test(=tests::suspension_observation::owner_read_finishing_after_quiescent_pause_waits_for_original_ack)
+  | test(=tests::suspension_observation::worker_join_retains_original_heartbeat_renewal_after_main_returns)
+  | test(=tests::terminal_control::own_terminal_control_refusal_does_not_replace_unknown_completion_ack)
+  | test(=tests::terminal_control::own_terminal_control_refusal_waits_for_original_completion_ack)
+  | test(=tests::terminal_outcome::failed_execution_exposes_unknown_terminal_persistence)
+  | test(=tests::terminal_outcome::interruption_requires_acknowledged_terminal_commit)
+  | test(=tests::terminal_outcome::resumed_executor_interruption_does_not_attempt_terminal_settlement)
+  | test(=tests::terminal_outcome::resumed_success_does_not_retry_an_unknown_terminal_write)
+  | test(=tests::terminal_outcome::successful_execution_does_not_retry_an_unknown_terminal_write)
+  | test(=tests::tool_suspension_faults::suspension_distinguishes_definite_refusal_revision_retry_and_unknown_ack)
+  | test(=tests::tracing_spans::approval_suspend_and_continue_spans)
+  | test(=tests::tracing_spans::attempt_id_matches_observer_attempt)
+  | test(=tests::tracing_spans::failed_approval_suspension_records_error_status)
+  | test(=tests::tracing_spans::host_context_is_recorded_on_run_span)
+  | test(=tests::tracing_spans::host_span_closes_after_run_span)
+  | test(=tests::tracing_spans::lease_loss_records_outcome_and_single_warn_source)
+  | test(=tests::tracing_spans::lifecycle_events_are_emitted_under_lifecycle_target_only)
+  | test(=tests::tracing_spans::no_content_fields_anywhere)
+  | test(=tests::tracing_spans::retry_emits_warn_with_finite_kind)
+  | test(=tests::tracing_spans::run_span_is_child_of_caller_span_and_has_model_and_tool_children)
+  | test(=tests::turn_budget::ambiguous_or_invalid_pause_budget_is_refused_before_claim)
+  | test(=tests::turn_budget::ordinary_pause_preserves_the_consumed_model_turn)
+  | test(=tests::turn_budget::repeated_approvals_share_one_total_model_turn_budget)
+  | test(=tests::unstarted_batch::cold_unstarted_continuation_executes_pending_batch_before_another_model_turn)
+  | test(=tests::zero_output_cap_is_rejected_before_admission)
+)
+"""
+test-group = '@global'
+
+# Preparation and driver fixtures construct private MemoryStore values.
+# Exact names keep future and SQL entrypoints under the conservative fallback.
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=tests::preparation_resources::cleanup_failure::cancelled_factory_with_actual_failed_cleanup_stays_uncertain)
+  | test(=tests::preparation_resources::driver::actual_outer_worker_panic_survives_supervisor_join_reporting)
+  | test(=tests::preparation_resources::driver::dropped_handle_retains_original_driver_ack_future_and_dispatches_once)
+  | test(=tests::preparation_resources::driver::faults::activation_store_panics_join_actual_no_dispatch)
+  | test(=tests::preparation_resources::driver::faults::genuine_other_run_driver_grant_cannot_dispatch_this_runs_work)
+  | test(=tests::preparation_resources::driver::faults::isolation::older_worker_cleanup_cannot_close_another_workers_same_run_resources)
+  | test(=tests::preparation_resources::driver::faults::join_store_panics_retry_same_actual_observation)
+  | test(=tests::preparation_resources::driver::faults::late::interrupt_closes_resources_before_main_join_and_covers_late_scopes)
+  | test(=tests::preparation_resources::driver::faults::late::panic_cleanup_cannot_omit_a_late_registered_scope)
+  | test(=tests::preparation_resources::driver::faults::pending::pending_store_poll_survives_cancellation_while_resource_closure_progresses)
+  | test(=tests::preparation_resources::driver::faults::store_poll_panic_retains_actual_main_and_cleanup_until_their_joins)
+  | test(=tests::preparation_resources::driver::native_terminal_does_not_join_driver_while_outer_observer_is_running)
+  | test(=tests::preparation_resources::driver::unknown_driver_activation_joins_actual_no_dispatch_without_model_effects)
+  | test(=tests::preparation_resources::driver::unknown_driver_join_retries_only_original_observation)
+  | test(=tests::preparation_resources::driver::unknown_driver_registration_never_dispatches_the_model)
+  | test(=tests::preparation_resources::faults::cleanup_join_ack_retry_retains_actual_observation_and_never_dispatches)
+  | test(=tests::preparation_resources::faults::explicit_cleanup_after_unknown_native_commit_preserves_original_source)
+  | test(=tests::preparation_resources::faults::malformed_cleanup_ack_retains_original_observation_for_exact_retry)
+  | test(=tests::preparation_resources::faults::running_factory_cancel_is_observed_after_signal_and_waits_for_cleanup)
+  | test(=tests::preparation_resources::faults::unkeyed_unknown_commit_retry_keeps_uncertainty_without_repeating_io)
+  | test(=tests::preparation_resources::faults::unknown_activation_ack_never_opens_factory_and_explicit_cleanup_observes_no_dispatch)
+  | test(=tests::preparation_resources::faults::unknown_completion_cleanup_joins_child_without_forging_root_disposition)
+  | test(=tests::preparation_resources::heartbeat::dropped_legacy_preparation_retry_retains_original_heartbeat)
+  | test(=tests::preparation_resources::heartbeat::stopping_preparation_after_pending_lookup_does_not_start_cancel_observation)
+  | test(=tests::preparation_resources::heartbeat::stopping_preparation_heartbeat_does_not_start_next_authority_io)
+  | test(=tests::preparation_resources::legacy_failure::joined_legacy_failure_reconciles_original_cancelled_ack_without_factory_retry)
+  | test(=tests::preparation_resources::pending_approval::pending_approval_preflight_refusal_precedes_factory_and_begin)
+  | test(=tests::preparation_resources::provider_binding::lost_native_commit_ack_retains_captured_provider_and_never_reacquires_on_retry)
+  | test(=tests::preparation_resources::provider_binding::ordinary_and_keyed_initial_workers_use_captured_owned_provider_once)
+  | test(=tests::preparation_resources::provider_binding::owned_provider_refuses_unscoped_preparation_before_provider_factory)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_fresh_notice_survives_registration_and_activation_failure)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_same_task_and_original_replay_memory)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_unsupported_inspector_refuses_before_factory)
+  | test(=tests::preparation_resources::queue::pending_queue_runtime_waiter_drop_and_stop_retain_committed_ack_and_original_plan)
+  | test(=tests::preparation_resources::scoped_plan_lifetime_keeps_child_active_until_actual_cleanup_joins)
+  | test(=tests::preparation_resources::successor::callbacks::pending_first_two_retain_nested_callback_before_native_join)
+  | test(=tests::preparation_resources::unknown_native_commit_retry_observes_without_reminting_authority)
+)
+"""
+test-group = '@global'
+
+# The result-transform harness fixes its Store to a private MemoryStore.
+# Exact names keep future and SQL entrypoints under the conservative fallback.
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=result_transform_tests::binding::parallel_binding_survives_reverse_callback_completion)
+  | test(=result_transform_tests::binding::sequential_binding_preserves_each_calls_context_and_output)
+  | test(=result_transform_tests::cancel::accepted_predecessor_at_next_ordinary_entry_is_discarded)
+  | test(=result_transform_tests::cancel::accepted_value_passes_every_final_after_interrupt)
+  | test(=result_transform_tests::cancel::accepted_value_without_final_is_discarded)
+  | test(=result_transform_tests::cancel::blocked_ordinary_drops_seed)
+  | test(=result_transform_tests::cancel::blocked_pre_stage_is_not_accepted)
+  | test(=result_transform_tests::cancel::final_error_after_interrupt_uses_fixed_interrupted_text)
+  | test(=result_transform_tests::cancel::final_panic_after_interrupt_uses_fixed_interrupted_text)
+  | test(=result_transform_tests::cancel::gate_release_counts_live_receivers_after_a_handler_is_dropped)
+  | test(=result_transform_tests::cancel::in_flight_final_survives_and_remaining_final_protects)
+  | test(=result_transform_tests::cancel::two_finals_share_one_cancellation_deadline)
+  | test(=result_transform_tests::compose::execution_failure_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::compose::permission_denial_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::compose::preparation_failure_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::compose::success_runs_pre_stage_then_reducer_then_final_redactor)
+  | test(=result_transform_tests::compose::unknown_tool_runs_reducer_then_final_redactor_without_pre_stage)
+  | test(=result_transform_tests::context::a_tool_prepare_rewrite_into_a_sentinel_is_a_preparation_failure)
+  | test(=result_transform_tests::context::around_handler_error_and_changed_input_are_execution_failed)
+  | test(=result_transform_tests::context::cancellation_during_pre_stage_discards_output_and_skips_chain)
+  | test(=result_transform_tests::context::deeply_nested_unknown_tool_call_settles_with_the_usual_result)
+  | test(=result_transform_tests::context::executor_error_text_permission_denied_is_still_execution_failed)
+  | test(=result_transform_tests::context::guard_ask_refused_by_the_approver_is_permission_denied)
+  | test(=result_transform_tests::context::input_is_the_post_tool_prepare_arguments)
+  | test(=result_transform_tests::context::permission_denial_by_guard_and_restriction_is_normalized)
+  | test(=result_transform_tests::context::permission_denial_by_policy_and_refused_approval_is_normalized)
+  | test(=result_transform_tests::context::pre_stage_error_is_sanitized_and_skips_result_chain)
+  | test(=result_transform_tests::context::pre_stage_mark_error_is_monotonic_through_extension_chain)
+  | test(=result_transform_tests::context::pre_stage_only_runs_on_success_and_cannot_clear_errors)
+  | test(=result_transform_tests::context::preparation_failures_have_unavailable_input)
+  | test(=result_transform_tests::context::reader_anything_else_rows)
+  | test(=result_transform_tests::context::reader_preparation_failure_rows)
+  | test(=result_transform_tests::context::reader_unknown_tool_rows)
+  | test(=result_transform_tests::context::reserved_sole_key_arguments_are_a_preparation_failure)
+  | test(=result_transform_tests::context::resume_from_the_stored_record_derives_the_same_context)
+  | test(=result_transform_tests::context::success_and_execution_error_are_normalized)
+  | test(=result_transform_tests::context::unknown_tool_input_is_raw_provider_arguments)
+  | test(=result_transform_tests::context::unknown_tool_record_always_decodes_and_reads_back_as_raw)
+  | test(=result_transform_tests::execution_error_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::harness_builder_installs_guard_and_restriction_denials)
+  | test(=result_transform_tests::harness_builder_mounts_extra_extensions_and_runs_in_parallel)
+  | test(=result_transform_tests::harness_gate_parks_only_the_selected_call_and_releases_it_alone)
+  | test(=result_transform_tests::harness_gate_parks_the_result_handler_until_released)
+  | test(=result_transform_tests::interrupted_runtime::accepted_final_redaction_settles_interrupted_with_json_and_notifications)
+  | test(=result_transform_tests::interrupted_runtime::blocked_result_transform_interrupts_with_fixed_text_within_bound)
+  | test(=result_transform_tests::interrupted_runtime::delayed_protected_notifications_read_seeded_state_and_reject_terminal_writes)
+  | test(=result_transform_tests::interrupted_runtime::interrupted_notifications_cannot_block_sibling_settlement_and_retain_plan_lease)
+  | test(=result_transform_tests::interrupted_runtime::owned::interrupted_notification_keeps_actual_join_and_propagates_disposal_failure)
+  | test(=result_transform_tests::interrupted_runtime::parallel_interruption_settles_out_of_order_without_deadlock)
+  | test(=result_transform_tests::paths::execution_failure_cannot_be_cleared_by_unchanged_result)
+  | test(=result_transform_tests::paths::guard_denial_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::pipeline_prepare_failure_has_unavailable_input_and_never_runs_handler)
+  | test(=result_transform_tests::paths::policy_denial_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::refused_approval_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::restriction_denial_keeps_normalized_input_and_never_executes)
+  | test(=result_transform_tests::paths::schema_failure_has_unavailable_input_and_never_prepares)
+  | test(=result_transform_tests::paths::success_uses_post_tool_prepare_input_without_preparing_again)
+  | test(=result_transform_tests::paths::tool_prepare_handler_failure_has_unavailable_input_without_reconstruction)
+  | test(=result_transform_tests::paths::unknown_tool_keeps_raw_provider_values_including_unparseable_text)
+  | test(=result_transform_tests::permission_denial_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::preparation_error_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::recovery::old_contract_fingerprint_is_refused_without_mutation)
+  | test(=result_transform_tests::recovery::public_entrypoints_require_native_suspension_before_replaying_pending_calls)
+  | test(=result_transform_tests::recovery::replay_class_and_input_come_only_from_the_record)
+  | test(=result_transform_tests::result_chain_failures_persist_only_fixed_handler_message)
+  | test(=result_transform_tests::success_path_uses_authoritative_envelope)
+  | test(=result_transform_tests::tamper::deep_normalized_arguments_are_downgraded_before_result_transform)
+  | test(=result_transform_tests::tamper::deep_raw_envelope_is_downgraded_before_result_transform)
+  | test(=result_transform_tests::tamper::denied_calls_cannot_be_rewritten_into_execution_or_success)
+  | test(=result_transform_tests::tamper::every_context_field_is_immutable_and_stops_the_chain)
+  | test(=result_transform_tests::tamper::false_mark_error_cannot_clear_any_error_class)
+  | test(=result_transform_tests::tamper::malformed_replies_errors_and_panics_persist_only_fixed_text)
+  | test(=result_transform_tests::tamper::mark_error_escalates_success_and_later_false_cannot_clear_it)
+  | test(=result_transform_tests::tamper::tampered_run_id_does_not_change_store_fencing)
+  | test(=result_transform_tests::two_calls_one_turn_keep_distinct_authoritative_ids)
+  | test(=result_transform_tests::typed_result_chain_preserves_structured_output_and_error_classes)
+  | test(=result_transform_tests::unknown_tool_path_uses_authoritative_envelope)
+)
+"""
+test-group = '@global'
+
+# Worker ownership fixtures and their path-mapped children use MemoryStore.
+# Exact names keep future and SQL entrypoints under the conservative fallback.
+[[profile.complete-ci.overrides]]
+filter = """
+package(crabber-runtime) & (
+    test(=tests::owned_execution::abandoned_resume_waiter_leaves_claim_and_work_owned)
+  | test(=tests::owned_execution::done_consumes_actual_join_and_host_drain_can_join_before_result_is_taken)
+  | test(=tests::owned_execution::dropped_run_handle_keeps_worker_owned_until_real_join)
+  | test(=tests::owned_execution::panicked_worker_join_does_not_invent_durable_terminal_outcome)
+  | test(=tests::owned_execution::preparation::abandoned_initial_waiters_keep_late_ordinary_and_keyed_commits_owned)
+  | test(=tests::owned_execution::preparation::abandoned_retained_admission_recovery_waiter_keeps_late_claim_owned)
+  | test(=tests::owned_execution::session_invocations::ack::detached_join_rejects_changed_native_ack_fields_without_repeating_work)
+  | test(=tests::owned_execution::session_invocations::bounds::invocation_drain_overflow_preserves_idle_pending_cancellation_and_failed_cleanup)
+  | test(=tests::owned_execution::session_invocations::detached_owner_ack_loss_never_dispatches_from_metadata)
+  | test(=tests::owned_execution::session_invocations::faults::detached_store_panic_retains_original_main_and_resource_joins)
+  | test(=tests::owned_execution::session_invocations::pending_detached_cancel_before_begin_ack_skips_factory_and_reconciles_observe_ack)
+  | test(=tests::owned_execution::session_invocations::pending_preparation_cancel_before_begin_ack_preserves_blocker_without_factory_or_observe)
+  | test(=tests::owned_execution::session_invocations::scoped::detached_registered_join_waits_for_exact_sealed_cleanup_after_parent_finishes)
+  | test(=tests::owned_execution::session_invocations::unknown_detached_activation_ack_stays_unknown_and_never_dispatches)
+)
+"""
+test-group = '@global'
+
+# These exact consumer fixtures construct only fresh MemoryStore values.
+# They use ordinary worker slots, including their isolated literal child.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::caller_timeout_and_drop_keep_the_same_supervisor_resource_join_and_capacity) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::every_native_call_remains_in_the_same_original_task) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_child) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::literal_consumer_poll_and_drop_children_are_contained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::native_deadline_after_successful_literal_drop_can_reconcile_paired_close) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement::committed_seal_lost_ack_replays_same_original_and_retains_outputs) | test(=session_owner::owned_scope::task::pending::enrolled_initial::consumer::tests::retirement_witness_keeps_actual_disposition_and_pre_io_activation))'
+test-group = '@global'
+
+# Both killed-worker journeys contain an unchanged real lease-expiry wait.
+# The unprefixed trace case uses PostgreSQL and keeps its backend group.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber) & binary(=trace_context) & (test(=durable_process::killed_started_worker_refuses_replay_and_preserves_closed_anchor) | test(=durable_process::sqlite_killed_started_worker_refuses_replay_and_preserves_closed_anchor))'
+priority = 30
+
+# Start long independent native histories before shorter cases in their group.
+# Priority alone changes; backend slots, worker weights and deadlines remain.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber-session) & (test(=memory::queue::tests::queue_bounds) | test(=sqlite::queue::tests::queue_bounds) | test(=postgres::queue::tests::queue_bounds) | test(=sqlite::session_owner::tests::session_owner_contract) | test(=postgres::session_owner::tests::session_owner_contract) | test(=memory::session_owner::tests::session_owner_shared_capacity) | test(=postgres::session_owner::drivers::tests::approval_successor_driver_contract))'
+priority = 30
+
+# These MemoryStore-only blocked-drop histories include real native deadlines.
+# Start them early while retaining the conservative service group and weight.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber-session) & (test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_native_deadline_keeps_actual_blocked_drop_visible_and_retained) | test(=session_owner::owned_scope::task::pending::enrolled_initial::tests::every_ready_native_reply_stays_private_through_actual_blocked_drop))'
+priority = 20
+
+# Service limits take priority even inside a WASM binary. The later WASM
+# override independently retains its two general scheduler reservations.
+# These reconnect journeys compile/register echo WASM but dispatch a native tool.
+# Weight one keeps SQL groups uniform while heavy WASM cases retain weight two.
+[[profile.complete-ci.overrides]]
+filter = 'package(crabber) & binary(=wasm_roles) & (test(=freshly_connected_postgres_agent_resumes_native_and_wasm_plan) | test(=freshly_connected_sqlite_agent_resumes_native_and_wasm_plan))'
+threads-required = 1
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/postgres/)'
+test-group = 'postgres-ci'
+priority = 10
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/sqlite/)'
+test-group = 'sqlite'
+
+[[profile.complete-ci.overrides]]
+filter = 'binary(/wasm/) | test(/wasm/)'
+test-group = 'wasm'
+threads-required = 2
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/(^sqlite::|::sqlite_|^sqlite_)/)'
+test-group = 'sqlite'
+
+[[profile.complete-ci.overrides]]
+filter = 'test(/(^memory::|::memory_|^memory_)/)'
+threads-required = 1
+
+[[profile.complete-ci.overrides]]
+filter = 'not test(/(^memory::|::memory_|^memory_|^sqlite::|::sqlite_|^sqlite_)/) & (package(crabber-session) | package(crabber-runtime) | package(crabber) | package(server-host-probe) | package(workspace-context-probe) | package(crabber-test-support))'
+test-group = 'postgres-ci'
+
+# Override the old partial profile's generic runtime weight; only actual heavy
+# WASM cases above reserve two scheduler threads in the combined run.
+[[profile.complete-ci.overrides]]
+filter = 'all()'
+threads-required = 1

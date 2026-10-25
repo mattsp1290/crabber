@@ -1,0 +1,889 @@
+{
+  "version": 1,
+  "implementation_base": "3fc10a553bdd007f018fd85cbe629f44d316f52a",
+  "timing_budget_seconds": 600,
+  "qualification_status": "pending",
+  "policy": "Every required detector must distinguish a concrete important failure; identical parameter products are not a coverage obligation.",
+  "changes": [
+    {
+      "id": "sql-successor-tool-faults",
+      "disposition": "MERGE",
+      "state": "targeted-backend-qualified",
+      "failure": "Rollback before commit, committed-but-unknown register or activation ACK, cancellation, lease expiry, and public-state fencing must never grant an extra effect.",
+      "owner": [
+        "crates/crabber-session/src/postgres/session_owner/drivers/successor.rs",
+        "crates/crabber-session/src/sqlite/session_owner/drivers/successor.rs"
+      ],
+      "retained_tests": [
+        "tool_fresh_fault_before_commit",
+        "tool_fresh_fault_committed_ack",
+        "tool_fresh_fault_activation_ack",
+        "tool_fresh_fault_cancelled",
+        "tool_fresh_fault_expired",
+        "tool_fresh_fault_changed_public_state",
+        "tool_fresh_fault_changed_before_register",
+        "tool_fresh_fault_tool_recovery_before_commit",
+        "tool_fresh_fault_frontend_claim_committed_ack",
+        "tool_fresh_fault_frontend_recovery_activation_ack"
+      ],
+      "required_backends": [
+        "sqlite",
+        "postgres"
+      ],
+      "before": "28 complete histories per SQL backend: frontend x recovery x seven boundaries.",
+      "after": "Ten independent histories per backend, all seven boundaries and all four origins.",
+      "rationale": "Fault injection and post-registration refusal/activation checks are shared across origins inside each backend. Tool/Frontend claim/recovery select different native authentication paths, so three alternate-origin faults remain; tool_source_tests and tool_guards_tests retain all four source/authority paths. Existing fresh::faults, activation_fault and refusals assertions are unchanged. PostgreSQL Current fixtures already contain the migrated schema; migration tests retain Blank provisioning.",
+      "validation": "All selected histories passed at one and four slots; Memory/SQLite20 selected cases each, managed PostgreSQL10fault+4pendingfixtures each; all4ownedcontainers and fixture registries drained. Full combined schedule and budget qualification remain pending."
+    },
+    {
+      "id": "runtime-successor-wrapper-faults",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A failed, panicking or replayed successor registration/activation/Join must not authorize extra dispatch, lose the original cleanup, or misstate native ownership.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/driver.rs",
+        "crates/crabber-runtime/src/orchestrator/driver/registration.rs",
+        "crates/crabber-runtime/src/orchestrator/driver/retirement.rs"
+      ],
+      "retained_tests": [
+        "memory_runtime_successor_native_faults",
+        "sqlite_runtime_successor_core",
+        "postgres_runtime_successor_core",
+        "sqlite_runtime_successor_retention",
+        "postgres_runtime_successor_retention",
+        "sqlite_runtime_successor_recovery",
+        "postgres_runtime_successor_recovery",
+        "sqlite_runtime_successor_pending",
+        "postgres_runtime_successor_pending",
+        "sqlite::session_owner::drivers::tests::successor_driver_contract",
+        "postgres::session_owner::drivers::tests::successor_driver_contract",
+        "sqlite::session_owner::drivers::tests::successor_process::physical_successor_commit_boundaries",
+        "postgres::session_owner::drivers::tests::successor_process::physical_successor_commit_boundaries"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Both admission-recovery and expired-run origins execute 14 rows on every backend: 28 Runtime successor histories per backend.",
+      "after": "Memory keeps all 28 histories. Each SQL backend retains both origins and rows (0,0),(1,1),(1,2),(1,5),(2,1),(2,2),(3,1),(3,2): 16 histories, with every assertion unchanged.",
+      "rationale": "Fault-store panic points 3/4 run before invoking the inner Store or after its awaited operation has completed, outside any live SQL transaction. Returned authority/receipt values contain metadata, not pooled connections. The shared Runtime unwind adapter remains covered by all Memory panic rows; SQL points 1/2 retain the same pre-call/completed-call uncertainty states, and registration point 5 retains actual native replay. Existing Runtime SQL retention families separately cover panic while real main/resource children remain held and require actual Active-to-Joined cleanup; native SQL transaction and physical process boundaries remain required. No origin, effect-count, cleanup, issuance, ownership-state or deadline assertion is removed.",
+      "validation": "All three retained core families passed once serially and once at four scheduler slots: 28 Memory and 16 histories per SQL backend. Native wall times were43.857s serial and21.536s parallel. Each run created and finished its one PostgreSQL history fixture, cleaned its owned run/server, and left its container absent. This is partial changed-family validation; complete and affected-rebuild qualification remain pending. Prior full-run timings are not a controlled critical-path comparison."
+    },
+    {
+      "id": "runtime-initial-driver-join-ack",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A malformed Join acknowledgement must not release the original physical proof, change retry identity, or repeat business dispatch even though native Join committed.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/driver/retirement.rs"
+      ],
+      "retained_tests": [
+        "memory_initial_driver_malformed_join_ack_retains_original_proof",
+        "sqlite_initial_driver_malformed_join_ack_retains_original_proof",
+        "postgres_initial_driver_malformed_join_ack_retains_original_proof",
+        "sqlite::session_owner::drivers::tests::sql_initial_driver_contract",
+        "postgres::session_owner::drivers::tests::sql_initial_driver_contract",
+        "sqlite::session_owner::drivers::tests::sql_unkeyed_driver_contract",
+        "postgres::session_owner::drivers::tests::sql_unkeyed_driver_contract",
+        "sqlite::session_owner::tests::owned_scope_sources_and_join_hash_are_independent",
+        "postgres::session_owner::tests::owned_scope_sources_and_join_hash_are_independent",
+        "sqlite::session_owner::drivers::tests::publications::driver_original_publication_refuses_valid_projection_rewrites",
+        "postgres::session_owner::drivers::tests::publications::driver_original_publication_refuses_valid_projection_rewrites",
+        "sqlite::session_owner::tests::session_owner_contract",
+        "postgres::session_owner::tests::session_owner_contract"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Each backend repeats nine returned-receipt field mutations for both keyed and unkeyed initial admission: 18 histories.",
+      "after": "Memory keeps all 18 histories. Each SQL backend retains both origins with wrong termination (1) and wrong owner target (8): four histories. All original assertions and deadlines remain.",
+      "rationale": "The test wrapper changes only an in-memory returned SessionOwnerReceipt after genuine native Join has completed. No mutation changes persisted SQL data, backend authentication or an in-flight transaction. All nine negative field comparisons belong to the shared Runtime retirement predicate and remain covered on Memory. Each retained SQL case proves persisted Joined state, a still-pending original proof after150ms, identical repeated Join keys, exactly one business/provider effect, and eventual completion only after clearing the corruption. That genuine SQL Replay must pass all nine positive comparisons. Native SQL driver fault/cold-replay/protection and real persisted owned-scope source/Join-hash corruption and process histories remain required.",
+      "validation": "All three retained ACK families passed once serially and once at four scheduler slots: 18 Memory and four histories per SQL backend. Each run created and finished one owned PostgreSQL fixture, cleaned its run/server and left its container absent. Every real Replay still passed the complete retirement predicate. This is partial changed-family validation; complete-budget and affected-rebuild qualification remain pending."
+    },
+    {
+      "id": "pending-tool-malformed-ack",
+      "disposition": "MOVE-CHEAPER",
+      "state": "targeted-backend-qualified",
+      "failure": "Forged completion metadata, wrong claim/inspection/fence, oversized receipt, or wrong typed outcome must prevent registration and business dispatch.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation.rs",
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/execute/continuation/receipt.rs"
+      ],
+      "retained_tests": [
+        "tool_claim::memory_pending_malformed_replay",
+        "tool_recovery::memory_pending_malformed_replay",
+        "frontend_claim::memory_pending_malformed_replay",
+        "frontend_recovery::memory_pending_malformed_replay",
+        "tool_claim::sqlite_pending_malformed_replay",
+        "tool_recovery::sqlite_pending_malformed_replay",
+        "frontend_claim::sqlite_pending_malformed_replay",
+        "frontend_recovery::sqlite_pending_malformed_replay",
+        "tool_claim::postgres_pending_malformed_replay",
+        "tool_recovery::postgres_pending_malformed_replay",
+        "frontend_claim::postgres_pending_malformed_replay",
+        "frontend_recovery::postgres_pending_malformed_replay"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Twelve corruption preparations for each of four origins on every backend.",
+      "after": "All twelve on Memory for every origin; forged receipt revision (0) and suspended/wrong typed outcome (8) on both SQL backends for every origin.",
+      "rationale": "Completed::new, Source::metadata, claim-token/run/root-join checks and metadata/inspection equality are shared Rust pending execution code, independent of Store backend. SQL retains authentic preparation/commit/inspection followed by zero-register and zero-business-effect assertions for both a forged receipt and an invalid outcome on each of four independently authenticated origins. All held-stage faults and committed-ACK replay histories remain unchanged.",
+      "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
+    },
+    {
+      "id": "wasm-state-bounds",
+      "disposition": "MOVE-CHEAPER",
+      "state": "targeted-backend-qualified",
+      "failure": "State must survive independent PerCall Agent runs; real host state imports must enforce entry, value and key bounds without applying refused writes.",
+      "owner": [
+        "crates/crabber-wasm/src/lib.rs",
+        "fixtures/wasm/src/counter-sink/src/lib.rs"
+      ],
+      "required_backends": [
+        "wasm"
+      ],
+      "retained_tests": [
+        "counter_state_survives_independent_agent_runs",
+        "state_import_enforces_default_entry_and_value_limits",
+        "counter_state_crosses_thousand_between_fresh_instances",
+        "concurrent_sessions_serialize_without_state_leak"
+      ],
+      "before": "212 full Agent turns merely increment one state key past1000; actual default entry/value/key overflow was not crossed.",
+      "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999→1000 counter transition and existing two-session concurrent state history remain.",
+      "rationale": "The counter guest only updates count; another model turn repeats the same transport/state path. Direct guest calls exercise actual host imports and state snapshots at their owning WASM layer. Limits/defaults/instance mode and production implementations are unchanged.",
+      "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
+    },
+    {
+      "id": "embedded-memory-queue-bounds",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-unqualified",
+      "failure": "Pending item and byte budgets must reject overflow while retaining head preparation/admission capacity.",
+      "owner": [
+        "crates/crabber-session/src/memory/queue.rs",
+        "crates/crabber-session/src/queue_contract/limits.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory::queue::tests::queue_bounds",
+        "sqlite::queue::tests::queue_bounds",
+        "postgres::queue::tests::queue_bounds"
+      ],
+      "before": "The exact private Memory queue_bounds contract executes in both the native session binary and source-embedded facade adapter.",
+      "after": "Canonical Memory and both independently implemented SQL queue bounds remain; only this named duplicate registration is absent from the embedding adapter.",
+      "rationale": "The adapter source-embeds the same Memory queue implementation and shared limits; its Store implementation still compiles. Its own fenced public and adapter-specific negative histories remain. No test-prefix filtering or generic adapter suite removal is used."
+    },
+    {
+      "id": "native-pending-tool-family-scheduling",
+      "disposition": "KEEP",
+      "state": "targeted-backend-qualified",
+      "failure": "Completion/inspection/main must share the actual task; held ACK cancellation cannot dispatch; committed replay cannot repeat effects; blocked cleanup must retain ownership until actual release.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_pending_tool_claim",
+        "memory_pending_tool_recovery",
+        "memory_pending_frontend_claim",
+        "memory_pending_frontend_recovery",
+        "sqlite_pending_tool_claim",
+        "sqlite_pending_tool_recovery",
+        "sqlite_pending_frontend_claim",
+        "sqlite_pending_frontend_recovery",
+        "postgres_pending_tool_claim",
+        "postgres_pending_tool_recovery",
+        "postgres_pending_frontend_claim",
+        "postgres_pending_frontend_recovery",
+        "tool_claim::memory_pending_held_ack",
+        "tool_claim::memory_pending_cleanup",
+        "tool_recovery::memory_pending_held_ack",
+        "tool_recovery::memory_pending_cleanup",
+        "frontend_claim::memory_pending_held_ack",
+        "frontend_claim::memory_pending_cleanup",
+        "frontend_recovery::memory_pending_held_ack",
+        "frontend_recovery::memory_pending_cleanup",
+        "tool_claim::sqlite_pending_held_ack",
+        "tool_claim::sqlite_pending_cleanup",
+        "tool_recovery::sqlite_pending_held_ack",
+        "tool_recovery::sqlite_pending_cleanup",
+        "frontend_claim::sqlite_pending_held_ack",
+        "frontend_claim::sqlite_pending_cleanup",
+        "frontend_recovery::sqlite_pending_held_ack",
+        "frontend_recovery::sqlite_pending_cleanup",
+        "tool_claim::postgres_pending_held_ack",
+        "tool_claim::postgres_pending_cleanup",
+        "tool_recovery::postgres_pending_held_ack",
+        "tool_recovery::postgres_pending_cleanup",
+        "frontend_claim::postgres_pending_held_ack",
+        "frontend_claim::postgres_pending_cleanup",
+        "frontend_recovery::postgres_pending_held_ack",
+        "frontend_recovery::postgres_pending_cleanup"
+      ],
+      "before": "Each of four origins bundles success, held-stage faults, malformed ACK/replay and blocked cleanup into one sequential Store history.",
+      "after": "Each origin has independently scheduled success/replay, held-ACK, malformed/replay and cleanup tests, each with fresh Store/clock. Current PostgreSQL clones reuse the already migrated template.",
+      "rationale": "The helpers preserve their assertions and internal task/join order. Separate families share no IDs, receipts, tasks or database state. Migration is not asserted in these wrappers; dedicated migration cases retain real migration calls.",
+      "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
+    },
+    {
+      "id": "narrow-feature-builds",
+      "disposition": "MERGE",
+      "state": "implemented-unqualified",
+      "failure": "SQLite libraries must compile without a PostgreSQL driver; CLI constructors and external WASM embedding must work in their selected feature graphs.",
+      "owner": [
+        "xtask/src/complete.rs",
+        "xtask/src/main.rs",
+        "testdata/external-consumer"
+      ],
+      "required_backends": [
+        "compile-boundary"
+      ],
+      "retained_tests": [],
+      "before": "Narrow library/CLI feature checks compile their full private integration/unit suites, plus wasm_state and wasm_roles are rebuilt in two narrower facade graphs.",
+      "after": "One driver-free SQLite library graph also compiles crabber-obs without OTLP. Combined behavior and actual normal CLI builds own constructor match arms; the standalone external consumer owns real WASM-only embedding. Custom-HTTP positive/negative probes retain every visibility assertion.",
+      "rationale": "server-host-probe main.rs has only sqlite/postgres conditional match arms; both compile in the combined graph. It has no wasm conditional CLI arm. workspace-context-probe is a library and its SQLite-enabled behavior compiles and runs in the combined graph. There were no negative CLI visibility assertions in the removed positive cargo-check commands. External host still builds/executes the facade with wasm+otlp+custom-http and no SQL drivers; the locked server-host consumer remains a genuine separate public consumer. The custom-http probe retains all positive/negative provider API diagnostics. crabber-obs has only two OTLP gates, at its telemetry module and reexports; its production library without OTLP now shares the driver-free SQLite graph, while its private tests run once with the combined graph. No assertion helper, doctest or actual executable journey was removed."
+    },
+    {
+      "id": "runtime-grant-ack-input-matrices",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A changed native Tool/Frontend grant ACK must never reach payload protection, successor registration, Begin or business effects; legacy None must still authenticate opaque attempt and phase capabilities.",
+      "owner": [
+        "crates/crabber-runtime/src/orchestrator/tool_continuation.rs:prepared_tool_authority",
+        "crates/crabber-session/src/tool_continuation/ack.rs:ToolContinuationGrant::verify_native_ack"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_pending_tool_grant_payload_is_authenticated",
+        "memory_pending_frontend_grant_payload_is_authenticated",
+        "sqlite_pending_tool_and_frontend_grant_payload_is_authenticated",
+        "postgres_pending_tool_and_frontend_grant_payload_is_authenticated",
+        "memory_none_grant_ack_integrity",
+        "sqlite_none_grant_ack_integrity",
+        "postgres_none_grant_ack_integrity"
+      ],
+      "before": "Each SQL backend repeats16 altered-payload and24 legacy-None corruption histories, plus four None positive/replay paths.",
+      "after": "Memory retains all four payload and six None corruption variants for each origin. Each SQL backend keeps four altered-payload histories and12 None corruption histories (checkpoint/result mutation and both opaque foreign-capability substitutions), plus all four None positive/replay paths.",
+      "rationale": "Runtime prepared_tool_authority calls the same backend-independent ToolContinuationGrant::verify_native_ack before protection or dispatch. Public checkpoint/result, answer/descriptor, turns_used and source_turn_id are covered by that same native ACK commitment. Memory keeps each distinct public-field branch for Tool/Frontend claim/recovery. Each SQL issuer still supplies real authentic grants for all four origins; changed checkpoint/result and both independently typed opaque attempt/phase authority substitutions remain real SQL. Existing Some-source inspection, SQL source/authentication and runtime task/cancellation/cold-recovery histories are unchanged. Current PostgreSQL clones already contain the migrated schema; these wrappers assert no migration behavior.",
+      "validation": "Previous full combined run measured PostgreSQL payload54.957s and None55.010s; SQLite payload33.241s. Targeted changed-family qualification is pending."
+    },
+    {
+      "id": "bounded-snapshot-cli-smoke",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "targeted-backend-qualified",
+      "failure": "CLI argument/backend selection, output, continuation serialization and cold child database wiring must work; reads must remain bounded independently of total history.",
+      "owner": [
+        "examples/bounded-snapshot/src/main.rs",
+        "examples/bounded-snapshot/src/journey.rs",
+        "crates/crabber/tests/bounded_snapshots.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_embedding_pages_settled_relations_then_resumes_events",
+        "sqlite_embedding_independent_stores_and_fresh_process",
+        "postgres_embedding_independent_pools_and_fresh_process"
+      ],
+      "before": "Each CLI backend repeats the canonical 1024-message, 147-page and 512KiB/32MiB allocation histories already required in facade tests.",
+      "after": "Required native facade tests keep the full fixture and allocation proof unchanged; CLI --smoke uses eight fixture messages and the same continuation, settled relation, invalidation, event-tail and actual cold-child assertions.",
+      "rationale": "Facade tests source-include the exact journey.rs and still call journey with 1024 messages plus allocation_proof for every backend. CLI alone exercises ChildMode::Demo/SqliteDemo and main argument routing; smoke keeps those actual executable child entrypoints and requires a multi-page continuation. No allocation or large-history detector is removed from the required native graph.",
+      "validation": "Actual Memory, SQLite and managed PostgreSQL --smoke modes passed; both durable modes verified their actual child entrypoints and 11-message/two-page output. The three full native history/allocation owners passed at one and four slots. Full combined budget qualification remains pending."
+    },
+    {
+      "id": "native-pending-approval-family-scheduling",
+      "disposition": "KEEP",
+      "state": "targeted-backend-qualified",
+      "failure": "Approval completion, inspection and the actual main must share the original task; dropped ACK waiters, malformed claims and committed replay must never dispatch; blocked cleanup must retain the owner.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/approval_tests.rs",
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/approval_tests/faults.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory_pending_approval_same_task",
+        "memory_pending_approval_held_claim",
+        "memory_pending_approval_held_recovery",
+        "memory_pending_approval_malformed_replay",
+        "memory_pending_approval_blocked_main",
+        "sqlite_pending_approval_same_task",
+        "sqlite_pending_approval_held_claim",
+        "sqlite_pending_approval_held_recovery",
+        "sqlite_pending_approval_malformed_replay",
+        "sqlite_pending_approval_blocked_main",
+        "postgres_pending_approval_same_task",
+        "postgres_pending_approval_held_claim",
+        "postgres_pending_approval_held_recovery",
+        "postgres_pending_approval_malformed_replay",
+        "postgres_pending_approval_blocked_main"
+      ],
+      "before": "One test per backend sequentially runs four keyed/unkeyed claim/recovery success histories, held complete/inspect/register/activate ACKs with both faults, all four malformed variants plus committed replay for each origin, and blocked-main cleanup; PostgreSQL took76.664s in the unoptimized full baseline.",
+      "after": "Five independently scheduled families per backend receive fresh Store and ManualClock state: same-task success, held claim, held recovery, malformed/replay and blocked main. Every original loop, fault variant, assertion and timeout is preserved.",
+      "rationale": "Each prepared history already creates a distinct session and PendingDriverTasks owner. No assertion depends on unrelated earlier family rows or absolute clock time. Fresh family fixtures therefore remove cross-family accumulation and permit normal service-group scheduling. Current PostgreSQL fixtures are already migrated; the dedicated current-schema/migration detectors remain required.",
+      "validation": "All fifteen approval families and five bounded-snapshot entrypoints passed at one and four complete-profile slots. Each run drained six PostgreSQL parent fixtures and its owned container. The slowest approval family took26.333s serial and16.328s parallel. Full combined budget qualification remains pending."
+    },
+    {
+      "id": "server-host-memory-cli",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "targeted-cli-qualified",
+      "failure": "Public host workflows and report fields must remain correct; the actual CLI must construct its selected Store and adapter, execute a provider turn, close resources and serialize output.",
+      "owner": [
+        "examples/server-host-probe/src/main.rs",
+        "examples/server-host-probe/src/lib.rs",
+        "testdata/server-host-consumer/src/main.rs"
+      ],
+      "retained_tests": [],
+      "required_backends": [
+        "memory"
+      ],
+      "required_commands": [
+        "testdata/server-host-consumer/check.sh",
+        "target/debug/server-host-probe memory --smoke"
+      ],
+      "before": "The required locked consumer and the later normal Memory CLI each executed server_host_probe::run(AuditedStore(MemoryStore)), taking approximately20seconds apiece.",
+      "after": "The locked consumer still executes the full shared public host journey, asserts all12reportfields and adaptercalls, and serializes Report. The actual normal CLI executes one fake-provider turn through the selected Store/adapter and closes resources. Default CLI behavior remains the full journey.",
+      "rationale": "The shared library journey has no feature-conditional branches; the consumer has stronger assertions than the former CLI call. Full combined-feature CLI compilation and real main/argument/backend/facade/JSON execution remain. No normal PostgreSQL server-host CLI owner is claimed. Existing native SQL/WASM integration tests remain required.",
+      "validation": "At c9772172 with tracked source unchanged, current complete-feature normal binaries built; full locked consumer passed20.128s with all12reportassertions; actual memory --smoke passed0.126s with Completed,oneproviderrequest,adaptercalls,resourceclose andexpectedJSON. Diagnostic Python bytecode was untracked during these partial checks and removed afterward; full clean local/CI budget qualification remains pending."
+    },
+    {
+      "id": "embedded-memory-owner-capacity",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "targeted-canonical-qualified",
+      "failure": "At the exact 1024-owner bound, an unjoined reservation must retain capacity and an actual authenticated Join must free exactly one slot.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/ledger.rs",
+        "crates/crabber-session/src/session_owner_contract/capacity.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "memory::session_owner::tests::session_owner_shared_capacity",
+        "sqlite::session_owner::tests::session_owner_contract",
+        "postgres::session_owner::tests::session_owner_contract"
+      ],
+      "before": "The same private Memory root-capacity history runs in the canonical session crate and source-embedded fenced-abandon adapter.",
+      "after": "Only the exact embedded duplicate registration is omitted via native_store_unit_tests; canonical Memory, SQL immutable-capacity and adapter-specific parent/fault/fenced histories remain.",
+      "rationale": "Both wrappers compile identical MemoryStore, immutable owner ledger, record authentication and capacity helpers. Root Preparation reservations have parent=None and resource_contract=None, so they never enter the opaque attempt/phase adapter bridge or pending native transport. The canonical owner retains all1024 physical records, overflow refusal and actual Join/slot reuse. Its native Memory fixture population is now recorded separately in memory-owner-capacity-fixture-batch.",
+      "validation": "All three affected canonical capacity and blocked-drop tests passed; actual complete native inventory differs by exactly the intended embedded test (3038 to3037). No full timing qualification claim."
+    },
+    {
+      "id": "native-facade-abandonment-registration",
+      "disposition": "DELETE-REDUNDANT",
+      "state": "implemented-unqualified",
+      "failure": "Facade abandonment must preserve rollback, usage, fence, calls, history and inbox, reject all seven candidate boundaries including private publication, replay exactly once and invoke no provider or unrelated Store method.",
+      "owner": [
+        "crates/crabber-session/src/memory/abandon_tests.rs",
+        "crates/crabber/tests/fenced_abandon.rs"
+      ],
+      "retained_tests": [
+        "memory::abandon_tests::pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox",
+        "memory::abandon_tests::facade_each_memory_candidate_boundary_rolls_back_including_private_commit"
+      ],
+      "required_backends": [
+        "memory"
+      ],
+      "before": "Both exact facade-only histories registered in Session units and the facade source-embedding harness.",
+      "after": "Both unchanged histories register only in crabber::fenced_abandon_facade; other native abandonment tests remain.",
+      "rationale": "Raw admission and legacy Pending fixture status use canonical source journal, Memory transaction and fault implementation in both registrations. Neither history enters genuine opaque Pending transport, preparation or phase authority paths. The facade bridge forwards only abandon_run and panics on every other Store method. Every rollback, replay, inbox and seven-boundary assertion and zero-provider-effects assertion is retained. Removing the redundant native registration permits removing the Session dev dependency on facade/Runtime.",
+      "validation": "Source and graph validation in progress; no timing gain or final qualification claimed."
+    },
+    {
+      "id": "sqlite-multiprocess-writer-repetitions",
+      "disposition": "REDUCE-REDUNDANT-REPETITIONS",
+      "state": "implemented-unqualified",
+      "failure": "Independent SQLite processes must serialize durable writes, preserve event and message histories across run rollover, commit one contested abandonment and reject stale fences.",
+      "owner": [
+        "crates/crabber-session/src/sqlite/process_tests.rs"
+      ],
+      "retained_tests": [
+        "sqlite::process_tests::multi_process_writers_serialize_and_keep_fences"
+      ],
+      "required_backends": [
+        "sqlite"
+      ],
+      "before": "Three fresh writer processes each execute 200 iterations, rolling over every 20 iterations.",
+      "after": "The same three processes each execute 40 iterations, including one populated-run rollover and final settlement.",
+      "rationale": "Iterations 40 through 199 repeat the same SQL operations and predicates without another branch or capacity boundary. Forty retains two complete child-admitted runs, all three independent processes and their start barrier, message/event/lease writes, contested recovery and stale abandonment checks, exact history assertions, one abandonment commit and final stale-fence refusal. Full durability and all deadlines remain unchanged. This removes 80 percent of contention cycles and eight rollovers per writer, reducing stochastic interleaving and WAL pressure exposure; it does not claim equal stress coverage or fix the observed child timeout. Independent lock, crash and durability tests remain required.",
+      "validation": "Both independent prospective reviews approved deterministic coverage only. Compilation, execution and final qualification remain pending."
+    },
+    {
+      "id": "sql-owner-capacity-fixture-batch",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "Mutable Joined projections must not free immutable live-owner capacity; the real SQL public API must admit owner1024, refuse1025, and reuse capacity only after an actual Join.",
+      "owner": [
+        "crates/crabber-session/src/postgres/session_owner/corruption/capacity_fixture.rs",
+        "crates/crabber-session/src/sqlite/session_owner/corruption/capacity_fixture.rs"
+      ],
+      "retained_tests": [
+        "memory::session_owner::tests::session_owner_shared_capacity",
+        "sqlite::session_owner::tests::session_owner_contract",
+        "postgres::session_owner::tests::session_owner_contract"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "before": "Each SQL capacity fixture performs1024 individually committed public reservations before overflow, mutable-current corruption and genuine Join/slot-reuse assertions.",
+      "after": "First and1024th SQL reservations use the public API. Exactly1022 interior fixture reservations use the existing Record/revision/protected-source writers in one normally durable owned transaction. Fresh authenticated readback verifies exact committed1023 and1024 identities, native sources and sequential publication provenance. Overflow, corruption, actual Join and replacement assertions remain. The follow-up Memory fixture strategy is recorded separately in memory-owner-capacity-fixture-batch.",
+      "rationale": "Repeated public preflight and independent transaction commits for known-valid root fixture interiors are removed. This explicitly loses1022 public preflight/commit/ACK/fault boundaries per SQL fixture, incremental near-capacity commit churn and repeated durability exposure; it is not equivalent stress. Limits, synchronization settings and actual public boundary checks are unchanged. Existing SQL owner faults and physical process histories remain required. No production API or schema is changed.",
+      "validation": "Both independent actual source reviews approved. Clippy with PostgreSQL and SQLite passed. Each SQL owner contract passed serially, and all12 selected owner-family tests passed with four threads on each backend, with unchanged source. PostgreSQL fixture identity pairs and owned container cleanup were independently verified. These focused checks are not full budget qualification; selected full inventory and all final local/CI qualification cases remain pending."
+    },
+    {
+      "id": "pending-tool-held-ack-sql-product",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "Waiter Drop and post-return unknown ACKs must retain administrative task ownership, prevent main dispatch and return capacity only after real completion across genuine Tool/Frontend origins.",
+      "owner": [
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests.rs",
+        "crates/crabber-session/src/session_owner/owned_scope/task/pending/tool_tests/faults.rs"
+      ],
+      "required_backends": [
+        "memory",
+        "sqlite",
+        "postgres"
+      ],
+      "retained_tests": [
+        "session_owner::owned_scope::task::pending::tool_tests::tool_claim::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_recovery::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_claim::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_recovery::memory_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_claim::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_recovery::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_claim::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_recovery::sqlite_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_claim::postgres_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::tool_recovery::postgres_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_claim::postgres_pending_held_ack",
+        "session_owner::owned_scope::task::pending::tool_tests::frontend_recovery::postgres_pending_held_ack",
+        "sqlite::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins",
+        "postgres::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_before_commit",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_committed_ack",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_activation_ack",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_cancelled",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_expired",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_public_state",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_before_register",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_tool_recovery_before_commit",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_claim_committed_ack",
+        "sqlite::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_recovery_activation_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_before_commit",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_committed_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_activation_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_cancelled",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_expired",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_public_state",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_changed_before_register",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_tool_recovery_before_commit",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_claim_committed_ack",
+        "postgres::session_owner::drivers::successor::tool_fault_tests::tool_fresh_fault_frontend_recovery_activation_ack"
+      ],
+      "before": "Each backend runs four Tool/Frontend claim/recovery origins through Complete, Inspect, Register and Activate with both normal and unknown ACKs:32 held histories per backend.",
+      "after": "Memory retains all32 histories. Each SQL backend retains both Complete ACK outcomes for all four origins and all four stages for ToolClaim:14 histories per SQL backend. All existing native entrypoint names and held() assertions remain.",
+      "rationale": "Interposed pauses and substitutes UnknownStoreOutcome only after awaited native calls return; shared late-stage stop/no-main/drain branches do not vary by origin/backend. Distinct native source paths remain exercised by all four unchanged SQL success/exact-replay/malformed/cleanup families and explicit protected-source/native transaction fault detectors. This removes18 family-specific Inspect/Register/Activate by ACK combinations per SQL backend,36 total, losing their repeated native preparation/commit, payload-drop and interleaving exposure. It is not equal stress. No capacity, durability setting, deadline or production code changes. General successor/approval process cases do not provide an exact Tool/Frontend physical-death replacement.",
+      "validation": "Both independent actual source reviews approved the exact matrix and detector partition. Focused runs passed45 Memory/SQLite cases,33 managed Memory/PostgreSQL pending-family cases and12 native PostgreSQL source/fault cases with unchanged source. All34 explicit retained detectors actually passed. PostgreSQL fixture identities matched16/16 and12/12, and both owned containers were independently absent. These are partial behavior checks; full selected inventory and all final local/CI budget qualification cases remain pending."
+    },
+    {
+      "id": "memory-owner-capacity-fixture-batch",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "The real Memory public API must admit owner1024, refuse1025, and free capacity only after actual Join; a forged mutable Joined label must not override immutable latest Reserved state.",
+      "owner": [
+        "crates/crabber-session/src/memory/session_owner/capacity_fixture.rs",
+        "crates/crabber-session/src/session_owner/ledger/capacity_fixture.rs"
+      ],
+      "required_backends": [
+        "memory"
+      ],
+      "retained_tests": [
+        "memory::session_owner::tests::session_owner_shared_capacity"
+      ],
+      "before": "1024 public reservations repeatedly clone and validate the same growing Memory fixture before overflow and actual Join/replacement.",
+      "after": "Public first reservation establishes context;1022 interior records use actual Record/grant/receipt/protected Ledger publication writers. Exact physical identities, immutable/current records, publication ordinals, original context and Absent revisions are independently verified at1023/1024. Public1024accept/1025refusal remain, with new full-capacity forged mutable Joined refusal, exact restore, unchanged actual Join/replacement. SQL fixtures unchanged.",
+      "rationale": "Removes1022 repeated public preflight/replay/capacity/identity/deletion/archive/parent checks, State clones and transaction fault boundaries from fixture population. Arbitrary intermediate-occupancy-only defects and per-reservation stress lose exposure. Existing owner, parent, replay and before/after fault contracts retain those branches; this is not equivalent stress. Real1024 physical owners, limits, production code and APIs remain unchanged.",
+      "validation": "Independent source reviews approved. Own-target Clippy and native compilation passed with Session0/Core1 and assertions/overflow checks. The actual capacity case passed3.790s wall/3.741userCPU versus a previous matched own-target baseline46.596s/46.375userCPU; this single fixed-order pair is not a replicated speedup estimate. Meaningful off-by-one and mutable-current-vs-immutable-audit faults each failed at the intended public capacity assertion; canonical source was restored and hash-verified after each. The initial cfg placement compile failure remains preserved. Full local/CI and all six final qualification cases remain pending."
+    },
+    {
+      "id": "restricted-worker-role-journeys",
+      "disposition": "MOVE-CHEAPER",
+      "state": "implemented-unqualified",
+      "failure": "A restricted LOGIN must complete authorized workspace operations and cold snapshot continuation without superuser or BYPASSRLS, while foreign reads, mutations, recovery and dispatch remain denied.",
+      "owner": [
+        "crates/crabber-session/src/postgres/isolation_tests/workload.rs",
+        "crates/crabber/tests/workspace_roles",
+        "crates/crabber-test-support/src/postgres/child.rs"
+      ],
+      "required_backends": [
+        "postgres"
+      ],
+      "retained_tests": [
+        "worker_role_workload_succeeds",
+        "foreign_reads_and_admissions_are_hidden_without_provider_calls",
+        "foreign_queue_claim_prepare_dispatch_and_recovery_are_denied",
+        "foreign_controls_and_abandonment_are_hidden",
+        "foreign_management_fork_and_delete_preserve_rows",
+        "scoped_recovery_has_a_real_foreign_candidate",
+        "worker_recovery_reports_own_expired_candidates",
+        "worker_snapshot_continuation_in_fresh_process",
+        "role_handoff_preserves_owned_server_database_and_exact_role"
+      ],
+      "before": "CI reruns the complete future_queue, session_owners, durable_controls, bounded_snapshots, session_management, durable_interactions and server_host facade binaries using one shared restricted-worker login.",
+      "after": "The combined graph runs dedicated own-workspace positives and foreign-workspace denials, the native restricted-worker Store, public-state, typed-admission, session-owner, queue, fork and management contracts, the existing ordered-steer history, and one actual restricted-worker snapshot continuation in a cold process.",
+      "rationale": "Each isolated role fixture owns its cloned database and unique LOGIN roles. Public positives retain prompt and keyed replay, queue claim, preparation, dispatch and recovery, cancellation, management, fork, deletion and V2 reads. Native restricted-role contracts retain storage and ordered-steer behavior. The cold snapshot history delegates only its owned database to the expected worker role, verifies the real login lacks superuser and BYPASSRLS, and retains exact continuation, cutoff, relation and event readback. Ordinary administrative child handoffs retain their exact credential check. The removed dimension is repeating every facade fault and scenario combination under a second login. Backend and facade behavior matrices remain in the ordinary combined run.",
+      "validation": "Source integration candidate only. No new build, test run or timing qualification has completed."
+    }
+  ],
+  "required_behaviors": [
+    {
+      "behavior": "Receipt/actor/version/source/grant binding and replay",
+      "primary_owner": "Shared validator and session contracts",
+      "required_layer": "Cheap branch tables plus genuine SQL authentication and runtime no-dispatch",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::session_owner::drivers::successor::tool_source_tests::tool_original_sources_authenticate_all_four_compound_origins"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "pending_tool::none_ack::memory_none_grant_ack_integrity"
+        }
+      ]
+    },
+    {
+      "behavior": "Tool/approval keyed/unkeyed fresh/recovery transitions",
+      "primary_owner": "Session storage implementations",
+      "required_layer": "Memory branch coverage plus distinct SQLite/PostgreSQL transitions",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::tool_continuation::tests::tool_continuation_contract"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::tool_continuation::tests::tool_continuation_contract"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::approval::process_tests::lost_acknowledgements_reconcile_in_fresh_process"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::approval::process_tests::lost_acknowledgements_reconcile_in_fresh_process"
+        }
+      ]
+    },
+    {
+      "behavior": "Atomic rollback and unknown commit response",
+      "primary_owner": "SQL transaction implementations",
+      "required_layer": "Real SQLite/PostgreSQL and one public cold-reconciliation journey per backend",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::abandon_tests::rollback_unknown_response_and_fresh_process_replay"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::abandon_tests::rollback_unknown_response_and_fresh_process_replay"
+        },
+        {
+          "package": "crabber",
+          "suffix": "sqlite_replay_never_initializes_unavailable_or_closed_components"
+        },
+        {
+          "package": "crabber",
+          "suffix": "postgres_replay_never_initializes_unavailable_or_closed_components"
+        }
+      ]
+    },
+    {
+      "behavior": "Kill/reconnect/exact replay",
+      "primary_owner": "Durable protocol process histories",
+      "required_layer": "Actual OS processes for admission/queue/distinct tool and approval paths",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::approval::process_tests::killed_writer_rolls_back_suspend_answer_and_claim"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::approval::process_tests::killed_writer_rolls_back_suspend_answer_and_claim"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::tool_continuation::tests::committed_controls_survive_killed_writer"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::tool_continuation::tests::committed_controls_survive_killed_writer"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::admission_tests::process_crash_before_commit_rolls_back_every_record"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::process_crash_before_commit_rolls_back_every_record"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::queue::process_tests::queue_killed_after_claim_prepared_and_admit_commit"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::queue::process_tests::queue_killed_before_claim_prepared_and_admit_commit"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::queue::process_tests::queue_killed_after_claim_prepared_and_admit_commit"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::queue::process_tests::queue_killed_before_claim_prepared_and_admit_commit"
+        }
+      ]
+    },
+    {
+      "behavior": "Contention/fencing/cancellation/ownership/cleanup",
+      "primary_owner": "Backend concurrency and runtime ownership",
+      "required_layer": "Real SQL concurrency and one public controller lifecycle",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::independent_pools_and_saturated_existing_session"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "cancelled_factory_with_actual_failed_cleanup_stays_uncertain"
+        },
+        {
+          "package": "crabber",
+          "suffix": "public_host_stopped_requires_exact_owner_and_fence"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "sqlite_mixed_products_both_scope_orders"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "postgres_initial_driver_malformed_join_ack_retains_original_proof"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "sqlite_initial_driver_malformed_join_ack_retains_original_proof"
+        }
+      ],
+      "known_regressions": [
+        "crabber-pxdk",
+        "crabber-09ku"
+      ]
+    },
+    {
+      "behavior": "Limits and overflow",
+      "primary_owner": "Owning limit implementation",
+      "required_layer": "Pure boundaries and SQL enforcement/rollback",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "memory::queue::tests::queue_bounds"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::queue::tests::queue_bounds"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::queue::tests::queue_bounds"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "memory::session_owner::tests::session_owner_shared_capacity"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::session_owner::tests::session_owner_contract"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::session_owner::tests::session_owner_contract"
+        }
+      ]
+    },
+    {
+      "behavior": "Migration/corruption/unsupported data",
+      "primary_owner": "Backend storage",
+      "required_layer": "Real Blank/legacy/current schema fixtures",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::lifecycle_tests::migrate_is_idempotent_and_keeps_the_snapshot_secret"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::lifecycle_tests::unknown_schema_version_is_refused_without_changes"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::tests::migrate_reopen_and_concurrent_sessions"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::migrations::forward_migration_preserves_v1_and_connect_is_read_only"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres::admission_tests::migrations::current_migration_never_relocks_runtime_tables"
+        }
+      ]
+    },
+    {
+      "behavior": "Feature absence/custom HTTP visibility",
+      "primary_owner": "Narrow compile probes",
+      "required_layer": "Positive/negative compilation",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [],
+      "required_commands": [
+        "cargo check -p crabber-session -p crabber-runtime -p crabber-obs --no-default-features --features crabber-session/sqlite,crabber-runtime/sqlite --lib",
+        "testdata/custom-http-feature-probe/check.sh"
+      ]
+    },
+    {
+      "behavior": "Redaction/credentials/authorization before effects",
+      "primary_owner": "Owning boundary",
+      "required_layer": "Sentinel/effect checks and captured transport/log wiring",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-obs",
+          "suffix": "all_intake_and_transport_diagnostics_hide_response_and_endpoint_secrets"
+        },
+        {
+          "package": "crabber-obs",
+          "suffix": "mock_intake_receives_linked_redacted_signals"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "invalid_generic_checkpoint_call_sets_are_rejected_before_claim_or_effects"
+        }
+      ]
+    },
+    {
+      "behavior": "WASM state/limits/embedding/telemetry",
+      "primary_owner": "Component and host integration",
+      "required_layer": "Real component bound plus short executable wiring per CLI",
+      "status": "source-audited-pending-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "crabber-wasm",
+          "suffix": "state_import_enforces_default_entry_and_value_limits"
+        },
+        {
+          "package": "crabber-wasm",
+          "suffix": "counter_state_crosses_thousand_between_fresh_instances"
+        },
+        {
+          "package": "crabber",
+          "suffix": "counter_state_survives_independent_agent_runs"
+        }
+      ]
+    },
+    {
+      "behavior": "Facade Memory abandonment rollback and replay",
+      "primary_owner": "Canonical Memory transaction through facade source embedding",
+      "required_layer": "crabber::fenced_abandon_facade",
+      "status": "implemented-unqualified",
+      "required_detectors": [
+        {
+          "package": "crabber",
+          "suffix": "memory::abandon_tests::pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox"
+        },
+        {
+          "package": "crabber",
+          "suffix": "memory::abandon_tests::facade_each_memory_candidate_boundary_rolls_back_including_private_commit"
+        }
+      ]
+    },
+    {
+      "behavior": "SQLite durable multiprocess writer serialization across run rollover",
+      "primary_owner": "SQLite WAL transaction implementation",
+      "required_layer": "crabber-session unit tests with real fresh OS processes",
+      "status": "implemented-unqualified",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite::process_tests::multi_process_writers_serialize_and_keep_fences"
+        }
+      ]
+    },
+    {
+      "behavior": "Durable-control observation progresses independently of held original callbacks and joins its original Store future",
+      "primary_owner": "Runtime worker RunControlObservation background resource scope",
+      "required_layer": "Runtime native units, deterministic held-callback observation and real Memory/SQLite/PostgreSQL histories",
+      "status": "implemented-unqualified",
+      "required_detectors": [
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::owned_tool_invocations::mixed_products::contracts::durable_control_progresses_while_original_guard_panic_payload_is_held"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::suspension_observation::worker_join_retains_original_control_observation_after_main_returns"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "orchestrator::run_control::observation::tests::queued_results_cannot_supersede_quiescent_ack_or_cooperative_close"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::tracing_spans::run_span_is_child_of_caller_span_and_has_model_and_tool_children"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::owned_tool_invocations::mixed_products::contracts::sqlite_mixed_products_both_scope_orders"
+        },
+        {
+          "package": "crabber-runtime",
+          "suffix": "tests::owned_tool_invocations::mixed_products::contracts::postgres_mixed_products_both_scope_orders"
+        }
+      ]
+    }
+  ]
+}

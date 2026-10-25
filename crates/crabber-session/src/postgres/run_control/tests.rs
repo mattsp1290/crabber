@@ -4,54 +4,60 @@ use std::sync::{Arc, atomic::Ordering};
 use time::OffsetDateTime;
 #[tokio::test]
 async fn control_read_failure_is_not_stale_owner() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
-    let (_, _, execution) = run_control_contract::corruption_fixture(&store).await;
-    store.pool.close().await;
-    assert_eq!(
-        execution.observe_run_controls(None).await.unwrap_err(),
-        RunControlError::UnknownStoreOutcome
-    );
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
+        let (_, _, execution) = run_control_contract::corruption_fixture(&store).await;
+        store.pool.close().await;
+        assert_eq!(
+            execution.observe_run_controls(None).await.unwrap_err(),
+            RunControlError::UnknownStoreOutcome
+        );
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn durable_run_control_contract() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
-    run_control_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
-    run_control_contract::run_fault_contract(&store, |point| {
-        store.control_fault.store(point, Ordering::SeqCst);
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
+        run_control_contract::run_contract(|clock| store.clone().with_clock(clock)).await;
+        run_control_contract::run_fault_contract(&store, |point| {
+            store.control_fault.store(point, Ordering::SeqCst);
+        })
+        .await;
+        corrupted_carriers(&store).await;
+        corrupted_termination(&store).await;
+        run_control_contract::process::run(
+            &store,
+            "postgres::run_control::tests::durable_control_process_helper",
+            crabber_test_support::ChildDatabase::Postgres(&url),
+        )
+        .await;
     })
-    .await;
-    corrupted_carriers(&store).await;
-    corrupted_termination(&store).await;
-    run_control_contract::process::run(
-        &store,
-        "postgres::run_control::tests::durable_control_process_helper",
-        None,
-    )
-    .await;
+    .await
+    .unwrap();
 }
 #[tokio::test]
 async fn durable_control_process_helper() {
     let Some(command) = run_control_contract::process::command() else {
         return;
     };
-    let url = crate::postgres::tests::test_url().expect("child URL");
+    let url = crabber_test_support::postgres::TestDatabase::attached_url()
+        .await
+        .expect("child URL");
     let store = PostgresStore::connect(&url)
         .await
         .unwrap()
@@ -190,15 +196,17 @@ async fn corrupted_termination(store: &PostgresStore) {
 
 #[tokio::test]
 async fn original_waiting_cancel_terminal_source() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url)
-        .await
-        .unwrap()
-        .with_clock(clock.clone());
-    crate::run_control::terminal::contract::run(&store, &clock).await;
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::run_control::terminal::contract::run(&store, &clock).await;
+    })
+    .await
+    .unwrap();
 }

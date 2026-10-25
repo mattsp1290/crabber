@@ -23,7 +23,7 @@ pub(crate) async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>
 }
 #[cfg(test)]
 #[allow(clippy::too_many_lines)] // One complete paused, claimed, and recovered authority journey.
-async fn journey(store: &impl Store, clock: &ManualClock) {
+async fn journey(store: &dyn Store, clock: &ManualClock) {
     race::run(store).await;
     let f = fixture::fixture(store).await;
     let staged = f

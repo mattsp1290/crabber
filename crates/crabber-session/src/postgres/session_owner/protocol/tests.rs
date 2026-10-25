@@ -2,10 +2,10 @@
 use crate::Store;
 #[tokio::test]
 async fn owner_publication_roster_and_monotonic_head_detect_cancel_rollback() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     for both in [false, true] {
@@ -74,77 +74,78 @@ async fn owner_publication_roster_and_monotonic_head_detect_cancel_rollback() {
             crate::session_owner::SessionOwnerError::UnknownStoreOutcome
         );
     }
+
+    }).await.unwrap();
 }
 #[tokio::test]
 async fn selected_owner_publication_sources_charge_shared_budget() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let (request, receipt, _next) =
-        crate::session_owner_contract::services::cohort::source_fixture(&store).await;
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
-        .await
-        .unwrap();
-    let mut proof = crate::public_session::v2::proof::Proof::bounded(1);
-    assert!(matches!(
-        super::verify(
-            &mut tx,
-            &receipt.source.root.session_id,
-            &receipt.began.owner.target.id,
-            &mut proof
-        )
-        .await,
-        Err(crate::public_session::v2::proof::ReadError::Budget(_))
-    ));
-    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
-    assert_eq!(
-        super::verify(
-            &mut tx,
-            &receipt.source.root.session_id,
-            &receipt.began.owner.target.id,
-            &mut proof
-        )
-        .await
-        .unwrap(),
-        crate::session_owner::publication::Coverage::Verified
-    );
-    assert!(proof.used() > receipt.source.generation.id.len());
-    let audit = super::super::reads::audit(
-        &mut tx,
-        &receipt.source.root.session_id,
-        &receipt.began.operation_id,
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let consumed = proof.used();
-    // Each materialization consumes the remaining caller allowance, including
-    // a compound writer's recheck. A separate fresh writer budget would pass
-    // the guard and instead reach the duplicate INSERT below.
-    let mut shared = crate::public_session::v2::proof::Proof::bounded(consumed + 1);
-    shared.charge(consumed).unwrap();
-    assert_eq!(
-        super::super::reads::publish_with_proof(&mut tx, &audit, false, &mut shared,)
-            .await
-            .unwrap_err(),
-        crate::session_owner::SessionOwnerError::Capacity
-    );
-    assert_eq!(
-        super::verify(
-            &mut tx,
-            &receipt.source.root.session_id,
-            &receipt.began.owner.target.id,
-            &mut crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024),
-        )
-        .await
-        .unwrap(),
-        crate::session_owner::publication::Coverage::Verified
-    );
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
 
-    assert!(
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let (request, receipt, _next) =
+            crate::session_owner_contract::services::cohort::source_fixture(&store).await;
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(1);
+        assert!(matches!(
+            super::verify(
+                &mut tx,
+                &receipt.source.root.session_id,
+                &receipt.began.owner.target.id,
+                &mut proof
+            )
+            .await,
+            Err(crate::public_session::v2::proof::ReadError::Budget(_))
+        ));
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
+        assert_eq!(
+            super::verify(
+                &mut tx,
+                &receipt.source.root.session_id,
+                &receipt.began.owner.target.id,
+                &mut proof
+            )
+            .await
+            .unwrap(),
+            crate::session_owner::publication::Coverage::Verified
+        );
+        assert!(proof.used() > receipt.source.generation.id.len());
+        let audit = super::super::reads::audit(
+            &mut tx,
+            &receipt.source.root.session_id,
+            &receipt.began.operation_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let consumed = proof.used();
+        // Each materialization consumes the remaining caller allowance, including
+        // a compound writer's recheck. A separate fresh writer budget would pass
+        // the guard and instead reach the duplicate INSERT below.
+        let mut shared = crate::public_session::v2::proof::Proof::bounded(consumed + 1);
+        shared.charge(consumed).unwrap();
+        assert_eq!(
+            super::super::reads::publish_with_proof(&mut tx, &audit, false, &mut shared,)
+                .await
+                .unwrap_err(),
+            crate::session_owner::SessionOwnerError::Capacity
+        );
+        assert_eq!(
+            super::verify(
+                &mut tx,
+                &receipt.source.root.session_id,
+                &receipt.began.owner.target.id,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024),
+            )
+            .await
+            .unwrap(),
+            crate::session_owner::publication::Coverage::Verified
+        );
+
+        assert!(
         sqlx::query(
             "UPDATE session_owner_current SET source_protocol=0 WHERE session_id=$1 AND owner_id=$2"
         )
@@ -154,81 +155,85 @@ async fn selected_owner_publication_sources_charge_shared_budget() {
         .await
         .is_err()
     );
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn legacy_owner_mutation_never_mints_a_publication_cohort() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
-    crate::PostgresStore::migrate(&url).await.unwrap();
-    let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let mut request = crate::session_owner_contract::reservation(crabber_core::SessionId::new());
-    request.lease_ms = 30_000;
-    let crate::session_owner::SessionOwnerOutcome::Applied {
-        authority: Some(authority),
-        ..
-    } = store
-        .reserve_session_owner(request.clone(), None)
-        .await
-        .unwrap()
-    else {
-        panic!("fresh owner")
-    };
-    legacy_fixture(&store, &request).await;
-    for command in [
-        crate::session_owner::SessionOwnerCommand::Begin,
-        crate::session_owner::SessionOwnerCommand::Renew { lease_ms: 30_000 },
-    ] {
-        store
-            .mutate_session_owner(
-                crate::session_owner::MutateSessionOwner {
-                    id: crabber_core::SessionOwnerOperationId::new(),
-                    session_id: request.binding.session_id.clone(),
-                    target: authority.target().clone(),
-                    command,
-                },
-                Some(authority.clone()),
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let mut request =
+            crate::session_owner_contract::reservation(crabber_core::SessionId::new());
+        request.lease_ms = 30_000;
+        let crate::session_owner::SessionOwnerOutcome::Applied {
+            authority: Some(authority),
+            ..
+        } = store
+            .reserve_session_owner(request.clone(), None)
+            .await
+            .unwrap()
+        else {
+            panic!("fresh owner")
+        };
+        legacy_fixture(&store, &request).await;
+        for command in [
+            crate::session_owner::SessionOwnerCommand::Begin,
+            crate::session_owner::SessionOwnerCommand::Renew { lease_ms: 30_000 },
+        ] {
+            store
+                .mutate_session_owner(
+                    crate::session_owner::MutateSessionOwner {
+                        id: crabber_core::SessionOwnerOperationId::new(),
+                        session_id: request.binding.session_id.clone(),
+                        target: authority.target().clone(),
+                        command,
+                    },
+                    Some(authority.clone()),
+                )
+                .await
+                .unwrap();
+        }
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
+        assert_eq!(
+            super::verify(
+                &mut tx,
+                &request.binding.session_id,
+                &request.binding.id,
+                &mut proof
             )
             .await
-            .unwrap();
-    }
-    let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .unwrap(),
+            crate::session_owner::publication::Coverage::Legacy
+        );
+        assert!(matches!(
+            super::require(
+                &mut tx,
+                &request.binding.session_id,
+                &request.binding.id,
+                &mut proof
+            )
+            .await,
+            Err(crate::public_session::v2::proof::ReadError::Domain(
+                crate::session_owner::SessionOwnerError::Unsupported
+            ))
+        ));
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM session_owner_publications WHERE session_id=$1",
+        )
+        .bind(&request.binding.session_id.0)
+        .fetch_one(&mut *tx)
         .await
         .unwrap();
-    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
-    assert_eq!(
-        super::verify(
-            &mut tx,
-            &request.binding.session_id,
-            &request.binding.id,
-            &mut proof
-        )
-        .await
-        .unwrap(),
-        crate::session_owner::publication::Coverage::Legacy
-    );
-    assert!(matches!(
-        super::require(
-            &mut tx,
-            &request.binding.session_id,
-            &request.binding.id,
-            &mut proof
-        )
-        .await,
-        Err(crate::public_session::v2::proof::ReadError::Domain(
-            crate::session_owner::SessionOwnerError::Unsupported
-        ))
-    ));
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM session_owner_publications WHERE session_id=$1")
-            .bind(&request.binding.session_id.0)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-    assert_eq!(count, 0);
-    assert!(
+        assert_eq!(count, 0);
+        assert!(
         sqlx::query(
             "UPDATE session_owner_current SET source_protocol=1 WHERE session_id=$1 AND owner_id=$2"
         )
@@ -238,6 +243,9 @@ async fn legacy_owner_mutation_never_mints_a_publication_cohort() {
         .await
         .is_err()
     );
+    })
+    .await
+    .unwrap();
 }
 // Reconstruct an actual old-v2 row without inventing a positive new origin.
 // Dropping guards is confined to this fixture transaction and restored before commit.
@@ -305,10 +313,10 @@ CREATE TRIGGER session_owner_protocol_immutable BEFORE UPDATE OF source_protocol
 
 #[tokio::test]
 async fn migration_preserves_legacy_owner_bytes_without_positive_backfill() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Blank, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let mut tx = crate::postgres::transaction::begin(&store.pool)
@@ -358,4 +366,6 @@ async fn migration_preserves_legacy_owner_bytes_without_positive_backfill() {
         .fetch_one(&mut *tx).await.unwrap();
     assert_eq!(count, 0);
     tx.rollback().await.unwrap();
+
+    }).await.unwrap();
 }

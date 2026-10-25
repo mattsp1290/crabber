@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Normal builds retain this executable; required CLI checks stay enabled.
+# Keep unit tests in library or integration targets.
+[[bin]]
+name = "operational-telemetry"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry", "fmt", "json", "env-filter"] }

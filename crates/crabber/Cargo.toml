@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Avoid Cargo clean -p fenced-abandon deleting this facade test artifact.
+[[test]]
+name = "fenced_abandon_facade"
+path = "tests/fenced_abandon.rs"
+
 [dependencies]
 crabber-core = { path = "../crabber-core" }
 crabber-auth = { path = "../crabber-auth", optional = true }
@@ -19,6 +24,7 @@ async-trait = "0.1"
 serde_json = "1"
 
 [dev-dependencies]
+crabber-test-support = { path = "../crabber-test-support", default-features = false }
 url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
@@ -34,7 +40,7 @@ time = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "process", "io-util", "test-util", "net"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "sqlite"] }
 tempfile = "3"
 
 [lints]
@@ -42,7 +48,7 @@ workspace = true
 
 [features]
 default = []
-postgres = ["crabber-session/postgres"]
+postgres = ["crabber-test-support/postgres", "crabber-session/postgres"]
 sqlite = ["crabber-session/sqlite", "crabber-runtime/sqlite"]
 custom-http = ["crabber-providers/custom-http"]
 anthropic = ["crabber-providers/anthropic"]

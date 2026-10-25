@@ -1,6 +1,6 @@
 use super::*;
+use crabber_test_support::ChildDatabase;
 use std::{
-    path::Path,
     process::{Child, Command},
     time::Duration,
 };
@@ -74,7 +74,7 @@ impl Drop for Guard {
 pub(crate) fn spawn(
     helper: &str,
     request: &ManageSession,
-    path: Option<&Path>,
+    path: ChildDatabase<'_>,
     extra: &[(&str, String)],
 ) -> Guard {
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -82,9 +82,7 @@ pub(crate) fn spawn(
         "CRABBER_MANAGEMENT_CHILD",
         serde_json::to_string(request).unwrap(),
     );
-    if let Some(path) = path {
-        command.env("CRABBER_SQLITE_CHILD_PATH", path);
-    }
+    path.configure(&mut command, "CRABBER_SQLITE_CHILD_PATH");
     for (key, value) in extra {
         command.env(key, value);
     }

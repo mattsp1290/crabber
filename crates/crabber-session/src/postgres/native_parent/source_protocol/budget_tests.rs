@@ -3,10 +3,10 @@ use crate::Store;
 use crate::public_session::v2::proof::Proof;
 #[tokio::test]
 async fn native_issuer_write_reuses_the_remaining_enclosing_proof() {
-    let Some(url) = crate::postgres::tests::test_url() else {
-        return;
-    };
-    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let session = crabber_core::SessionId(format!(
@@ -92,4 +92,6 @@ async fn native_issuer_write_reuses_the_remaining_enclosing_proof() {
             .unwrap()
             .is_some()
     );
+
+    }).await.unwrap();
 }

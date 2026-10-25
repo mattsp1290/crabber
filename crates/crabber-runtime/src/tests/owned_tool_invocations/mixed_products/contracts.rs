@@ -1,15 +1,34 @@
 use super::*;
 
+#[cfg(feature = "sqlite")]
+#[path = "transaction_diagnostics.rs"]
+mod transaction_diagnostics;
+
 async fn contract(store: Arc<dyn Store>, inverted: bool) {
     for mode in 0..4 {
         case(store.clone(), inverted, mode).await;
     }
 }
+async fn start_session(
+    runtime: &Orchestrator,
+    inverted: bool,
+    mode: usize,
+    phase: &str,
+) -> crate::RunHandle {
+    let started = std::time::Instant::now();
+    runtime.start(request()).await.unwrap_or_else(|error| {
+        panic!(
+            "{phase} admission: inverted={inverted} mode={mode} elapsed={:?} error={error:?}",
+            started.elapsed()
+        )
+    })
+}
+
 async fn case(store: Arc<dyn Store>, inverted: bool, mode: usize) {
     let seen = Seen::new(mode);
     let release = Release(seen.gate.clone());
     let (runtime, plans, host) = build(store.clone(), inverted, &seen);
-    let a = runtime.start(request()).await.unwrap();
+    let a = start_session(&runtime, inverted, mode, "first").await;
     let first = a.session_id().clone();
     let arun = a.run_id().clone();
     tokio::time::timeout(BOUND, seen.gate.entered.notified())
@@ -31,7 +50,7 @@ async fn case(store: Arc<dyn Store>, inverted: bool, mode: usize) {
         assert_eq!(seen.effects.load(Ordering::SeqCst), 0);
         assert!(seen.dropped.iter().all(|d| d.load(Ordering::SeqCst) == 0));
     }
-    let b = runtime.start(request()).await.unwrap();
+    let b = start_session(&runtime, inverted, mode, "second (first held)").await;
     let second = b.session_id().clone();
     let brun = b.run_id().clone();
     assert_eq!(
@@ -112,35 +131,101 @@ async fn memory_mixed_products_both_scope_orders() {
     }
 }
 #[cfg(feature = "sqlite")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sqlite_mixed_products_both_scope_orders() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("mixed.sqlite");
-    crabber_session::SqliteStore::migrate(&path).await.unwrap();
-    for inverted in [false, true] {
-        contract(
-            Arc::new(crabber_session::SqliteStore::connect(&path).await.unwrap()),
-            inverted,
-        )
-        .await;
-    }
+#[test]
+fn sqlite_mixed_products_both_scope_orders() {
+    transaction_diagnostics::run(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.sqlite");
+        crabber_session::SqliteStore::migrate(&path).await.unwrap();
+        for inverted in [false, true] {
+            contract(
+                Arc::new(crabber_session::SqliteStore::connect(&path).await.unwrap()),
+                inverted,
+            )
+            .await;
+        }
+    });
 }
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_mixed_products_both_scope_orders() {
-    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-        assert_ne!(
-            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
-            Ok("1")
-        );
-        return;
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crabber_session::PostgresStore::migrate(&url).await.unwrap();
+        for inverted in [false, true] {
+            contract(
+                Arc::new(crabber_session::PostgresStore::connect(&url).await.unwrap()),
+                inverted,
+            )
+            .await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+// The original panic-payload destructor stays blocked throughout this check.
+// A pending control observation must make progress on its independently owned
+// task; another worker/connection alone cannot poll a sibling future for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn durable_control_progresses_while_original_guard_panic_payload_is_held() {
+    use crate::tests::{
+        DelayedTerminalStore, SettlementGate, suspension_observation::ObservationGate,
     };
-    crabber_session::PostgresStore::migrate(&url).await.unwrap();
-    for inverted in [false, true] {
-        contract(
-            Arc::new(crabber_session::PostgresStore::connect(&url).await.unwrap()),
-            inverted,
-        )
-        .await;
+    struct ReleaseObserver(Arc<ObservationGate>);
+    impl Drop for ReleaseObserver {
+        fn drop(&mut self) {
+            self.0.release_observer.notify_one();
+        }
     }
+    let observation = Arc::new(ObservationGate::default());
+    let release_observer = ReleaseObserver(observation.clone());
+    let store = Arc::new(DelayedTerminalStore {
+        inner: Arc::new(MemoryStore::new()),
+        gate: Arc::new(SettlementGate {
+            observation: Some(observation.clone()),
+            ..Default::default()
+        }),
+    });
+    let seen = Seen::new(3);
+    let release_payload = Release(seen.gate.clone());
+    let (runtime, plans, _) = build(store, false, &seen);
+    let first = runtime.start(request()).await.unwrap();
+    tokio::time::timeout(BOUND, observation.observer_entered.notified())
+        .await
+        .expect("original control observation entered");
+    tokio::time::timeout(BOUND, seen.gate.entered.notified())
+        .await
+        .expect("original guard panic payload is held");
+    drop(release_observer);
+    tokio::time::timeout(BOUND, observation.observer_returned.notified())
+        .await
+        .expect("original control observation must return while panic payload remains held");
+    assert!(!*seen.gate.open.lock().unwrap());
+    let second = tokio::time::timeout(BOUND, runtime.start(request()))
+        .await
+        .expect("independent admission must progress while original payload remains held")
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(BOUND, second.done())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    assert!(!*seen.gate.open.lock().unwrap());
+    drop(release_payload);
+    assert!(
+        tokio::time::timeout(BOUND, first.done())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(
+        runtime.drain_execution_tasks(BOUND).await.pending,
+        [] as [RunId; 0]
+    );
+    let _closed = plans.close_all(BOUND).await;
 }

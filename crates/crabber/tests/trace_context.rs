@@ -405,11 +405,6 @@ mod durable_process {
     use crabber::session::SqliteStore;
     use std::{path::Path, process::Command};
 
-    // Hold this lock for every full journey: migration DDL can deadlock with
-    // another journey's live worker. New journeys must use journey_store.
-    #[cfg(feature = "postgres")]
-    static JOURNEY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     enum Backend {
         #[cfg(feature = "postgres")]
         Postgres(String),
@@ -420,7 +415,6 @@ mod durable_process {
     struct Journey {
         backend: Backend,
         store: Arc<dyn Store>,
-        _guard: Option<tokio::sync::MutexGuard<'static, ()>>,
         _directory: Option<tempfile::TempDir>,
     }
 
@@ -430,8 +424,12 @@ mod durable_process {
             command.args(["--exact", "durable_process::worker_child", "--nocapture"]);
             match &self.backend {
                 #[cfg(feature = "postgres")]
-                Backend::Postgres(_) => {
+                Backend::Postgres(url) => {
                     command
+                        .envs(
+                            crabber_test_support::postgres::TestDatabase::child_environment(url)
+                                .unwrap(),
+                        )
                         .env("CRABBER_TRACE_WORKER", mode)
                         .env("CRABBER_TRACE_QUEUE", path);
                     if mode == "loss" {
@@ -488,23 +486,14 @@ mod durable_process {
     }
 
     #[cfg(feature = "postgres")]
-    async fn journey_store() -> Option<Journey> {
-        let guard = JOURNEY_LOCK.lock().await;
-        let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-            assert!(
-                std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
-                "CRABBER_TEST_POSTGRES_URL required"
-            );
-            return None;
-        };
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
-        Some(Journey {
-            backend: Backend::Postgres(url),
+    async fn journey_store(url: &str) -> Journey {
+        PostgresStore::migrate(url).await.unwrap();
+        let store = PostgresStore::connect(url).await.unwrap();
+        Journey {
+            backend: Backend::Postgres(url.to_owned()),
             store: Arc::new(store),
-            _guard: Some(guard),
             _directory: None,
-        })
+        }
     }
 
     #[cfg(feature = "sqlite")]
@@ -516,7 +505,6 @@ mod durable_process {
         Journey {
             backend: Backend::Sqlite(path),
             store: Arc::new(store),
-            _guard: None,
             _directory: Some(directory),
         }
     }
@@ -570,7 +558,9 @@ mod durable_process {
             let Ok(mode) = std::env::var("CRABBER_TRACE_WORKER") else {
                 return;
             };
-            let url = std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap();
+            let url = crabber_test_support::postgres::TestDatabase::attached_url()
+                .await
+                .unwrap();
             let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
             let path = std::path::PathBuf::from(std::env::var_os("CRABBER_TRACE_QUEUE").unwrap());
             durable::worker(store, &path, &mode, "postgres").await;
@@ -593,10 +583,13 @@ mod durable_process {
     #[cfg(all(feature = "datadog", feature = "postgres"))]
     #[tokio::test]
     async fn killed_started_worker_refuses_replay_and_preserves_closed_anchor() {
-        let Some(journey) = journey_store().await else {
-            return;
-        };
-        killed_worker_recovery(&journey).await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            let journey = journey_store(&url).await;
+            killed_worker_recovery(&journey).await;
+        })
+        .await
+        .unwrap();
     }
 
     #[cfg(all(feature = "datadog", feature = "sqlite"))]
@@ -688,10 +681,13 @@ mod durable_process {
     #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn postgres_fresh_workers_preserve_receipts_sessions_and_cursors() {
-        let Some(journey) = journey_store().await else {
-            return;
-        };
-        fresh_workers(&journey).await;
+        use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+        TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+            let journey = journey_store(&url).await;
+            fresh_workers(&journey).await;
+        })
+        .await
+        .unwrap();
     }
 
     #[cfg(feature = "sqlite")]

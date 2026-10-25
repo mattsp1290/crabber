@@ -1,4 +1,5 @@
 //! Mutable projections cannot choose or erase their immutable source evidence.
+mod capacity_fixture;
 use super::*;
 use crate::{Store, session_owner_contract};
 use crabber_core::ManualClock;
@@ -423,7 +424,7 @@ async fn restored_phase(store: &PostgresStore) {
 }
 
 async fn immutable_capacity(store: &PostgresStore) {
-    let (first, authority) = session_owner_contract::capacity::fill(store).await;
+    let (first, authority) = Box::pin(capacity_fixture::fill(store)).await;
     let original: String = sqlx::query_scalar(
         "SELECT data_json FROM session_owner_current WHERE session_id=$1 AND owner_id=$2",
     )

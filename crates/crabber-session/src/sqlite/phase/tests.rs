@@ -12,11 +12,10 @@ async fn phase_fault_contract() {
     let store = store.with_clock(clock);
     crate::phase_contract::run_fault_contract(
         &store,
-        |point: crate::phase_contract::FaultPoint| {
-            store
-                .phase_fault
-                .store(point as u8, std::sync::atomic::Ordering::SeqCst);
-        },
+        crate::binding_fault::setter(
+            &store.phase_fault,
+            |point: crate::phase_contract::FaultPoint| point as u8,
+        ),
     )
     .await;
 }

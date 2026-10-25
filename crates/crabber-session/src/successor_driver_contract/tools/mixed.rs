@@ -99,7 +99,7 @@ pub(super) async fn staged(
 }
 async fn stage(
     f: &crate::tool_continuation_contract::fixture::Fixture,
-    store: &impl Store,
+    store: &dyn Store,
     descriptor: FrontendTool,
 ) -> crate::FrontendCallStaging {
     let call = ToolCallRecord {

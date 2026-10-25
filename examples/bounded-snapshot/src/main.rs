@@ -1,5 +1,8 @@
 #[allow(dead_code)]
 mod journey;
+#[cfg(feature = "postgres")]
+#[path = "../../postgres-fixture.rs"]
+mod postgres_fixture;
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "--memory".into());
@@ -9,12 +12,14 @@ fn main() {
         .unwrap();
     #[cfg(feature = "postgres")]
     if mode == "--postgres-child" {
-        runtime.block_on(journey::child());
+        let url = std::env::var("CRABBER_TEST_POSTGRES_URL").expect("PostgreSQL endpoint required");
+        runtime.block_on(postgres_fixture::verify(&url));
+        runtime.block_on(journey::child(Some(&url)));
         return;
     }
     #[cfg(feature = "sqlite")]
     if mode == "--sqlite-child" {
-        runtime.block_on(journey::child());
+        runtime.block_on(journey::child(None));
         return;
     }
     #[cfg(feature = "sqlite")]
@@ -29,15 +34,25 @@ fn main() {
         None
     };
     let check = std::env::args().any(|arg| arg == "--check");
+    let smoke = std::env::args().any(|arg| arg == "--smoke");
     let source = journey::source(!check);
     let (backend, stores, child) = match mode.as_str() {
         "--memory" => ("memory", journey::memory(), journey::ChildMode::None),
         #[cfg(feature = "postgres")]
-        "--postgres" => (
-            "postgres",
-            runtime.block_on(journey::postgres(true)),
-            journey::ChildMode::Demo(check),
-        ),
+        "--postgres" => {
+            let url =
+                std::env::var("CRABBER_TEST_POSTGRES_URL").expect("PostgreSQL endpoint required");
+            runtime.block_on(postgres_fixture::verify(&url));
+            (
+                "postgres",
+                runtime.block_on(journey::postgres(&url, true)),
+                journey::ChildMode::Demo(
+                    url,
+                    check,
+                    std::env::var("CRABBER_TEST_POSTGRES_CHILD_DATABASE").ok(),
+                ),
+            )
+        }
         #[cfg(feature = "sqlite")]
         "--sqlite" => {
             let path = directory.as_ref().unwrap().path().join("session.sqlite");
@@ -51,6 +66,10 @@ fn main() {
             "usage: bounded-snapshot --memory | --postgres | --sqlite (durable modes require their Cargo feature)"
         ),
     };
-    runtime.block_on(journey::journey(stores.clone(), backend, &source, child));
-    journey::allocation_proof(&runtime, &stores, backend, &source);
+    if smoke {
+        runtime.block_on(journey::smoke(stores, backend, &source, child));
+    } else {
+        runtime.block_on(journey::journey(stores.clone(), backend, &source, child));
+        journey::allocation_proof(&runtime, &stores, backend, &source);
+    }
 }
