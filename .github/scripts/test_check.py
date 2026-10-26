@@ -601,5 +601,13 @@ class DeadlineTests(unittest.TestCase):
         self.assertLess(result['wall_seconds'], 3)
 
 
+def load_tests(loader, tests, pattern):
+    spec = importlib.util.spec_from_file_location('test_native_ci', MODULE.with_name('test_native_ci.py'))
+    native_tests = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native_tests)
+    tests.addTests(loader.loadTestsFromModule(native_tests))
+    return tests
+
+
 if __name__ == '__main__':
     unittest.main()
