@@ -1089,6 +1089,63 @@ the six local and hosted cache qualification cases. An opt-in restoration pilot
 proves capability only. A cache speedup or default change requires repeated
 matched observations with actual work, errors and outliers retained.
 
+## Hosted quality diagnostic
+
+CI has a default-off `quality-diagnostic` dispatch choice: `off`,
+`quality-contracts`, `quality-artifacts`, or `both`. Each selected part runs on
+its own x64 `ubuntu-latest` runner through the existing `check.py --part` entrypoint.
+The selection is closed; unknown selections or mismatched parts fail before
+checkout or setup. Enabled quality diagnostics reject `qualify` and a matching
+`CRABBER_QUALIFY_REVISION`. Ordinary pushes, pull requests and default dispatches
+add no quality jobs. Canonical Full and compatibility checks remain required.
+
+```sh
+gh workflow run ci.yml --ref SOURCE_BRANCH -f quality-diagnostic=both
+```
+
+Workers use the shared setup action with compatible compiler restoration and
+CacheUse recording. The receipt distinguishes a requested restore from its
+actual outcome; the check remains `unclassified`. The profile uses four Cargo
+jobs, incremental compilation off, dev/test debug information off and symbols
+stripped. Workers add no complete-cache marking, cache saving, post-check cache
+pruning or source-time manifest replacement. Shared setup retains its existing
+targeted `cargo clean` for `minimal-embed`, `fenced-abandon` and
+`operational-telemetry`.
+
+Each check clock starts after all setup and includes ordinary compilation, the
+selected workload and owned cleanup. `target/quality-worker/setup.json` records
+the interval from the shared pre-cache-restoration clock to check start, with
+an explicit `setup_timing_scope`. That interval excludes Python, ripgrep and Rust
+provisioning and compiler identity collection. The 4800-second supervision budget
+allows the first measurements to finish; the 600-second goal stays informational.
+Quality contracts require drained processes and no owned PostgreSQL run.
+Quality artifacts retain the existing four PostgreSQL demos and owned cleanup.
+Their normal-output journals preserve the existing limitation: passing partial
+artifact gates does not establish canonical transitive feature-context
+equivalence.
+
+Attempt-specific artifacts bind the source SHA, x64 architecture, part, run ID
+and attempt in their names and remain available for seven days. They contain
+bounded wrapper and phase reports, setup/cache receipts, fixture events,
+normal-output and normal-example journals, prepared-example and normal-output
+reports, tool/metadata reports, and disposable local-consumer ownership and
+compiler receipts with their manifests and locks. They exclude executables,
+generated WASM binaries, whole target trees, arbitrary scratch source and
+credential files. Failed checks retain available evidence and still fail the
+job. A missing report is not a passing measurement. Artifact names correlate
+source-controlled observations; later authenticated readback must verify job
+metadata and the server archive digest.
+
+Native and quality diagnostics may run together when qualification is off.
+They have independent runners and clocks. The Native receipt ends at its own
+collector and excludes any later quality completion. Neither the maximum part
+time nor that receipt measures the whole check. This diagnostic adds no quality
+exporter, whole collector or admission rule: each part remains unqualified,
+`complete_suite_qualified=false` and `full_check_executed=false`. Accepting a
+hosted measurement requires actual evidence for each selected part and a
+subsequent same-source canonical Full check. No whole-check speedup or timing
+qualification follows from these partial observations.
+
 ## Generic successor fault fixtures
 
 The candidate reuses the failed before-commit request for the two-caller retry in
