@@ -398,9 +398,11 @@ async fn shutdown_tolerates_observer_stopped_first() {
 async fn terminal_intake_loss_survives_repeated_controls_and_shared_stop() {
     use crabber_runtime::Observer as _;
     for stop_mode in 0..3 {
-        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", socket.local_addr().unwrap());
-        drop(socket);
+        let (reservation, origin) = crate::tests::refused_origin();
+        assert!(
+            TcpListener::bind(origin.strip_prefix("http://").unwrap()).is_err(),
+            "unavailable intake port must remain reserved"
+        );
         let mut config = empty_config();
         let mut intake = crate::DatadogConfig::from_lookup(&|name| {
             if name == "DD_API_KEY" {
@@ -442,6 +444,10 @@ async fn terminal_intake_loss_survives_repeated_controls_and_shared_stop() {
         assert!(telemetry.shutdown().await.is_err());
         assert!(telemetry.shutdown().await.is_err());
         assert!(telemetry.flush().await.is_err());
+        assert!(
+            TcpListener::bind(reservation.local_addr().unwrap()).is_err(),
+            "unavailable intake port must remain reserved after the worker stops"
+        );
     }
 }
 
