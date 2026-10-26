@@ -194,7 +194,7 @@ class NativeTransportTests(unittest.TestCase):
         worker['steps'][0]['started_at'] = '2026-10-26T01:01:00.125+01:00'
         collector = dict(self.job, completed_at='2026-10-26T00:06:00.875Z')
         timing = native.outer_timing([worker], collector)
-        self.assertEqual(timing['earliest_worker_check_started_at'], '2026-10-26T00:01:00.125Z')
+        self.assertEqual(timing['earliest_worker_check_started_at'], '2026-10-26T00:01:00.125000Z')
         self.assertEqual(timing['server_span_seconds'], 300.75)
         self.assertEqual(timing['conservative_upper_bound_seconds'], 301.75)
         self.assertEqual(timing['timestamp_resolution_seconds'], 1)
