@@ -116,20 +116,95 @@ fn declared(directory: &Path, kind: &str) -> BTreeMap<String, Value> {
 }
 
 pub(crate) fn journal(directory: &Path, path: &Path) -> Vec<Value> {
-    let rows: Vec<Value> = fs::read_to_string(path)
-        .expect("retained Cargo artifact journal")
+    let raw = fs::read(path).expect("retained Cargo artifact journal");
+    let metadata = fs::read(crate::native_files::File::Metadata.path(directory)).unwrap();
+    journal_bytes(&raw, &metadata)
+}
+
+pub(crate) fn journal_bytes(raw: &[u8], metadata: &[u8]) -> Vec<Value> {
+    let rows: Vec<Value> = std::str::from_utf8(raw)
+        .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows[0]["kind"], "header");
     assert_eq!(rows.last().unwrap()["kind"], "reader-finished");
     assert_eq!(rows.last().unwrap()["invalid"], false);
-    let metadata = fs::read(crate::native_files::File::Metadata.path(directory)).unwrap();
     assert_eq!(
         rows[0]["metadata_sha256"],
         format!("{:x}", sha2::Sha256::digest(metadata))
     );
     rows
+}
+
+pub(crate) fn admit_owner(metadata: &Value, rows: &[Value], owner: &Value, target_root: &Path) {
+    assert_eq!(rows.last().unwrap()["truncated_tail"], false);
+    let artifacts: Vec<_> = rows
+        .iter()
+        .filter(|row| row["kind"] == "artifact")
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "narrow owner must produce only its normal executable"
+    );
+    let artifact = &owner["artifact"];
+    for key in [
+        "package_id",
+        "target",
+        "profile",
+        "features",
+        "executable",
+        "fresh",
+    ] {
+        assert_eq!(
+            artifact[key], artifacts[0][key],
+            "owner differs from compiler evidence"
+        );
+    }
+    assert_eq!(owner["source"], rows[0]["source"]);
+    assert_eq!(owner["metadata_sha256"], rows[0]["metadata_sha256"]);
+    assert_eq!(owner["argv"], rows[0]["argv"]);
+    let package = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == artifact["package_id"])
+        .unwrap();
+    assert_eq!(package["name"], "xtask");
+    assert!(
+        metadata["workspace_members"]
+            .as_array()
+            .unwrap()
+            .contains(&package["id"])
+    );
+    let target = package["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "xtask" && t["kind"] == json!(["bin"]))
+        .unwrap();
+    assert_eq!(artifact["target"]["name"], target["name"]);
+    assert_eq!(artifact["target"]["kind"], target["kind"]);
+    assert_eq!(artifact["target"]["src_path"], target["src_path"]);
+    assert_eq!(
+        Path::new(artifact["executable"].as_str().unwrap()),
+        target_root.join("debug/xtask")
+    );
+    assert_eq!(artifact["profile"]["test"], false);
+    assert_eq!(artifact["profile"]["opt_level"], "0");
+    assert_eq!(artifact["profile"]["debug_assertions"], true);
+    assert_eq!(artifact["profile"]["overflow_checks"], true);
+    crate::native_artifacts::validate_debuginfo(&artifact["profile"]["debuginfo"]);
+    let features: std::collections::BTreeSet<_> = artifact["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(features, ["postgres-check", "session-fixtures"].into());
+    let hash = artifact["sha256"].as_str().unwrap();
+    assert!(hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()));
 }
 
 fn observed(directory: &Path, path: &Path, kind: &str) -> BTreeMap<String, Value> {
@@ -278,10 +353,13 @@ pub(crate) fn migration_owner(
             crate::native_artifacts::validate_debuginfo(&owner["profile"]["debuginfo"]);
             let features: std::collections::BTreeSet<_> = owner["features"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
             assert_eq!(features, ["postgres-check", "session-fixtures"].into());
-            fs::write(&verdict, serde_json::to_vec_pretty(&json!({
+            let evidence = json!({
                 "source": rows[0]["source"], "metadata_sha256": rows[0]["metadata_sha256"],
                 "argv": rows[0]["argv"], "artifact": owner,
                 "scope": "normal enabled xtask preparation; no full dependency-context equivalence claim",
-            })).unwrap()).unwrap();
+            });
+            let metadata = read(crate::native_files::File::Metadata.path(&output));
+            admit_owner(&metadata, &rows, &evidence, Path::new(metadata["target_directory"].as_str().unwrap()));
+            fs::write(&verdict, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
         });
 }

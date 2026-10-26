@@ -17,11 +17,17 @@ mod native_artifacts;
 mod native_bundle;
 #[cfg(feature = "postgres-check")]
 mod native_compiler_input;
+#[cfg(feature = "postgres-check")]
+mod native_coverage;
 mod native_files;
 #[cfg(feature = "postgres-check")]
 mod native_libraries;
 #[cfg(feature = "postgres-check")]
 mod native_library_evidence;
+#[cfg(feature = "postgres-check")]
+mod native_reduce;
+#[cfg(feature = "postgres-check")]
+mod native_reduce_context;
 #[cfg(feature = "postgres-check")]
 mod native_remaining;
 #[cfg(feature = "postgres-check")]
@@ -84,9 +90,14 @@ fn main() {
     }
     match args.first().map(String::as_str) {
         #[cfg(feature = "postgres-check")]
-        Some("native-bundle") => {
-            if let Err(error) = native_bundle::command(&args[1..]) {
-                eprintln!("native-bundle: {error}");
+        Some(command @ ("native-reduce" | "native-bundle")) => {
+            let result = if command == "native-reduce" {
+                native_reduce::command(&args[1..])
+            } else {
+                native_bundle::command(&args[1..])
+            };
+            if let Err(error) = result {
+                eprintln!("{command}: {error}");
                 std::process::exit(2);
             }
         }
@@ -137,7 +148,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts|native-library-1..4|native-remaining-1..4] [--timings <path>] | native-bundle --report <path> --data-dir <path> --output <path> | build-fixtures | verify-datadog | check-probes | inventory-tests"
+                "usage: cargo xtask check [--list] [--part quality-contracts|quality-artifacts|native-library-1..4|native-remaining-1..4] [--timings <path>] | native-reduce --source <revision> --bundles <directory> --output <path> | native-bundle --report <path> --data-dir <path> --output <path> | build-fixtures | verify-datadog | check-probes | inventory-tests"
             );
             std::process::exit(2);
         }

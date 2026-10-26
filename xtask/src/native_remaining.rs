@@ -5,7 +5,7 @@ use crate::{
     native_remaining_evidence::{Plan, read},
     parts::{PartFamily, Quarter},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -141,6 +141,10 @@ fn manifest(gates: &mut Checks, directory: &Path, profile: &str, selected: bool)
                 &read(File::Binaries(Family::Remaining).path(&output)),
                 &value,
             );
+            crate::native_test_evidence::admit_packages(
+                &read(File::Metadata.path(&output)),
+                &value,
+            );
             if selected {
                 assert_eq!(
                     value,
@@ -154,19 +158,48 @@ fn manifest(gates: &mut Checks, directory: &Path, profile: &str, selected: bool)
 
 pub(crate) fn execute(gates: &mut Checks, directory: &Path, profile: &str) {
     gates.native_contribution(PartFamily::NativeRemaining, |gates| {
-        manifest(gates,directory,profile,false);
-        crate::nextest::scoped_group_gate(crate::workspace(),gates,&File::Metadata.path(directory),&File::Binaries(Family::Remaining).path(directory),profile,"native-remaining-resource-groups",File::Groups(Family::Remaining).path(directory));
-        manifest(gates,directory,profile,true);
-        let mut command = base("run",directory,profile);
-        command.args(["--retries","0","--no-fail-fast","--no-tests","fail","--color","never","--success-output","never","--status-level","pass"]);
+        manifest(gates, directory, profile, false);
+        crate::nextest::scoped_group_gate(
+            crate::workspace(),
+            gates,
+            &File::Metadata.path(directory),
+            &File::Binaries(Family::Remaining).path(directory),
+            profile,
+            "native-remaining-resource-groups",
+            File::Groups(Family::Remaining).path(directory),
+        );
+        manifest(gates, directory, profile, true);
+        let mut command = base("run", directory, profile);
+        command.args([
+            "--retries",
+            "0",
+            "--no-fail-fast",
+            "--no-tests",
+            "fail",
+            "--color",
+            "never",
+            "--success-output",
+            "never",
+            "--status-level",
+            "pass",
+        ]);
         crate::standard_tools::require_subprocess_tools(&mut command);
-        let selected = File::Selected(Family::Remaining).path(directory);let verdict = File::Execution(Run::Remaining).path(directory);
-        gates.recorded("native-remaining",command,Run::Remaining.path(directory),"exact observed remaining case execution",move |result: &Output| {
-            let expected = crate::native_test_evidence::selected(&read(&selected));
-            let actual = crate::native_test_evidence::passing(&result.stdout,&result.stderr);
-            assert_eq!(actual,expected,"executed remaining cases differ from admitted selection");
-            fs::write(&verdict,serde_json::to_vec_pretty(&json!({"exact_equal":true,"actual_cases":actual.into_iter().map(|((binary,case),count)|json!([binary,case,count])).collect::<Vec<_>>(),"stdin":"null","success_output":"never","status_level":"pass","color":"never"})).unwrap()).unwrap();
-        });
+        let selected = File::Selected(Family::Remaining).path(directory);
+        let verdict = File::Execution(Run::Remaining).path(directory);
+        gates.recorded(
+            "native-remaining",
+            command,
+            Run::Remaining.path(directory),
+            "exact observed remaining case execution",
+            move |result: &Output| {
+                let evidence = crate::native_test_evidence::execution(
+                    &read(&selected),
+                    &result.stdout,
+                    &result.stderr,
+                );
+                fs::write(&verdict, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+            },
+        );
     });
 }
 

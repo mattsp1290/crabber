@@ -129,6 +129,21 @@ impl Plan {
         quarter: Quarter,
         bytes: &[u8],
     ) -> Self {
+        Self::recorded(
+            metadata,
+            workspace,
+            quarter,
+            bytes,
+            crate::timings::source_identity(),
+        )
+    }
+    pub(crate) fn recorded(
+        metadata: &Value,
+        workspace: &Path,
+        quarter: Quarter,
+        bytes: &[u8],
+        source: Value,
+    ) -> Self {
         let members = strings(&metadata["workspace_members"]);
         let nodes: BTreeMap<_, _> = metadata["resolve"]["nodes"]
             .as_array()
@@ -172,7 +187,7 @@ impl Plan {
         assert!(!owned.is_empty(), "empty remaining target group");
         let selectors = owned.iter().map(Declaration::selector).collect();
         Self {
-            source: crate::timings::source_identity(),
+            source,
             metadata_sha256: format!("{:x}", sha2::Sha256::digest(bytes)),
             quarter: quarter.index(),
             declarations,
@@ -204,6 +219,23 @@ impl Plan {
         fs::write(File::TargetPlan.path(directory), serde_json::to_vec_pretty(&json!({"plan":self,"materialized_argv":argv,"argv_authority":"materialized request; output establishes successful spawn"})).unwrap()).unwrap();
     }
     pub(crate) fn admit_build(&self, directory: &Path, metadata: &Value, input: &Input) {
+        let journal = crate::normal_outputs::journal(
+            directory,
+            &File::Compiler(Family::Remaining).path(directory),
+        );
+        let value = self.validate_build(metadata, input, &journal);
+        fs::write(
+            File::Targets(Family::Remaining).path(directory),
+            serde_json::to_vec_pretty(&value).unwrap(),
+        )
+        .unwrap();
+    }
+    pub(crate) fn validate_build(
+        &self,
+        metadata: &Value,
+        input: &Input,
+        journal: &[Value],
+    ) -> Value {
         let binaries = input.admit();
         let owned: BTreeMap<_, _> = self.owned.iter().map(|v| (&v.key, v)).collect();
         let packages: BTreeSet<_> = self.owned.iter().map(|v| v.package_id.as_str()).collect();
@@ -273,13 +305,9 @@ impl Plan {
         }
         assert_eq!(listed, actual.keys().cloned().collect());
         admit_normal_metadata(binaries, &normals);
-        let journal = crate::normal_outputs::journal(
-            directory,
-            &File::Compiler(Family::Remaining).path(directory),
-        );
         assert_eq!(journal[0]["source"], self.source);
         assert_eq!(journal[0]["metadata_sha256"], self.metadata_sha256);
-        fs::write(File::Targets(Family::Remaining).path(directory), serde_json::to_vec_pretty(&json!({"source":self.source,"metadata_sha256":self.metadata_sha256,"owned_targets":self.owned,"test_artifacts":actual.into_values().collect::<Vec<_>>(),"normal_prerequisites":normals.into_values().collect::<Vec<_>>(),"normal_prerequisite_scope":"eligible declared bins of owned test packages","semantic_credit":false})).unwrap()).unwrap();
+        json!({"source":self.source,"metadata_sha256":self.metadata_sha256,"owned_targets":self.owned,"test_artifacts":actual.into_values().collect::<Vec<_>>(),"normal_prerequisites":normals.into_values().collect::<Vec<_>>(),"normal_prerequisite_scope":"eligible declared bins of owned test packages","semantic_credit":false})
     }
 }
 

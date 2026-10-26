@@ -24,6 +24,24 @@ fn target_key(package: &Value, target: &Value) -> (String, String) {
 
 pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
     let metadata = read(File::Metadata.path(directory));
+    let rows: Vec<Value> = serde_json::Deserializer::from_slice(stream)
+        .into_iter::<Value>()
+        .map(Result::unwrap)
+        .collect();
+    let actual = validate_build(&metadata, binaries, &rows);
+    let rows = crate::normal_outputs::journal(
+        directory,
+        &File::Compiler(Family::Libraries).path(directory),
+    );
+    assert_eq!(rows[0]["source"], crate::timings::source_identity());
+    fs::write(File::Targets(Family::Libraries).path(directory), serde_json::to_vec_pretty(&json!({
+        "source": rows[0]["source"], "metadata_sha256": rows[0]["metadata_sha256"],
+        "declared_target_count": actual.len(), "artifacts": actual,
+        "scope": "all workspace testable libraries and proc-macros; no integration or binary harnesses",
+    })).unwrap()).unwrap();
+}
+
+pub(crate) fn validate_build(metadata: &Value, binaries: &Value, rows: &[Value]) -> Vec<Value> {
     let members = metadata["workspace_members"].as_array().unwrap();
     let mut declared = BTreeMap::new();
     for package in metadata["packages"].as_array().unwrap() {
@@ -39,8 +57,7 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
     }
     assert!(!declared.is_empty(), "no declared library targets");
     let mut actual = BTreeMap::new();
-    for row in serde_json::Deserializer::from_slice(stream).into_iter::<Value>() {
-        let row = row.unwrap();
+    for row in rows {
         if row["reason"] != "compiler-artifact" || row["executable"].is_null() {
             continue;
         }
@@ -60,9 +77,9 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
         let (package, target) = declared.get(&key).expect("undeclared library target");
         assert_eq!(row["target"]["src_path"], target["src_path"]);
         assert_eq!(row["target"]["kind"], target["kind"]);
-        admit_compiler_context(&metadata, &row, package);
+        admit_compiler_context(metadata, row, package);
         assert!(
-            actual.insert(key, row).is_none(),
+            actual.insert(key, row.clone()).is_none(),
             "duplicate library executable"
         );
     }
@@ -95,16 +112,7 @@ pub(crate) fn admit_build(directory: &Path, binaries: &Value, stream: &[u8]) {
         assert!(listed.insert(key), "duplicate listed binary");
     }
     assert_eq!(listed, actual.keys().cloned().collect());
-    let rows = crate::normal_outputs::journal(
-        directory,
-        &File::Compiler(Family::Libraries).path(directory),
-    );
-    assert_eq!(rows[0]["source"], crate::timings::source_identity());
-    fs::write(File::Targets(Family::Libraries).path(directory), serde_json::to_vec_pretty(&json!({
-        "source": rows[0]["source"], "metadata_sha256": rows[0]["metadata_sha256"],
-        "declared_target_count": declared.len(), "artifacts": actual.into_values().collect::<Vec<_>>(),
-        "scope": "all workspace testable libraries and proc-macros; no integration or binary harnesses",
-    })).unwrap()).unwrap();
+    actual.into_values().collect()
 }
 
 fn library(kind: &Value) -> bool {
@@ -114,10 +122,12 @@ fn library(kind: &Value) -> bool {
 pub(crate) fn admit_manifest(directory: &Path, manifest: &Value) {
     let binaries = read(File::Binaries(Family::Libraries).path(directory));
     crate::native_test_evidence::admit_manifest(&binaries, manifest);
-    admit_role(&read(File::Metadata.path(directory)), manifest);
+    let metadata = read(File::Metadata.path(directory));
+    crate::native_test_evidence::admit_packages(&metadata, manifest);
+    admit_role(&metadata, manifest);
 }
 
-fn admit_role(metadata: &Value, manifest: &Value) {
+pub(crate) fn admit_role(metadata: &Value, manifest: &Value) {
     let members = metadata["workspace_members"].as_array().unwrap();
     let session: Vec<_> = metadata["packages"]
         .as_array()

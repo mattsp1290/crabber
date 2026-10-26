@@ -159,15 +159,20 @@ impl Selection {
         };
         let evidence = run_kind.path(directory);
         let verdict = File::Execution(run_kind).path(directory);
-        gates.recorded(self.name(), run, evidence, "exact observed library case execution", move |result| {
-            let expected = crate::native_test_evidence::selected(&read(&selected));
-            let actual = crate::native_test_evidence::passing(&result.stdout, &result.stderr);
-            assert_eq!(actual, expected, "executed passing cases differ from admitted selection");
-            fs::write(&verdict, serde_json::to_vec_pretty(&serde_json::json!({
-                "exact_equal": true, "actual_cases": actual.into_iter().map(|((binary, case), count)| serde_json::json!([binary, case, count])).collect::<Vec<_>>(),
-                "stdin": "null", "success_output": "never", "status_level": "pass", "color": "never",
-            })).unwrap()).unwrap();
-        });
+        gates.recorded(
+            self.name(),
+            run,
+            evidence,
+            "exact observed library case execution",
+            move |result| {
+                let evidence = crate::native_test_evidence::execution(
+                    &read(&selected),
+                    &result.stdout,
+                    &result.stderr,
+                );
+                fs::write(&verdict, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+            },
+        );
     }
 }
 
