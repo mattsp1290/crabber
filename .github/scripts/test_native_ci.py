@@ -40,6 +40,29 @@ class NativeTransportTests(unittest.TestCase):
                         'name': native.CHECK_STEP, 'status': 'completed', 'conclusion': 'success',
                         'started_at': '2026-10-26T00:01:00Z', 'completed_at': '2026-10-26T00:01:30Z'}]}
 
+    def test_context_uses_canonical_repository_route_and_rejects_sibling_paths(self):
+        prefix = '/repos/owner/repo'
+        routes = {prefix: self.repository,
+                  prefix + '/actions/workflows/ci.yml': self.workflow,
+                  prefix + '/actions/runs/42/attempts/2': self.run,
+                  prefix + '/actions/runs/42/attempts/2/jobs?per_page=100&page=1':
+                      {'jobs': [self.job], 'total_count': 1}}
+
+        def respond(request, timeout):
+            path = request.full_url.removeprefix('https://api.github.com')
+            self.assertIn(path, routes, 'unrecognized GitHub API route')
+            return io.BytesIO(json.dumps(routes[path]).encode())
+
+        with mock.patch.dict(native.os.environ, {'GH_TOKEN': 'credential-free-control'}):
+            api = native.GitHub(self.identity, self.root)
+        with mock.patch.object(api.opener, 'open', side_effect=respond) as opened:
+            self.assertEqual(api.context(), (self.repository, self.workflow, self.run, [self.job]))
+            self.assertEqual(opened.call_count, 4)
+            for endpoint in ['/repos/owner/repository', '/repos/owner/repo-other/jobs']:
+                with self.assertRaises(ValueError):
+                    api.request(endpoint)
+            self.assertEqual(opened.call_count, 4)
+
     def test_run_context_rejects_foreign_identity(self):
         native.validate_context(self.identity, self.repository, self.workflow, self.run)
         for key, value in [('id', 43), ('run_attempt', 1), ('head_sha', 'c' * 40),
