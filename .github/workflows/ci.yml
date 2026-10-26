@@ -15,6 +15,11 @@ on:
         type: choice
         options: ['off', restore-compatible]
         default: 'off'
+      quality-diagnostic:
+        description: Opt-in independent quality part measurements on x64
+        type: choice
+        options: ['off', quality-contracts, quality-artifacts, both]
+        default: 'off'
       qualify:
         description: Run the three cached-source qualification cases once
         type: boolean
@@ -37,7 +42,7 @@ env:
 
 jobs:
   check:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native-diagnostic != 'off' && (inputs.qualify || vars.CRABBER_QUALIFY_REVISION == github.sha)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.native-diagnostic != 'off' || inputs.quality-diagnostic != 'off') && (inputs.qualify || vars.CRABBER_QUALIFY_REVISION == github.sha)) }}
     strategy:
       fail-fast: false
       matrix:
@@ -275,6 +280,111 @@ jobs:
           CRABBER_REV: ${{ github.sha }}
         run: ./testdata/extensions-consumer/run.sh
 
+
+  quality-worker:
+    name: Quality worker (${{ matrix.part }})
+    if: github.event_name == 'workflow_dispatch' && inputs.quality-diagnostic != 'off'
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON('{"off":[],"quality-contracts":["quality-contracts"],"quality-artifacts":["quality-artifacts"],"both":["quality-contracts","quality-artifacts"]}')[inputs.quality-diagnostic] }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_STRIP: "symbols"
+      CARGO_PROFILE_TEST_STRIP: "symbols"
+    steps:
+      - name: Validate selection and reject qualification conflicts before checkout
+        env:
+          QUALITY_SELECTION: ${{ inputs.quality-diagnostic }}
+          QUALITY_PART: ${{ matrix.part }}
+          QUALIFY: ${{ inputs.qualify }}
+          QUALIFICATION_REVISION: ${{ vars.CRABBER_QUALIFY_REVISION }}
+        run: |
+          case "$QUALITY_SELECTION:$QUALITY_PART" in
+            quality-contracts:quality-contracts|quality-artifacts:quality-artifacts|both:quality-contracts|both:quality-artifacts) ;;
+            *) echo 'Invalid quality diagnostic selection' >&2; exit 1 ;;
+          esac
+          if test "$QUALIFY" = true || test "$QUALIFICATION_REVISION" = "$GITHUB_SHA"; then
+            echo 'Quality diagnostics cannot run with qualification' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up quality measurement with compatible compiler restoration
+        id: quality-setup
+        uses: ./.github/actions/check-setup
+        with:
+          tools: check
+          restore-compiler-cache: "true"
+          record-cache-use: "true"
+      - name: Start quality check clock after setup
+        id: quality-budget
+        env:
+          SETUP_STARTED: ${{ steps.quality-setup.outputs.setup-start }}
+        run: |
+          python3 -I -S - <<'PY'
+          import json, os, pathlib, time
+          started = time.time()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'start={started}', file=output)
+          directory = pathlib.Path('target/quality-worker')
+          directory.mkdir(parents=True, exist_ok=True)
+          report = {
+              'setup_seconds_before_check': started - float(os.environ['SETUP_STARTED']),
+              'setup_timing_scope': 'shared pre-cache-restoration clock to check start; excludes Python, ripgrep, Rust provisioning and compiler identity',
+              'check_timing_scope': 'after setup, including compilation and cleanup',
+          }
+          (directory / 'setup.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - name: Measure selected quality part including compilation and cleanup
+        id: quality-check
+        env:
+          QUALITY_PART: ${{ matrix.part }}
+          CHECK_STARTED: ${{ steps.quality-budget.outputs.start }}
+        run: python3 -I -S .github/scripts/check.py --part "$QUALITY_PART" --budget-seconds 4800 --ci-start-time "$CHECK_STARTED" --cache-state unclassified --report target/quality-worker/check.json
+      - name: Preserve bounded quality evidence even after check failure
+        if: always() && contains(fromJSON('["success","failure","cancelled"]'), steps.quality-check.outcome)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quality-worker-${{ github.sha }}-X64-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/quality-worker/*.json
+            target/test-performance/cache-restore.json
+            target/test-performance/cache-use/receipt.json
+            target/test-performance/complete-*/fixtures.jsonl
+            target/test-performance/complete-*/tests.json
+            target/test-performance/complete-*/binaries.json
+            target/test-performance/complete-*/cargo-metadata.json
+            target/test-performance/complete-*/boundary-features.json
+            target/test-performance/complete-*/resource-groups.json
+            target/test-performance/complete-*/*-version.txt
+            target/test-performance/complete-*/normal-output-artifacts.jsonl
+            target/test-performance/complete-*/normal-example-artifacts.jsonl
+            target/test-performance/complete-*/prepared-normal-examples.json
+            target/test-performance/complete-*/normal-outputs.json
+            target/local-probes/*/owners.json
+            target/local-probes/*/*/compiler.json
+            target/local-probes/*/*/source/Cargo.toml
+            target/local-probes/*/*/source/Cargo.lock
+            target/local-probes/*/shared-target/CACHEDIR.TAG
+          if-no-files-found: error
+          retention-days: 7
+      - name: Record measurement scope
+        if: always() && contains(fromJSON('["success","failure","cancelled"]'), steps.quality-check.outcome)
+        env:
+          QUALITY_PART: ${{ matrix.part }}
+          CHECK_OUTCOME: ${{ steps.quality-check.outcome }}
+        run: |
+          {
+            echo "Quality part: $QUALITY_PART (x64)"
+            echo "Check outcome: $CHECK_OUTCOME"
+            echo 'Measurement only; complete_suite_qualified=false; full_check_executed=false.'
+            echo 'The check clock includes compilation and owned cleanup; setup is reported separately.'
+            echo 'Native observations have a separate clock and do not include this job.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   native-plan:
     if: github.event_name == 'workflow_dispatch' && inputs.native-diagnostic != 'off'
