@@ -55,27 +55,27 @@ async fn actual_consumer_native_and_returned_ack_boundaries(keyed:bool,kind:Call
 }
 #[tokio::test]
 async fn actual_consumer_unkeyed_register_native_and_returned_ack_boundaries(){
-    actual_consumer_native_and_returned_ack_boundaries(false,CallKind::Register).await;
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(false,CallKind::Register)).await;
 }
 #[tokio::test]
 async fn actual_consumer_keyed_register_native_and_returned_ack_boundaries(){
-    actual_consumer_native_and_returned_ack_boundaries(true,CallKind::Register).await;
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(true,CallKind::Register)).await;
 }
 #[tokio::test]
 async fn actual_consumer_unkeyed_begin_initial_native_and_returned_ack_boundaries(){
-    actual_consumer_native_and_returned_ack_boundaries(false,CallKind::BeginInitial).await;
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(false,CallKind::BeginInitial)).await;
 }
 #[tokio::test]
 async fn actual_consumer_keyed_begin_initial_native_and_returned_ack_boundaries(){
-    actual_consumer_native_and_returned_ack_boundaries(true,CallKind::BeginInitial).await;
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(true,CallKind::BeginInitial)).await;
 }
 #[tokio::test]
 async fn actual_consumer_unkeyed_conclude_native_and_returned_ack_boundaries(){
-    actual_consumer_native_and_returned_ack_boundaries(false,CallKind::Conclude).await;
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(false,CallKind::Conclude)).await;
 }
 #[tokio::test]
 async fn actual_consumer_keyed_conclude_native_and_returned_ack_boundaries(){
-    actual_consumer_native_and_returned_ack_boundaries(true,CallKind::Conclude).await;
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(true,CallKind::Conclude)).await;
 }
 
 struct ReleaseSeal(Arc<super::fault_tests::SealHold>);
