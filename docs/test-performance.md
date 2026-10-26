@@ -1002,7 +1002,31 @@ Feature-ref acceptance of the added dispatch input needs an actual hosted check.
 If GitHub requires default-branch registration, merge the inert change after the
 canonical gates pass, then verify the hosted diagnostic separately.
 
-The initial diagnostic restores no compiler cache and reports `unclassified`.
+The diagnostic defaults to `native-compiler-cache=off`. To request compatible
+compiler artifacts for workers, dispatch with `native-compiler-cache` set to
+`restore-compatible`. Both modes report `unclassified`; collectors always keep
+compiler cache restoration off.
+
+```sh
+gh workflow run ci.yml --ref SOURCE_BRANCH \
+  -f native-diagnostic=x64 -f native-compiler-cache=restore-compatible
+```
+
+Each worker exports the setup action's finalized cache-use receipt. It records
+the request, actual restore action outcome and matched key, raw compiler digest,
+prior marker and source-time inputs, and the same-pass source-refresh result.
+Disabled, missed, and restored caches remain distinct. A restored cache without
+a prior complete marker remains a restored cache. A requested key or successful
+action alone does not establish a hit. Changed source still requires compilation
+and the complete selected Native workload.
+
+All eight workers must agree with the collector's requested mode. Admission
+binds each receipt to the bundle's recorded source, tree, workspace, compiler,
+runner and profile, including after relocation. Legacy boolean envelopes are
+rejected by this source. Cache key and producer associations are source-trusted;
+cache origin is not independently authenticated as canonical main. Compiler
+journals and build phases, rather than a receipt, show actual artifact freshness.
+
 Workers use the existing setup action and run ordinary project compilation and
 owned cleanup inside their check clock. The planner reads
 `.github/native-workers.json` without compiling the project. The collector checks
@@ -1014,12 +1038,14 @@ or PostgreSQL image.
 After the collector job completes, fetch an authenticated receipt from the same
 source checkout. Set `GH_TOKEN` to a read-only token with repository Actions read
 access. Use the exact source SHA, run ID, and attempt from the diagnostic run.
-Choose a new output directory.
+Choose a new output directory and pass the dispatch's compiler-cache mode. The
+CLI defaults to `off` when the flag is omitted.
 
 ```sh
 python3 -I -S .github/scripts/native-ci.py receipt \
   --repository owner/repository --run RUN_ID --attempt ATTEMPT \
-  --source EXACT_SOURCE_SHA --arch x64 --output target/native-receipt
+  --source EXACT_SOURCE_SHA --arch x64 --compiler-cache restore-compatible \
+  --output target/native-receipt
 ```
 
 The receipt verifies authenticated repository, workflow, source, attempt-specific
@@ -1028,7 +1054,8 @@ SHA256 digest before extracting it. Missing digests fail admission. Raw archives
 and sanitized API provenance remain in the output directory. Artifact metadata
 has no uploading job ID or attempt field. Matching artifact names and worker
 envelopes provide source-trusted correlation to a job and attempt, rather than
-independent server attestation of that association.
+independent server attestation of that association. The expected dispatch mode
+is also source-trusted caller policy; the run API does not attest that input.
 
 `receipt.json` measures the earliest required worker check-step start after
 setup through collector **job** completion. The adapter accepts timezone-aware
@@ -1058,7 +1085,9 @@ An actual eight-slot hosted x64 positive, portable replay, transport and semanti
 negative controls, terminal receipt, and a subsequent same-source external Full
 oracle remain acceptance gates for this diagnostic. ARM64 requires its own
 positive evidence. Native coverage does not qualify the complete check or any of
-the six local and hosted cache qualification cases.
+the six local and hosted cache qualification cases. An opt-in restoration pilot
+proves capability only. A cache speedup or default change requires repeated
+matched observations with actual work, errors and outliers retained.
 
 ## Generic successor fault fixtures
 

@@ -5,6 +5,7 @@ import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -12,12 +13,18 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
 import zipfile
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+_cache_spec = importlib.util.spec_from_file_location('cache_use', Path(__file__).with_name('cache-use.py'))
+cache_use = importlib.util.module_from_spec(_cache_spec)
+_cache_spec.loader.exec_module(cache_use)
+CACHE_MODES = ('off', 'restore-compatible')
 WORKFLOW = '.github/workflows/ci.yml'
 ARCHES = {'x64': ('ubuntu-latest', 'X64', 'x86_64'),
           'arm64': ('ubuntu-24.04-arm', 'ARM64', 'aarch64')}
@@ -90,15 +97,18 @@ def collector_name(arch):
     return f'Native collect ({arch})'
 
 
-def plan(mode, qualify, qualification_revision, source):
+def plan(mode, qualify, qualification_revision, source, compiler_cache='off'):
     require(re.fullmatch(r'[0-9a-f]{40}', source), 'planner source must be an exact SHA')
     require(mode in {'off', 'x64', 'arm64', 'both'}, 'unknown Native diagnostic choice')
+    require(compiler_cache in CACHE_MODES, 'unknown compiler cache request')
     require(not (mode != 'off' and (qualify or qualification_revision == source)),
             'qualification and Native diagnostic cannot run together')
     selected = list(ARCHES) if mode == 'both' else ([] if mode == 'off' else [mode])
-    return {'workers': {'include': [{'arch': arch, 'runner': ARCHES[arch][0], 'slot': slot}
+    return {'workers': {'include': [{'arch': arch, 'runner': ARCHES[arch][0], 'slot': slot,
+                                   'compiler_cache': compiler_cache}
                                    for arch in selected for slot in slots()]},
-            'collectors': {'include': [{'arch': arch, 'runner': ARCHES[arch][0]}
+            'collectors': {'include': [{'arch': arch, 'runner': ARCHES[arch][0],
+                                      'compiler_cache': compiler_cache}
                                       for arch in selected]}}
 
 
@@ -254,21 +264,31 @@ def extract_archive(raw_path, destination):
                     shutil.copyfileobj(source, target)
 
 
-def admit_envelope(identity, arch, slot, directory):
+def admit_envelope(identity, arch, slot, directory, compiler_cache):
     envelope = load(directory / 'ci-envelope.json')
     require(envelope['identity'] == asdict(identity) and envelope['arch'] == arch
             and envelope['runner_arch'] == ARCHES[arch][1]
             and envelope['machine'] == ARCHES[arch][2]
             and envelope['slot'] == slot and envelope['job'] == 'native-worker'
             and envelope['job_name'] == worker_name(arch, slot), 'wrong worker envelope context')
-    require(envelope['cache_state'] == 'unclassified' and envelope['compiler_cache_restored'] is False
+    require('compiler_cache_restored' not in envelope, 'legacy cache boolean is not a cache-use receipt')
+    require('cache_use' in envelope, 'missing worker cache-use receipt')
+    require(envelope['cache_state'] == 'unclassified'
             and envelope['profile'] == PROFILE and envelope['source_clean'] is True,
             'wrong worker profile, cache policy, or dirty source')
     require(envelope['workflow_sha'] == identity.source
             and envelope['workflow_ref'].startswith(identity.repository + '/' + WORKFLOW + '@'),
             'wrong worker workflow context')
     bundle = directory / 'bundle'
-    require(envelope['rustc'] == load(bundle / 'bundle.json')['source']['rustc'],
+    index = load(bundle / 'bundle.json')
+    cache_use.admit(envelope['cache_use'],
+                    expected={'repository': identity.repository, 'run': identity.run,
+                              'attempt': identity.attempt, 'source': identity.source,
+                              'tree': index['source']['tree'], 'workspace': index['recorded_roots']['workspace'],
+                              'runner_os': 'Linux', 'runner_arch': ARCHES[arch][1], 'profile': PROFILE},
+                    compiler_text=index['source']['rustc'], requested=compiler_cache)
+    require(index['source']['revision'] == identity.source, 'worker bundle source mismatch')
+    require(envelope['rustc'] == index['source']['rustc'],
             'worker toolchain envelope mismatch')
     require(envelope['bundle_index_sha256'] == sha256((bundle / 'bundle.json').read_bytes()),
             'worker bundle index digest mismatch')
@@ -295,6 +315,7 @@ def worker(args):
             and report['profile'] == PROFILE and report['cache_state'] == 'unclassified'
             and report['source_revision'] == identity.source and report['end_revision'] == identity.source
             and report['source_clean'] is True and report['end_clean'] is True, 'invalid worker report')
+    setup_receipt = json.loads(cache_use.read(args.cache_use_receipt))
     args.output.mkdir(parents=True, exist_ok=False)
     subprocess.run(['cargo', 'xtask', 'native-bundle', '--report', str(args.report),
                     '--data-dir', str(metrics.parent), '--output', str(args.output / 'bundle')],
@@ -306,14 +327,14 @@ def worker(args):
                 'rustc': load(args.output / 'bundle/bundle.json')['source']['rustc'],
                 'job': os.environ['GITHUB_JOB'], 'job_name': worker_name(args.arch, args.slot),
                 'profile': report['profile'], 'cache_state': 'unclassified',
-                'compiler_cache_restored': False, 'source_clean': True,
+                'cache_use': setup_receipt, 'source_clean': True,
                 'bundle_index_sha256': sha256((args.output / 'bundle/bundle.json').read_bytes()),
                 'wrapper_wall_seconds': report['wall_seconds'],
                 'wrapper_cpu_seconds': {key: value for key, value in report.items() if 'cpu' in key},
                 'setup_seconds_before_check': args.setup_seconds,
                 'artifact_job_association': CORRELATION}
     save(args.output / 'ci-envelope.json', envelope)
-    admit_envelope(identity, args.arch, args.slot, args.output)
+    admit_envelope(identity, args.arch, args.slot, args.output, args.compiler_cache)
 
 
 def server_time(value):
@@ -377,7 +398,7 @@ def collect(args):
             api.archive(artifact, archive)
             extracted = args.output / 'workers' / slot
             extract_archive(archive, extracted)
-            envelope = admit_envelope(identity, args.arch, slot, extracted)
+            envelope = admit_envelope(identity, args.arch, slot, extracted, args.compiler_cache)
             shutil.copytree(extracted / 'bundle', bundle_root / slot)
             records.append({'slot': slot, 'job_id': job['id'], 'artifact': artifact,
                             'archive': str(archive.relative_to(args.output)), 'envelope': envelope})
@@ -393,6 +414,7 @@ def collect(args):
                 'collector source changed during reduction')
         save(args.output / 'collection.json', {
             'version': 1, 'identity': asdict(identity), 'arch': args.arch,
+            'compiler_cache_request': args.compiler_cache,
             'repository_id': repository['id'], 'workflow_id': workflow['id'],
             'workers': records, 'artifact_job_association': CORRELATION,
             'native_coverage_validated': True, 'complete_suite_qualified': False, 'full_check_executed': False,
@@ -429,6 +451,7 @@ def receipt(args):
         extract_archive(archive, directory)
         collection = load(directory / 'collection.json')
         require(collection['identity'] == asdict(identity) and collection['arch'] == args.arch
+                and collection['compiler_cache_request'] == args.compiler_cache
                 and collection['repository_id'] == repository['id'] and collection['workflow_id'] == workflow['id'],
                 'collection context mismatch')
         records = collection['workers']
@@ -442,9 +465,11 @@ def receipt(args):
                     for key in ['id', 'name', 'size_in_bytes', 'digest', 'workflow_run']), 'worker provenance changed')
             require(record['archive'] == f'archives/{slot}.zip', 'unexpected archived worker path')
             verify_archive((directory / record['archive']).read_bytes(), fresh)
-            admit_envelope(identity, args.arch, slot, directory / 'workers' / slot)
+            envelope = admit_envelope(identity, args.arch, slot, directory / 'workers' / slot, args.compiler_cache)
+            require(record['envelope'] == envelope, 'collection worker envelope changed')
         admit_result(load(directory / 'native-result.json'))
         save(args.output / 'receipt.json', {'version': 1, 'identity': asdict(identity), 'arch': args.arch,
+             'compiler_cache_request': args.compiler_cache,
              'collector_job_id': collector['id'], 'collector_artifact': artifact,
              'timing': outer_timing(workers, collector), 'artifact_job_association': CORRELATION,
              'native_coverage_validated': True, 'complete_suite_qualified': False, 'full_check_executed': False,
@@ -459,17 +484,20 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     planning = commands.add_parser('plan')
     planning.add_argument('--mode', choices=['off', 'x64', 'arm64', 'both'], default='off')
+    planning.add_argument('--compiler-cache', choices=CACHE_MODES, default='off')
     planning.add_argument('--qualify', action='store_true')
     planning.add_argument('--qualification-revision', default='')
     planning.add_argument('--source', required=True)
     for command in ['worker', 'collect', 'receipt']:
         child = commands.add_parser(command)
         child.add_argument('--arch', choices=ARCHES, required=True)
+        child.add_argument('--compiler-cache', choices=CACHE_MODES, default='off')
         child.add_argument('--output', type=Path, required=True)
         if command == 'worker':
             child.add_argument('--slot', required=True)
             child.add_argument('--report', type=Path, required=True)
             child.add_argument('--setup-seconds', type=float, required=True)
+            child.add_argument('--cache-use-receipt', type=Path, required=True)
         if command == 'receipt':
             child.add_argument('--repository', required=True)
             child.add_argument('--run', type=int, required=True)
@@ -478,7 +506,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == 'plan':
-            value = plan(args.mode, args.qualify, args.qualification_revision, args.source)
+            value = plan(args.mode, args.qualify, args.qualification_revision, args.source, args.compiler_cache)
             with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                 for key, matrix in value.items():
                     print(key + '=' + json.dumps(matrix, separators=(',', ':')), file=output)
