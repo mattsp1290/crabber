@@ -60,6 +60,21 @@ def stamps(paths):
             for directory in paths for p in directory.glob('*.json')}
 
 
+def clean_target_arguments(target, affected_before):
+    arguments = set()
+    for name in affected_before:
+        parts = owned(target, Path(name)).relative_to(target).parts
+        if len(parts) == 4 and parts[1] == '.fingerprint':
+            arguments.add(())
+        elif len(parts) == 5 and parts[2] == '.fingerprint':
+            arguments.add(('--target', parts[0]))
+        else:
+            raise ValueError(f'cannot identify the retained Cargo target for {name}')
+    if not arguments:
+        raise ValueError('affected compiler fingerprints are required for cleanup')
+    return sorted(arguments)
+
+
 def dependent_stamps(target, package):
     module = package.replace('-', '_')
     result = {}
@@ -332,17 +347,19 @@ def main():
               'targets': inventory(root, main_target, args.package)}
     save(args.report, report)
     for row in report['targets']:
+        target_arguments = clean_target_arguments(Path(row['target']), row['affected_before'])
         for owner in row['owners']:
             if 'compiler_before' in owner and not any(
                     Path(a['target']['src_path']).is_relative_to(source)
                     for a in owner['compiler_before']['artifacts']):
                 continue
-            command = ['cargo', 'clean', '--offline', '--locked', '--manifest-path', owner['manifest'],
-                       '--target-dir', row['target'], '-p', args.package]
-            env = dict(os.environ, CARGO_BUILD_BUILD_DIR=row['target'])
-            result = subprocess.run(command, cwd=root, env=env)
-            if result.returncode:
-                raise SystemExit(result.returncode)
+            for target_argument in target_arguments:
+                command = ['cargo', 'clean', '--offline', '--locked', '--manifest-path', owner['manifest'],
+                           '--target-dir', row['target'], *target_argument, '-p', args.package]
+                env = dict(os.environ, CARGO_BUILD_BUILD_DIR=row['target'])
+                result = subprocess.run(command, cwd=root, env=env)
+                if result.returncode:
+                    raise SystemExit(result.returncode)
         affected = current_package(Path(row['target']), args.package, source)
         if affected:
             raise ValueError(f'package cleanup left current-source artifacts in {row["target"]}')
