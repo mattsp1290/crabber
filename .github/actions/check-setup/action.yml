@@ -7,6 +7,9 @@ inputs:
   tools:
     description: Required tool set, check or collector
     default: check
+  record-cache-use:
+    description: Write a source-bound setup cache-use receipt
+    default: "false"
 outputs:
   setup-start:
     description: Setup clock start before cache restoration
@@ -20,6 +23,9 @@ outputs:
   cache-primary-key:
     description: Cache key used by the canonical main-only writer
     value: ${{ steps.cache.outputs.cache-primary-key }}
+  cache-use-receipt:
+    description: Finalized optional setup cache-use receipt
+    value: ${{ steps.cache-use.outputs.path }}
 runs:
   using: composite
   steps:
@@ -54,8 +60,25 @@ runs:
         fi
     - name: Record compiler cache identity
       id: compiler
+      env:
+        GRAPH_HASH: ${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}
+        RECORD_CACHE_USE: ${{ inputs.record-cache-use }}
+        RESTORE_COMPILER_CACHE: ${{ inputs.restore-compiler-cache }}
+        SETUP_TOOLS: ${{ inputs.tools }}
       shell: bash
-      run: echo "hash=$(rustc -Vv | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      run: |
+        compiler_file=target/test-performance/cache-use/compiler.txt
+        mkdir -p "$(dirname "$compiler_file")"
+        rustc -Vv > "$compiler_file"
+        compiler_hash="$(sha256sum "$compiler_file" | cut -d ' ' -f 1)"
+        base="rust-$RUNNER_OS-$RUNNER_ARCH-$compiler_hash-dev0-test0-strip-symbols-inc0-combined-v2-"
+        graph="$base$GRAPH_HASH-"
+        primary="$graph$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        printf '%s\n' "hash=$compiler_hash" "base-key=$base" "graph-key=$graph" "primary-key=$primary" >> "$GITHUB_OUTPUT"
+        if test "$RECORD_CACHE_USE" = true; then
+          test "$SETUP_TOOLS" = check
+          python3 -I -S .github/scripts/cache-use.py begin --restore "$RESTORE_COMPILER_CACHE" --compiler "$compiler_file" --base-key "$base" --graph-key "$graph" --primary-key "$primary" --graph-hash "$GRAPH_HASH"
+        fi
     - name: Start setup clock before cache restoration
       id: setup
       shell: bash
@@ -74,19 +97,21 @@ runs:
           target/consumer-probes
           target/test-tools
           fixtures/wasm/target
-        key: rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: ${{ steps.compiler.outputs.primary-key }}
         # Prefer the exact dependency/feature graph. The fallback keeps the
         # compiler/base profile identical; the exact key includes per-package
         # profile overrides in Cargo.toml. Cargo still validates every unit's
         # dependency/features fingerprint and rebuilds changed source.
         restore-keys: |
-          rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
-          rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-
+          ${{ steps.compiler.outputs.graph-key }}
+          ${{ steps.compiler.outputs.base-key }}
     - name: Record cache conditions and install pinned tools
       if: inputs.tools == 'check'
       id: conditions
       env:
         RESTORED_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+        RESTORE_OUTCOME: ${{ steps.cache.outcome }}
+        RECORD_CACHE_USE: ${{ inputs.record-cache-use }}
       shell: bash
       run: |
         python3 -I -S - <<'PY'
@@ -95,6 +120,8 @@ runs:
         root.mkdir(parents=True, exist_ok=True)
         pins = json.loads(pathlib.Path('.config/test-tools.json').read_text())
         marker = root / 'complete-cache.json'
+        if os.environ['RECORD_CACHE_USE'] == 'true':
+            subprocess.run([sys.executable, '-I', '-S', '.github/scripts/cache-use.py', 'capture', '--action-outcome', os.environ['RESTORE_OUTCOME'], '--matched-key', os.environ['RESTORED_KEY']], check=True)
         warm = marker.exists() and bool(os.environ['RESTORED_KEY'])
         state = 'unclassified' if warm else 'bootstrap'
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -128,6 +155,19 @@ runs:
     - name: Refresh source provenance after cache restore
       if: inputs.restore-compiler-cache == 'true' && inputs.tools == 'check'
       shell: bash
+      env:
+        RECORD_CACHE_USE: ${{ inputs.record-cache-use }}
       run: |
-        python3 -I -S .github/scripts/cache-source-times.py restore
+        args=()
+        if test "$RECORD_CACHE_USE" = true; then
+          args+=(--report target/test-performance/cache-use/source-refresh.json)
+        fi
+        python3 -I -S .github/scripts/cache-source-times.py restore "${args[@]}"
         cargo clean -p minimal-embed -p fenced-abandon -p operational-telemetry
+    - name: Finalize optional setup cache-use receipt
+      if: inputs.record-cache-use == 'true' && inputs.tools == 'check'
+      id: cache-use
+      shell: bash
+      run: |
+        python3 -I -S .github/scripts/cache-use.py finish
+        echo "path=$GITHUB_WORKSPACE/target/test-performance/cache-use/receipt.json" >> "$GITHUB_OUTPUT"
