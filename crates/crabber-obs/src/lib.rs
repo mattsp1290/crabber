@@ -1290,6 +1290,12 @@ mod tests {
         net::{TcpListener, TcpStream},
         sync::atomic::AtomicBool,
     };
+    pub(crate) fn refused_origin() -> (tokio::net::TcpSocket, String) {
+        let reservation = tokio::net::TcpSocket::new_v4().unwrap();
+        reservation.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let origin = format!("http://{}", reservation.local_addr().unwrap());
+        (reservation, origin)
+    }
     fn span_payload(body: &Value) -> Vec<Value> {
         body.as_array()
             .unwrap()
@@ -1365,7 +1371,15 @@ mod tests {
             all.extend_from_slice(&buffer[..n]);
         }
         let headers = String::from_utf8_lossy(&all[..head_end]).to_ascii_lowercase();
-        assert!(headers.contains("dd-api-key: test-key"));
+        assert!(
+            headers.contains("dd-api-key: test-key"),
+            "mock intake received unexpected authentication; header names: {:?}",
+            headers
+                .lines()
+                .skip(1)
+                .filter_map(|line| line.split_once(':').map(|(name, _)| name))
+                .collect::<Vec<_>>()
+        );
         let mut body_text = String::new();
         if is_span_intake(&headers) {
             assert!(!headers.contains("content-encoding: gzip"));
@@ -1417,14 +1431,12 @@ mod tests {
             }
             server.join().unwrap();
         }
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
+        let (_reservation, origin) = refused_origin();
         let mut parts = vec![json!({"safe":true})];
         let error = post(
             &reqwest::Client::new(),
             &config(),
-            format!("http://{address}/PRIVATE_PATH_SECRET?token=CREDENTIAL_SECRET"),
+            format!("{origin}/PRIVATE_PATH_SECRET?token=CREDENTIAL_SECRET"),
             &mut parts,
             &Health::default(),
         )
@@ -2125,9 +2137,7 @@ mod tests {
     }
     #[tokio::test(start_paused = true)]
     async fn bounded_shutdown_is_terminal_offline_and_overflow_health_is_cumulative() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        drop(listener);
+        let (_reservation, origin) = refused_origin();
         let mut c = config();
         c.api_origin = Some(origin.clone());
         c.logs_origin = Some(origin);
@@ -2241,9 +2251,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_producers_keep_local_observation_depths_bounded() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        drop(listener);
+        let (_reservation, origin) = refused_origin();
         let mut c = config();
         c.api_origin = Some(origin);
         c.channel_capacity = 8;

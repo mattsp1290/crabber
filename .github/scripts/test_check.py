@@ -91,6 +91,48 @@ class RebuildInventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'must not traverse a symlink'):
             rebuild.inventory(self.root, alias, 'crabber-session')
 
+    def test_package_cleanup_covers_native_and_cross_target_artifacts(self):
+        main = self.root / 'target'
+        triple = 'aarch64-unknown-linux-musl'
+        cached = {None: self.cached_session(main), triple: self.cached_session(main / triple)}
+        dependencies = {files[2]: [files[2].stat().st_size, files[2].stat().st_mtime_ns]
+                        for files in cached.values()}
+        selected = []
+
+        def clean(command, *, cwd, env):
+            self.assertEqual(command[:2], ['cargo', 'clean'])
+            self.assertEqual(cwd, self.root)
+            self.assertEqual(env['CARGO_BUILD_BUILD_DIR'], str(main))
+            self.assertEqual(command[command.index('--target-dir') + 1], str(main))
+            self.assertEqual(command[-2:], ['-p', 'crabber-session'])
+            target = command[command.index('--target') + 1] if '--target' in command else None
+            selected.append(target)
+            shutil.rmtree(cached[target][0].parent)
+            return subprocess.CompletedProcess(command, 0)
+
+        report = self.root / 'rebuild.json'
+        argv = ['prepare-rebuild.py', 'crabber-session', '--report', str(report)]
+        with mock.patch.object(rebuild, '__file__', str(self.root / '.github/scripts/prepare-rebuild.py')), \
+                mock.patch.object(rebuild.subprocess, 'check_output', return_value='revision'), \
+                mock.patch.object(rebuild.subprocess, 'run', side_effect=clean), \
+                mock.patch.dict(os.environ, {'CARGO_TARGET_DIR': str(main)}), \
+                mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+            rebuild.main()
+
+        self.assertEqual(selected, [None, triple])
+        value = json.loads(report.read_text())
+        self.assertEqual(value['status'], 'prepared')
+        self.assertEqual(set(value['targets'][0]['affected_removed']),
+                         {str(files[0]) for files in cached.values()})
+        self.assertEqual(rebuild.current_package(main, 'crabber-session', self.source.parent), [])
+        for path, previous in dependencies.items():
+            self.assertEqual([path.stat().st_size, path.stat().st_mtime_ns], previous)
+        alias = main / 'aliased-target'
+        alias.symlink_to(self.root / 'foreign-target', target_is_directory=True)
+        unsafe = alias / 'debug/.fingerprint/crabber-session-0123456789abcdef/lib-crabber_session.json'
+        with self.assertRaisesRegex(ValueError, 'must not traverse a symlink'):
+            rebuild.clean_target_arguments(main, {str(unsafe): [1, 2]})
+
 
 class SharedProbeInventoryTests(unittest.TestCase):
     def setUp(self):
