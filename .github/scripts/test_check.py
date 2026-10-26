@@ -602,10 +602,11 @@ class DeadlineTests(unittest.TestCase):
 
 
 def load_tests(loader, tests, pattern):
-    spec = importlib.util.spec_from_file_location('test_native_ci', MODULE.with_name('test_native_ci.py'))
-    native_tests = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(native_tests)
-    tests.addTests(loader.loadTestsFromModule(native_tests))
+    for name in ['test_native_ci', 'test_cache_use']:
+        spec = importlib.util.spec_from_file_location(name, MODULE.with_name(name + '.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tests.addTests(loader.loadTestsFromModule(module))
     return tests
 
 
