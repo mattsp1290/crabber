@@ -1,5 +1,6 @@
 """Focused ownership and failure tests for the outer check deadline."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -72,7 +73,7 @@ class RebuildInventoryTests(unittest.TestCase):
                                                  (probe, probe_files, manifest)]:
             affected, dependent, dependency = files
             row = by_target[str(target)]
-            self.assertEqual(row['manifest'], str(expected_manifest))
+            self.assertEqual(row['owners'], [{'manifest': str(expected_manifest)}])
             self.assertEqual(set(row['affected_before']), {str(affected)})
             self.assertEqual(set(row['dependents_before']), {str(dependent)})
             self.assertEqual(set(row['dependency_before']), {str(dependency)})
@@ -89,6 +90,194 @@ class RebuildInventoryTests(unittest.TestCase):
         alias.symlink_to(actual, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, 'must not traverse a symlink'):
             rebuild.inventory(self.root, alias, 'crabber-session')
+
+
+class SharedProbeInventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        self.cache = self.root / 'target/local-probes/checkout'
+        self.target = self.cache / 'shared-target'
+        self.target.mkdir(parents=True)
+        self.package_source = self.root / 'crates/crabber-session/src/lib.rs'
+        self.package_source.parent.mkdir(parents=True)
+        self.package_source.write_text('')
+        self.marker = {'version': 1, 'checkout': str(self.root), 'owners': {}}
+        self.receipts = {}
+        for name, affected in [('left', True), ('right', False)]:
+            source = self.cache / name / 'source'
+            (source / 'src').mkdir(parents=True)
+            manifest = source / 'Cargo.toml'
+            manifest.write_text('[package]\nname="' + name + '"\nversion="0.1.0"\n')
+            (source / 'src/main.rs').write_text('fn main(){}')
+            entry = {'manifest': name + '/source/Cargo.toml', 'gate': 'local-probe-' + name,
+                     'receipt': name + '/compiler.json'}
+            self.marker['owners'][name] = entry
+            artifacts = [self.artifact(name, source / 'src/main.rs')]
+            if affected:
+                artifacts.append(self.artifact('crabber_session', self.package_source))
+            receipt = {'version': 1, 'manifest': str(manifest), 'target': str(self.target),
+                       'gate': entry['gate'], 'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                       'completed_unix_seconds': 10, 'artifacts': artifacts}
+            self.receipts[name] = receipt
+            self.write_receipt(name)
+        (self.cache / 'owners.json').write_text(json.dumps(self.marker))
+        self.row = {'target': str(self.target), 'owners': rebuild.owners_for(self.root, self.target, self.root / 'target')}
+
+    def artifact(self, name, source):
+        output = self.target / 'debug/deps' / (name + '.rmeta')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text('metadata')
+        return {'package_id': name, 'target': {'name': name, 'kind': ['lib'], 'src_path': str(source)},
+                'features': [], 'filenames': [str(output)], 'fresh': True,
+                'profile': {'opt_level': '0', 'debuginfo': 0, 'debug_assertions': True,
+                            'overflow_checks': True, 'test': False}}
+
+    def write_receipt(self, name):
+        (self.cache / name / 'compiler.json').write_text(json.dumps(self.receipts[name]))
+
+    def passing_phases(self):
+        gates = []
+        for owner in self.row['owners']:
+            gates.append({'id': owner['gate'], 'status': 'passed', 'exit_code': 0,
+                          'working_directory': str(Path(owner['manifest']).parent.relative_to(self.root)),
+                          'argv': ['cargo', 'check', '--all-targets', '--target-dir', str(self.target),
+                                   '--message-format', 'json-render-diagnostics'],
+                          'kind': 'captured-command', 'environment_names': ['CARGO_BUILD_BUILD_DIR']})
+        return {'coverage_scope': 'complete', 'status': 'passed', 'exit_code': 0,
+                'source': {'revision': 'revision'}, 'started_unix_seconds': 19,
+                'wall_seconds': 2, 'gates': gates}
+
+    def finish_compilation(self):
+        for name, receipt in self.receipts.items():
+            receipt['completed_unix_seconds'] = 20
+            for artifact in receipt['artifacts']:
+                artifact['fresh'] = name != 'left'
+            self.write_receipt(name)
+
+    def test_each_affected_owner_rebuilds_without_requiring_unaffected_owner_work(self):
+        self.finish_compilation()
+        phases = self.passing_phases()
+        rebuild.verify_consumer_gates(self.root, self.row, {'source_revision': 'revision'}, phases, 'crabber-session')
+        left = self.receipts['left']
+        left['artifacts'][0]['fresh'] = True
+        self.write_receipt('left')
+        with self.assertRaisesRegex(ValueError, 'affected consumer root'):
+            rebuild.verify_consumer_gates(self.root, self.row, {'source_revision': 'revision'}, phases, 'crabber-session')
+
+    def test_prepared_owner_snapshot_cannot_lose_a_gate_or_follow_a_regenerated_marker(self):
+        self.finish_compilation()
+        phases = self.passing_phases()
+        self.marker['owners'].pop('right')
+        (self.cache / 'owners.json').write_text(json.dumps(self.marker))
+        rebuild.verify_consumer_gates(self.root, self.row, {'source_revision': 'revision'}, phases, 'crabber-session')
+        for row, report in [(dict(self.row, owners=self.row['owners'][:1]), phases),
+                            (self.row, dict(phases, gates=phases['gates'][:1]))]:
+            with self.assertRaisesRegex(ValueError, 'gates differ'):
+                rebuild.verify_consumer_gates(self.root, row, {'source_revision': 'revision'}, report, 'crabber-session')
+
+    def test_gate_routing_and_owner_paths_fail_closed(self):
+        self.finish_compilation()
+        for field, value in [('argv', ['cargo', 'check', '--all-targets']),
+                             ('working_directory', 'elsewhere'), ('environment_names', [])]:
+            phases = self.passing_phases()
+            phases['gates'][0][field] = value
+            with self.assertRaisesRegex(ValueError, 'prepared manifest/cache'):
+                rebuild.verify_consumer_gates(self.root, self.row, {'source_revision': 'revision'}, phases, 'crabber-session')
+        self.marker['owners']['left']['manifest'] = '../Cargo.toml'
+        (self.cache / 'owners.json').write_text(json.dumps(self.marker))
+        with self.assertRaisesRegex(ValueError, 'owner identity'):
+            rebuild.owners_for(self.root, self.target, self.root / 'target')
+
+    def test_missing_variant_stale_receipt_and_source_substitution_are_rejected(self):
+        self.finish_compilation()
+        self.receipts['left']['artifacts'][1]['fresh'] = True
+        self.write_receipt('left')
+        with self.assertRaisesRegex(ValueError, 'shared compiler variant'):
+            rebuild.verify_consumer_compilation(self.root, self.row, 'crabber-session', 19, 22)
+        self.finish_compilation()
+        self.receipts['left']['completed_unix_seconds'] = 10
+        self.write_receipt('left')
+        with self.assertRaisesRegex(ValueError, 'not produced'):
+            rebuild.verify_consumer_compilation(self.root, self.row, 'crabber-session', 19, 22)
+        self.finish_compilation()
+        self.receipts['left']['manifest_sha256'] = 'wrong'
+        self.write_receipt('left')
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            rebuild.verify_consumer_compilation(self.root, self.row, 'crabber-session', 19, 22)
+
+    def test_main_cannot_downgrade_shared_targets_by_removing_owner_fields(self):
+        phases_path = self.root / 'phases.json'
+        phases_path.write_text(json.dumps(self.passing_phases()))
+        check_path = self.root / 'check.json'
+        check_path.write_text(json.dumps({'status': 'passed', 'source_revision': 'revision',
+                                         'started_unix_seconds': 19,
+                                         'phases_report': str(phases_path)}))
+        report_path = self.root / 'rebuild.json'
+        for owners in [[], [{'manifest': self.row['owners'][0]['manifest']}]]:
+            row = dict(self.row, owners=owners, dependents_before={}, dependency_before={})
+            report_path.write_text(json.dumps({'version': 3, 'status': 'prepared',
+                                              'revision': 'revision', 'package': 'crabber-session',
+                                              'prepared_unix_seconds': 18, 'targets': [row]}))
+            argv = ['prepare-rebuild.py', 'crabber-session', '--report', str(report_path),
+                    '--verify-check', str(check_path)]
+            with self.subTest(owners=owners), \
+                    mock.patch.object(rebuild, '__file__', str(self.root / '.github/scripts/prepare-rebuild.py')), \
+                    mock.patch.object(rebuild.subprocess, 'check_output', return_value='revision'), \
+                    mock.patch.object(rebuild, 'current_package', return_value=['affected']), \
+                    mock.patch.object(rebuild, 'stamps', return_value={'affected': [1, 2]}), \
+                    mock.patch.object(rebuild, 'dependent_stamps', return_value={'dependent': [1, 2]}), \
+                    mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, 'shared consumer owners'):
+                    rebuild.main()
+
+    def test_main_cannot_omit_the_shared_target_from_a_nonempty_report(self):
+        main_target = self.root / 'target'
+        conventional = {'target': str(main_target),
+                        'owners': [{'manifest': str(self.root / 'Cargo.toml')}],
+                        'dependents_before': {}, 'dependency_before': {}}
+        phases_path = self.root / 'phases.json'
+        phases_path.write_text(json.dumps(self.passing_phases()))
+        check_path = self.root / 'check.json'
+        check_path.write_text(json.dumps({'status': 'passed', 'source_revision': 'revision',
+                                         'started_unix_seconds': 19,
+                                         'phases_report': str(phases_path)}))
+        report_path = self.root / 'rebuild.json'
+        report_path.write_text(json.dumps({'version': 3, 'status': 'prepared',
+                                          'revision': 'revision', 'package': 'crabber-session',
+                                          'prepared_unix_seconds': 18,
+                                          'targets': [conventional]}))
+        argv = ['prepare-rebuild.py', 'crabber-session', '--report', str(report_path),
+                '--verify-check', str(check_path)]
+        with mock.patch.object(rebuild, '__file__', str(self.root / '.github/scripts/prepare-rebuild.py')), \
+                mock.patch.object(rebuild.subprocess, 'check_output', return_value='revision'), \
+                mock.patch.object(rebuild, 'current_package', return_value=['affected']), \
+                mock.patch.object(rebuild, 'stamps', return_value={'affected': [1, 2]}), \
+                mock.patch.object(rebuild, 'dependent_stamps', return_value={'dependent': [1, 2]}), \
+                mock.patch.object(rebuild, 'inventory', return_value=[conventional, self.row]), \
+                mock.patch.dict(os.environ, {'CARGO_TARGET_DIR': str(main_target)}), \
+                mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, 'retained target inventory'):
+                rebuild.main()
+
+    def test_owner_marker_discovers_shared_cache_without_rustc_info(self):
+        self.assertFalse((self.target / '.rustc_info.json').exists())
+        with mock.patch.object(rebuild, 'current_package', return_value=['affected']), \
+                mock.patch.object(rebuild, 'stamps', return_value={'affected': [1, 2]}), \
+                mock.patch.object(rebuild, 'dependent_stamps', return_value={'dependent': [1, 2]}):
+            rows = rebuild.inventory(self.root, self.root / 'target', 'crabber-session')
+        self.assertEqual({row['target'] for row in rows},
+                         {str(self.root / 'target'), str(self.target)})
+        shared = next(row for row in rows if row['target'] == str(self.target))
+        self.assertEqual({owner['gate'] for owner in shared['owners']},
+                         {'local-probe-left', 'local-probe-right'})
+        (self.cache / 'owners.json').unlink()
+        with mock.patch.object(rebuild, 'current_package', return_value=['affected']), \
+                mock.patch.object(rebuild, 'stamps', return_value={'affected': [1, 2]}), \
+                mock.patch.object(rebuild, 'dependent_stamps', return_value={'dependent': [1, 2]}):
+            with self.assertRaises(FileNotFoundError):
+                rebuild.inventory(self.root, self.root / 'target', 'crabber-session')
 
 
 class DeadlineTests(unittest.TestCase):
