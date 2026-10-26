@@ -1,5 +1,7 @@
 """Source freshness must preserve unchanged inputs and invalidate changed ones."""
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -77,6 +79,77 @@ class SourceTimesTests(unittest.TestCase):
         artifact_time = self.newer_restored_artifact()
         self.assertEqual(cache.restore(self.root, self.report), 0)
         self.assertGreater(self.source.stat().st_mtime_ns, artifact_time)
+
+    def committed_source(self):
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                 '-c', 'commit.gpgsign=false',
+                 'commit', '-qm', 'source fixture')
+
+    def test_optional_report_records_the_input_and_actual_same_pass_decisions(self):
+        self.committed_source()
+        cache.capture(self.root, self.report)
+        raw = self.report.read_bytes()
+        original = self.source.stat().st_mtime_ns
+        os.utime(self.source, ns=(original + 10**9, original + 10**9))
+        destination = self.root / '.git/restore-report.json'
+
+        self.assertEqual(cache.restore(self.root, self.report, destination), 1)
+
+        result = json.loads(destination.read_text())
+        self.assertEqual(result['input_sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual((result['reused_files'], result['invalidated_files']), (1, 0))
+        self.assertEqual(result['status'], 'completed')
+        self.assertTrue(result['tracked_source_clean'])
+        self.assertEqual(result['current_files']['lib.rs']['mode'], '100644')
+        self.assertEqual(self.source.stat().st_mtime_ns, original)
+
+    def test_report_binds_a_changed_blob_and_the_restored_invocation_bound(self):
+        self.committed_source()
+        cache.capture(self.root, self.report)
+        previous = json.loads(self.report.read_text())['files']['lib.rs']['blob']
+        self.source.write_text('pub fn value() -> u8 { 2 }\n')
+        self.git('add', 'lib.rs')
+        self.committed_source()
+        artifact_time = self.newer_restored_artifact()
+        destination = self.root / '.git/restore-report.json'
+
+        self.assertEqual(cache.restore(self.root, self.report, destination), 0)
+
+        result = json.loads(destination.read_text())
+        self.assertEqual((result['reused_files'], result['invalidated_files']), (0, 1))
+        self.assertNotEqual(result['current_files']['lib.rs']['blob'], previous)
+        self.assertEqual(result['max_invocation_ns'], artifact_time)
+        self.assertGreater(result['changed_time_ns'], artifact_time)
+        self.assertEqual(self.source.stat().st_mtime_ns, result['changed_time_ns'])
+
+    def test_missing_and_foreign_inputs_report_zero_reuse(self):
+        self.committed_source()
+        for name, saved in [('missing', None), ('foreign', {
+                'version': 2, 'workspace': '/different-checkout', 'files': {}})]:
+            if saved is not None:
+                self.report.write_text(json.dumps(saved))
+            destination = self.root / '.git' / (name + '.json')
+            self.assertEqual(cache.restore(self.root, self.report, destination), 0)
+            result = json.loads(destination.read_text())
+            self.assertEqual((result['reused_files'], result['invalidated_files']), (0, 1))
+            self.assertEqual(result['input_sha256'],
+                             hashlib.sha256(self.report.read_bytes()).hexdigest() if saved else None)
+
+    def test_existing_report_is_rejected_before_timestamps_change(self):
+        destination = self.root / '.git/restore-report.json'
+        destination.write_text('previous report\n')
+        before = self.source.stat().st_mtime_ns
+        with self.assertRaises(FileExistsError):
+            cache.restore(self.root, self.report, destination)
+        self.assertEqual(self.source.stat().st_mtime_ns, before)
+        self.assertEqual(destination.read_text(), 'previous report\n')
+
+    def test_restore_does_not_admit_utf16_input(self):
+        self.report.write_bytes('{"version": 2, "workspace": "/other", "files": {}}'.encode('utf-16'))
+        before = self.source.stat().st_mtime_ns
+        with self.assertRaises(UnicodeDecodeError):
+            cache.restore(self.root, self.report)
+        self.assertEqual(self.source.stat().st_mtime_ns, before)
 
 
 if __name__ == '__main__':
