@@ -228,6 +228,7 @@ class SharedProbeInventoryTests(unittest.TestCase):
                     mock.patch.object(rebuild, 'current_package', return_value=['affected']), \
                     mock.patch.object(rebuild, 'stamps', return_value={'affected': [1, 2]}), \
                     mock.patch.object(rebuild, 'dependent_stamps', return_value={'dependent': [1, 2]}), \
+                    mock.patch.dict(os.environ, {'CARGO_TARGET_DIR': str(self.root / 'target')}), \
                     mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(ValueError, 'shared consumer owners'):
                     rebuild.main()
