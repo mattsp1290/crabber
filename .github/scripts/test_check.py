@@ -171,7 +171,10 @@ class DeadlineTests(unittest.TestCase):
                 git('init', '--quiet')
                 tracked = repo / 'tracked'
                 tracked.write_text('original\n')
-                git('add', 'tracked')
+                snapshot = repo / '.github/native-workers.json'
+                snapshot.parent.mkdir()
+                snapshot.write_bytes((MODULE.parents[1] / 'native-workers.json').read_bytes())
+                git('add', 'tracked', '.github/native-workers.json')
                 commit = ['-c', 'user.name=Policy test', '-c', 'user.email=policy@example.invalid',
                           '-c', 'commit.gpgsign=false', 'commit', '--quiet']
                 git(*commit, '-m', 'initial')

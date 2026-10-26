@@ -21,6 +21,14 @@ impl Part {
     }
 }
 
+pub(crate) fn native_slots() -> impl Iterator<Item = Part> {
+    let quarters = [Quarter::One, Quarter::Two, Quarter::Three, Quarter::Four];
+    quarters
+        .into_iter()
+        .map(Part::NativeLibraries)
+        .chain(quarters.into_iter().map(Part::NativeRemaining))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PartFamily {
     #[cfg(feature = "postgres-check")]
