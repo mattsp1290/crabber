@@ -670,13 +670,15 @@ fn fixtures(raw: &[u8], transport: &str) -> usize {
 }
 
 fn close(workers: &BTreeMap<(Family, usize), Worker>, policy: &Value) -> Value {
-    let expected: BTreeSet<_> = [Family::Libraries, Family::Remaining]
-        .into_iter()
-        .flat_map(|family| (1..=4).map(move |q| (family, q)))
-        .collect();
     assert_eq!(
         workers.keys().copied().collect::<BTreeSet<_>>(),
-        expected,
+        crate::parts::native_slots()
+            .map(|part| match part {
+                Part::NativeLibraries(q) => (Family::Libraries, q.index()),
+                Part::NativeRemaining(q) => (Family::Remaining, q.index()),
+                _ => unreachable!("Native inventory contains a quality part"),
+            })
+            .collect::<BTreeSet<_>>(),
         "all eight worker slots required"
     );
     let first = &workers[&(Family::Libraries, 1)];
