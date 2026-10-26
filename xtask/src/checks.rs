@@ -65,35 +65,11 @@ impl Options {
                     options.part = Some(match args.next().map(String::as_str) {
                         Some("quality-contracts") => crate::parts::Part::QualityContracts,
                         Some("quality-artifacts") => crate::parts::Part::QualityArtifacts,
-                        Some("native-library-1") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::One)
-                        }
-                        Some("native-library-2") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::Two)
-                        }
-                        Some("native-library-3") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::Three)
-                        }
-                        Some("native-library-4") => {
-                            crate::parts::Part::NativeLibraries(crate::parts::Quarter::Four)
-                        }
-                        Some("native-remaining-1") => {
-                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::One)
-                        }
-                        Some("native-remaining-2") => {
-                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::Two)
-                        }
-                        Some("native-remaining-3") => {
-                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::Three)
-                        }
-                        Some("native-remaining-4") => {
-                            crate::parts::Part::NativeRemaining(crate::parts::Quarter::Four)
-                        }
-                        _ => {
-                            return Err(
-                                "--part accepts quality-contracts, quality-artifacts or native-library-1 through native-library-4 or native-remaining-1 through native-remaining-4".into()
-                            );
-                        }
+                        name => crate::parts::native_slots()
+                            .find(|part| Some(part.name()) == name)
+                            .ok_or_else(|| {
+                                "--part accepts quality-contracts, quality-artifacts or native-library-1 through native-library-4 or native-remaining-1 through native-remaining-4".to_owned()
+                            })?,
                     });
                 }
                 "--timings" if options.timings.is_none() => {
