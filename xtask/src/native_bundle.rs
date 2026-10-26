@@ -16,16 +16,16 @@ type Result<T> = std::result::Result<T, String>;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Worker {
-    family: Family,
-    quarter: usize,
+pub(crate) struct Worker {
+    pub(crate) family: Family,
+    pub(crate) quarter: usize,
 }
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Roots {
-    workspace: String,
-    target: String,
-    run: String,
+pub(crate) struct Roots {
+    pub(crate) workspace: String,
+    pub(crate) target: String,
+    pub(crate) run: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,9 +38,9 @@ struct Binding {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Index {
     version: u32,
-    worker: Worker,
-    source: Value,
-    recorded_roots: Roots,
+    pub(crate) worker: Worker,
+    pub(crate) source: Value,
+    pub(crate) recorded_roots: Roots,
     recorded_phases: String,
     files: BTreeMap<String, Binding>,
     native_credit_awarded: bool,
@@ -507,7 +507,12 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn load(directory: &Path) -> Result<Index> {
+pub(crate) struct LoadedBundle {
+    pub(crate) index: Index,
+    pub(crate) files: BTreeMap<String, Vec<u8>>,
+}
+
+pub(crate) fn load(directory: &Path) -> Result<LoadedBundle> {
     let index: Index = serde_json::from_slice(&regular_bytes(&directory.join("bundle.json"))?)
         .map_err(|e| e.to_string())?;
     require(index.version == 1, "unsupported bundle version")?;
@@ -547,7 +552,10 @@ pub(crate) fn load(directory: &Path) -> Result<Index> {
         worker == index.worker && roots == index.recorded_roots && source == index.source,
         "index identity/root binding",
     )?;
-    Ok(index)
+    Ok(LoadedBundle {
+        index,
+        files: values,
+    })
 }
 fn collect_files(root: &Path, directory: &Path, output: &mut Vec<String>) -> Result<()> {
     for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
@@ -701,7 +709,7 @@ mod tests {
                 fs::remove_dir_all(&snapshot.data).unwrap();
                 fs::remove_file(&snapshot.report).unwrap();
                 fs::remove_file(phase_sibling(&snapshot.report).unwrap()).unwrap();
-                let index = load(&moved).unwrap();
+                let index = load(&moved).unwrap().index;
                 assert!(!index.native_credit_awarded && !index.complete_suite_qualified);
                 assert_eq!(
                     index.source["revision"],

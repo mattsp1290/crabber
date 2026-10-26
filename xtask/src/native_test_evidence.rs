@@ -72,6 +72,27 @@ pub(crate) fn admit_manifest(binaries: &Value, manifest: &Value) {
     );
 }
 
+pub(crate) fn admit_packages(metadata: &Value, manifest: &Value) {
+    for suite in manifest["rust-suites"].as_object().unwrap().values() {
+        let package = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["id"] == suite["package-id"])
+            .expect("declared manifest package");
+        assert!(
+            metadata["workspace_members"]
+                .as_array()
+                .unwrap()
+                .contains(&package["id"])
+        );
+        assert_eq!(
+            suite["package-name"], package["name"],
+            "manifest package name differs from metadata"
+        );
+    }
+}
+
 pub(crate) fn ignored(case: &Value) -> bool {
     let ignored = case["ignored"].as_bool().expect("case ignored flag");
     if ignored {
@@ -151,4 +172,49 @@ pub(crate) fn passing(stdout: &[u8], stderr: &[u8]) -> Cases {
     }
     assert!(!cases.is_empty(), "no passing runner evidence");
     cases
+}
+
+pub(crate) fn execution(manifest: &Value, stdout: &[u8], stderr: &[u8]) -> Value {
+    let actual = passing(stdout, stderr);
+    assert_eq!(
+        actual,
+        selected(manifest),
+        "executed passing cases differ from admitted selection"
+    );
+    for stream in [stdout, stderr] {
+        for line in std::str::from_utf8(stream)
+            .unwrap()
+            .lines()
+            .map(str::trim_start)
+        {
+            assert!(
+                !["FAIL ", "TIMEOUT ", "LEAK ", "ERROR ", "CANCEL "]
+                    .iter()
+                    .any(|prefix| line.starts_with(prefix)),
+                "nonpassing runner outcome"
+            );
+        }
+    }
+    json!({"exact_equal":true,"actual_cases":actual.into_iter().map(|((binary,case),count)|json!([binary,case,count])).collect::<Vec<_>>(),"stdin":"null","success_output":"never","status_level":"pass","color":"never"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn execution_requires_exact_passes_and_rejects_failed_or_duplicate_outcomes() {
+        let manifest = json!({"rust-suites":{"binary":{"binary-id":"binary","testcases":{"case":{"ignored":false,"filter-match":{"status":"matches"}}}}}});
+        let pass = b"PASS [0.01s] binary case\n";
+        assert_eq!(
+            execution(&manifest, pass, b"")["actual_cases"],
+            json!([["binary", "case", 1]])
+        );
+        for output in [
+            b"PASS [0.01s] binary other\n".as_slice(),
+            b"PASS [0.01s] binary case\nPASS [0.02s] binary case\n".as_slice(),
+            b"PASS [0.01s] binary case\nFAIL [0.02s] binary case\n".as_slice(),
+        ] {
+            assert!(std::panic::catch_unwind(|| execution(&manifest, output, b"")).is_err());
+        }
+    }
 }

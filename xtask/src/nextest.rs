@@ -140,19 +140,24 @@ pub(crate) fn scoped_group_gate(
         "backend cases retain service limits and each custom group has uniform worker weights",
         move |output| {
             let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert!(list["test-count"].as_u64().is_some_and(|count| count > 0));
-            for suite in list["rust-suites"].as_object().unwrap().values() {
-                for (name, case) in suite["testcases"].as_object().unwrap() {
-                    assert_ne!(
-                        case["filter-match"]["status"], "matches",
-                        "case {name} bypasses its service group or has an unsafe grouped worker weight"
-                    );
-                }
-            }
+            admit_groups(&list);
             std::fs::write(&destination, serde_json::to_vec(&list).unwrap())
                 .expect("persist resolved resource group audit");
         },
     );
+}
+
+#[cfg(feature = "postgres-check")]
+pub(crate) fn admit_groups(list: &serde_json::Value) {
+    assert!(list["test-count"].as_u64().is_some_and(|count| count > 0));
+    for suite in list["rust-suites"].as_object().unwrap().values() {
+        for (name, case) in suite["testcases"].as_object().unwrap() {
+            assert_ne!(
+                case["filter-match"]["status"], "matches",
+                "case {name} bypasses its service group or has an unsafe grouped worker weight"
+            );
+        }
+    }
 }
 
 // future-queue 0.4.0 can strand a group's heavier queued work after its last
