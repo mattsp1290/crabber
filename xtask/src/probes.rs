@@ -339,7 +339,6 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut crate::checks::Checks) {
             prepare(workspace, &original, &prepared);
             extra_sources(workspace, &prepared, probe);
             reject_symlinks(&prepared_target);
-            fs::create_dir_all(&prepared_target).unwrap();
             retain_owner(workspace, &locked_cache, probe);
         });
         let mut command = Command::new("cargo");
