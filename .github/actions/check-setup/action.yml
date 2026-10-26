@@ -1,5 +1,12 @@
 name: Check setup
 description: Restore the canonical check environment and compiler cache
+inputs:
+  restore-compiler-cache:
+    description: Restore and refresh the canonical compiler cache
+    default: "true"
+  tools:
+    description: Required tool set, check or collector
+    default: check
 outputs:
   setup-start:
     description: Setup clock start before cache restoration
@@ -20,6 +27,7 @@ runs:
       with:
         python-version: "3.14"
     - name: Install ripgrep for standard tools
+      if: inputs.tools == 'check'
       shell: bash
       run: |
         sudo apt-get update && sudo apt-get install -y ripgrep
@@ -30,7 +38,9 @@ runs:
       run: |
         rust_version="$(python3 -I -S -c 'import json; print(json.load(open(".config/test-tools.json"))["rust"]["version"])')"
         rustup toolchain install "$rust_version" --profile minimal --component rustfmt --component clippy
-        rustup target add --toolchain "$rust_version" wasm32-wasip2
+        if test "${{ inputs.tools }}" = check; then
+          rustup target add --toolchain "$rust_version" wasm32-wasip2
+        fi
     - name: Record compiler cache identity
       id: compiler
       shell: bash
@@ -41,6 +51,7 @@ runs:
       run: echo "start=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       id: cache
+      if: inputs.restore-compiler-cache == 'true' && inputs.tools == 'check'
       with:
         path: |
           ~/.cargo/registry
@@ -61,6 +72,7 @@ runs:
           rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-${{ hashFiles('Cargo.toml', 'xtask/Cargo.toml', 'Cargo.lock', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm-negative/Cargo.lock', 'testdata/*/Cargo.lock', 'rust-toolchain.toml', '.config/test-tools.json', '.config/nextest.toml', 'xtask/src/complete.rs', 'xtask/src/postgres/container.rs') }}-
           rust-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.hash }}-dev0-test0-strip-symbols-inc0-combined-v2-
     - name: Record cache conditions and install pinned tools
+      if: inputs.tools == 'check'
       id: conditions
       env:
         RESTORED_KEY: ${{ steps.cache.outputs.cache-matched-key }}
@@ -92,6 +104,7 @@ runs:
         echo "$GITHUB_WORKSPACE/target/test-tools" >> "$GITHUB_PATH"
         echo "$GITHUB_WORKSPACE/target/test-tools/bin" >> "$GITHUB_PATH"
     - name: Restore and verify pinned PostgreSQL image
+      if: inputs.tools == 'check'
       shell: bash
       run: |
         if test -f target/test-tools/postgres-14.tar; then
@@ -102,6 +115,7 @@ runs:
           docker save "$CRABBER_POSTGRES_IMAGE" -o target/test-tools/postgres-14.tar
         fi
     - name: Refresh source provenance after cache restore
+      if: inputs.restore-compiler-cache == 'true' && inputs.tools == 'check'
       shell: bash
       run: |
         python3 -I -S .github/scripts/cache-source-times.py restore
