@@ -991,3 +991,71 @@ focused package build configuration.
 
 These observations establish exact-case savings. Complete-check timing and the
 ten-minute unchanged/Runtime/Session targets are assessed separately.
+
+## Hosted Native diagnostic
+
+CI has a default-off `native-diagnostic` dispatch choice. Choose `x64`, `arm64`, or
+`both` to request eight Native workers per architecture and a collector. Ordinary
+pushes, pull requests, and dispatches keep their existing required Full checks.
+A diagnostic cannot run with `qualify` or a matching `CRABBER_QUALIFY_REVISION`.
+Feature-ref acceptance of the added dispatch input needs an actual hosted check.
+If GitHub requires default-branch registration, merge the inert change after the
+canonical gates pass, then verify the hosted diagnostic separately.
+
+The initial diagnostic restores no compiler cache and reports `unclassified`.
+Workers use the existing setup action and run ordinary project compilation and
+owned cleanup inside their check clock. The planner reads
+`.github/native-workers.json` without compiling the project. The collector checks
+that snapshot with `cargo xtask native-matrix --check .github/native-workers.json`
+and runs the existing Native reducer on eight exported bundles. The collector
+uses the shared pinned Rust and Python setup without installing the check tools
+or PostgreSQL image.
+
+After the collector job completes, fetch an authenticated receipt from the same
+source checkout. Set `GH_TOKEN` to a read-only token with repository Actions read
+access. Use the exact source SHA, run ID, and attempt from the diagnostic run.
+Choose a new output directory.
+
+```sh
+python3 -I -S .github/scripts/native-ci.py receipt \
+  --repository owner/repository --run RUN_ID --attempt ATTEMPT \
+  --source EXACT_SOURCE_SHA --arch x64 --output target/native-receipt
+```
+
+The receipt verifies authenticated repository, workflow, source, attempt-specific
+jobs, and artifact metadata. It verifies each downloaded ZIP against the server
+SHA256 digest before extracting it. Missing digests fail admission. Raw archives
+and sanitized API provenance remain in the output directory. Artifact metadata
+has no uploading job ID or attempt field. Matching artifact names and worker
+envelopes provide source-trusted correlation to a job and attempt, rather than
+independent server attestation of that association.
+
+`receipt.json` measures the earliest required worker check-step start after
+setup through collector **job** completion. The adapter accepts timezone-aware
+timestamps, including fractional seconds and numeric UTC offsets. It normalizes
+them to UTC and retains a conservative one-second resolution allowance. The
+receipt includes the observed span and its conservative upper bound. The
+interval includes stagger, later queue and setup waits, compilation,
+cleanup, transfer, collector compilation, publication, and poststeps. Receipt
+retrieval itself is outside that span. The collector's own published timing is
+provisional because its terminal job timestamp does not yet exist. With `both`,
+the flat worker matrix can delay either collector until both worker sets finish.
+That delay stays in each measured interval.
+
+The receipt preserves `native_coverage_validated=true`,
+`complete_suite_qualified=false`, and `full_check_executed=false`. The adapter
+keeps GitHub transport policy outside the Rust reducer. To replay semantic
+validation after moving the downloaded collection to a different absolute path,
+use the ordinary offline API from that exact source checkout.
+
+```sh
+cargo xtask native-reduce --source EXACT_SOURCE_SHA \
+  --bundles target/native-receipt/collection/bundles \
+  --output target/native-replayed.json
+```
+
+An actual eight-slot hosted x64 positive, portable replay, transport and semantic
+negative controls, terminal receipt, and a subsequent same-source external Full
+oracle remain acceptance gates for this diagnostic. ARM64 requires its own
+positive evidence. Native coverage does not qualify the complete check or any of
+the six local and hosted cache qualification cases.
