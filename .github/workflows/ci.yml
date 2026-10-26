@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      native-diagnostic:
+        description: Opt-in Native-only diagnostic with no compiler cache restoration
+        type: choice
+        options: ['off', x64, arm64, both]
+        default: 'off'
       qualify:
         description: Run the three cached-source qualification cases once
         type: boolean
@@ -27,6 +32,7 @@ env:
 
 jobs:
   check:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native-diagnostic != 'off' && (inputs.qualify || vars.CRABBER_QUALIFY_REVISION == github.sha)) }}
     strategy:
       fail-fast: false
       matrix:
@@ -263,3 +269,117 @@ jobs:
         env:
           CRABBER_REV: ${{ github.sha }}
         run: ./testdata/extensions-consumer/run.sh
+
+
+  native-plan:
+    if: github.event_name == 'workflow_dispatch' && inputs.native-diagnostic != 'off'
+    runs-on: ubuntu-latest
+    outputs:
+      workers: ${{ steps.plan.outputs.workers }}
+      collectors: ${{ steps.plan.outputs.collectors }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Plan committed Native slots without project compilation
+        id: plan
+        env:
+          NATIVE_MODE: ${{ inputs.native-diagnostic }}
+          QUALIFY: ${{ inputs.qualify }}
+          QUALIFICATION_REVISION: ${{ vars.CRABBER_QUALIFY_REVISION }}
+        run: |
+          args=()
+          if test "$QUALIFY" = true; then args+=(--qualify); fi
+          python3 -I -S .github/scripts/native-ci.py plan --mode "$NATIVE_MODE" --source "$GITHUB_SHA" --qualification-revision "$QUALIFICATION_REVISION" "${args[@]}"
+
+  native-worker:
+    name: Native worker (${{ matrix.arch }}, ${{ matrix.slot }})
+    needs: native-plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.native-plan.outputs.workers) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_STRIP: "symbols"
+      CARGO_PROFILE_TEST_STRIP: "symbols"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Native worker without compiler cache restoration
+        id: native-setup
+        uses: ./.github/actions/check-setup
+        with:
+          restore-compiler-cache: "false"
+      - name: Run Native check after setup
+        id: native-check
+        env:
+          NATIVE_SLOT: ${{ matrix.slot }}
+        run: |
+          started="$(date +%s.%N)"
+          echo "start=$started" >> "$GITHUB_OUTPUT"
+          python3 -I -S .github/scripts/check.py --part "$NATIVE_SLOT" --cache-state unclassified --budget-seconds 4800 --ci-start-time "$started" --report target/native-worker/check.json
+      - name: Export finalized Native evidence
+        env:
+          NATIVE_SLOT: ${{ matrix.slot }}
+          NATIVE_ARCH: ${{ matrix.arch }}
+          SETUP_STARTED: ${{ steps.native-setup.outputs.setup-start }}
+          CHECK_STARTED: ${{ steps.native-check.outputs.start }}
+        run: |
+          setup_seconds="$(python3 -I -S -c 'import os; print(float(os.environ["CHECK_STARTED"]) - float(os.environ["SETUP_STARTED"]))')"
+          python3 -I -S .github/scripts/native-ci.py worker --slot "$NATIVE_SLOT" --arch "$NATIVE_ARCH" --report target/native-worker/check.json --setup-seconds "$setup_seconds" --output target/native-export
+      - name: Publish Native bundle before optional maintenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-worker-${{ github.sha }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slot }}
+          path: target/native-export/
+          if-no-files-found: error
+          retention-days: 7
+
+  native-collect:
+    name: Native collect (${{ matrix.arch }})
+    needs: [native-plan, native-worker]
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.native-plan.outputs.collectors) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_STRIP: "symbols"
+      CARGO_PROFILE_TEST_STRIP: "symbols"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up collector tools without compiler cache restoration
+        uses: ./.github/actions/check-setup
+        with:
+          tools: collector
+          restore-compiler-cache: "false"
+      - name: Authenticate archives and reduce eight Native bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARCH: ${{ matrix.arch }}
+        run: python3 -I -S .github/scripts/native-ci.py collect --arch "$NATIVE_ARCH" --output target/native-collection
+      - name: Publish provisional Native collection
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-collection-${{ github.sha }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/native-collection/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Describe Native assurance and terminal receipt
+        run: |
+          echo 'Native-only coverage validated. Cache state unclassified. Complete suite qualified false. Full check executed false.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Collection timing is provisional. Fetch the read-only receipt after this job completes for the authenticated outer span.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The flat worker matrix can wait for both architectures. That delay remains in the final span.' >> "$GITHUB_STEP_SUMMARY"
