@@ -985,8 +985,9 @@ on CPU work. SQL profiles show substantial CPU work and I/O activity; they do
 not identify a particular server, storage or lock bottleneck. Profiling elapsed
 times are excluded from the paired
 observations. Four deliberately wrong durable-state commit implementations were
-rejected by both original and revised helpers at the intended assertions. Both
-unmodified helpers also passed the same focused package build configuration.
+rejected by both original and revised helpers at the intended assertions in the
+canonical Memory case. Both unmodified helpers also passed that case in the same
+focused package build configuration.
 
 These observations establish exact-case savings. Complete-check timing and the
 ten-minute unchanged/Runtime/Session targets are assessed separately.
