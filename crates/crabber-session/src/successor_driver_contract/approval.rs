@@ -258,18 +258,18 @@ pub(crate) async fn faults<S: Store + 'static>(
                 Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome)
             ));
             fault(0);
-            let retry = store
-                .register_successor_execution_driver(f.request)
-                .await
-                .unwrap();
-            assert_eq!(
-                matches!(retry, SuccessorExecutionDriverOutcome::Replayed(_)),
-                boundary == 2
-            );
-            if let SuccessorExecutionDriverOutcome::Applied { grant, .. } = retry {
-                super::faults::exercise(store.as_ref(), grant, boundary, &fault).await;
-            }
-            let f = fixture(store.as_ref(), clock, recovery).await;
+            let f = if boundary == 2 {
+                assert!(matches!(
+                    store
+                        .register_successor_execution_driver(f.request)
+                        .await
+                        .unwrap(),
+                    SuccessorExecutionDriverOutcome::Replayed(_)
+                ));
+                fixture(store.as_ref(), clock, recovery).await
+            } else {
+                f
+            };
             let (left, right) = futures::join!(
                 store.register_successor_execution_driver(f.request.clone()),
                 store.register_successor_execution_driver(f.request)
@@ -279,6 +279,13 @@ pub(crate) async fn faults<S: Store + 'static>(
                 outcomes
                     .iter()
                     .filter(|o| matches!(o, SuccessorExecutionDriverOutcome::Applied { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|o| matches!(o, SuccessorExecutionDriverOutcome::Replayed(_)))
                     .count(),
                 1
             );
