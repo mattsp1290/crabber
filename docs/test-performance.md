@@ -945,3 +945,49 @@ different source and cache condition. Those runs are not a before-and-after
 comparison. The consumer measurements establish no Full-check speedup. Current
 CI and all six local and hosted qualification cases remain separate acceptance
 gates for the ten-minute target.
+
+## Approval fault fixtures
+
+The approval driver contract separately checked a retry after registration
+failed before commit and a fresh registration with two callers. At that boundary,
+both paths exercised the same activation and join faults. The revised contract
+uses two callers for the retry and exercises its returned grant once. Claim and
+Recovery retain both commit boundaries, one Applied and one Replayed outcome,
+activation/join replay classification, callback counts and Joined readback. A
+fresh registration check remains at the second boundary.
+This removes two of eight fault fixtures and two duplicate lifecycle exercises
+per selected case. Keyed/unkeyed success and SQL integrity histories remain.
+
+Five fixed before/after pairs per case ran in frozen binaries from the same
+primary checkout on aarch64, with one warmup per case and variant. The actual
+complete-check feature graph and test profile were retained, including debug
+assertions, overflow checks and existing dependency optimizations. Runs used
+affinity to four CPU cores, eight build jobs, zero incremental compilation and zero
+dev/test debug information. Compilation and complete-suite contention are
+outside these exact-case timings. Side order was alternating before/after
+without counterbalancing. All twenty pairs favored the candidate.
+
+| Case | Before median seconds [range] | After median seconds [range] |
+| --- | --- | --- |
+| Memory | 6.689 [6.592, 6.700] | 5.434 [5.391, 5.448] |
+| Embedded Memory facade | 6.585 [6.543, 6.602] | 5.300 [5.290, 5.335] |
+| SQLite | 33.434 [32.960, 33.749] | 29.783 [29.573, 29.920] |
+| PostgreSQL | 50.339 [49.790, 50.837] | 45.011 [44.250, 45.464] |
+
+[Raw paired observations](test-performance/approval-fault-fixtures.csv) retain
+the compiled source revisions and binary digests. Forty measured executions and
+eight warmups passed; three empty-selector controls verified that zero tests
+cannot count as work. PostgreSQL used twelve balanced real database fixtures,
+including warmups.
+
+Separate baseline profiles show that the Memory case spends most of its time
+on CPU work. SQL profiles show substantial CPU work and I/O activity; they do
+not identify a particular server, storage or lock bottleneck. Profiling elapsed
+times are excluded from the paired
+observations. Four deliberately wrong durable-state commit implementations were
+rejected by both original and revised helpers at the intended assertions in the
+canonical Memory case. Both unmodified helpers also passed that case in the same
+focused package build configuration.
+
+These observations establish exact-case savings. Complete-check timing and the
+ten-minute unchanged/Runtime/Session targets are assessed separately.
