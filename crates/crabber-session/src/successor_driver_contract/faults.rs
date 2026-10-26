@@ -18,21 +18,21 @@ pub(crate) async fn run<S: Store + 'static>(
                 Err(Error::UnknownStoreOutcome)
             ));
             fault(0);
-            let retry = store
-                .register_successor_execution_driver(request.clone())
-                .await
-                .unwrap();
-            assert_eq!(
-                matches!(retry, SuccessorExecutionDriverOutcome::Replayed(_)),
-                boundary == 2
-            );
-            if let SuccessorExecutionDriverOutcome::Applied { grant, .. } = retry {
-                exercise(store.as_ref(), grant, boundary, &fault).await;
-            }
-            let request = fixture::request(store.as_ref(), clock, admission).await;
+            let request = if boundary == 2 {
+                assert!(matches!(
+                    store
+                        .register_successor_execution_driver(request)
+                        .await
+                        .unwrap(),
+                    SuccessorExecutionDriverOutcome::Replayed(_)
+                ));
+                fixture::request(store.as_ref(), clock, admission).await
+            } else {
+                request
+            };
             let (left, right) = futures::join!(
                 store.register_successor_execution_driver(request.clone()),
-                store.register_successor_execution_driver(request.clone())
+                store.register_successor_execution_driver(request)
             );
             let outcomes = [left.unwrap(), right.unwrap()];
             assert_eq!(
@@ -41,6 +41,16 @@ pub(crate) async fn run<S: Store + 'static>(
                     .filter(|outcome| matches!(
                         outcome,
                         SuccessorExecutionDriverOutcome::Applied { .. }
+                    ))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|outcome| matches!(
+                        outcome,
+                        SuccessorExecutionDriverOutcome::Replayed(_)
                     ))
                     .count(),
                 1
