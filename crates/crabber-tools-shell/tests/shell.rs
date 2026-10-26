@@ -156,7 +156,7 @@ async fn runtime_interrupt_kills_group_and_permission_denies_effect() {
         .provider(Arc::new(FakeProvider::scripted(vec![
             turn(
                 "shell",
-                json!({"cmd":"echo $$ > leader; sleep 60 & echo $! > child; wait"}),
+                json!({"cmd":"echo $$ > leader; sleep 60 & echo $! > child.tmp; mv child.tmp child; wait"}),
             ),
             done(),
         ])))
