@@ -371,6 +371,7 @@ impl Checks {
         self.register_command(None, directory, command, expected);
     }
 
+    #[cfg(feature = "postgres-check")]
     pub(crate) fn named_command(
         &mut self,
         id: &str,
