@@ -1059,3 +1059,61 @@ negative controls, terminal receipt, and a subsequent same-source external Full
 oracle remain acceptance gates for this diagnostic. ARM64 requires its own
 positive evidence. Native coverage does not qualify the complete check or any of
 the six local and hosted cache qualification cases.
+
+## Generic successor fault fixtures
+
+The candidate reuses the failed before-commit request for the two-caller retry in
+`successor_driver_contract/faults.rs`. AdmissionRecovery and ExpiredRun retain
+both commit boundaries, one Applied and one Replayed result, activation and join
+replay checks, callback counts, and Joined readback. The after-commit boundary
+retains a serial Replayed retry and a fresh two-caller fixture.
+
+This reduces genuine preparation histories from eight to six and lifecycle
+exercises from six to four per helper invocation. Test names, ignored cases,
+proof budgets, success matrices, and SQL integrity checks remain unchanged.
+Managed database fixture counts also remain unchanged. Memory checks two-caller
+idempotence because its futures complete without yielding. SQL permits overlap
+but does not force simultaneous calls.
+
+Frozen binaries from baseline `750ea663` and candidate `0e14075b` ran five fixed
+before-then-after pairs per case on aarch64, with one warmup per case and variant.
+Both variants retained the actual Full feature graph and test profile. Session
+and facade test code used optimization level zero. Debug assertions, overflow
+checks, and existing dependency optimizations remained enabled. Runs used
+four-core affinity, eight build jobs, no incremental compilation, and zero dev
+and test debug information. Compilation and complete suite contention are outside these exact-case timings. The candidate build took
+85.517 seconds outside those observations. The order was alternating without
+counterbalancing. All twenty pairs favored the candidate.
+
+| Case | Before median seconds [range] | After median seconds [range] | Reduction |
+| --- | --- | --- | ---: |
+| Memory | 3.686 [3.677, 3.730] | 2.977 [2.977, 3.025] | 19.2% |
+| Embedded Memory facade | 3.630 [3.627, 3.633] | 2.977 [2.974, 2.981] | 18.0% |
+| SQLite | 21.333 [21.202, 21.437] | 18.969 [18.818, 19.132] | 11.1% |
+| PostgreSQL | 28.963 [28.568, 29.532] | 25.930 [25.448, 26.103] | 10.5% |
+
+[Raw paired observations](test-performance/generic-successor-fault-fixtures.csv)
+retain all forty timed executions, their client CPU times, source revisions,
+binary digests, and log digests. Eight warmups also passed. Three empty-selector
+controls verified that zero tests cannot count as work. PostgreSQL used twelve
+balanced real database fixtures, including warmups. Its 29.532-second baseline
+observation remains in the data.
+
+Separate baseline profiles support CPU-heavy Memory work and mixed SQL CPU and
+I/O work. They do not identify a function hotspot or a server, storage, or lock
+bottleneck. Aggregate futex wall times overlap across threads and are not elapsed
+database wait. CPU observations cover child clients. Profiling elapsed times are
+excluded from the paired observations.
+
+The PostgreSQL comparison recorded one resource sampler error of unknown cause,
+so resource maxima may be incomplete. Separate direct checks found all seventeen
+observed process identities and the exact owned container absent. All twelve
+database fixtures finished, and run and server cleanup completed.
+
+Eight temporary production fault controls failed at their intended assertions
+across the old and reduced helpers. Both unmutated helper variants passed the
+exact Memory case in the same focused build configuration. These controls retain
+the tested Memory fault detectors; they do not establish SQL race behavior.
+
+These observations establish exact-case savings. Complete-check speed and the
+six local and hosted timing targets require separate evidence.
