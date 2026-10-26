@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,27 @@ spec.loader.exec_module(native)
 
 
 class NativeTransportTests(unittest.TestCase):
+    def test_planner_cli_leaves_its_checkout_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            checkout = directory / 'checkout'
+            scripts = checkout / '.github/scripts'
+            scripts.mkdir(parents=True)
+            for name in ['native-ci.py', 'cache-use.py']:
+                (scripts / name).write_bytes(Path(__file__).with_name(name).read_bytes())
+            (checkout / '.github/native-workers.json').write_text(json.dumps(native.slots()))
+            before = {str(path.relative_to(checkout)): path.read_bytes()
+                      for path in checkout.rglob('*') if path.is_file()}
+            result = subprocess.run(
+                [sys.executable, '-I', '-S', str(scripts / 'native-ci.py'),
+                 'plan', '--mode', 'x64', '--source', 'a' * 40],
+                env=native.os.environ | {'GITHUB_OUTPUT': str(directory / 'outputs')},
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                {str(path.relative_to(checkout)): path.read_bytes()
+                 for path in checkout.rglob('*') if path.is_file()}, before)
+
     def setUp(self):
         self.identity = native.Identity('owner/repo', 42, 2, 'a' * 40)
         self.temp = tempfile.TemporaryDirectory()

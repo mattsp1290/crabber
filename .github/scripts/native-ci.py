@@ -13,11 +13,13 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
 import zipfile
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 _cache_spec = importlib.util.spec_from_file_location('cache_use', Path(__file__).with_name('cache-use.py'))
 cache_use = importlib.util.module_from_spec(_cache_spec)
