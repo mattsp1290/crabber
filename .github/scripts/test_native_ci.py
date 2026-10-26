@@ -1,4 +1,5 @@
 """Credential-free failure controls for the hosted Native transport boundary."""
+import base64
 import copy
 import importlib.util
 import io
@@ -162,37 +163,130 @@ class NativeTransportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             native.SafeRedirect().redirect_request(request, None, 302, 'Found', {}, 'http://blob.example/file')
 
-    def test_worker_context_profile_architecture_and_index_are_bound(self):
-        slot = 'native-library-1'
-        bundle = self.root / 'bundle'
-        (bundle / 'reports').mkdir(parents=True)
-        index = {'source': {'rustc': 'fixture compiler identity'}}
+    def worker_fixture(self, result='disabled', slot='native-library-1', directory=None):
+        directory = directory or self.root
+        bundle = directory / 'bundle'
+        (bundle / 'reports').mkdir(parents=True, exist_ok=True)
+        compiler = b'rustc fixture\nhost: x86_64-unknown-linux-gnu\nrelease: fixture\n'
+        index = {'source': {'revision': self.identity.source, 'tree': 'b' * 40,
+                            'rustc': compiler.decode().strip()},
+                 'recorded_roots': {'workspace': '/original/worker'}}
         (bundle / 'bundle.json').write_text(json.dumps(index))
         wrapper = {'coverage_scope': slot, 'profile': native.PROFILE,
                    'source_revision': self.identity.source, 'end_revision': self.identity.source,
                    'source_clean': True, 'end_clean': True, 'cache_state': 'unclassified',
                    'status': 'passed', 'platform': ['Linux', 'host', 'release', 'version', 'x86_64']}
         (bundle / 'reports/check.json').write_text(json.dumps(wrapper))
+        compiler_hash = native.sha256(compiler)
+        base = 'rust-Linux-X64-' + compiler_hash + '-dev0-test0-strip-symbols-inc0-combined-v2-'
+        graph = base + 'c' * 64 + '-'
+        context = {'repository': self.identity.repository, 'run': self.identity.run,
+                   'attempt': self.identity.attempt, 'source': self.identity.source,
+                   'tree': index['source']['tree'], 'workspace': index['recorded_roots']['workspace'],
+                   'runner_os': 'Linux', 'runner_arch': 'X64', 'profile': native.PROFILE.copy(),
+                   'compiler_stdout_base64': base64.b64encode(compiler).decode(),
+                   'compiler_sha256': compiler_hash,
+                   'keys': {'base': base, 'graph': graph, 'graph_hash': 'c' * 64,
+                            'primary': graph + self.identity.source + '-42-2'}}
+        disabled = result == 'disabled'
+        receipt = {'version': 1, 'status': 'finalized', 'context': context,
+                   'request': 'off' if disabled else 'restore-compatible', 'result': result,
+                   'action': {'outcome': 'skipped' if disabled else 'success',
+                              'matched_key': context['keys']['primary'] if result == 'restored' else ''},
+                   'inputs': {'marker': {'kind': 'not-consumed' if disabled else 'absent'},
+                              'source_times': {'kind': 'not-consumed' if disabled else 'absent'}},
+                   'marker': {'kind': 'not-consumed' if disabled else 'absent'},
+                   'refresh': {'kind': 'not-run'} if disabled else {
+                       'version': 1, 'status': 'completed', 'workspace': context['workspace'],
+                       'source': context['source'], 'tree': context['tree'], 'tracked_source_clean': True,
+                       'input_sha256': None,
+                       'current_files': {'src/lib.rs': {'blob': 'e' * 40, 'mode': '100644'}},
+                       'reused_files': 0, 'invalidated_files': 1,
+                       'changed_time_ns': 101, 'max_invocation_ns': 100},
+                   'cache_state': 'unclassified', 'producer_association': native.cache_use.ASSOCIATION}
         envelope = {'identity': native.asdict(self.identity), 'arch': 'x64', 'runner_arch': 'X64',
                     'machine': 'x86_64', 'slot': slot, 'job': 'native-worker',
                     'job_name': native.worker_name('x64', slot), 'cache_state': 'unclassified',
-                    'compiler_cache_restored': False, 'profile': native.PROFILE, 'source_clean': True,
+                    'cache_use': receipt, 'profile': native.PROFILE, 'source_clean': True,
                     'workflow_sha': self.identity.source, 'workflow_ref': 'owner/repo/' + native.WORKFLOW + '@refs/heads/topic',
                     'rustc': index['source']['rustc'],
                     'bundle_index_sha256': native.sha256((bundle / 'bundle.json').read_bytes())}
-        native.save(self.root / 'ci-envelope.json', envelope)
-        native.admit_envelope(self.identity, 'x64', slot, self.root)
+        native.save(directory / 'ci-envelope.json', envelope)
+        return bundle, wrapper, envelope
+
+    def test_worker_context_profile_architecture_and_index_are_bound(self):
+        slot = 'native-library-1'
+        bundle, wrapper, envelope = self.worker_fixture()
+        native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
         for key, value in [('arch', 'arm64'), ('machine', 'aarch64'), ('source_clean', False),
                            ('profile', {}), ('compiler_cache_restored', True), ('workflow_sha', 'c' * 40),
                            ('bundle_index_sha256', '0' * 64), ('rustc', 'another compiler')]:
             native.save(self.root / 'ci-envelope.json', dict(envelope, **{key: value}))
             with self.subTest(key=key), self.assertRaises(ValueError):
-                native.admit_envelope(self.identity, 'x64', slot, self.root)
+                native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
         native.save(self.root / 'ci-envelope.json', envelope)
         for key, value in [('profile', {}), ('source_clean', False), ('end_revision', 'c' * 40)]:
             native.save(bundle / 'reports/check.json', dict(wrapper, **{key: value}))
             with self.subTest(key=key), self.assertRaises(ValueError):
-                native.admit_envelope(self.identity, 'x64', slot, self.root)
+                native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
+
+    def test_cache_use_binds_recorded_context_and_preserves_markerless_hits(self):
+        slot = 'native-library-1'
+        for result, request in [('disabled', 'off'), ('miss', 'restore-compatible'), ('restored', 'restore-compatible')]:
+            _, _, envelope = self.worker_fixture(result)
+            actual = native.admit_envelope(self.identity, 'x64', slot, self.root, request)
+            self.assertEqual(actual['cache_use']['result'], result)
+            self.assertEqual(actual['cache_use']['marker']['kind'], 'not-consumed' if result == 'disabled' else 'absent')
+            with self.assertRaises(ValueError):
+                native.admit_envelope(self.identity, 'x64', slot, self.root,
+                                      'off' if request == 'restore-compatible' else 'restore-compatible')
+        _, _, envelope = self.worker_fixture()
+        for key, value in [('repository', 'foreign/repo'), ('run', 43), ('attempt', 3),
+                           ('tree', 'd' * 40), ('workspace', '/foreign/worker')]:
+            changed = copy.deepcopy(envelope)
+            changed['cache_use']['context'][key] = value
+            if key in ['run', 'attempt']:
+                context = changed['cache_use']['context']
+                context['keys']['primary'] = context['keys']['graph'] + context['source'] + f"-{context['run']}-{context['attempt']}"
+            native.save(self.root / 'ci-envelope.json', changed)
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
+        changed = copy.deepcopy(envelope)
+        changed['cache_use']['context']['source'] = 'f' * 40
+        changed['cache_use']['context']['keys']['primary'] = changed['cache_use']['context']['keys']['graph'] + 'f' * 40 + '-42-2'
+        native.save(self.root / 'ci-envelope.json', changed)
+        with self.assertRaises(ValueError):
+            native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
+
+    def test_missing_legacy_pending_and_unknown_cache_use_are_rejected(self):
+        slot = 'native-library-1'
+        _, _, envelope = self.worker_fixture()
+        changed = copy.deepcopy(envelope)
+        del changed['cache_use']
+        for legacy in [False, True]:
+            native.save(self.root / 'ci-envelope.json', changed | {'compiler_cache_restored': legacy})
+            with self.assertRaises(ValueError):
+                native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
+        native.save(self.root / 'ci-envelope.json', changed)
+        with self.assertRaises(ValueError):
+            native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
+        for key, value in [('status', 'pending'), ('request', 'unknown'), ('unexpected', True)]:
+            changed = copy.deepcopy(envelope)
+            changed['cache_use'][key] = value
+            native.save(self.root / 'ci-envelope.json', changed)
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
+
+    def test_all_slots_require_the_collectors_cache_request(self):
+        for mixed in [False, True]:
+            for position, slot in enumerate(native.slots()):
+                directory = self.root / (str(mixed) + slot)
+                self.worker_fixture('disabled' if mixed and position == 7 else 'restored', slot, directory)
+                if mixed and position == 7:
+                    with self.assertRaises(ValueError):
+                        native.admit_envelope(self.identity, 'x64', slot, directory, 'restore-compatible')
+                else:
+                    native.admit_envelope(self.identity, 'x64', slot, directory, 'restore-compatible')
 
     def test_server_timestamps_accept_documented_forms_without_shortening_bounds(self):
         valid = [
@@ -250,6 +344,12 @@ class NativeTransportTests(unittest.TestCase):
         both = native.plan('both', False, '', 'a' * 40)
         self.assertEqual(len(both['workers']['include']), 16)
         self.assertEqual(len(both['collectors']['include']), 2)
+        for mode in native.CACHE_MODES:
+            planned = native.plan('both', False, '', 'a' * 40, mode)
+            self.assertTrue(all(entry['compiler_cache'] == mode for group in planned.values() for entry in group['include']))
+        self.assertTrue(all(entry['compiler_cache'] == 'off' for group in both.values() for entry in group['include']))
+        with self.assertRaises(ValueError):
+            native.plan('x64', False, '', 'a' * 40, 'unknown')
         for qualify, revision in [(True, ''), (False, 'a' * 40)]:
             with self.assertRaises(ValueError):
                 native.plan('x64', qualify, revision, 'a' * 40)
