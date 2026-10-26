@@ -30,9 +30,20 @@ runs:
       if: inputs.tools == 'check'
       shell: bash
       run: |
-        sudo apt-get update && sudo apt-get install -y ripgrep
-        major=$(rg --version | head -1 | cut -d' ' -f2 | cut -d. -f1)
-        test "$major" -ge 14
+        ripgrep_ready() {
+          local version
+          version="$(rg --version 2>/dev/null)" || return 1
+          [[ "$version" =~ ^ripgrep[[:blank:]]+([0-9]+)\.[0-9]+\.[0-9]+([[:space:]]|$) ]] &&
+            test "${BASH_REMATCH[1]}" -ge 14
+        }
+        if ! ripgrep_ready; then
+          sudo timeout --kill-after=10s 5m bash -e -o pipefail -c '
+            apt=(apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
+            "${apt[@]}" update
+            "${apt[@]}" install -y ripgrep
+          '
+        fi
+        ripgrep_ready
     - name: Provision pinned Rust
       shell: bash
       run: |
