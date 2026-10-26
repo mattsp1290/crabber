@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 use tracing::{
     Subscriber,
@@ -103,24 +103,20 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
 }
 pub(crate) struct CaptureGuard {
     _subscriber: tracing::subscriber::DefaultGuard,
-    _interest_guard: tracing::Dispatch,
 }
 pub(crate) fn capture() -> (Capture, CaptureGuard) {
     use tracing_subscriber::prelude::*;
+    // Keep tracing-core out of its single-dispatcher path between captures.
+    static INTEREST_GUARD: OnceLock<tracing::Dispatch> = OnceLock::new();
+    INTEREST_GUARD.get_or_init(|| {
+        tracing::Dispatch::new(
+            tracing_subscriber::registry().with(tracing_subscriber::filter::LevelFilter::OFF),
+        )
+    });
     let captured = Capture::default();
     let guard =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(captured.clone()));
-    // tracing-core's single-dispatcher fast path registers callsites against
-    // the calling thread. A second live dispatcher keeps parallel subscriberless
-    // tests from caching Never for callsites this scoped capture needs.
-    let interest_guard = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
-    (
-        captured,
-        CaptureGuard {
-            _subscriber: guard,
-            _interest_guard: interest_guard,
-        },
-    )
+    (captured, CaptureGuard { _subscriber: guard })
 }
 
 #[test]
@@ -139,6 +135,34 @@ fn subscriberless_callsite_registration_does_not_disable_scoped_capture() {
             .unwrap()
             .iter()
             .filter(|r| r.name == "capture.registration")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn subscriberless_registration_after_capture_drop_preserves_next_subscriber() {
+    use tracing_subscriber::prelude::*;
+    fn cold_callsite() {
+        let _span = tracing::info_span!(
+            target: crate::targets::EXTENSION,
+            "capture.lifecycle"
+        )
+        .entered();
+    }
+    drop(capture());
+    let captured = Capture::default();
+    // Exercise the next capture's subscriber-construction window directly.
+    let dispatcher = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+    std::thread::spawn(cold_callsite).join().unwrap();
+    tracing::dispatcher::with_default(&dispatcher, cold_callsite);
+    assert_eq!(
+        captured
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| record.name == "capture.lifecycle")
             .count(),
         1
     );
