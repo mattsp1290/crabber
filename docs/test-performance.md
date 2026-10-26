@@ -893,3 +893,55 @@ owned container cleanup verified. The two affected compiled binaries retain all
 poll bodies instead of 18 in the earlier retained build (51,200 versus 152,040
 bytes). This is structural evidence, not a controlled compilation speedup.
 Full local/CI checks and all final rebuild qualification cases remain pending.
+
+## Shared consumer cache rebuild measurements
+
+Sharing compiler artifacts reduced the measured time for the five consumer API
+checks after Runtime or Session invalidation. Each consumer kept its independent
+manifest, feature graph, and all-target Cargo check.
+
+Each side ran five times per package, alternating which side ran first. All
+20 runs passed. Each clock includes the original frozen `xtask check-probes`
+runner's source preparation, compilation, receipt work, and child cleanup.
+Package cleanup and graph diagnostics ran outside that clock. The
+[20 raw measurements](test-performance/consumer-rebuild-f36.csv) retain execution
+order, wall time, child CPU time, and the separate cleanup time.
+
+| Invalidation | Baseline median and range | Shared-cache median and range | Difference of medians |
+| --- | --- | --- | --- |
+| Runtime | 32.359s, 31.970 to 32.635s | 27.916s, 27.648 to 28.897s | 4.443s, 13.7% |
+| Session | 89.991s, 88.405 to 99.858s | 74.920s, 73.952 to 89.106s | 15.071s, 16.7% |
+
+The Session candidate's 89.106s outlier remains in the results. Its cause is
+unknown, and its range overlaps the baseline range. All five paired results
+favored the candidate for each package. These observations do not establish a
+stable Session latency guarantee.
+
+The baseline logs report five Runtime and `crabber` compilations per run, plus five
+Session compilations after Session invalidation. Candidate receipts report four
+distinct compiled units of each relevant package. Complete unit identities
+include output and dependency-context hashes. All 18 consumer-root artifacts
+still compiled across the five consumers. Fresh-only diagnostics verified
+matching generated inputs, source, features, profiles, and all-target graphs.
+Affected work rebuilt, and registry controls and inactive caches stayed unchanged.
+
+Rust compilation dominated observed CPU in separate baseline profiles. Sampled
+`rustc` CPU accounted for at least 82.3% of aggregate child CPU after Runtime
+invalidation and 85.7% after Session invalidation. These samples are lower bounds
+and do not give an exact wall-time or I/O breakdown.
+
+The local host ran AArch64 Linux with 20 logical CPUs, Cargo 1.99.0, and Rust 1.99.0.
+Both frozen `xtask` runners were built with only the `postgres-check` feature.
+They used eight Cargo jobs, debug level zero, and disabled incremental compilation. Each side retained its own populated
+consumer caches before package invalidation. The baseline runner came from
+`f9fcdcb6b5b84b6037740891da500f5b209d19e5`. The candidate came from
+`f36cde9b008ada482928181ba90ae90004b91034`. Both checked the same library sources.
+
+A separate Full check at `f36cde9b` passed 72 gates and 3,821 active native cases in
+656.416s. It compiled a new replacement shared cache, retained the normal
+workspace cache, and began after legacy targets had already been retired. It
+missed 600s by 56.416s. The older `abacf0da` warmed Full took 544.441s under a
+different source and cache condition. Those runs are not a before-and-after
+comparison. The consumer measurements establish no Full-check speedup. Current
+CI and all six local and hosted qualification cases remain separate acceptance
+gates for the ten-minute target.
