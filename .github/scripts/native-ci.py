@@ -120,7 +120,8 @@ class GitHub:
         self.opener = urllib.request.build_opener(SafeRedirect())
 
     def request(self, endpoint, limit=16 * 1024 * 1024):
-        require(endpoint.startswith(f'/repos/{self.identity.repository}/'), 'unexpected API endpoint')
+        prefix = f'/repos/{self.identity.repository}'
+        require(endpoint == prefix or endpoint.startswith(prefix + '/'), 'unexpected API endpoint')
         request = urllib.request.Request('https://api.github.com' + endpoint, headers={
             'Authorization': 'Bearer ' + self.token,
             'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
@@ -151,7 +152,7 @@ class GitHub:
 
     def context(self):
         prefix = f'/repos/{self.identity.repository}'
-        repository = self.json(prefix + '/')
+        repository = self.json(prefix)
         workflow = self.json(prefix + '/actions/workflows/ci.yml')
         run = self.json(prefix + f'/actions/runs/{self.identity.run}/attempts/{self.identity.attempt}')
         validate_context(self.identity, repository, workflow, run)
