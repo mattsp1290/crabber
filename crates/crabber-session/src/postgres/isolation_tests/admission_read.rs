@@ -13,7 +13,7 @@ async fn host_admission_reads_use_one_snapshot_across_worker_begin() {
         let admin = admin(&url).await;
         let role = ProvisionedRole::host(&url, &admin).await;
         let host = PostgresStore::connect(&role.url).await.unwrap();
-        let function = format!("admission_read_barrier_{}", &role.name);
+        let function = format!("admission_read_barrier_{}", role.name);
         // Test-only restrictive policy: it grants nothing, and pauses only the
         // provisioned host after its statement snapshot exists.
         sqlx::query(&format!("CREATE FUNCTION {function}() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN PERFORM pg_advisory_xact_lock({READ_BARRIER}); RETURN true; END $$"))
