@@ -35,35 +35,47 @@ impl Fixture {
         Observed{usage,native,members,failed,closed:view.close.is_some()}
     }
 }
-#[tokio::test]
-async fn actual_consumer_native_n_commits_and_n_minus_one_rolls_back(){
-    for keyed in [false,true]{for kind in [CallKind::Register,CallKind::BeginInitial,CallKind::Conclude]{
-        let fixture=Fixture::new(keyed).await;let baseline=fixture.run(kind,MAX).await;
-        let label=serde_json::to_string(&kind).unwrap();
-        assert!(!baseline.failed&&baseline.usage.acknowledged&&baseline.closed,"baseline {label}, keyed={keyed}");
-        let native=baseline.native.unwrap();assert!(native>0&&native<baseline.usage.used);
-        let exact=fixture.run(kind,native).await;
-        assert!(exact.failed&&!exact.usage.acknowledged&&exact.closed);
-        assert_eq!(exact.native,Some(native),"native exact {label}, keyed={keyed}");assert_eq!(exact.members,1);
-        let short=fixture.run(kind,native-1).await;
-        assert!(short.failed&&!short.usage.acknowledged&&short.closed);
-        assert_eq!(short.native,None,"native short {label}, keyed={keyed}");assert_eq!(short.members,0);
-    }}
+async fn actual_consumer_native_and_returned_ack_boundaries(keyed:bool,kind:CallKind){
+    let fixture=Fixture::new(keyed).await;let baseline=fixture.run(kind,MAX).await;
+    let label=serde_json::to_string(&kind).unwrap();
+    assert!(!baseline.failed&&baseline.usage.acknowledged&&baseline.closed,"baseline {label}, keyed={keyed}");
+    let native=baseline.native.unwrap();assert!(native>0&&native<baseline.usage.used);
+    let exact=fixture.run(kind,native).await;
+    assert!(exact.failed&&!exact.usage.acknowledged&&exact.closed);
+    assert_eq!(exact.native,Some(native),"native exact {label}, keyed={keyed}");assert_eq!(exact.members,1);
+    let short=fixture.run(kind,native-1).await;
+    assert!(short.failed&&!short.usage.acknowledged&&short.closed);
+    assert_eq!(short.native,None,"native short {label}, keyed={keyed}");assert_eq!(short.members,0);
+    let whole=baseline.usage.used;assert!(whole>baseline.native.unwrap());
+    let exact=fixture.run(kind,whole).await;
+    assert!(!exact.failed&&exact.usage.acknowledged&&exact.closed);assert_eq!(exact.usage.used,whole,"whole exact {label}, keyed={keyed}");
+    let short=fixture.run(kind,whole-1).await;
+    assert!(short.failed&&!short.usage.acknowledged&&short.closed);
+    assert_eq!(short.members,1);assert!(short.native.is_some());
 }
 #[tokio::test]
-async fn actual_consumer_returned_ack_n_and_n_minus_one_preserve_native_outcome(){
-    for keyed in [false,true]{for kind in [CallKind::Register,CallKind::BeginInitial,CallKind::Conclude]{
-        let fixture=Fixture::new(keyed).await;let baseline=fixture.run(kind,MAX).await;
-        let label=serde_json::to_string(&kind).unwrap();
-        let whole=baseline.usage.used;assert!(whole>baseline.native.unwrap());
-        let exact=fixture.run(kind,whole).await;
-        assert!(!exact.failed&&exact.usage.acknowledged&&exact.closed);assert_eq!(exact.usage.used,whole,"whole exact {label}, keyed={keyed}");
-        let short=fixture.run(kind,whole-1).await;
-        assert!(short.failed&&!short.usage.acknowledged&&short.closed);
-        // ACK exhaustion occurs after the actual native commit. It cannot
-        // relabel the protected member as absent or permit another grant.
-        assert_eq!(short.members,1);assert!(short.native.is_some());
-    }}
+async fn actual_consumer_unkeyed_register_native_and_returned_ack_boundaries(){
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(false,CallKind::Register)).await;
+}
+#[tokio::test]
+async fn actual_consumer_keyed_register_native_and_returned_ack_boundaries(){
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(true,CallKind::Register)).await;
+}
+#[tokio::test]
+async fn actual_consumer_unkeyed_begin_initial_native_and_returned_ack_boundaries(){
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(false,CallKind::BeginInitial)).await;
+}
+#[tokio::test]
+async fn actual_consumer_keyed_begin_initial_native_and_returned_ack_boundaries(){
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(true,CallKind::BeginInitial)).await;
+}
+#[tokio::test]
+async fn actual_consumer_unkeyed_conclude_native_and_returned_ack_boundaries(){
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(false,CallKind::Conclude)).await;
+}
+#[tokio::test]
+async fn actual_consumer_keyed_conclude_native_and_returned_ack_boundaries(){
+    Box::pin(actual_consumer_native_and_returned_ack_boundaries(true,CallKind::Conclude)).await;
 }
 
 struct ReleaseSeal(Arc<super::fault_tests::SealHold>);
