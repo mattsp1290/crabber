@@ -1179,9 +1179,10 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(_, g)| {
-                g.inventory["argv"]
-                    .as_array()
-                    .is_some_and(|args| args.starts_with(&[json!("cargo"), json!("nextest")]))
+                g.inventory["argv"].as_array().is_some_and(|args| {
+                    args.starts_with(&[json!("cargo"), json!("nextest"), json!("list")])
+                        || args.starts_with(&[json!("cargo"), json!("nextest"), json!("run")])
+                })
             })
             .collect();
         assert_eq!(nextest.len(), 1);
