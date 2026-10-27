@@ -15,17 +15,14 @@ use std::{
 
 pub(crate) fn schedule(gates: &mut Checks, directory: &Path, features: &str) {
     gates.preparation(Part::QualityArtifacts, |gates| {
-        examples(gates, directory, features);
+        examples(gates, directory);
     });
     gates.owned(Owner::QualityArtifacts, |gates| {
         let artifacts_only = gates.is_part(Part::QualityArtifacts);
         let mut command = Command::new("cargo");
         command
             .current_dir(crate::workspace())
-            .args(["build", "--workspace", "--bins"]);
-        if !artifacts_only {
-            command.arg("--tests");
-        }
+            .args(["build", "--workspace", "--bins", "--tests"]);
         command.args(["--example", "protected_workspace", "--features", features]);
         if artifacts_only {
             command.args(["--message-format", "json-render-diagnostics"]);
@@ -50,40 +47,21 @@ pub(crate) fn schedule(gates: &mut Checks, directory: &Path, features: &str) {
     });
 }
 
-fn examples(gates: &mut Checks, directory: &Path, features: &str) {
-    let mut command = Command::new("cargo");
-    command.current_dir(crate::workspace()).args([
-        "build",
-        "--workspace",
-        "--examples",
-        "--profile",
-        "test",
-        "--features",
-        features,
-        "--message-format",
-        "json-render-diagnostics",
-    ]);
-    let journal = directory.join("normal-example-artifacts.jsonl");
+fn examples(gates: &mut Checks, directory: &Path) {
+    let journal = directory.join("native-artifacts.jsonl");
     let output = directory.to_owned();
-    gates.named_captured(
-        "prepare-normal-examples",
-        crate::workspace(),
-        command,
-        "all declared normal examples; zero semantic gate credit",
-        journal.clone(),
-        move |_| {
-            let examples = observed(&output, &journal, "example");
-            assert_eq!(
-                examples.keys().collect::<Vec<_>>(),
-                declared(&output, "example").keys().collect::<Vec<_>>()
-            );
-            fs::write(
-                output.join("prepared-normal-examples.json"),
-                serde_json::to_vec_pretty(&examples).unwrap(),
-            )
-            .unwrap();
-        },
-    );
+    gates.internal("prepare-normal-examples", crate::workspace(), move |_| {
+        let examples = observed(&output, &journal, "example");
+        assert_eq!(
+            examples.keys().collect::<Vec<_>>(),
+            declared(&output, "example").keys().collect::<Vec<_>>()
+        );
+        fs::write(
+            output.join("prepared-normal-examples.json"),
+            serde_json::to_vec_pretty(&examples).unwrap(),
+        )
+        .unwrap();
+    });
 }
 
 fn read(path: impl AsRef<Path>) -> Value {

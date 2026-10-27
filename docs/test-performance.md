@@ -88,9 +88,28 @@ The larger supervision budget lets the first cost probe finish. The supervisor r
 
 ## Partial artifact cost probe
 
-`cargo xtask check --part quality-artifacts` runs 23 artifact obligations with their explicit readiness, normal-example and template preparation, followed by the four real PostgreSQL demos. `--list` shows the semantic gates, preparation steps and owned demo commands without starting them. The existing producer still selects `--bins --tests --example protected_workspace`: it compiles native test harnesses. This mode executes rustdoc tests and CLI journeys, while the canonical Nextest suite remains part of the full check.
+`cargo xtask check --part quality-artifacts` runs 23 artifact obligations and
+ten preparations, followed by the four real PostgreSQL demos. `--list` shows
+those 33 gates and the owned demo commands without starting them. The mode
+compiles the canonical native graph through the existing binaries-only Nextest
+producer. This preparation has no Native behavior credit. It neither lists
+individual test cases from saved metadata nor runs the Nextest suite. Rustdoc
+tests and CLI journeys still execute as artifact obligations.
 
-The extra example build precedes the normal producer. The runner checks actual Cargo output records for the normal programs and all three normal examples, with the protected example bound to its final producer. No transitive feature-context equivalence is inferred for the other two examples. The normal producer now has the semantic ID `normal-output-build` in both full and partial reports; full command selectors and order stay unchanged.
+The runner reads all three normal examples from that producer's
+`native-artifacts.jsonl`. It checks their exact declared identities and actual
+executable hashes. It then runs the same broad normal producer as Full,
+`cargo build --workspace --bins --tests --example protected_workspace --features FEATURES`,
+with `FEATURES` taken from `complete.rs`. Only the partial invocation adds JSON
+output capture. The protected example is bound to this final producer; the
+other examples retain their canonical native producer observations. There is
+no separate `--examples` compiler command.
+
+Both modes share these producer implementations and their order. Full keeps
+72 obligations. The retained workspace executable journals omit dependency
+libraries, proc macros and graph edges. Their equality does not independently
+prove canonical transitive feature-context equivalence. These preparations
+provide no whole-check coverage or timing qualification.
 
 ```sh
 python3 -I -S .github/scripts/check.py --part quality-artifacts \
@@ -1120,14 +1139,16 @@ provisioning and compiler identity collection. The 4800-second supervision budge
 allows the first measurements to finish; the 600-second goal stays informational.
 Quality contracts require drained processes and no owned PostgreSQL run.
 Quality artifacts retain the existing four PostgreSQL demos and owned cleanup.
-Their normal-output journals preserve the existing limitation: passing partial
-artifact gates does not establish canonical transitive feature-context
+Their canonical binaries-only compiler is a preparation without Native execution
+or behavior credit. Normal examples come from its journal before the canonical
+broad normal producer. The journals preserve the existing limitation. Passing
+partial artifact gates does not establish canonical transitive feature-context
 equivalence.
 
 Attempt-specific artifacts bind the source SHA, x64 architecture, part, run ID
 and attempt in their names and remain available for seven days. They contain
 bounded wrapper and phase reports, setup/cache receipts, fixture events,
-normal-output and normal-example journals, prepared-example and normal-output
+canonical native and normal-output journals, prepared-example and normal-output
 reports, tool/metadata reports, and disposable local-consumer ownership and
 compiler receipts with their manifests and locks. They exclude executables,
 generated WASM binaries, whole target trees, arbitrary scratch source and

@@ -67,16 +67,18 @@ fn compile_native_artifacts(gates: &mut Checks, directory: &Path, destination: P
         "--cargo-message-format",
         "json-render-diagnostics",
     ]);
-    gates.captured_native(
-        workspace,
-        compile,
-        directory.join("native-artifacts.jsonl"),
-        move |output| {
-            let value = crate::native_artifacts::summary(&output.stdout);
-            fs::write(&destination, serde_json::to_vec(&value).unwrap())
-                .expect("persist canonical native build metadata");
-        },
-    );
+    gates.prepares_for(crate::parts::PartFamily::QualityArtifacts, |gates| {
+        gates.captured_native(
+            workspace,
+            compile,
+            directory.join("native-artifacts.jsonl"),
+            move |output| {
+                let value = crate::native_artifacts::summary(&output.stdout);
+                fs::write(&destination, serde_json::to_vec(&value).unwrap())
+                    .expect("persist canonical native build metadata");
+            },
+        );
+    });
     crate::normal_outputs::schedule(gates, directory, FEATURES);
 }
 
