@@ -21,39 +21,27 @@ use sqlx::{Postgres, Row};
 fn budget(error: Failure) -> ReadError<StoreError> {
     ReadError::Budget(error)
 }
-async fn charge(
-    tx: &mut Transaction<'_, Postgres>,
-    query: &str,
-    session: &str,
-    id: &str,
-    proof: &mut Proof,
-) -> Result<()> {
-    let bytes: Option<i64> = sqlx::query_scalar(query)
-        .bind(session)
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(db)?
-        .flatten();
-    proof
-        .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
-        .map_err(budget)
-}
 pub(super) async fn protocol(
     tx: &mut Transaction<'_, Postgres>,
     scope: &Scope,
     proof: &mut Proof,
 ) -> Result<bool> {
     proof.measure(scope).map_err(budget)?;
-    let marker: Option<i32> = sqlx::query_scalar("SELECT CAST(source_protocol AS INTEGER) FROM future_queue WHERE session_id=$1 AND queue_id=$2").bind(&scope.session.0).bind(&scope.queue.0).fetch_optional(&mut **tx).await.map_err(db)?;
-    let cohort: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2)").bind(&scope.session.0).bind(&scope.queue.0).fetch_one(&mut **tx).await.map_err(db)?;
-    let source: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2)").bind(&scope.session.0).bind(&scope.queue.0).fetch_one(&mut **tx).await.map_err(db)?;
+    // future_queue is keyed by (session_id,queue_id), so the marker subquery
+    // yields at most one row; one statement replaces three round trips.
+    let row = sqlx::query("SELECT (SELECT CAST(source_protocol AS INTEGER) FROM future_queue WHERE session_id=$1 AND queue_id=$2) AS marker,EXISTS(SELECT 1 FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2) AS cohort,EXISTS(SELECT 1 FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2) AS source").bind(&scope.session.0).bind(&scope.queue.0).fetch_one(&mut **tx).await.map_err(db)?;
+    let marker: Option<i32> = row.try_get("marker").map_err(db)?;
+    let cohort: bool = row.try_get("cohort").map_err(db)?;
+    let source: bool = row.try_get("source").map_err(db)?;
     match (marker, cohort, source) {
         (Some(0) | None, false, false) => Ok(false),
         (Some(1), true, true) => Ok(true),
         _ => Err(corrupt().into()),
     }
 }
+/// Source columns with their byte cost. Each caller appends the data column,
+/// bounded by its allowance the way the former separate probe and fetch were.
+const SOURCE_COLUMNS: &str = "CAST(octet_length(data_json)+octet_length(queue_id)+octet_length(operation_id)+octet_length(kind)+COALESCE(octet_length(previous_digest),0)+octet_length(source_digest) AS BIGINT) AS bytes,protocol_version,queue_sequence,sequence,revision,CASE WHEN octet_length(queue_id)<=128 THEN queue_id END AS queue_id,CASE WHEN octet_length(operation_id)<=128 THEN operation_id END AS operation_id,CASE WHEN octet_length(kind)<=16 THEN kind END AS kind,CASE WHEN octet_length(previous_digest)<=64 THEN previous_digest END AS previous_digest,CASE WHEN octet_length(source_digest)<=64 THEN source_digest END AS source_digest";
 async fn source(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -61,8 +49,26 @@ async fn source(
     proof: &mut Proof,
 ) -> Result<Source> {
     let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
-    charge(tx, "SELECT CAST(octet_length(data_json)+octet_length(queue_id)+octet_length(operation_id)+octet_length(kind)+COALESCE(octet_length(previous_digest),0)+octet_length(source_digest) AS BIGINT) FROM queue_publication_sources WHERE session_id=$1 AND operation_id=$2", &session.0, &operation.0, proof).await?;
-    let row = sqlx::query("SELECT protocol_version,queue_sequence,sequence,revision,CASE WHEN octet_length(queue_id)<=128 THEN queue_id END AS queue_id,CASE WHEN octet_length(operation_id)<=128 THEN operation_id END AS operation_id,CASE WHEN octet_length(kind)<=16 THEN kind END AS kind,CASE WHEN octet_length(previous_digest)<=64 THEN previous_digest END AS previous_digest,CASE WHEN octet_length(source_digest)<=64 THEN source_digest END AS source_digest,CASE WHEN octet_length(data_json)<=4096 AND octet_length(data_json)<=$3 THEN data_json END AS data FROM queue_publication_sources WHERE session_id=$1 AND operation_id=$2").bind(&session.0).bind(&operation.0).bind(allowance).fetch_optional(&mut **tx).await.map_err(db)?.ok_or_else(corrupt)?;
+    let row = sqlx::query(&format!("SELECT {SOURCE_COLUMNS},CASE WHEN octet_length(data_json)<=4096 AND octet_length(data_json)<=$3 THEN data_json END AS data FROM queue_publication_sources WHERE session_id=$1 AND operation_id=$2")).bind(&session.0).bind(&operation.0).bind(allowance).fetch_optional(&mut **tx).await.map_err(db)?;
+    charge_row(row.as_ref(), "bytes", proof)?;
+    decode_source(&row.ok_or_else(corrupt)?, session, operation)
+}
+/// Charge a folded row's byte column exactly as the former separate probe did:
+/// an absent row charges nothing, and the charge precedes any decoding.
+fn charge_row(row: Option<&sqlx::postgres::PgRow>, column: &str, proof: &mut Proof) -> Result<()> {
+    let bytes = match row {
+        Some(row) => row.try_get::<Option<i64>, _>(column).map_err(db)?,
+        None => None,
+    };
+    proof
+        .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
+        .map_err(budget)
+}
+fn decode_source(
+    row: &sqlx::postgres::PgRow,
+    session: &SessionId,
+    operation: &ControlId,
+) -> Result<Source> {
     let value: Source = decode(
         &row.try_get::<Option<String>, _>("data")
             .map_err(db)?
@@ -118,30 +124,52 @@ async fn indexed(
     proof: &mut Proof,
 ) -> Result<Source> {
     let raw = i64::try_from(sequence).map_err(|_| corrupt())?;
-    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(octet_length(operation_id) AS BIGINT) FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2 AND sequence=$3").bind(&scope.session.0).bind(&scope.queue.0).bind(raw).fetch_optional(&mut **tx).await.map_err(db)?;
-    proof
-        .charge(usize::try_from(bytes.ok_or_else(corrupt)?).map_err(|_| corrupt())?)
-        .map_err(budget)?;
-    let operation: Option<String> = sqlx::query_scalar("SELECT CASE WHEN octet_length(operation_id)<=128 THEN operation_id END FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2 AND sequence=$3").bind(&scope.session.0).bind(&scope.queue.0).bind(raw).fetch_one(&mut **tx).await.map_err(db)?;
-    let value = source(
-        tx,
-        &scope.session,
-        &ControlId(operation.ok_or_else(corrupt)?),
-        proof,
-    )
-    .await?;
+    // (session_id,queue_id,sequence) is unique and (session_id,operation_id) is
+    // the primary key, so this is the row source() would load by operation id.
+    // Charges, bounds and error order match the former four statements: the id
+    // probe, the id fetch, then source()'s probe and a fetch bounded by the
+    // allowance left after the id charge.
+    let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
+    let row = sqlx::query(&format!("SELECT CAST(octet_length(operation_id) AS BIGINT) AS id_bytes,{SOURCE_COLUMNS},CASE WHEN octet_length(data_json)<=4096 AND octet_length(data_json)<=$4-octet_length(operation_id) THEN data_json END AS data FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2 AND sequence=$3")).bind(&scope.session.0).bind(&scope.queue.0).bind(raw).bind(allowance).fetch_optional(&mut **tx).await.map_err(db)?.ok_or_else(corrupt)?;
+    charge_row(Some(&row), "id_bytes", proof)?;
+    let operation = ControlId(
+        row.try_get::<Option<String>, _>("operation_id")
+            .map_err(db)?
+            .ok_or_else(corrupt)?,
+    );
+    charge_row(Some(&row), "bytes", proof)?;
+    let value = decode_source(&row, &scope.session, &operation)?;
     if value.scope != *scope || value.sequence != sequence {
         return Err(corrupt().into());
     }
     Ok(value)
+}
+/// The cohort read already loaded and verified the origin and head sources in
+/// this transaction; reuse them instead of reading the same rows again.
+async fn known(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &Scope,
+    sequence: u64,
+    origin: &Source,
+    head: &Source,
+    proof: &mut Proof,
+) -> Result<Source> {
+    if sequence == origin.sequence {
+        Ok(origin.clone())
+    } else if sequence == head.sequence {
+        Ok(head.clone())
+    } else {
+        indexed(tx, scope, sequence, proof).await
+    }
 }
 async fn cohort(
     tx: &mut Transaction<'_, Postgres>,
     scope: &Scope,
     proof: &mut Proof,
 ) -> Result<(Source, Source)> {
-    charge(tx, "SELECT CAST(octet_length(origin_operation)+octet_length(origin_digest)+octet_length(head_digest) AS BIGINT) FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2", &scope.session.0, &scope.queue.0, proof).await?;
-    let row = sqlx::query("SELECT protocol_version,head_sequence,CASE WHEN octet_length(origin_operation)<=128 THEN origin_operation END AS origin_operation,CASE WHEN octet_length(origin_digest)<=64 THEN origin_digest END AS origin_digest,CASE WHEN octet_length(head_digest)<=64 THEN head_digest END AS head_digest FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2").bind(&scope.session.0).bind(&scope.queue.0).fetch_one(&mut **tx).await.map_err(db)?;
+    let row = sqlx::query("SELECT CAST(octet_length(origin_operation)+octet_length(origin_digest)+octet_length(head_digest) AS BIGINT) AS bytes,protocol_version,head_sequence,CASE WHEN octet_length(origin_operation)<=128 THEN origin_operation END AS origin_operation,CASE WHEN octet_length(origin_digest)<=64 THEN origin_digest END AS origin_digest,CASE WHEN octet_length(head_digest)<=64 THEN head_digest END AS head_digest FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2").bind(&scope.session.0).bind(&scope.queue.0).fetch_optional(&mut **tx).await.map_err(db)?;
+    charge_row(row.as_ref(), "bytes", proof)?;
+    let row = row.ok_or_else(|| db(sqlx::Error::RowNotFound))?;
     let origin = indexed(tx, scope, 1, proof).await?;
     let head = indexed(
         tx,
@@ -226,8 +254,9 @@ pub(super) async fn selected(
     value.verify(audit)?;
     let origin = indexed(tx, &scope, 1, proof).await?;
     origin.validate()?;
-    charge(tx, "SELECT CAST(octet_length(origin_operation)+octet_length(origin_digest) AS BIGINT) FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2", &scope.session.0, &scope.queue.0, proof).await?;
-    let anchored: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2 AND origin_operation=$3 AND origin_digest=$4 AND protocol_version=1)").bind(&scope.session.0).bind(&scope.queue.0).bind(&origin.operation.0).bind(origin.digest.as_str()).fetch_one(&mut **tx).await.map_err(db)?;
+    let row = sqlx::query("SELECT (SELECT CAST(octet_length(origin_operation)+octet_length(origin_digest) AS BIGINT) FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2) AS bytes,EXISTS(SELECT 1 FROM queue_publication_cohorts WHERE session_id=$1 AND queue_id=$2 AND origin_operation=$3 AND origin_digest=$4 AND protocol_version=1) AS anchored").bind(&scope.session.0).bind(&scope.queue.0).bind(&origin.operation.0).bind(origin.digest.as_str()).fetch_one(&mut **tx).await.map_err(db)?;
+    charge_row(Some(&row), "bytes", proof)?;
+    let anchored: bool = row.try_get("anchored").map_err(db)?;
     if !anchored {
         return Err(corrupt().into());
     }
@@ -260,7 +289,7 @@ async fn full_history(
     let (mut enqueue, mut prepare, mut claim) = (None, None, None);
     let mut prepare_source = None;
     for sequence in 1..=head.sequence {
-        let value = indexed(tx, scope, sequence, proof).await?;
+        let value = known(tx, scope, sequence, &origin, &head, proof).await?;
         let (_, audit) = super::reads::audited_leaf(tx, &scope.session, &value.operation, proof)
             .await?
             .ok_or_else(corrupt)?;
@@ -290,22 +319,14 @@ async fn full_history(
         }
         previous = Some(value);
     }
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2",
-    )
-    .bind(&scope.session.0)
-    .bind(&scope.queue.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(db)?;
-    let audit_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM future_queue_audit WHERE session_id=$1 AND queue_id=$2",
-    )
-    .bind(&scope.session.0)
-    .bind(&scope.queue.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(db)?;
+    let counts = sqlx::query("SELECT (SELECT COUNT(*) FROM queue_publication_sources WHERE session_id=$1 AND queue_id=$2) AS count,(SELECT COUNT(*) FROM future_queue_audit WHERE session_id=$1 AND queue_id=$2) AS audit_count")
+        .bind(&scope.session.0)
+        .bind(&scope.queue.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+    let count: i64 = counts.try_get("count").map_err(db)?;
+    let audit_count: i64 = counts.try_get("audit_count").map_err(db)?;
     if previous.as_ref() != Some(&head)
         || u64::try_from(count).ok() != Some(head.sequence)
         || audit_count != count
@@ -446,22 +467,19 @@ pub(super) async fn projected(
     let (origin, head) = cohort(tx, scope, proof).await?;
     let mut previous: Option<Source> = None;
     for sequence in 1..=head.sequence {
-        let value = indexed(tx, scope, sequence, proof).await?;
+        let value = known(tx, scope, sequence, &origin, &head, proof).await?;
         let extraction = super::public::RECEIPT;
-        let cost = format!(
-            "SELECT CAST(octet_length(r.data_json)+COALESCE(octet_length({extraction}),0) AS BIGINT) FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2 AND r.kind='future_queue' AND r.event_seq IS NULL"
-        );
-        charge(tx, &cost, &scope.session.0, &value.operation.0, proof).await?;
         let query = format!(
-            "SELECT CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS receipt,CASE WHEN octet_length({extraction})<=16384 THEN {extraction} END AS original FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2 AND r.kind='future_queue' AND r.event_seq IS NULL"
+            "SELECT CAST(octet_length(r.data_json)+COALESCE(octet_length({extraction}),0) AS BIGINT) AS bytes,CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS receipt,CASE WHEN octet_length({extraction})<=16384 THEN {extraction} END AS original FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2 AND r.kind='future_queue' AND r.event_seq IS NULL"
         );
         let row = sqlx::query(&query)
             .bind(&scope.session.0)
             .bind(&value.operation.0)
             .fetch_optional(&mut **tx)
             .await
-            .map_err(db)?
-            .ok_or_else(corrupt)?;
+            .map_err(db)?;
+        charge_row(row.as_ref(), "bytes", proof)?;
+        let row = row.ok_or_else(corrupt)?;
         let receipt: crate::QueueReceipt = decode(
             &row.try_get::<Option<String>, _>("receipt")
                 .map_err(db)?
