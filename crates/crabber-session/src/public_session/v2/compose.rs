@@ -1,20 +1,20 @@
 use super::{
     PublicHeaderOutcomeV2, PublicHeaderRequestV2, PublicSessionError, PublicSessionLimitV2,
-    PublicSessionOutcomeV2, PublicSessionPageV2, PublicSessionRequestV2, SessionRevision,
+    PublicSessionOutcomeV2, PublicSessionPageV2, PublicSessionRequestV2,
 };
 use crate::{PublicHistoryOutcome, PublicRunOutcome, SnapshotRequest, Store};
 pub(crate) async fn snapshot<S: Store + ?Sized>(
     store: &S,
     request: PublicSessionRequestV2,
 ) -> Result<PublicSessionOutcomeV2, PublicSessionError> {
+    snapshot_window(store, request, false).await
+}
+pub(crate) async fn snapshot_window<S: Store + ?Sized>(
+    store: &S,
+    request: PublicSessionRequestV2,
+    newest: bool,
+) -> Result<PublicSessionOutcomeV2, PublicSessionError> {
     request.validate()?;
-    let check = PublicHeaderRequestV2 {
-        session_id: request.session_id.clone(),
-        run_id: None,
-        expected_revision: SessionRevision::INITIAL,
-        limits: request.limits,
-    };
-    check.validate()?;
     let state = match store
         .public_run_state(&request.session_id, request.limits.header_bytes)
         .await?
@@ -37,7 +37,7 @@ pub(crate) async fn snapshot<S: Store + ?Sized>(
                 header_bytes: request.limits.header_bytes.saturating_sub(run_bytes),
                 ..request.limits
             },
-            ..check
+            session_id: request.session_id.clone(),
         })
         .await?
     {
@@ -50,26 +50,47 @@ pub(crate) async fn snapshot<S: Store + ?Sized>(
         }
         PublicHeaderOutcomeV2::Invalidated => return Ok(PublicSessionOutcomeV2::Invalidated),
     };
-    let history = match store
-        .public_history_v2(SnapshotRequest {
-            session_id: request.session_id.clone(),
-            limits: request.limits.history,
-            continuation: request.continuation,
-        })
-        .await?
-    {
-        PublicHistoryOutcome::Page(page) => page,
-        PublicHistoryOutcome::Limited {
-            limit,
-            continuation,
-            ..
-        } => {
-            return Ok(PublicSessionOutcomeV2::Limited {
-                limit: PublicSessionLimitV2::History(limit),
-                continuation: Some(continuation),
-            });
+    let history = if newest {
+        match store
+            .public_newest_history_v2(SnapshotRequest {
+                session_id: request.session_id.clone(),
+                limits: request.limits.history,
+                continuation: None,
+            })
+            .await?
+        {
+            crate::PublicNewestHistoryOutcome::Page(page) => page,
+            crate::PublicNewestHistoryOutcome::Limited(limit) => {
+                return Ok(PublicSessionOutcomeV2::Limited {
+                    limit: PublicSessionLimitV2::History(limit),
+                    continuation: None,
+                });
+            }
         }
-        PublicHistoryOutcome::Invalidated { .. } => return Ok(PublicSessionOutcomeV2::Invalidated),
+    } else {
+        match store
+            .public_history_v2(SnapshotRequest {
+                session_id: request.session_id.clone(),
+                limits: request.limits.history,
+                continuation: request.continuation,
+            })
+            .await?
+        {
+            PublicHistoryOutcome::Page(page) => page,
+            PublicHistoryOutcome::Limited {
+                limit,
+                continuation,
+                ..
+            } => {
+                return Ok(PublicSessionOutcomeV2::Limited {
+                    limit: PublicSessionLimitV2::History(limit),
+                    continuation: Some(continuation),
+                });
+            }
+            PublicHistoryOutcome::Invalidated { .. } => {
+                return Ok(PublicSessionOutcomeV2::Invalidated);
+            }
+        }
     };
     if history.captured_revision != state.revision
         || header.revision != state.revision

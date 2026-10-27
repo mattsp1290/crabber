@@ -6,7 +6,7 @@ use crate::{
 };
 use crabber_core::{Clock, EventKind, EventRecord, ManualClock, SessionId};
 
-pub(super) async fn admit(store: &dyn Store, now: time::OffsetDateTime) -> crate::AdmitOutcome {
+pub(crate) async fn admit(store: &dyn Store, now: time::OffsetDateTime) -> crate::AdmitOutcome {
     let mut fixture =
         crate::typed_admission_contract::fixture(&SessionId::new(), now, "bound-start");
     fixture.keyed.request.session_id = None;
@@ -18,7 +18,7 @@ pub(super) async fn admit(store: &dyn Store, now: time::OffsetDateTime) -> crate
         .await
         .unwrap()
 }
-pub(super) fn request(revision: crabber_core::SessionRevision) -> AttemptMutation {
+pub(crate) fn request(revision: crabber_core::SessionRevision) -> AttemptMutation {
     let mut request = reserve(revision);
     request.command = AttemptCommand::ReserveBound {
         target: request.command.target().clone(),
@@ -66,11 +66,15 @@ pub(super) async fn run(store: &dyn Store, clock: &ManualClock) {
     for dirty in [Dirty::Unbound, Dirty::Event, Dirty::Message, Dirty::Call] {
         rejects_dirty(store, clock, dirty).await;
     }
+    if store.supports_run_controls() {
+        rejects_dirty(store, clock, Dirty::ControlAndBusiness).await;
+    }
 }
 #[derive(Clone, Copy)]
 enum Dirty {
     Unbound,
     Event,
+    ControlAndBusiness,
     Message,
     Call,
 }
@@ -80,7 +84,7 @@ async fn rejects_dirty(store: &dyn Store, clock: &ManualClock, dirty: Dirty) {
     } else {
         admit(store, clock.now()).await
     };
-    let execution = store.execution(admitted.fence).await.unwrap();
+    let execution = store.execution(admitted.fence.clone()).await.unwrap();
     let event = EventRecord {
         cursor: None,
         session_id: admitted.session.id.clone(),
@@ -96,6 +100,10 @@ async fn rejects_dirty(store: &dyn Store, clock: &ManualClock, dirty: Dirty) {
     };
     match dirty {
         Dirty::Event => execution.append_event(event).await.unwrap(),
+        Dirty::ControlAndBusiness => {
+            cancel(store, &admitted, "authorized host cancellation").await;
+            execution.append_event(event).await.unwrap();
+        }
         Dirty::Message => {
             let mut message = store
                 .list_all_messages(&admitted.session.id)
@@ -155,4 +163,36 @@ async fn rejects_dirty(store: &dyn Store, clock: &ManualClock, dirty: Dirty) {
             .unwrap(),
         None
     );
+}
+
+pub(crate) async fn cancel(
+    store: &dyn Store,
+    admitted: &crate::AdmitOutcome,
+    claim: &str,
+) -> crate::RunControlReceipt {
+    let binding = store
+        .run_control_binding(&admitted.session.id, &admitted.run.id)
+        .await
+        .unwrap();
+    match store
+        .control_run(crate::RunControlRequest {
+            id: crabber_core::ControlId::new(),
+            target: binding.target,
+            expected_revision: binding.revision,
+            action: crate::RunControlAction::Cancel {
+                resolver: crate::ApprovalResolverClaim {
+                    resolver_id: "host-controller".into(),
+                    authority: crabber_core::AuthorityRequirement::new("host-cancel", "1").unwrap(),
+                    authority_claim: claim.into(),
+                },
+            },
+        })
+        .await
+        .unwrap()
+    {
+        crate::RunControlOutcome::Applied(receipt) => receipt,
+        other @ crate::RunControlOutcome::Replayed(_) => {
+            panic!("fresh accepted control required: {other:?}")
+        }
+    }
 }

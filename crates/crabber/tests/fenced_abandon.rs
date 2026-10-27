@@ -45,9 +45,15 @@ mod fork {
     pub(crate) use crate::fork_history as history;
     pub(crate) use crate::fork_records::Audit;
 }
+#[path = "../../crabber-session/src/public_history/newest.rs"]
+pub(crate) mod newest_history;
 #[path = "../../crabber-session/src/public_history/redaction.rs"]
 #[allow(dead_code)]
-mod public_history;
+mod public_history_redaction;
+mod public_history {
+    pub(crate) use crate::newest_history as newest;
+    pub(crate) use crate::public_history_redaction::{redact_message, redact_result};
+}
 pub use crabber::session::{
     FrontendCallOrigin, FrontendCallStaging, FrontendCallView, FrontendContinuationClaim,
     FrontendContinuationRecovery, FrontendPhaseResume, FrontendResolverClaim,
@@ -206,8 +212,9 @@ mod public_session {
 }
 pub use crabber::session::{
     PublicApprovalBarrier, PublicApprovalSummary, PublicControlHeader, PublicHeaderOutcome,
-    PublicHeaderRequest, PublicHeaderUsage, PublicHistoryOutcome, PublicSessionError,
-    PublicSessionLimit, PublicSessionLimits, PublicSessionOutcome, PublicSessionRequest,
+    PublicHeaderRequest, PublicHeaderUsage, PublicHistoryOutcome, PublicHistoryPage,
+    PublicNewestHistoryOutcome, PublicSessionError, PublicSessionLimit, PublicSessionLimits,
+    PublicSessionOutcome, PublicSessionRequest,
 };
 pub use crabber::session::{
     PublicContinuationBarrierV2, PublicControlHeaderV2, PublicFrontendRequirement,

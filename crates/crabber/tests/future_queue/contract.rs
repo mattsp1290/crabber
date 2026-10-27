@@ -5,7 +5,10 @@ mod model_controls;
 #[path = "races.rs"]
 mod races;
 use super::{fixture::*, store::TestStore};
-use crabber::{Admission, Agent, QueueControl, RuntimeError, SessionContext, core::*, session::*};
+use crabber::{
+    Admission, Agent, QueueAdmissionLease, QueueControl, RuntimeError, SessionContext, core::*,
+    session::*,
+};
 use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
@@ -40,6 +43,7 @@ fn context(session: &SessionId) -> SessionContext {
 pub(super) async fn run(native: Arc<dyn Store>, clock: Arc<ManualClock>) {
     fallback_and_defaults(native.clone()).await;
     Box::pin(unknown_ack(native.clone(), &clock)).await;
+    Box::pin(dispatch_lease(native.clone(), &clock)).await;
     contexts::explicit_and_foreign_context(native.clone()).await;
     Box::pin(model_controls::retained(native.clone())).await;
     contexts::unsupported(native.clone()).await;
@@ -117,6 +121,7 @@ async fn initial_preparation(
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority: authority.clone(),
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     preparing
         .prepare_queue_in(&context(&session), prepare.clone())
@@ -151,6 +156,7 @@ async fn fallback_and_defaults(native: Arc<dyn Store>) {
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     let admitted = dispatching
         .admit_queue_in(&context(&session), admit.clone(), None)
@@ -210,6 +216,7 @@ async fn fallback_and_defaults(native: Arc<dyn Store>) {
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     match dispatching
         .dispatch_queue_in(&context(&session), prepare, ControlId::new(), None)
@@ -227,7 +234,7 @@ async fn fallback_and_defaults(native: Arc<dyn Store>) {
     );
 }
 async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
-    for point in [1, 2] {
+    for point in [1, 2, 3] {
         let wrapped = Arc::new(TestStore::new(native.clone()));
         let probe = Probe::new(1);
         let host = agent(wrapped.clone(), &probe);
@@ -242,6 +249,7 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
             id: ControlId::new(),
             expected_revision: native.session_revision(&session).await.unwrap(),
             authority: authority.clone(),
+            admission_lease: crabber::QueueAdmissionLease::default(),
         };
         if point == 1 {
             wrapped.queue_loss.store(1, Ordering::SeqCst);
@@ -271,6 +279,11 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
             id: ControlId::new(),
             expected_revision: prepared.revision,
             authority,
+            admission_lease: if point == 2 {
+                QueueAdmissionLease::default()
+            } else {
+                QueueAdmissionLease::new(Duration::from_secs(60)).unwrap()
+            },
         };
         wrapped.queue_loss.store(2, Ordering::SeqCst);
         let failed = host
@@ -279,6 +292,11 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
             .err()
             .unwrap();
         let retained = failed.preparation_reconciliation().unwrap().clone();
+        let admitted = admitted_run(native.as_ref(), &session, &queue).await;
+        assert_eq!(
+            admitted.lease_until,
+            clock.now() + time::Duration::try_from(admit.admission_lease.duration()).unwrap()
+        );
         assert_eq!(probe.fake.requests().len(), 0);
         assert_eq!(probe.resolutions.load(Ordering::SeqCst), 0);
         update(
@@ -292,27 +310,16 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
             &probe,
             selection("changed-fallback", "changed-fallback-model"),
         );
-        let before = (
-            probe.factories.load(Ordering::SeqCst),
-            probe.resolutions.load(Ordering::SeqCst),
-        );
-        assert!(matches!(
-            restarted
-                .admit_queue_in(&context(&session), admit.clone(), None)
-                .await
-                .unwrap(),
-            Admission::Replayed(_)
-        ));
-        assert_eq!(
-            before,
-            (
-                probe.factories.load(Ordering::SeqCst),
-                probe.resolutions.load(Ordering::SeqCst)
-            )
-        );
+        replay_without_dispatch(&restarted, &session, &admit, &probe).await;
         assert_eq!(
             native.get_queue(&session, &queue).await.unwrap().state,
             QueueState::Admitted
+        );
+        assert_eq!(
+            admitted_run(native.as_ref(), &session, &queue)
+                .await
+                .lease_until,
+            admitted.lease_until
         );
         reconcile_retained(&host, &session, &retained, &probe).await;
         recover_expired(&restarted, clock, &session, &queue, &probe).await;
@@ -325,6 +332,41 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
         ));
     }
 }
+async fn replay_without_dispatch(
+    restarted: &Agent,
+    session: &SessionId,
+    admit: &QueueControl,
+    probe: &Probe,
+) {
+    let before = (
+        probe.factories.load(Ordering::SeqCst),
+        probe.resolutions.load(Ordering::SeqCst),
+    );
+    assert!(matches!(
+        restarted
+            .admit_queue_in(&context(session), admit.clone(), None)
+            .await
+            .unwrap(),
+        Admission::Replayed(_)
+    ));
+    assert_eq!(
+        before,
+        (
+            probe.factories.load(Ordering::SeqCst),
+            probe.resolutions.load(Ordering::SeqCst)
+        )
+    );
+    let changed = QueueControl {
+        admission_lease: QueueAdmissionLease::new(Duration::from_secs(45)).unwrap(),
+        ..admit.clone()
+    };
+    assert!(matches!(
+        restarted
+            .admit_queue_in(&context(session), changed, None)
+            .await,
+        Err(RuntimeError::Store(StoreError::AdmissionConflict))
+    ));
+}
 async fn recover_expired(
     restarted: &Agent,
     clock: &ManualClock,
@@ -332,7 +374,7 @@ async fn recover_expired(
     queue: &QueueId,
     probe: &Probe,
 ) {
-    clock.set(clock.now() + time::Duration::seconds(31));
+    clock.set(clock.now() + time::Duration::seconds(61));
     match restarted
         .recover_queue_in(&context(session), queue, None)
         .await
@@ -421,4 +463,47 @@ async fn reconcile_retained(
     assert!(progress.replayed);
     assert_eq!(probe.factories.load(Ordering::SeqCst), before_retry);
     assert_eq!(host.retained_preparation_status(session), []);
+}
+
+async fn dispatch_lease(native: Arc<dyn Store>, clock: &ManualClock) {
+    let wrapped = Arc::new(TestStore::new(native.clone()));
+    let probe = Probe::new(1);
+    let host = agent(wrapped.clone(), &probe);
+    let session = create(native.as_ref(), defaults(None, None)).await;
+    let (queue, _, _) = enqueue(&host, native.as_ref(), &session).await;
+    let authority = claim(&host, native.as_ref(), &session).await;
+    let prepare = QueueControl {
+        id: ControlId::new(),
+        expected_revision: native.session_revision(&session).await.unwrap(),
+        authority,
+        admission_lease: QueueAdmissionLease::new(Duration::from_secs(60)).unwrap(),
+    };
+    wrapped.queue_loss.store(2, Ordering::SeqCst);
+    let failed = host
+        .dispatch_queue_in(&context(&session), prepare, ControlId::new(), None)
+        .await
+        .err()
+        .unwrap();
+    let retained = failed.preparation_reconciliation().unwrap();
+    let receipt = native
+        .get_queue(&session, &queue)
+        .await
+        .unwrap()
+        .admission
+        .unwrap();
+    let run = native.get_run(&receipt.run_id).await.unwrap().unwrap();
+    assert_eq!(run.lease_until, clock.now() + time::Duration::seconds(60));
+    assert_eq!(probe.fake.requests().len(), 0);
+    reconcile_retained(&host, &session, retained, &probe).await;
+    host.close_extensions().await.unwrap();
+}
+
+async fn admitted_run(native: &dyn Store, session: &SessionId, queue: &QueueId) -> Run {
+    let receipt = native
+        .get_queue(session, queue)
+        .await
+        .unwrap()
+        .admission
+        .unwrap();
+    native.get_run(&receipt.run_id).await.unwrap().unwrap()
 }

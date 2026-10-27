@@ -293,9 +293,17 @@ impl Runner {
             () = close.cancelled() => ExecuteOutcome::Closing { may_have_executed: true },
             () = sleep_until(deadline) => ExecuteOutcome::TimedOut { may_have_executed: true },
             raw = read => {
-                match raw.ok().and_then(|raw| serde_json::from_slice::<Response>(&raw).ok()) {
-                    Some(response) if valid_response(&response, id, self.bounds) => ExecuteOutcome::Completed(response),
-                    _ => ExecuteOutcome::Failed { may_have_executed: true },
+                let response = raw.ok()
+                    .and_then(|raw| serde_json::from_slice::<Response>(&raw).ok())
+                    .filter(|response| valid_response(response, id, self.bounds));
+                if cancel.is_cancelled() {
+                    ExecuteOutcome::Interrupted { may_have_executed: true }
+                } else if close.is_cancelled() {
+                    ExecuteOutcome::Closing { may_have_executed: true }
+                } else if Instant::now() >= deadline {
+                    ExecuteOutcome::TimedOut { may_have_executed: true }
+                } else {
+                    response.map_or(ExecuteOutcome::Failed { may_have_executed: true }, ExecuteOutcome::Completed)
                 }
             }
             () = exited(&self.child) => ExecuteOutcome::Failed { may_have_executed: true },

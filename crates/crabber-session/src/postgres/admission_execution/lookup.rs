@@ -1,4 +1,4 @@
-//! Backend-local persistence; transaction and failure ordering are unchanged.
+//! Read-only admission lookups validate the body and journal in one snapshot.
 use crate::StoreError;
 use crate::postgres::{PostgresStore, admission_execution, db, lookup_receipt};
 use crabber_core::{AdmissionKey, RunId, SessionId};
@@ -13,6 +13,10 @@ impl PostgresStore {
             crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Admission)
                 .await
                 .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         let receipt = lookup_receipt(&mut tx, session, key)
             .await
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
@@ -36,6 +40,10 @@ impl PostgresStore {
             crate::transaction::begin_scoped(&self.pool, crate::transaction::StoreScope::Admission)
                 .await
                 .map_err(db)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         let state = admission_execution::load_record(&mut tx, run)
             .await?
             .map(|record| record.state);

@@ -11,14 +11,16 @@ pub(super) fn check(
     let binding = execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::InvalidTransition)?;
-    check_with_binding(state, run, &binding)
+    check_with_binding(state, run, &binding, proof)
 }
 pub(super) fn check_with_binding(
     state: &State,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     let count = attempt::pristine::input_count(run, binding)?;
+    let controls = super::super::run_control::accepted_event_count(state, run, proof)?;
     if state
         .messages
         .iter()
@@ -26,7 +28,13 @@ pub(super) fn check_with_binding(
         .take(count + 1)
         .count()
         != count
-        || state.events.iter().any(|event| event.run_id == run.id)
+        || state
+            .events
+            .iter()
+            .filter(|event| event.run_id == run.id)
+            .take(controls + 1)
+            .count()
+            != controls
         || state.calls.values().any(|call| call.run_id == run.id)
         || state
             .phases

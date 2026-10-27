@@ -116,6 +116,7 @@ pub(super) async fn queue(f: &Fixture) {
         id: ControlId::new(),
         expected_revision: receipt.revision,
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     let prepared = f
         .worker
@@ -139,7 +140,8 @@ pub(super) async fn queue(f: &Fixture) {
                 QueueControl {
                     id: admission_id,
                     expected_revision: prepared.revision,
-                    authority: prepare.authority
+                    authority: prepare.authority,
+                    admission_lease: crabber::QueueAdmissionLease::default(),
                 },
                 None
             )

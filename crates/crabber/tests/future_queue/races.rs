@@ -10,6 +10,7 @@ pub(super) async fn defaults_cas(native: Arc<dyn Store>) {
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     wrapped.hold_summary.store(true, Ordering::SeqCst);
     let admitted_context = context(&session);
@@ -69,6 +70,7 @@ pub(super) async fn same_key_prepare(native: Arc<dyn Store>) {
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     wrapped.hold_summary.store(true, Ordering::SeqCst);
     let scope = context(&session);
@@ -103,6 +105,7 @@ pub(super) async fn same_key_prepare_during_inspection(native: Arc<dyn Store>) {
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     wrapped.hold_queue_inspection.store(true, Ordering::SeqCst);
     let scope = context(&session);

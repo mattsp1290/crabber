@@ -6,6 +6,7 @@ use crabber_core::{
 };
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod newest;
 mod redaction;
 pub(crate) use redaction::{redact_message, redact_result};
 
@@ -27,6 +28,9 @@ pub struct PublicHistoryPage {
     /// consume this budget; projection never bypasses backend allocation caps.
     pub read_usage: SnapshotUsage,
     pub continuation: Option<SnapshotContinuation>,
+    /// True only for replacement windows whose older messages are omitted.
+    #[serde(default)]
+    pub omitted_older_messages: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +44,12 @@ pub enum PublicHistoryOutcome {
     Invalidated {
         high_water: EventCursor,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PublicNewestHistoryOutcome {
+    Page(PublicHistoryPage),
+    Limited(SnapshotLimit),
 }
 
 impl From<SnapshotPage> for PublicHistoryPage {
@@ -64,6 +74,7 @@ impl From<SnapshotPage> for PublicHistoryPage {
             imported_provenance: page.imported_provenance,
             read_usage: page.usage,
             continuation: page.continuation,
+            omitted_older_messages: false,
         }
     }
 }
@@ -88,3 +99,6 @@ impl From<crate::SnapshotOutcome> for PublicHistoryOutcome {
 #[cfg(test)]
 #[path = "public_history/tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+pub(crate) mod newest_tests;

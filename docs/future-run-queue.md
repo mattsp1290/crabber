@@ -28,6 +28,13 @@ The host owns dispatch scheduling:
    the latest session revision. A fresh admission returns `Admission::Started`
    with the actual owned RunHandle. Retain and supervise that handle normally.
 
+Set `QueueControl::admission_lease` to a validated `QueueAdmissionLease` for
+host-selected initial run leases. `QueueAdmissionLease::default()` retains 30
+seconds; `QueueAdmissionLease::new(Duration::from_secs(60))` selects 60 seconds.
+Durations must be positive and at most one hour. Preparation does not use this
+policy. Admission persists it atomically with the run; replay preserves the
+original deadline and rejects a changed lease under the same operation ID.
+
 `dispatch_queue_in` combines steps 3 and 4 for an unprepared claimed head, using
 its prepare receipt revision as the admission precondition. Keep both operation
 IDs and the original preparation control to reconcile an unknown response. A

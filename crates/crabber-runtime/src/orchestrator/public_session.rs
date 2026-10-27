@@ -14,6 +14,15 @@ impl Orchestrator {
     ) -> Result<crabber_session::PublicSessionOutcomeV2, PublicSessionError> {
         self.store.public_session_snapshot_v2(request).await
     }
+    /// Capture a revision-coherent newest replacement window, in display order.
+    /// # Errors
+    /// Rejects continuations, unsupported stores and inconsistent durable proof.
+    pub async fn public_session_newest_snapshot_v2(
+        &self,
+        request: crabber_session::PublicSessionRequestV2,
+    ) -> Result<crabber_session::PublicSessionOutcomeV2, PublicSessionError> {
+        self.store.public_session_newest_snapshot_v2(request).await
+    }
     /// Poll the fixed V2 aggregate using host-owned state; starts no task.
     /// # Errors
     /// Returns bounded snapshot and integrity failures.

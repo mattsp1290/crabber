@@ -6,11 +6,39 @@ use crabber_session::{
     QueueReceipt, RetainedQueue, StoreError,
 };
 use std::time::Duration;
+/// Initial run lease selected by the queue host. Native stores accept positive
+/// durations of at most one hour. The default preserves the 30-second policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueAdmissionLease(Duration);
+impl QueueAdmissionLease {
+    /// Validate a host-selected initial admission lease.
+    /// # Errors
+    /// Rejects zero and durations greater than one hour.
+    pub fn new(duration: Duration) -> Result<Self, StoreError> {
+        if duration.is_zero() || duration > Duration::from_secs(3600) {
+            return Err(StoreError::Validation(
+                "invalid queue admission lease".into(),
+            ));
+        }
+        Ok(Self(duration))
+    }
+    #[must_use]
+    pub fn duration(self) -> Duration {
+        self.0
+    }
+}
+impl Default for QueueAdmissionLease {
+    fn default() -> Self {
+        Self(Duration::from_secs(30))
+    }
+}
 #[derive(Debug, Clone)]
 pub struct QueueControl {
     pub id: ControlId,
     pub expected_revision: SessionRevision,
     pub authority: QueueAuthority,
+    /// Initial run lease for admission; preparation does not consume this policy.
+    pub admission_lease: QueueAdmissionLease,
 }
 impl QueueControl {
     fn mutation(&self, action: QueueAction) -> QueueMutation {
@@ -25,7 +53,7 @@ impl QueueControl {
         self.mutation(QueueAction::Admit {
             authority: self.authority.clone(),
             owner: self.authority.token.clone(),
-            lease: Duration::from_secs(30),
+            lease: self.admission_lease.duration(),
         })
     }
 }
@@ -353,7 +381,7 @@ impl Orchestrator {
         }
         self.own_preparation(
             control.authority.session_id.clone(),
-            move |runtime| async move { runtime.prepare_queue_owned(request, control).await },
+            move |runtime| async move { Box::pin(runtime.prepare_queue_owned(request, control)).await },
         )
         .await
     }
@@ -693,5 +721,38 @@ fn pending_admission(
         } => Ok(Admission::Started { receipt, handle }),
         PendingOutcome::Replayed(Metadata::Queue(receipt)) => Ok(Admission::Replayed(receipt)),
         _ => Err(StoreError::AdmissionConflict.into()),
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn host_lease_bounds_and_default() {
+        assert_eq!(
+            QueueAdmissionLease::default().duration(),
+            Duration::from_secs(30)
+        );
+        for duration in [
+            Duration::from_nanos(1),
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+        ] {
+            assert_eq!(
+                QueueAdmissionLease::new(duration).unwrap().duration(),
+                duration
+            );
+        }
+        for duration in [
+            Duration::ZERO,
+            Duration::from_secs(3600) + Duration::from_nanos(1),
+            Duration::MAX,
+        ] {
+            assert!(matches!(
+                QueueAdmissionLease::new(duration),
+                Err(StoreError::Validation(_))
+            ));
+        }
     }
 }

@@ -3,7 +3,7 @@
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
 pub use crabber_core::{ModelControls, ReasoningEffort};
-pub use crabber_runtime::QueueControl;
+pub use crabber_runtime::{QueueAdmissionLease, QueueControl};
 pub use crabber_session::{QueueHeadsPage, QueueHeadsRequest, WorkspaceRunsRequest};
 mod agent;
 mod host;
@@ -48,9 +48,9 @@ pub use crabber_session::{
     AttemptControlOutcome, AttemptResolverClaim, AttemptRetirement, AttemptRetirementOutcome,
     AttemptUncertainty, AttemptUncertaintyCause, ListSessions, ManageSession, ManagementError,
     ManagementReceipt, PendingCallDisposition, PublicHistoryOutcome, PublicHistoryPage,
-    PublicRunOutcome, PublicRunState, PublicRunSummary, SessionChange, SessionDefaults,
-    SessionListCursor, SessionListPage, SessionSummary, SnapshotContinuation, SnapshotLimit,
-    SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
+    PublicNewestHistoryOutcome, PublicRunOutcome, PublicRunState, PublicRunSummary, SessionChange,
+    SessionDefaults, SessionListCursor, SessionListPage, SessionSummary, SnapshotContinuation,
+    SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
 };
 
 #[cfg(feature = "datadog")]

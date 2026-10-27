@@ -574,6 +574,39 @@ invalidates the capture. These DTOs expose no worker capability, private checkpo
 raw external answer or supplied frontend output. Empty local task lists are not
 durable quiescence evidence.
 
+For a replacement transcript, call `Agent::public_session_newest_snapshot_v2`
+(or its Store equivalent) with the same V2 request and `continuation: None`.
+It reads backward within the history budgets and returns the newest fitting
+suffix in chronological append order, together with associated native/imported
+call records and imported message provenance. IDs, parent links, call/result
+identities and recursive public filtering are preserved. A relationship may
+point into omitted older messages; the window is a suffix, not an assertion that
+its oldest message starts a complete conversation or tool round.
+
+`history.omitted_older_messages` explicitly reports truncation. A successful
+window has no continuation even when older messages are omitted: replace the
+transcript atomically, never append it to a previous window. Existing
+`public_session_snapshot_v2` keeps its original oldest-first pagination. Newest
+reads reject continuations, including tokens from ordinary V2 pages. A newest
+message and its associated records must fit; otherwise the outcome is typed
+`Limited { limit: History(...), continuation: None }`. Increase the allowed caps
+or report the limit; do not scan all older pages to build a replacement.
+
+`PublicSessionSubscriptionV2::newest` polls this window profile. Its first page
+and every replacement have `reset: true`; omitted history still permits a later
+`Unchanged`. Revision changes or channel overflow yield `Resync` before a fresh
+replacement. Constituent-read races yield `Invalidated`, so metadata and history
+from different revisions are never combined. `set_limits` restarts the window.
+No method starts a provider, dispatcher or background observer.
+
+The existing header and shared private-proof caps remain in force. History caps
+charge raw records before public filtering. SQL charges stored carrier bytes,
+including noncanonical whitespace; Memory measures its typed records before
+cloning. A boundary candidate that fits as a message but fails its associated
+record cap is omitted from the result, while its spent read cost remains charged.
+Thus `read_usage` can include a discarded boundary candidate. Custom stores must
+explicitly implement `public_newest_history_v2`; the default refuses support.
+
 Tools acquired from `Registry::mount_owned` use concrete mount invocation
 facades, including explicit resumable start and resume calls. An extracted
 executor refuses new invocation after that mount seals. The mount retains the

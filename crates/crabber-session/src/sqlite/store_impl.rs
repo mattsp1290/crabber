@@ -329,6 +329,12 @@ impl Store for SqliteStore {
         self.owner_receipt(session, id).await
     }
 
+    async fn public_newest_history_v2(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicNewestHistoryOutcome, StoreError> {
+        self.read_newest_history(request).await
+    }
     async fn public_history_v2(
         &self,
         request: crate::SnapshotRequest,

@@ -153,6 +153,7 @@ impl Agent {
                 id: admission_id,
                 expected_revision: receipt.revision,
                 authority: prepare.authority,
+                admission_lease: prepare.admission_lease,
             },
             trace,
         )

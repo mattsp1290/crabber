@@ -333,17 +333,18 @@ fn implicit_execution_references() {
     let Some(shells) = discover(&f) else {
         return;
     };
-    // Bash 5 as `sh` demonstrates this implicit interpretation. Dash in this
-    // environment does not expand an inherited PS4's external substitution.
-    std::os::unix::fs::symlink(&shells.bash, f.bin.join("sh")).unwrap();
     let path = f.path();
     let p = policy();
+    // Inherited PS4 remains a conservative denial even when the shell ignores it.
+    assert!(
+        p.analyze_script("env 'PS4=$(blocked)' sh -x -c 'echo ok'", Dialect::Bash)
+            .denies()
+    );
     for s in [
         "OPTIND='a[$(blocked)0]'",
         "RANDOM='a[$(blocked)0]'",
         "for OPTIND in 'a[$(blocked)0]'; do :; done",
         "PS4='$(blocked)'; set -x; echo ok",
-        "env 'PS4=$(blocked)' sh -x -c 'echo ok'",
         "env 'BASH_ENV=$(blocked)' bash -c 'echo ok'",
         "echo a # c \\\nblocked",
         "time blocked",

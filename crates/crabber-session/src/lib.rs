@@ -137,7 +137,7 @@ mod public_session;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod run_facts;
 mod snapshot_profile;
-pub use public_history::{PublicHistoryOutcome, PublicHistoryPage};
+pub use public_history::{PublicHistoryOutcome, PublicHistoryPage, PublicNewestHistoryOutcome};
 pub use public_session::*;
 mod continuation_source;
 mod public_state;
@@ -174,6 +174,10 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_newest_history_tools() {
+        crate::public_history::newest_tests::tools(&crate::MemoryStore::new()).await;
+    }
     #[tokio::test]
     async fn public_history_projection_contract() {
         crate::public_history::tests::run(&crate::MemoryStore::new()).await;

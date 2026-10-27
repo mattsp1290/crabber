@@ -33,6 +33,13 @@ For cancellation, supply `RunControlAction::Cancel { resolver }` with a bounded
 requirement and host authority claim. This retained claim attributes the host
 decision. It proves neither worker shutdown nor external resource cleanup.
 
+A cancellation accepted before the first execution attempt settles the run as
+`Interrupted` without invoking the provider or tools. Accepted control audit
+events remain valid initial state. The Store authenticates their original
+receipts and rejects business activity or incomplete control evidence. These
+checks retain the caller's shared proof-byte budget, including private requests
+and repeated audit reads.
+
 `Applied` and `Replayed` return the original acceptance receipt. Exact retries
 reconcile before revision and Agent ingress checks; changing any original choice
 under that key conflicts. A replay never grants worker authority or dispatches

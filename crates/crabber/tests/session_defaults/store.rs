@@ -26,6 +26,7 @@ pub(super) struct TestStore {
     pub hold_summary: AtomicBool,
     pub hold_queue_inspection: AtomicBool,
     pub hold_admission: AtomicBool,
+    pub hold_committed_admission: AtomicBool,
     pub lose_ack: AtomicBool,
     pub entered: Notify,
     pub release: Notify,
@@ -48,6 +49,7 @@ impl TestStore {
             hold_summary: AtomicBool::new(false),
             hold_queue_inspection: AtomicBool::new(false),
             hold_admission: AtomicBool::new(false),
+            hold_committed_admission: AtomicBool::new(false),
             lose_ack: AtomicBool::new(false),
             entered: Notify::new(),
             release: Notify::new(),
@@ -104,6 +106,16 @@ impl Store for TestStore {
             joined.set_admission_lease(std::time::Duration::from_millis(20));
         }
         let completed = self.inner.complete_preparation(joined).await?;
+        if matches!(
+            &completed,
+            crabber_session::session_owner::preparation::PreparationCompletion::Keyed(
+                KeyedAdmitOutcome::Started { .. }
+            )
+        ) && self.hold_committed_admission.swap(false, Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
         if lose_ack {
             return Err(StoreError::Validation("injected acknowledgement loss".into()).into());
         }

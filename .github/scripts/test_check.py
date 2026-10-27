@@ -577,7 +577,7 @@ class DeadlineTests(unittest.TestCase):
         ])
         program = '\n'.join([
             'import pathlib,signal,subprocess,sys,time',
-            f'p=subprocess.Popen({[sys.executable, '-I', '-S', '-B', '-c', child]!r})',
+            f"p=subprocess.Popen({[sys.executable, '-I', '-S', '-B', '-c', child]!r})",
             'def cleanup(*_):',
             '    p.send_signal(signal.SIGUSR1)',
             '    p.wait(timeout=.5)',

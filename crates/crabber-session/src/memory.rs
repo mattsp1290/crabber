@@ -63,6 +63,8 @@ mod session_owner;
 #[path = "memory/tool_result.rs"]
 mod tool_result;
 
+#[path = "memory/newest.rs"]
+mod newest;
 #[path = "memory/queue.rs"]
 mod queue;
 #[path = "memory/run_control.rs"]
@@ -590,6 +592,12 @@ impl Store for MemoryStore {
         )
     }
 
+    async fn public_newest_history_v2(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicNewestHistoryOutcome, StoreError> {
+        newest::read(&self.state.lock().expect("memory store poisoned"), &request)
+    }
     async fn public_history_v2(
         &self,
         request: crate::SnapshotRequest,

@@ -44,6 +44,7 @@ pub(super) async fn explicit_and_foreign_context(native: Arc<dyn Store>) {
         id: ControlId::new(),
         expected_revision: native.session_revision(&session).await.unwrap(),
         authority,
+        admission_lease: crabber::QueueAdmissionLease::default(),
     };
     match host
         .dispatch_queue_in(&context, prepare, ControlId::new(), None)
