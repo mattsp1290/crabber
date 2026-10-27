@@ -1129,6 +1129,7 @@ mod tests {
         assert_eq!(actual, expected);
         let metadata = partial.scope.as_ref().unwrap().metadata();
         assert_eq!(metadata["qualified"], false);
+        assert_eq!(metadata["full_native_suite_executed"], false);
         assert_eq!(
             metadata["requires_owned_postgres"],
             part == Part::QualityArtifacts
@@ -1164,31 +1165,49 @@ mod tests {
 
     #[cfg(feature = "postgres-check")]
     fn assert_artifact_preparation(partial: &Checks, full: &Checks) {
-        assert_eq!(partial.gates.len(), 32);
+        assert_eq!(partial.gates.len(), 33);
         assert_eq!(
             partial
                 .gates
                 .iter()
                 .filter(|g| g.inventory["execution_role"] == "preparation")
                 .count(),
-            9
+            10
         );
-        assert!(
-            !partial
-                .gates
-                .iter()
-                .any(|g| g.inventory["argv"]
+        let nextest: Vec<_> = partial
+            .gates
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| {
+                g.inventory["argv"]
                     .as_array()
-                    .is_some_and(|args| args.starts_with(&[
-                        json!("cargo"),
-                        json!("nextest"),
-                        json!("run")
-                    ]) || args.starts_with(&[
-                        json!("cargo"),
-                        json!("nextest"),
-                        json!("list")
-                    ])))
+                    .is_some_and(|args| args.starts_with(&[json!("cargo"), json!("nextest")]))
+            })
+            .collect();
+        assert_eq!(nextest.len(), 1);
+        let (compiler, gate) = nextest[0];
+        let full_compiler = full
+            .gates
+            .iter()
+            .find(|g| g.inventory["id"] == gate.inventory["id"])
+            .unwrap();
+        assert_eq!(gate.inventory["argv"], full_compiler.inventory["argv"]);
+        let argv = gate.inventory["argv"].as_array().unwrap();
+        assert!(argv.starts_with(&[json!("cargo"), json!("nextest"), json!("list")]));
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == [json!("--list-type"), json!("binaries-only")])
         );
+        assert!(!argv.iter().any(|arg| arg == "--binaries-metadata"));
+        assert_eq!(gate.inventory["owner"], "native");
+        assert_eq!(gate.inventory["execution_role"], "preparation");
+        assert_eq!(gate.inventory["semantic_credit"], false);
+        let super::Action::Captured(_, _, Some(journal), None) = &gate.action else {
+            panic!("canonical compiler must retain its native journal");
+        };
+        assert!(journal.ends_with("native-artifacts.jsonl"));
+        assert_eq!(gate.inventory["native_artifacts"], json!(journal));
+        assert!(gate.inventory["cargo_artifacts"].is_null());
         let position = |id: &str| {
             partial
                 .gates
@@ -1198,20 +1217,29 @@ mod tests {
         };
         let examples = position("prepare-normal-examples");
         let bins = position("normal-output-build");
-        for index in [examples, bins] {
-            let gate = &partial.gates[index];
-            let super::Action::Captured(_, _, Some(journal), None) = &gate.action else {
-                panic!("normal-output capture must retain its Cargo journal");
-            };
-            assert_eq!(gate.inventory["cargo_artifacts"], json!(journal));
-            assert!(gate.inventory["native_artifacts"].is_null());
-        }
+        assert!(matches!(
+            &partial.gates[examples].action,
+            super::Action::Internal(_)
+        ));
+        assert_eq!(partial.gates[examples].inventory["argv"], json!([]));
+        assert_eq!(
+            partial.gates[examples].inventory["execution_role"],
+            "preparation"
+        );
+        assert_eq!(partial.gates[examples].inventory["semantic_credit"], false);
+        let gate = &partial.gates[bins];
+        let super::Action::Captured(_, _, Some(journal), None) = &gate.action else {
+            panic!("normal-output capture must retain its Cargo journal");
+        };
+        assert_eq!(gate.inventory["cargo_artifacts"], json!(journal));
+        assert!(gate.inventory["native_artifacts"].is_null());
         let migration = partial
             .gates
             .iter()
             .position(|g| g.inventory["argv"][1] == "postgres-template-migrate")
             .unwrap();
-        assert!(examples < bins && bins < migration);
+        assert!(compiler < examples && examples < bins);
+        assert_eq!(bins + 1, migration);
         assert_eq!(partial.gates[migration].inventory["owner"], "native");
         assert_eq!(partial.gates[migration].inventory["semantic_credit"], false);
         let full_bins = full
@@ -1220,8 +1248,7 @@ mod tests {
             .find(|g| g.inventory["id"] == "normal-output-build")
             .unwrap();
         let mut expected = full_bins.inventory["argv"].as_array().unwrap().clone();
-        let tests = expected.iter().position(|arg| arg == "--tests").unwrap();
-        expected.remove(tests);
+        assert!(expected.iter().any(|arg| arg == "--tests"));
         expected.extend([json!("--message-format"), json!("json-render-diagnostics")]);
         assert_eq!(partial.gates[bins].inventory["argv"], json!(expected));
         assert_eq!(

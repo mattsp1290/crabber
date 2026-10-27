@@ -362,7 +362,7 @@ jobs:
             target/test-performance/complete-*/resource-groups.json
             target/test-performance/complete-*/*-version.txt
             target/test-performance/complete-*/normal-output-artifacts.jsonl
-            target/test-performance/complete-*/normal-example-artifacts.jsonl
+            target/test-performance/complete-*/native-artifacts.jsonl
             target/test-performance/complete-*/prepared-normal-examples.json
             target/test-performance/complete-*/normal-outputs.json
             target/local-probes/*/owners.json
