@@ -329,3 +329,77 @@ async fn journal_context_precharges_workspace_and_preserves_historical_selection
     .await
     .unwrap();
 }
+#[tokio::test(flavor = "current_thread")]
+async fn queue_proofs_issue_one_statement_per_logical_read() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+
+    TestDatabase::run_if_available(DatabaseMode::Current, async move |url| {
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = crate::PostgresStore::connect(&url).await.unwrap();
+        let f = crate::queue_contract::fixture(&store).await;
+        store.mutate_queue(f.enqueue.clone()).await.unwrap();
+        let authority = crate::queue_contract::claim(&store, &f).await;
+        let prepare = crate::queue_contract::mutation(
+            &store,
+            &f,
+            crate::QueueAction::Prepare {
+                authority: authority.clone(),
+                prepared: Box::new(f.prepared.clone()),
+            },
+        )
+        .await;
+        store.mutate_queue(prepare).await.unwrap();
+        let admit = crate::queue_contract::mutation(
+            &store,
+            &f,
+            crate::QueueAction::Admit {
+                authority,
+                owner: "statement-bound".into(),
+                lease: std::time::Duration::from_secs(30),
+            },
+        )
+        .await;
+        store.mutate_queue(admit).await.unwrap();
+        let scope = Scope {
+            session: f.session.clone(),
+            queue: f.queue.clone(),
+        };
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
+        let statements = |captured: &crate::tracing_capture_tests::Capture| {
+            captured
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.name == "event" && event.target == "sqlx::query")
+                .count()
+        };
+        // Four publications. Each pass is one protocol probe, the cohort row with
+        // its origin and head, one read per interior source, and per source one
+        // audited leaf (history) or receipt (projection), plus one closing
+        // check. The former split probes issued 43 and 38 statements here.
+        let (captured, guard) = crate::tracing_capture_tests::capture();
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        let head = super::protocol::history(&mut tx, &scope, &mut proof)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(guard);
+        assert_eq!(head.sequence, 4);
+        assert_eq!(statements(&captured), 11, "history statements");
+        let (captured, guard) = crate::tracing_capture_tests::capture();
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        let head = super::protocol::projected(&mut tx, &scope, &mut proof)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(guard);
+        assert_eq!(head.sequence, 4);
+        assert_eq!(statements(&captured), 11, "projection statements");
+        tx.rollback().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
