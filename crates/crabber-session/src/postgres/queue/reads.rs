@@ -180,15 +180,27 @@ pub(super) async fn audited_leaf(
     id: &ControlId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<(QueueReceipt, Audit)>, StoreError> {
-    super::super::deletion::ensure_live(tx, session).await?;
+    // One statement replaces the tombstone check, the size probe and the
+    // bounded fetch. operation_receipts is keyed by (session_id,operation_id),
+    // so the singleton LEFT JOIN yields one row whether or not a receipt exists,
+    // and liveness, the charge and the bounds keep their former order.
     let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
-    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0) AS BIGINT) FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
+    let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=$1) AS deleted,x.* FROM (SELECT 1) singleton LEFT JOIN (SELECT true AS present,CAST(octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0) AS BIGINT) AS bytes,CASE WHEN octet_length(r.kind)<=64 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN r.kind END AS kind,CASE WHEN octet_length(r.semantic_digest)<=64 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN r.semantic_digest END AS semantic_digest,r.event_seq,CASE WHEN octet_length(r.data_json)<=16384 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN r.data_json END AS receipt,CASE WHEN octet_length(a.data_json)<=33554432 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2) x ON true")
+        .bind(&session.0).bind(&id.0).bind(allowance).fetch_one(&mut **tx).await.map_err(db)?;
+    if row.try_get::<bool, _>("deleted").map_err(db)? {
+        return Err(StoreError::SessionDeleted);
+    }
+    let bytes: Option<i64> = row.try_get("bytes").map_err(db)?;
     proof
         .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
         .map_err(|_| corrupt())?;
-
-    let Some(row) = sqlx::query("SELECT CASE WHEN octet_length(r.kind)<=64 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN r.kind END AS kind,CASE WHEN octet_length(r.semantic_digest)<=64 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN r.semantic_digest END AS semantic_digest,r.event_seq,CASE WHEN octet_length(r.data_json)<=16384 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN r.data_json END AS receipt,CASE WHEN octet_length(a.data_json)<=33554432 AND (octet_length(r.kind)+octet_length(r.semantic_digest)+octet_length(r.data_json)+COALESCE(octet_length(a.data_json),0))<=$3 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2")
-        .bind(&session.0).bind(&id.0).bind(allowance).fetch_optional(&mut **tx).await.map_err(db)? else { return Ok(None); };
+    if row
+        .try_get::<Option<bool>, _>("present")
+        .map_err(db)?
+        .is_none()
+    {
+        return Ok(None);
+    }
     if row
         .try_get::<Option<String>, _>("kind")
         .map_err(db)?
