@@ -2,6 +2,7 @@
 use super::*;
 use crate::Store;
 use crabber_core::EventKind;
+mod admission_read;
 mod foreign_seed;
 mod helpers;
 mod migration;
