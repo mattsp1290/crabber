@@ -61,7 +61,12 @@ async fn read(
         .await
         .map_err(unknown)?;
     let Some(bytes) = bytes else {
-        proof.charge(1).map_err(|_| Error::Capacity)?;
+        proof.charge(1).map_err(|error| {
+            proof.admission_failure(
+                &error,
+                crate::session_owner::preparation::PreparationCommitError::Owner(Error::Capacity),
+            )
+        })?;
         let committed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2 UNION ALL SELECT 1 FROM session_owner_publications WHERE session_id=$1 AND operation_id=$2)")
             .bind(&metadata.session_id.0).bind(&metadata.join_id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
         return if committed {
@@ -72,7 +77,12 @@ async fn read(
     };
     proof
         .charge(usize::try_from(bytes).map_err(unknown)?)
-        .map_err(|_| Error::Capacity)?;
+        .map_err(|error| {
+            proof.admission_failure(
+                &error,
+                crate::session_owner::preparation::PreparationCommitError::Owner(Error::Capacity),
+            )
+        })?;
     let raw: Option<String> = sqlx::query_scalar(RUN)
         .bind(&metadata.session_id.0)
         .bind(&metadata.join_id.0)
@@ -87,14 +97,15 @@ async fn read(
         proof,
     )
     .await
-    .map_err(|error| inspection::read_error(&error.map_domain(|_| Error::UnknownStoreOutcome)))?
-    {
+    .map_err(|error| {
+        inspection::read_error(proof, error.map_domain(|_| Error::UnknownStoreOutcome))
+    })? {
         return Err(Error::Unsupported.into());
     }
     let source =
         super::super::drivers::source::original_read(tx, &metadata.session_id, &run, proof)
             .await
-            .map_err(|error| inspection::read_error(&error))?;
+            .map_err(|error| inspection::read_error(proof, error))?;
     if source.witness.join_id()? != metadata.join_id {
         return Err(Error::UnknownStoreOutcome.into());
     }

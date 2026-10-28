@@ -169,17 +169,22 @@ impl Ledger {
         workspace: &str,
         directory: &str,
         proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(), Error> {
+    ) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
         proof
             .measure(&(session, workspace, directory))
-            .map_err(|_| Error::Capacity)?;
+            .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
         if let Some(context) = self.contexts.get(session) {
-            proof.measure(context).map_err(|_| Error::Capacity)?;
+            proof
+                .measure(context)
+                .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
             if let Some(origin) = self.audits.get(&(session.clone(), context.origin.clone())) {
-                proof.measure(origin).map_err(|_| Error::Capacity)?;
+                proof
+                    .measure(origin)
+                    .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
             }
         }
         self.context(session, workspace, directory)
+            .map_err(Into::into)
     }
     pub fn context(
         &self,

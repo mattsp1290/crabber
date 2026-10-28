@@ -14,7 +14,8 @@ pub(super) async fn verify(
                 .map_err(|error| error.into_domain_or(Error::Capacity))?;
             let audit =
                 super::super::reads::audit_with_proof(tx, &origin.session, operation, proof)
-                    .await?
+                    .await
+                    .map_err(crate::public_session::v2::proof::ReadError::owner)?
                     .ok_or(Error::UnknownStoreOutcome)?;
             origin.verify_absent(&audit)
         }

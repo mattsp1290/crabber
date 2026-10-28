@@ -45,7 +45,7 @@ impl Orchestrator {
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
         let session = session_id.clone();
-        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = false, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = false, "admission.limit_kind" = tracing::field::Empty, "admission.limit_bytes" = tracing::field::Empty, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
         let result = Box::pin(self.start_admission_inner(request, session_id, context))
             .instrument(span.clone())
             .await;
@@ -165,7 +165,7 @@ impl Orchestrator {
             .session_id
             .as_ref()
             .map_or_else(|| "none".into(), ToString::to_string);
-        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = true, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = true, "admission.limit_kind" = tracing::field::Empty, "admission.limit_bytes" = tracing::field::Empty, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
         let result = Box::pin(self.start_keyed_admission_inner(request, options, context))
             .instrument(span.clone())
             .await;
@@ -325,7 +325,7 @@ impl Orchestrator {
             .session_id
             .as_ref()
             .map_or_else(|| "none".into(), ToString::to_string);
-        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = true, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
+        let span = tracing::info_span!(target: targets::RUNTIME, parent: &self.trace_parent, "crabber.admission", "session.id" = %session, keyed = true, "admission.limit_kind" = tracing::field::Empty, "admission.limit_bytes" = tracing::field::Empty, outcome = tracing::field::Empty, "error.kind" = tracing::field::Empty, "otel.status_code" = tracing::field::Empty);
         let result = Box::pin(self.recover_retained_admission_inner(request, options, context))
             .instrument(span.clone())
             .await;

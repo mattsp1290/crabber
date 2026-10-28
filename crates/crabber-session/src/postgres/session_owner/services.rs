@@ -29,7 +29,8 @@ impl PostgresStore {
                 return Ok(SessionServiceDependencyOutcome::Replayed(Box::new(receipt)));
             }
             if reads::audit_with_proof(&mut tx, session, &source.identities()?.begin, &mut proof)
-                .await?
+                .await
+                .map_err(crate::public_session::v2::proof::ReadError::owner)?
                 .is_some()
             {
                 return Err(Error::SemanticConflict);
@@ -62,7 +63,8 @@ impl PostgresStore {
                 true,
                 &mut proof,
             ))
-            .await?
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?
             .require_resource_activation()?;
             let roster = Box::pin(reads::services_with_proof(
                 &mut tx,
@@ -70,7 +72,8 @@ impl PostgresStore {
                 &source.root.root.id,
                 &mut proof,
             ))
-            .await?;
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?;
             metadata::ensure_available(&roster, &source.generation.scope)?;
             let (receipt, authority) = Box::pin(write::register(
                 &mut tx,
@@ -132,7 +135,8 @@ impl PostgresStore {
                 true,
                 &mut proof,
             ))
-            .await?
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?
             .require_resource_activation()?;
             let id = request.source.identities()?.owner;
             super::public::preflight(&mut tx, session, &id.0, &mut proof)

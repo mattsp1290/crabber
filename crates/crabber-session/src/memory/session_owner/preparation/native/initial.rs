@@ -18,7 +18,7 @@ impl MemoryStore {
 
         read_proof
             .measure(&(&bound.request, &bound.binding))
-            .map_err(|_| crate::StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, crate::StoreError::Conflict))?;
         bound.binding.validate(&bound.request)?;
         let captured = crate::memory::admission::admit_transaction_captured(
             state,
@@ -61,7 +61,7 @@ impl MemoryStore {
 
         read_proof
             .measure(&(&bound.keyed, &bound.binding))
-            .map_err(|_| crate::StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, crate::StoreError::Conflict))?;
         let outcome = match crate::memory::admission::admit_keyed_captured(
             state,
             &bound.keyed,
@@ -104,5 +104,65 @@ impl MemoryStore {
             }
         };
         Ok(PreparationCompletion::Keyed(outcome))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_owner::preparation::{JoinedPreparation, PreparedOperation};
+    use crate::session_owner::preparation_contract::resources;
+
+    async fn original(store: &MemoryStore, keyed: bool) -> JoinedPreparation {
+        if keyed {
+            let (root, bound) = resources::declaration::setup(store).await;
+            resources::initial_driver_observation(
+                store,
+                root,
+                PreparedOperation::AdmitKeyed(Box::new(bound)),
+            )
+            .await
+        } else {
+            resources::initial_unkeyed_observation(store).await
+        }
+    }
+
+    #[tokio::test]
+    async fn native_initial_body_preserves_its_own_carrier_refusal() {
+        for keyed in [false, true] {
+            let store = MemoryStore::new();
+            let original = original(&store, keyed).await;
+            let grant = original.observed_grant();
+            let mut state = store.state.lock().unwrap();
+            let session = &grant.original_reservation().owner.binding.session_id;
+            let revision = crate::memory::session_owner::revision(&state, session);
+            let verified = state
+                .session_owners
+                .verify_preparation_with_proof(
+                    grant,
+                    revision,
+                    store.clock.now(),
+                    &mut Proof::legacy(),
+                )
+                .unwrap();
+            let mut bounded = Proof::bounded(0);
+            let result = match original.observed_operation() {
+                PreparedOperation::Admit(bound) => {
+                    store.admit_prepared_bound(&mut state, bound, &verified, &mut bounded)
+                }
+                PreparedOperation::AdmitKeyed(bound) => {
+                    store.admit_prepared_keyed(&mut state, bound, &verified, &mut bounded)
+                }
+                _ => unreachable!(),
+            };
+            let PreparationCommitError::Store(error) = result.err().unwrap() else {
+                panic!("typed native body limit");
+            };
+            assert_eq!(error.admission_limit().unwrap().limit_bytes(), Some(0));
+            assert_eq!(
+                crate::memory::session_owner::revision(&state, session),
+                revision
+            );
+        }
     }
 }

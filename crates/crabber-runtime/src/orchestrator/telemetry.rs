@@ -106,6 +106,18 @@ pub(super) fn record_admission_result(
     span: &tracing::Span,
     result: Result<&'static str, &RuntimeError>,
 ) {
+    if let Err(error) = result
+        && let Some(limit) = error.admission_limit()
+    {
+        span.record("admission.limit_kind", limit.kind().as_str());
+        if let Some(bytes) = limit
+            .limit_bytes()
+            .and_then(|bytes| i64::try_from(bytes).ok())
+            .filter(|bytes| *bytes > 0)
+        {
+            span.record("admission.limit_bytes", bytes);
+        }
+    }
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(
@@ -159,3 +171,6 @@ pub(super) fn provider_error_kind(error: &crabber_providers::ProviderError) -> &
         ProviderErrorKind::Canceled => "provider_canceled",
     }
 }
+
+#[cfg(test)]
+mod admission_limit_tests;

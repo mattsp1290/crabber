@@ -343,6 +343,16 @@ fn incomplete(
 }
 
 impl RuntimeError {
+    /// Admission proof metadata through any retained preparation wrappers.
+    /// This does not establish rollback or successful cleanup.
+    #[must_use]
+    pub fn admission_limit(&self) -> Option<&crabber_core::AdmissionLimit> {
+        match self.operation_error() {
+            Self::Store(error) => error.admission_limit(),
+            _ => None,
+        }
+    }
+
     /// Native/business classification retained under preparation correlation.
     #[must_use]
     pub fn operation_error(&self) -> &Self {

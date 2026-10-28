@@ -72,7 +72,9 @@ impl super::super::PostgresStore {
             PreparedOperation::AdmitKeyed(bound) => {
                 read_proof
                     .measure(&(&bound.keyed, &bound.binding))
-                    .map_err(|_| crate::StoreError::Conflict)?;
+                    .map_err(|error| {
+                        read_proof.admission_failure(&error, crate::StoreError::Conflict)
+                    })?;
                 let outcome=match self.admit_keyed_captured(tx,&bound.keyed,guard,crate::native_enrollment::caller::initial::Dispatch::raw(crate::native_enrollment::caller::Caller::Raw),read_proof).await?{
                     crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(receipt)=>KeyedAdmitOutcome::Replayed(receipt),
                     crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started{receipt,admitted}=>{
@@ -101,7 +103,7 @@ impl super::super::PostgresStore {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         read_proof
             .measure(&(&bound.request, &bound.binding))
-            .map_err(|_| crate::StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, crate::StoreError::Conflict))?;
         bound.binding.validate(&bound.request)?;
         let captured = self
             .admit_transaction_captured(

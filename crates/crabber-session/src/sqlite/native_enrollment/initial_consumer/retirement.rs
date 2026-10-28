@@ -58,7 +58,7 @@ async fn verify_native(
                 proof,
             )
             .await
-            .map_err(owner_failure)?;
+            .map_err(|error| owner_failure(error.owner()))?;
             if current != actual.record {
                 return Err(unknown("retired Driver current/source mismatch"));
             }

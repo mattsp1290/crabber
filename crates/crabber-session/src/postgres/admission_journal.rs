@@ -50,10 +50,10 @@ pub(super) async fn init(
 ) -> Result<(), StoreError> {
     let issuance = issuance_with_proof(tx, &run.session_id, &run.id, Some(1), proof)
         .await
-        .map_err(|_| invalid())?;
+        .map_err(|error| proof.admission_read(error, |_| invalid(), invalid()))?;
     issuance.verify(run).map_err(|_| invalid())?;
     let source = admission_journal::init_with_proof(record, &issuance, proof)
-        .map_err(|error| error.into_domain_or(invalid()))?;
+        .map_err(|error| proof.admission_read(error, |error| error, invalid()))?;
     insert(tx, source).await
 }
 /// None denotes an authenticated legacy cohort, never missing new evidence.

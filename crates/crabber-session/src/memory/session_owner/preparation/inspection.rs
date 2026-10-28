@@ -43,26 +43,37 @@ fn read(
     let metadata = grant.reconciliation()?;
     let key = (metadata.session_id.clone(), metadata.join_id);
     let Some(run) = state.preparation_admission_joins.get(&key) else {
-        proof.charge(1).map_err(|_| Error::Capacity)?;
+        proof.charge(1).map_err(|error| {
+            proof.admission_failure(
+                &error,
+                crate::session_owner::preparation::PreparationCommitError::Owner(Error::Capacity),
+            )
+        })?;
         return if state.session_owners.source_audit(&key.0, &key.1).is_some() {
             Err(Error::UnknownStoreOutcome.into())
         } else {
             Ok(None)
         };
     };
-    proof.measure(&(&key, run)).map_err(|_| Error::Capacity)?;
+    proof.measure(&(&key, run)).map_err(|error| {
+        proof.admission_failure(
+            &error,
+            crate::session_owner::preparation::PreparationCommitError::Owner(Error::Capacity),
+        )
+    })?;
     if !state.preparation_admissions.contains_key(run) {
         return Err(Error::UnknownStoreOutcome.into());
     }
     let (session, initial, witness, sources) =
         super::super::drivers::sources_read(state, run, proof)
-            .map_err(|error| inspection::read_error(&error))?;
+            .map_err(|error| inspection::read_error(proof, error))?;
     let protected =
         crate::memory::native_parent::source_protocol::original(state, &key.0, run, 1, proof)
             .map_err(|failure| {
-                inspection::read_error(&crate::public_session::v2::proof::ReadError::Budget(
-                    failure,
-                ))
+                inspection::read_error(
+                    proof,
+                    crate::public_session::v2::proof::ReadError::Budget(failure),
+                )
             })?
             .ok_or(Error::UnknownStoreOutcome)?;
     if !state

@@ -6,26 +6,23 @@ pub(in super::super) async fn services_with_proof(
     session: &SessionId,
     root: &SessionOwnerId,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Vec<Record>, Error> {
+) -> Result<Vec<Record>, crate::public_session::v2::proof::ReadError<Error>> {
     let ids = service_ids_with_proof(tx, session, root, proof).await?;
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
         super::super::public::preflight(tx, session, &id.0, proof)
             .await
-            .map_err(|error| match error {
-                crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
-                crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
-            })?;
+            .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
         super::super::protocol::require(tx, session, &id, proof)
             .await
-            .map_err(|error| error.into_domain_or(Error::Capacity))?;
+            .map_err(crate::public_session::v2::proof::ReadError::capacity_fallback)?;
         let record = super::current(tx, session, &id).await?;
         if record
             .service
             .as_ref()
             .is_none_or(|link| link.root.root.id != *root || link.root.session_id != *session)
         {
-            return Err(Error::UnknownStoreOutcome);
+            return Err(Error::UnknownStoreOutcome.into());
         }
         records.push(record);
     }
@@ -65,7 +62,7 @@ pub(in super::super) async fn service_ids_with_proof(
     session: &SessionId,
     root: &SessionOwnerId,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Vec<SessionOwnerId>, Error> {
+) -> Result<Vec<SessionOwnerId>, crate::public_session::v2::proof::ReadError<Error>> {
     let costs = QUERY.replacen(
         "SELECT CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id",
         "SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes",
@@ -78,6 +75,6 @@ pub(in super::super) async fn service_ids_with_proof(
         proof,
     )
     .await
-    .map_err(|_| Error::Capacity)?;
-    service_ids(tx, session, root).await
+    .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
+    service_ids(tx, session, root).await.map_err(Into::into)
 }

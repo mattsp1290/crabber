@@ -1,4 +1,6 @@
 //! Capture facade-only telemetry without credentials or global subscribers.
+#[path = "tracing_spans/admission_limits.rs"]
+mod admission_limits;
 use super::*;
 use tracing::{
     Instrument, Subscriber,

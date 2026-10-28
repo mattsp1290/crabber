@@ -20,8 +20,10 @@ async fn latest_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Option<RunIssuance>, Error> {
-    proof.charge(8).map_err(|_| Error)?;
+) -> Result<Option<RunIssuance>, crate::public_session::v2::proof::ReadError<Error>> {
+    proof
+        .charge(8)
+        .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
     let sequence: Option<i64> = sqlx::query_scalar(
         "SELECT MAX(sequence) FROM native_run_issuances WHERE session_id=$1 AND run_id=$2",
     )
@@ -32,15 +34,16 @@ async fn latest_with_proof(
     .map_err(|_| Error)?;
     match sequence {
         None => Ok(None),
-        Some(sequence) => super::source_protocol::original(
-            tx,
-            &run.session_id,
-            &run.id,
-            u64::try_from(sequence).map_err(|_| Error)?,
-            proof,
-        )
-        .await
-        .map_err(|_| Error),
+        Some(sequence) => {
+            super::source_protocol::original(
+                tx,
+                &run.session_id,
+                &run.id,
+                u64::try_from(sequence).map_err(|_| Error)?,
+                proof,
+            )
+            .await
+        }
     }
 }
 async fn change_inner(
@@ -50,12 +53,17 @@ async fn change_inner(
     completion: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
     capture: crate::native_enrollment::caller::initial::Capture,
-) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
-    proof.measure(&(run, completion)).map_err(|_| Error)?;
+) -> Result<
+    crate::native_enrollment::caller::initial::RunPublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    proof
+        .measure(&(run, completion))
+        .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
     let previous = if creation {
         None
     } else {
-        super::super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(claim_token)+octet_length(status) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2").bind(&run.session_id.0).bind(&run.id.0),proof).await.map_err(|_|Error)?;
+        super::super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(claim_token)+octet_length(status) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2").bind(&run.session_id.0).bind(&run.id.0),proof).await.map_err(crate::public_session::v2::proof::ReadError::Budget)?;
         let row=sqlx::query("SELECT CASE WHEN octet_length(claim_token)<=512 THEN claim_token END AS token,CASE WHEN octet_length(status)<=32 THEN status END AS status FROM runs WHERE session_id=$1 AND id=$2")
             .bind(&run.session_id.0).bind(&run.id.0).fetch_one(&mut **tx).await.map_err(|_|Error)?;
         let token = row
@@ -72,30 +80,24 @@ async fn change_inner(
     };
     let latest = latest_with_proof(tx, run, proof).await?;
     if let Some(previous) = previous.as_ref() {
-        super::source_protocol::verify_previous(tx, previous, latest.as_ref(), proof)
-            .await
-            .map_err(|_| Error)?;
+        super::source_protocol::verify_previous(tx, previous, latest.as_ref(), proof).await?;
     }
     if let Some(mut value) =
         crate::native_parent::advance(previous.as_ref(), RunState::from_run(run)?, latest.as_ref())?
     {
         if let Some(source) = completion {
             if latest.is_none() {
-                return Err(Error);
+                return Err(Error.into());
             }
             value = value.completed(previous.as_ref().ok_or(Error)?, source.clone())?;
         }
         value.validate()?;
         let captured = match capture {
             crate::native_enrollment::caller::initial::Capture::Original => {
-                super::source_protocol::append_captured(tx, &value, creation, proof)
-                    .await
-                    .map_err(|_| Error)?
+                super::source_protocol::append_captured(tx, &value, creation, proof).await?
             }
             crate::native_enrollment::caller::initial::Capture::None => {
-                super::source_protocol::append(tx, &value, creation, proof)
-                    .await
-                    .map_err(|_| Error)?;
+                super::source_protocol::append(tx, &value, creation, proof).await?;
                 crate::native_enrollment::caller::initial::SourcePublication::default()
             }
         };
@@ -109,7 +111,7 @@ async fn change_inner(
             updated: captured.updated,
         });
     } else if completion.is_some() {
-        return Err(Error);
+        return Err(Error.into());
     }
     Ok(crate::native_enrollment::caller::initial::RunPublication {
         sequence: None,
@@ -132,7 +134,13 @@ pub(in super::super) async fn initial_with_proof(
         crate::native_enrollment::caller::initial::Capture::Original,
     )
     .await
-    .map_err(|_| crate::StoreError::Conflict)?
+    .map_err(|error| {
+        proof.admission_read(
+            error,
+            |_| crate::StoreError::Conflict,
+            crate::StoreError::Conflict,
+        )
+    })?
     .first
     .ok_or(crate::StoreError::Conflict)
 }
@@ -147,7 +155,6 @@ pub(in super::super) async fn change_with_proof(
     super::record_run_captured_with_proof(tx, run, creation, source, proof)
         .await
         .map(|_| ())
-        .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
 }
 
 pub(in super::super) async fn change_captured_with_proof(
@@ -167,7 +174,13 @@ pub(in super::super) async fn change_captured_with_proof(
     )
     .await
     .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
-    .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
+    .map_err(|error| {
+        proof.admission_read(
+            error,
+            |_| crate::StoreError::Validation("native run source evidence unavailable".into()),
+            crate::StoreError::Validation("native run source evidence unavailable".into()),
+        )
+    })
 }
 
 pub(in super::super) async fn publication_with_proof(
@@ -180,5 +193,11 @@ pub(in super::super) async fn publication_with_proof(
 ) -> Result<crate::native_enrollment::caller::initial::RunPublication, crate::StoreError> {
     change_inner(tx, run, creation, source, proof, capture)
         .await
-        .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
+        .map_err(|error| {
+            proof.admission_read(
+                error,
+                |_| crate::StoreError::Validation("native run source evidence unavailable".into()),
+                crate::StoreError::Validation("native run source evidence unavailable".into()),
+            )
+        })
 }

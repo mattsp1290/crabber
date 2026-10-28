@@ -197,8 +197,13 @@ pub(super) fn record_initial_run_with_birth(
     run: &Run,
     birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
-    proof.measure(run).map_err(|_| Error)?;
+) -> Result<
+    crate::native_enrollment::caller::initial::FirstPublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    proof
+        .measure(run)
+        .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
     record_run_states_output_with_birth(
         state,
         None,
@@ -209,7 +214,7 @@ pub(super) fn record_initial_run_with_birth(
         birth,
     )?
     .first
-    .ok_or(Error)
+    .ok_or_else(|| Error.into())
 }
 pub(super) fn record_owned_admission_with_birth(
     state: &mut State,
@@ -217,8 +222,13 @@ pub(super) fn record_owned_admission_with_birth(
     witness: crate::session_owner::preparation::admission::Witness,
     birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
-    proof.measure(&witness).map_err(|_| Error)?;
+) -> Result<
+    crate::native_enrollment::caller::initial::FirstPublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    proof
+        .measure(&witness)
+        .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
     let issuance = witness.initial_issuance(run).map_err(|_| Error)?;
     let key = (run.session_id.clone(), run.id.clone(), 1);
     let join = (
@@ -232,12 +242,12 @@ pub(super) fn record_owned_admission_with_birth(
             .keys()
             .any(|(_, id, _)| id == &run.id)
     {
-        return Err(Error);
+        return Err(Error.into());
     }
-    let first = source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)
-        .map_err(|_| Error)?
-        .first
-        .ok_or(Error)?;
+    let first =
+        source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)?
+            .first
+            .ok_or(Error)?;
     state
         .preparation_admission_joins
         .insert(join, run.id.clone());
@@ -346,6 +356,7 @@ fn record_run_states_output(
         capture,
         crate::native_enrollment::pending_initial::BirthDecision::Raw,
     )
+    .map_err(|error| error.into_domain_or(Error))
 }
 fn record_run_states_output_with_birth(
     state: &mut State,
@@ -355,7 +366,10 @@ fn record_run_states_output_with_birth(
     proof: &mut crate::public_session::v2::proof::Proof,
     capture: crate::native_enrollment::caller::initial::Capture,
     birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
-) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+) -> Result<
+    crate::native_enrollment::caller::initial::RunPublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
     crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
     let latest = state
         .native_run_issuances
@@ -369,12 +383,14 @@ fn record_run_states_output_with_birth(
         )
         .next_back()
         .map(|(_, value)| value);
-    proof.measure(&latest).map_err(|_| Error)?;
+    proof
+        .measure(&latest)
+        .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
     if let Some(previous) = previous {
         source_protocol::verify_previous(state, previous, latest, proof)?;
     }
     if completion.is_some() && latest.is_none() {
-        return Err(Error);
+        return Err(Error.into());
     }
     if let Some(mut issuance) = crate::native_parent::advance(previous, next, latest)? {
         if let Some(source) = completion {
@@ -386,12 +402,11 @@ fn record_run_states_output_with_birth(
             issuance.sequence,
         );
         if state.native_run_issuances.contains_key(&key) {
-            return Err(Error);
+            return Err(Error.into());
         }
         let source = match capture {
             crate::native_enrollment::caller::initial::Capture::Original if previous.is_none() => {
-                source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)
-                    .map_err(|_| Error)?
+                source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)?
             }
             crate::native_enrollment::caller::initial::Capture::Original => {
                 source_protocol::append_captured_with_proof(
@@ -399,12 +414,10 @@ fn record_run_states_output_with_birth(
                     &issuance,
                     previous.is_none(),
                     proof,
-                )
-                .map_err(|_| Error)?
+                )?
             }
             crate::native_enrollment::caller::initial::Capture::None => {
-                source_protocol::append_with_proof(state, &issuance, previous.is_none(), proof)
-                    .map_err(|_| Error)?;
+                source_protocol::append_with_proof(state, &issuance, previous.is_none(), proof)?;
                 crate::native_enrollment::caller::initial::SourcePublication::default()
             }
         };
@@ -416,7 +429,7 @@ fn record_run_states_output_with_birth(
             updated: source.updated,
         });
     } else if completion.is_some() {
-        return Err(Error);
+        return Err(Error.into());
     }
     Ok(crate::native_enrollment::caller::initial::RunPublication {
         sequence: None,

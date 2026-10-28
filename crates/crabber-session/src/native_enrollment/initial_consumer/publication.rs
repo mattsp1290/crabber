@@ -15,6 +15,11 @@ pub(crate) fn failure(error: &Failure) -> PreparationCommitError {
         Failure::Error(_) => Error::UnknownStoreOutcome.into(),
     }
 }
+pub(crate) fn admission_failure(proof: &Proof, error: &Failure) -> PreparationCommitError {
+    let fallback = failure(error);
+    proof.admission_failure(error, fallback)
+}
+
 fn checked_prefix(
     prefix: &HistoricalInitialPrefix<'_>,
     expected: &Correlation,
@@ -94,7 +99,7 @@ pub(crate) fn prepare_fixed_anchor(
 ) -> Result<RecordDelta, PreparationCommitError> {
     policy
         .validate(opened.correlation(), proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     prepare_anchor_policy(prefix, opened, view, Some(policy), proof)
 }
 fn prepare_anchor_policy(
@@ -108,7 +113,7 @@ fn prepare_anchor_policy(
     checked_prefix(prefix, expected, proof)?;
     if !matches!(
         view.verify(expected, proof)
-            .map_err(|error| failure(&error))?,
+            .map_err(|error| admission_failure(proof, &error))?,
         Bundle::Absent
     ) {
         return Err(Error::Unsupported.into());
@@ -116,7 +121,7 @@ fn prepare_anchor_policy(
     if opened.epoch.kind != birth::EpochKind::Opened {
         return Err(Error::Unsupported.into());
     }
-    proof.measure(opened).map_err(|error| failure(&error))?;
+    proof.measure(opened).map_err(|error| admission_failure(proof, &error))?;
     let origin = Origin::Opened(Anchor {
         version: if policy.is_some() { 2 } else { 1 },
         original_policy: policy
@@ -125,25 +130,25 @@ fn prepare_anchor_policy(
                 copied(p, proof).map(Box::new)
             })
             .transpose()
-            .map_err(|error| failure(&error))?,
-        correlation: copied(expected, proof).map_err(|error| failure(&error))?,
+            .map_err(|error| admission_failure(proof, &error))?,
+        correlation: copied(expected, proof).map_err(|error| admission_failure(proof, &error))?,
         birth_open_digest: digest(&(
             "crabber.pending-initial.open.v1",
             &opened.epoch,
             &opened.slot,
             &opened.registered,
         ))
-        .map_err(|error| failure(&error))?,
+        .map_err(|error| admission_failure(proof, &error))?,
     });
-    proof.measure(&origin).map_err(|error| failure(&error))?;
+    proof.measure(&origin).map_err(|error| admission_failure(proof, &error))?;
     let (publication, head) = append(
         view,
         &origin,
         PublicationKind::Opened,
-        origin.digest().map_err(|error| failure(&error))?,
+        origin.digest().map_err(|error| admission_failure(proof, &error))?,
         proof,
     )
-    .map_err(|error| failure(&error))?;
+    .map_err(|error| admission_failure(proof, &error))?;
     Ok(delta(Some(origin), None, publication, head))
 }
 pub(crate) fn link_initial(
@@ -153,7 +158,7 @@ pub(crate) fn link_initial(
     proof: &mut Proof,
 ) -> Result<RecordDelta, PreparationCommitError> {
     view.verify_birth(birth_view, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     let origin = view.origin.ok_or(Error::Unsupported)?;
     if !matches!(origin, Origin::Opened(_))
         || origin.correlation() != actual.correlation()
@@ -168,7 +173,7 @@ pub(crate) fn link_initial(
             &actual.first.source,
             &actual.assignment,
         ))
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     actual
         .first
         .source
@@ -182,21 +187,21 @@ pub(crate) fn link_initial(
     }
     let assignment = AssignmentLink {
         version: 1,
-        correlation: copied(actual.correlation(), proof).map_err(|error| failure(&error))?,
-        anchor_digest: origin.digest().map_err(|error| failure(&error))?,
-        assignment: copied(&actual.assignment, proof).map_err(|error| failure(&error))?,
+        correlation: copied(actual.correlation(), proof).map_err(|error| admission_failure(proof, &error))?,
+        anchor_digest: origin.digest().map_err(|error| admission_failure(proof, &error))?,
+        assignment: copied(&actual.assignment, proof).map_err(|error| admission_failure(proof, &error))?,
     };
     proof
         .measure(&assignment)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     let (publication, head) = append(
         view,
         origin,
         PublicationKind::Assigned,
-        assignment.digest().map_err(|error| failure(&error))?,
+        assignment.digest().map_err(|error| admission_failure(proof, &error))?,
         proof,
     )
-    .map_err(|error| failure(&error))?;
+    .map_err(|error| admission_failure(proof, &error))?;
     Ok(delta(None, Some(assignment), publication, head))
 }
 pub(crate) enum CallDecision<'a, 'records> {
@@ -212,7 +217,7 @@ pub(crate) fn prepare_call<'a, 'records>(
     proof: &mut Proof,
 ) -> Result<CallDecision<'a, 'records>, PreparationCommitError> {
     view.verify_birth(birth_view, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     let origin = view.origin.ok_or(Error::Unsupported)?;
     if origin.correlation() != expected
         || !matches!(origin, Origin::Opened(_))
@@ -236,7 +241,7 @@ pub(crate) fn prepare_call<'a, 'records>(
         }
         return Ok(CallDecision::Replayed(result));
     }
-    let results = ResultIndex::new(&view.results, proof).map_err(|error| failure(&error))?;
+    let results = ResultIndex::new(&view.results, proof).map_err(|error| admission_failure(proof, &error))?;
     let mut seen = Vec::new();
     for p in view
         .publications
@@ -246,7 +251,7 @@ pub(crate) fn prepare_call<'a, 'records>(
         let (_, r) = results.get(&p.original_digest).ok_or(Error::UnknownStoreOutcome)?;
         proof
             .measure(&p.original_digest)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| admission_failure(proof, &error))?;
         seen.push((r.original.kind(), p.original_digest.clone()));
     }
     verify_order(
@@ -254,22 +259,22 @@ pub(crate) fn prepare_call<'a, 'records>(
         &seen,
         assignment.assignment.keyed_receipt_digest.is_some(),
     )
-    .map_err(|error| failure(&error))?;
+    .map_err(|error| admission_failure(proof, &error))?;
     let registration = RegisteredCall {
         version: 1,
-        correlation: copied(expected, proof).map_err(|error| failure(&error))?,
-        call: copied(call_id, proof).map_err(|error| failure(&error))?,
-        anchor_digest: origin.digest().map_err(|error| failure(&error))?,
+        correlation: copied(expected, proof).map_err(|error| admission_failure(proof, &error))?,
+        call: copied(call_id, proof).map_err(|error| admission_failure(proof, &error))?,
+        anchor_digest: origin.digest().map_err(|error| admission_failure(proof, &error))?,
         kind,
         input_digest,
         prerequisites: seen.into_iter().map(|(_, digest)| digest).collect(),
     };
     proof
         .measure(&registration)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     proof
         .charge(std::mem::size_of::<VerifiedConsumerCall<'_, '_>>())
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     Ok(CallDecision::Fresh(Box::new(VerifiedConsumerCall {
         selected: view,
         registration,
@@ -289,54 +294,54 @@ pub(crate) fn capture_actual(
             assignment.run_id(),
             proof,
         )
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     if original.kind() != verified.kind()
-        || original.input_digest().map_err(|error| failure(&error))?
+        || original.input_digest().map_err(|error| admission_failure(proof, &error))?
             != verified.registration.input_digest
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
     let result = CallResult {
         version: 1,
-        correlation: copied(verified.correlation(), proof).map_err(|error| failure(&error))?,
-        call: copied(&verified.registration.call, proof).map_err(|error| failure(&error))?,
+        correlation: copied(verified.correlation(), proof).map_err(|error| admission_failure(proof, &error))?,
+        call: copied(&verified.registration.call, proof).map_err(|error| admission_failure(proof, &error))?,
         registration_digest: verified
             .registration
             .digest()
-            .map_err(|error| failure(&error))?,
+            .map_err(|error| admission_failure(proof, &error))?,
         original,
     };
-    proof.measure(&result).map_err(|error| failure(&error))?;
-    let result_digest = result.digest().map_err(|error| failure(&error))?;
+    proof.measure(&result).map_err(|error| admission_failure(proof, &error))?;
+    let result_digest = result.digest().map_err(|error| admission_failure(proof, &error))?;
     let mut reverse = Vec::new();
     let mut reverse_digests = Vec::new();
     for (kind, member_key) in result
         .original
         .reverse_keys()
-        .map_err(|error| failure(&error))?
+        .map_err(|error| admission_failure(proof, &error))?
     {
         let row = ReverseMembership {
             version: 1,
-            correlation: copied(result.correlation(), proof).map_err(|error| failure(&error))?,
-            call: copied(&result.call, proof).map_err(|error| failure(&error))?,
+            correlation: copied(result.correlation(), proof).map_err(|error| admission_failure(proof, &error))?,
+            call: copied(&result.call, proof).map_err(|error| admission_failure(proof, &error))?,
             kind,
             member_key,
-            result_digest: copied(&result_digest, proof).map_err(|error| failure(&error))?,
+            result_digest: copied(&result_digest, proof).map_err(|error| admission_failure(proof, &error))?,
         };
-        proof.measure(&row).map_err(|error| failure(&error))?;
-        reverse_digests.push(row.digest().map_err(|error| failure(&error))?);
+        proof.measure(&row).map_err(|error| admission_failure(proof, &error))?;
+        reverse_digests.push(row.digest().map_err(|error| admission_failure(proof, &error))?);
         reverse.push(row);
     }
     let roster = RosterEntry {
         version: 1,
-        correlation: copied(result.correlation(), proof).map_err(|error| failure(&error))?,
-        call: copied(&result.call, proof).map_err(|error| failure(&error))?,
+        correlation: copied(result.correlation(), proof).map_err(|error| admission_failure(proof, &error))?,
+        call: copied(&result.call, proof).map_err(|error| admission_failure(proof, &error))?,
         registration_digest: copied(&result.registration_digest, proof)
-            .map_err(|error| failure(&error))?,
-        result_digest: copied(&result_digest, proof).map_err(|error| failure(&error))?,
+            .map_err(|error| admission_failure(proof, &error))?,
+        result_digest: copied(&result_digest, proof).map_err(|error| admission_failure(proof, &error))?,
         reverse_digests,
     };
-    proof.measure(&roster).map_err(|error| failure(&error))?;
+    proof.measure(&roster).map_err(|error| admission_failure(proof, &error))?;
     let (publication, head) = append(
         view,
         origin,
@@ -344,7 +349,7 @@ pub(crate) fn capture_actual(
         result_digest,
         proof,
     )
-    .map_err(|error| failure(&error))?;
+    .map_err(|error| admission_failure(proof, &error))?;
     Ok(RecordDelta {
         origin: None,
         assignment: None,
@@ -422,28 +427,28 @@ pub(crate) fn prepare_paired_policy_close(
             delta: birth_delta,
         } => {
             let birth_close_digest = digest(&("crabber.pending-initial.close.v1", &record))
-                .map_err(|error| failure(&error))?;
+                .map_err(|error| admission_failure(proof, &error))?;
             let (consumer, kind, original_digest) = if let Some(origin) = view.origin {
                 let close = ConsumerClose {
                     version: if policy_terminal.is_some() { 3 } else { 2 },
                     policy_terminal: policy_terminal
                         .map(|p| copied(p, proof))
                         .transpose()
-                        .map_err(|error| failure(&error))?,
-                    retirement: copied(retirement, proof).map_err(|error| failure(&error))?,
+                        .map_err(|error| admission_failure(proof, &error))?,
+                    retirement: copied(retirement, proof).map_err(|error| admission_failure(proof, &error))?,
                     disposition,
-                    correlation: copied(expected, proof).map_err(|error| failure(&error))?,
-                    anchor_digest: origin.digest().map_err(|error| failure(&error))?,
+                    correlation: copied(expected, proof).map_err(|error| admission_failure(proof, &error))?,
+                    anchor_digest: origin.digest().map_err(|error| admission_failure(proof, &error))?,
                     birth_close_digest,
                     prior_head_digest: copied(
                         &view.head.ok_or(Error::UnknownStoreOutcome)?.digest,
                         proof,
                     )
-                    .map_err(|error| failure(&error))?,
-                    roster_digest: roster_digest(&view.roster).map_err(|error| failure(&error))?,
+                    .map_err(|error| admission_failure(proof, &error))?,
+                    roster_digest: roster_digest(&view.roster).map_err(|error| admission_failure(proof, &error))?,
                 };
-                proof.measure(&close).map_err(|error| failure(&error))?;
-                let d = close.digest().map_err(|error| failure(&error))?;
+                proof.measure(&close).map_err(|error| admission_failure(proof, &error))?;
+                let d = close.digest().map_err(|error| admission_failure(proof, &error))?;
                 (Some(close), PublicationKind::Closed, d)
             } else {
                 (
@@ -456,11 +461,11 @@ pub(crate) fn prepare_paired_policy_close(
             let new_origin = if view.origin.is_none() {
                 Some(Origin::NoOpenedMember(NoOpenedMember {
                     version: 2,
-                    retirement: copied(retirement, proof).map_err(|error| failure(&error))?,
+                    retirement: copied(retirement, proof).map_err(|error| admission_failure(proof, &error))?,
                     disposition,
-                    correlation: copied(expected, proof).map_err(|error| failure(&error))?,
+                    correlation: copied(expected, proof).map_err(|error| admission_failure(proof, &error))?,
                     birth_close_digest: digest(&("crabber.pending-initial.close.v1", &record))
-                        .map_err(|error| failure(&error))?,
+                        .map_err(|error| admission_failure(proof, &error))?,
                 }))
             } else {
                 None
@@ -469,14 +474,14 @@ pub(crate) fn prepare_paired_policy_close(
                 .as_ref()
                 .or(view.origin)
                 .ok_or(Error::UnknownStoreOutcome)?;
-            proof.measure(origin).map_err(|error| failure(&error))?;
+            proof.measure(origin).map_err(|error| admission_failure(proof, &error))?;
             let original_digest = if new_origin.is_some() {
-                origin.digest().map_err(|error| failure(&error))?
+                origin.digest().map_err(|error| admission_failure(proof, &error))?
             } else {
                 original_digest
             };
             let (publication, head) = append(view, origin, kind, original_digest, proof)
-                .map_err(|error| failure(&error))?;
+                .map_err(|error| admission_failure(proof, &error))?;
             let mut consumer_delta = delta(new_origin, None, publication, head);
             consumer_delta.close = consumer;
             Ok(PairedCloseDecision::Publish(Box::new(PairedCloseDelta {
@@ -487,13 +492,13 @@ pub(crate) fn prepare_paired_policy_close(
         }
         birth::CloseDecision::Replayed(record) => {
             view.verify_birth(birth_view, proof)
-                .map_err(|error| failure(&error))?;
+                .map_err(|error| admission_failure(proof, &error))?;
             if matches!(verified, Bundle::Absent) {
                 return Err(Error::UnknownStoreOutcome.into());
             }
             proof
                 .charge(std::mem::size_of::<birth::CloseRecord>())
-                .map_err(|error| failure(&error))?;
+                .map_err(|error| admission_failure(proof, &error))?;
             Ok(PairedCloseDecision::Replayed(Box::new(record)))
         }
         birth::CloseDecision::Conflict => Err(Error::SemanticConflict.into()),
@@ -515,16 +520,16 @@ fn verify_close_members(
 ) -> Result<Bundle, PreparationCommitError> {
     let verified = view
         .verify(expected, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     proof
         .measure(&local_calls)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     if view.calls.iter().any(|r| !local_calls.contains(&r.call)) {
         return Err(Error::UnknownStoreOutcome.into());
     }
     if !matches!(verified, Bundle::Absent) {
         view.verify_birth(birth_view, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| admission_failure(proof, &error))?;
     }
     if matches!(verified, Bundle::Absent) && !birth_view.empty() {
         return Err(Error::Unsupported.into());
@@ -532,11 +537,11 @@ fn verify_close_members(
     let (retirement, disposition) = retirement;
     retirement
         .verify(view, expected, disposition, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| admission_failure(proof, &error))?;
     if let Some((saved, actual_disposition)) = view.retirement()
         && (actual_disposition != disposition
-            || digest(saved).map_err(|error| failure(&error))?
-                != digest(retirement).map_err(|error| failure(&error))?)
+            || digest(saved).map_err(|error| admission_failure(proof, &error))?
+                != digest(retirement).map_err(|error| admission_failure(proof, &error))?)
     {
         return Err(Error::SemanticConflict.into());
     }
@@ -553,10 +558,10 @@ fn verify_policy_tail(
         (Some(original), Some(terminal)) => {
             terminal
                 .verify(original, proof)
-                .map_err(|error| failure(&error))?;
+                .map_err(|error| admission_failure(proof, &error))?;
             if let Some(saved) = view.close.and_then(|close| close.policy_terminal.as_ref())
-                && digest(saved).map_err(|error| failure(&error))?
-                    != digest(terminal).map_err(|error| failure(&error))?
+                && digest(saved).map_err(|error| admission_failure(proof, &error))?
+                    != digest(terminal).map_err(|error| admission_failure(proof, &error))?
             {
                 return Err(Error::SemanticConflict.into());
             }

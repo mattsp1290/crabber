@@ -14,18 +14,18 @@ pub(in crate::sqlite) async fn check_birth(
 ) -> Result<storage::Selected, PreparationCommitError> {
     let selected = storage::load(tx, parts.expected, parts.proof)
         .await
-        .map_err(|error| consumer::failure(&error))?;
+        .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     let view = selected
         .selection(parts.proof)
-        .map_err(|error| consumer::failure(&error))?;
+        .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     view.verify(parts.expected, parts.proof)
-        .map_err(|error| consumer::failure(&error))?;
+        .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     super::members::verify(tx, &view, parts.proof)
         .await
-        .map_err(|error| consumer::failure(&error))?;
+        .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     super::retirement::corroborate(tx, &view, parts.proof)
         .await
-        .map_err(|error| consumer::failure(&error))?;
+        .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     match parts.consumer {
         Some(actual) => {
             actual.verify(parts.original, parts.context, parts.expected, parts.proof)?;
@@ -35,7 +35,7 @@ pub(in crate::sqlite) async fn check_birth(
                 }
             } else {
                 view.verify_birth(birth_view, parts.proof)
-                    .map_err(|error| consumer::failure(&error))?;
+                    .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
             }
         }
         None => {
@@ -56,11 +56,11 @@ pub(in crate::sqlite) async fn open(
     if parts.consumer.is_some() {
         let view = selected
             .selection(parts.proof)
-            .map_err(|error| consumer::failure(&error))?;
+            .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
         let delta = consumer::prepare_anchor(prefix, opened, &view, parts.proof)?;
         write::persist(tx, &delta, parts.proof)
             .await
-            .map_err(|error| consumer::failure(&error))?;
+            .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     }
     Ok(())
 }
@@ -74,11 +74,11 @@ pub(in crate::sqlite) async fn complete(
     if parts.consumer.is_some() {
         let view = selected
             .selection(parts.proof)
-            .map_err(|error| consumer::failure(&error))?;
+            .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
         let delta = consumer::link_initial(&view, before, actual, parts.proof)?;
         write::persist(tx, &delta, parts.proof)
             .await
-            .map_err(|error| consumer::failure(&error))?;
+            .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     }
     Ok(())
 }
@@ -96,7 +96,7 @@ pub(in crate::sqlite) async fn close(
     let local = actual.verify_close(parts.original, parts.context, parts.expected, parts.proof)?;
     let view = selected
         .selection(parts.proof)
-        .map_err(|error| consumer::failure(&error))?;
+        .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
     let (retirement, disposition) =
         Box::pin(super::retirement::produce(store, tx, parts, &view)).await?;
     let record = match consumer::prepare_paired_close(
@@ -111,10 +111,10 @@ pub(in crate::sqlite) async fn close(
         consumer::PairedCloseDecision::Publish(delta) => {
             super::super::pending_initial::write::persist(tx, &delta.birth, parts.proof)
                 .await
-                .map_err(|error| consumer::failure(&error))?;
+                .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
             write::persist(tx, &delta.consumer, parts.proof)
                 .await
-                .map_err(|error| consumer::failure(&error))?;
+                .map_err(|error| consumer::admission_failure(parts.proof, &error))?;
             delta.record
         }
         consumer::PairedCloseDecision::Replayed(record) => *record,

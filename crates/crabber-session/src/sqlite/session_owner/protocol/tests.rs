@@ -110,12 +110,14 @@ async fn selected_owner_publication_sources_charge_shared_budget() {
     // the guard and instead reach the duplicate INSERT below.
     let mut shared = crate::public_session::v2::proof::Proof::bounded(consumed + 1);
     shared.charge(consumed).unwrap();
-    assert_eq!(
-        super::super::reads::publish_with_proof(&mut tx, &audit, false, &mut shared,)
-            .await
-            .unwrap_err(),
-        crate::session_owner::SessionOwnerError::Capacity
-    );
+    assert!(matches!(
+        super::super::reads::publish_with_proof(&mut tx, &audit, false, &mut shared).await,
+        Err(crate::public_session::v2::proof::ReadError::Budget(
+            crate::public_session::v2::proof::Failure::Limited(
+                crate::PublicSessionLimitV2::ProofBytes
+            )
+        ))
+    ));
     assert_eq!(
         super::verify(
             &mut tx,

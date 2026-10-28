@@ -28,23 +28,35 @@ impl Source {
         store: &dyn Store,
         context: &SessionContext,
         original: &JoinedPreparation,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, crate::session_owner::preparation::PreparationCommitError> {
+        Self::with_proof(
+            store,
+            context,
+            original,
+            &mut Proof::bounded(inspection::MAX_PROOF),
+        )
+    }
+    fn with_proof(
+        store: &dyn Store,
+        context: &SessionContext,
+        original: &JoinedPreparation,
+        proof: &mut Proof,
+    ) -> Result<Self, crate::session_owner::preparation::PreparationCommitError> {
         let grant = original.observed_grant();
         let reservation = grant.original_reservation();
         if reservation.resource_contract.is_none()
             || original.observed_registration().is_none()
             || !matches!(reservation.purpose, PreparationPurpose::OrdinaryAdmission)
         {
-            return Err(Error::Unsupported);
+            return Err(Error::Unsupported.into());
         }
         let identity = &reservation.owner.binding;
         if context.session_id() != &identity.session_id
             || context.workspace_id() != identity.workspace_id
             || context.directory() != identity.directory
         {
-            return Err(Error::IdentityMismatch);
+            return Err(Error::IdentityMismatch.into());
         }
-        let mut proof = Proof::bounded(inspection::MAX_PROOF);
         // All actual remaining cloned scalar authority carriers, before hashing.
         let root = grant.owner_authority();
         let child = grant
@@ -59,17 +71,25 @@ impl Source {
                 &child.target,
                 &child.token,
             ))
-            .map_err(|_| Error::Capacity)?;
+            .map_err(|error| {
+                proof.admission_failure(
+                    &error,
+                    crate::session_owner::preparation::PreparationCommitError::Owner(
+                        Error::Capacity,
+                    ),
+                )
+            })?;
         match (original.observed_operation(), &reservation.key) {
             (PreparedOperation::Admit(_), PreparationKey::Unkeyed(_)) => {
                 if !store.supports_initial_preparation_admission_inspection() {
-                    return Err(Error::Unsupported);
+                    return Err(Error::Unsupported.into());
                 }
-                inspection::original(original, &mut proof).map_err(|error| match error {
-                    crate::session_owner::preparation::PreparationCommitError::Owner(error) => {
-                        error
-                    }
-                    _ => Error::InvalidRequest,
+                inspection::original(original, proof).map_err(|error| match error {
+                    crate::session_owner::preparation::PreparationCommitError::Owner(_)
+                    | crate::session_owner::preparation::PreparationCommitError::Store(
+                        crate::StoreError::AdmissionLimit(_),
+                    ) => error,
+                    _ => Error::InvalidRequest.into(),
                 })?;
                 Ok(Self::Unkeyed)
             }
@@ -78,13 +98,20 @@ impl Source {
             {
                 proof
                     .measure(&(reservation, original.observed_registration(), bound))
-                    .map_err(|_| Error::Capacity)?;
+                    .map_err(|error| {
+                        proof.admission_failure(
+                            &error,
+                            crate::session_owner::preparation::PreparationCommitError::Owner(
+                                Error::Capacity,
+                            ),
+                        )
+                    })?;
                 original
                     .verify_original_intent()
                     .map_err(|_| Error::InvalidRequest)?;
                 Ok(Self::Keyed(key.clone()))
             }
-            _ => Err(Error::Unsupported),
+            _ => Err(Error::Unsupported.into()),
         }
     }
     fn validate_receipt(
@@ -278,4 +305,87 @@ fn validate_keyed(
         return Err(Error::SemanticConflict);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_owner::preparation::PreparationCommitError;
+
+    async fn prepared(
+        store: &crate::MemoryStore,
+        keyed: bool,
+    ) -> (SessionContext, JoinedPreparation) {
+        use crate::session_owner::preparation_contract::resources;
+        let original = if keyed {
+            let (root, bound) = resources::declaration::setup(store).await;
+            resources::initial_driver_observation(
+                store,
+                root,
+                PreparedOperation::AdmitKeyed(Box::new(bound)),
+            )
+            .await
+        } else {
+            resources::initial_unkeyed_observation(store).await
+        };
+        let binding = &original
+            .observed_grant()
+            .original_reservation()
+            .owner
+            .binding;
+        let context = SessionContext::new(
+            binding.session_id.clone(),
+            binding.workspace_id.clone(),
+            binding.directory.clone(),
+        );
+        (context, original)
+    }
+
+    #[tokio::test]
+    async fn initial_source_preserves_unkeyed_and_keyed_inspection_limits() {
+        for keyed in [false, true] {
+            let store = crate::MemoryStore::new();
+            let (context, original) = prepared(&store, keyed).await;
+            let mut authority = Proof::bounded(inspection::MAX_PROOF);
+            let grant = original.observed_grant();
+            let root = grant.owner_authority();
+            let child = grant.retained_resources_authority().unwrap();
+            authority
+                .measure(&(
+                    &root.session_id,
+                    &root.target,
+                    &root.token,
+                    &child.session_id,
+                    &child.target,
+                    &child.token,
+                ))
+                .unwrap();
+            let cap = authority.used();
+            let error = Source::with_proof(&store, &context, &original, &mut Proof::bounded(cap))
+                .err()
+                .unwrap();
+            let PreparationCommitError::Store(error) = error else {
+                panic!("source must preserve its own inspection proof limit");
+            };
+            assert_eq!(
+                error.admission_limit().unwrap().limit_bytes(),
+                Some(u64::try_from(cap).unwrap())
+            );
+            assert!(Source::new(&store, &context, &original).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_unkeyed_binding_retains_original_owner_classification() {
+        let store = crate::MemoryStore::new();
+        let (context, mut original) = prepared(&store, false).await;
+        let PreparedOperation::Admit(bound) = &mut original.operation else {
+            unreachable!()
+        };
+        bound.binding.version = 0;
+        assert!(matches!(
+            Source::new(&store, &context, &original),
+            Err(PreparationCommitError::Owner(Error::InvalidRequest))
+        ));
+    }
 }

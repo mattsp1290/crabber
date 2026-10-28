@@ -17,11 +17,15 @@ pub(in crate::sqlite) async fn read(
     selected: &SelectedOriginal<'_>,
     proof: &mut Proof,
 ) -> Result<Option<ActualRawMetadata>, PreparationCommitError> {
-    selected.verify(original, proof).map_err(budget)?;
+    selected
+        .verify(original, proof)
+        .map_err(|error| budget(proof, error))?;
     let metadata = original.observed_grant().reconciliation()?;
     let cost:Option<i64>=sqlx::query_scalar("SELECT CAST(length(CAST(run_id AS BLOB)) AS BIGINT) FROM preparation_admission_witnesses WHERE session_id=$1 AND root_join=$2")
   .bind(&metadata.session_id.0).bind(&metadata.join_id.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
-    proof.charge(8).map_err(|_| Error::Capacity)?;
+    proof.charge(8).map_err(|error| {
+        proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+    })?;
     let Some(cost) = cost else {
         let committed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2 UNION ALL SELECT 1 FROM session_owner_publications WHERE session_id=$1 AND operation_id=$2)")
    .bind(&metadata.session_id.0).bind(&metadata.join_id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
@@ -38,14 +42,16 @@ pub(in crate::sqlite) async fn read(
     };
     proof
         .charge(usize::try_from(cost).map_err(unknown)?)
-        .map_err(|_| Error::Capacity)?;
+        .map_err(|error| {
+            proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+        })?;
     let run:Option<String>=sqlx::query_scalar("SELECT CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END FROM preparation_admission_witnesses WHERE session_id=$1 AND root_join=$2")
   .bind(&metadata.session_id.0).bind(&metadata.join_id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
     let run = crabber_core::RunId(run.ok_or(Error::UnknownStoreOutcome)?);
     let status =
         super::super::super::native_enrollment::original(tx, &metadata.session_id, &run, proof)
             .await
-            .map_err(budget)?;
+            .map_err(|error| budget(proof, error))?;
     match status {
         crate::native_enrollment::Status::Pending => return Ok(None),
         crate::native_enrollment::Status::Legacy => return Err(Error::Unsupported.into()),
@@ -54,7 +60,7 @@ pub(in crate::sqlite) async fn read(
     let source =
         super::super::drivers::source::original_read(tx, &metadata.session_id, &run, proof)
             .await
-            .map_err(|error| inspection::read_error(&error))?;
+            .map_err(|error| inspection::read_error(proof, error))?;
     if source.witness.join_id()? != metadata.join_id {
         return Err(Error::UnknownStoreOutcome.into());
     }
@@ -88,7 +94,9 @@ pub(in crate::sqlite) async fn read(
         proof,
     )
     .await
-    .map_err(|error| inspection::read_error(&error.map_domain(|_| Error::UnknownStoreOutcome)))?
+    .map_err(|error| {
+        inspection::read_error(proof, error.map_domain(|_| Error::UnknownStoreOutcome))
+    })?
     .ok_or(Error::UnknownStoreOutcome)?;
     ActualRawMetadata::from_original(
         expected,
@@ -100,7 +108,7 @@ pub(in crate::sqlite) async fn read(
         proof,
     )
     .map(Some)
-    .map_err(budget)
+    .map_err(|error| budget(proof, error))
 }
 async fn unkeyed_metadata(
     tx: &mut Transaction<'_, Sqlite>,
@@ -125,7 +133,9 @@ async fn unkeyed_metadata(
         proof,
     )
     .await
-    .map_err(|error| inspection::read_error(&error.map_domain(|_| Error::UnknownStoreOutcome)))?
+    .map_err(|error| {
+        inspection::read_error(proof, error.map_domain(|_| Error::UnknownStoreOutcome))
+    })?
     .ok_or(Error::UnknownStoreOutcome)?;
     ActualRawMetadata::from_original(
         expected,
@@ -136,7 +146,7 @@ async fn unkeyed_metadata(
         RawInitialReceipt::Unkeyed(&receipt),
         proof,
     )
-    .map_err(budget)
+    .map_err(|error| budget(proof, error))
 }
 
 async fn keyed_receipt(
@@ -151,7 +161,9 @@ async fn keyed_receipt(
     let size:Option<i64>=sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&expected.key.session_id.0).bind(bound.keyed.options.key.as_str()).fetch_optional(&mut **tx).await.map_err(unknown)?;
     proof
         .charge(usize::try_from(size.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)?)
-        .map_err(|_| Error::Capacity)?;
+        .map_err(|error| {
+            proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+        })?;
     let raw:Option<String>=sqlx::query_scalar("SELECT CASE WHEN length(CAST(data AS BLOB))<=8192 THEN data END FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&expected.key.session_id.0).bind(bound.keyed.options.key.as_str()).fetch_one(&mut **tx).await.map_err(unknown)?;
     let receipt: crabber_core::AdmissionReceipt =
         serde_json::from_str(&raw.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)?;
@@ -176,6 +188,9 @@ async fn keyed_receipt(
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
-fn budget(error: crate::public_session::v2::proof::Failure) -> PreparationCommitError {
-    inspection::read_error(&ReadError::Budget(error))
+fn budget(
+    proof: &Proof,
+    error: crate::public_session::v2::proof::Failure,
+) -> PreparationCommitError {
+    inspection::read_error(proof, ReadError::Budget(error))
 }

@@ -20,7 +20,8 @@ async fn original_initial_admission_inspection_is_pure_and_bounded() {
     );
     assert!(matches!(
         store.inspect_initial_admission_with_proof(&original, &mut Proof::bounded(used - 1)),
-        Err(PreparationCommitError::Owner(Error::Capacity))
+        Err(PreparationCommitError::Store(crate::StoreError::AdmissionLimit(limit)))
+            if limit.limit_bytes() == Some(u64::try_from(used - 1).unwrap())
     ));
     // Neither today's private Run body nor later head is original-source proof.
     {
@@ -118,4 +119,64 @@ async fn initial_inspection_never_upgrades_legacy_originals() {
         store.inspect_initial_preparation_admission(&original).await,
         Err(PreparationCommitError::Owner(Error::Unsupported))
     ));
+}
+
+#[tokio::test]
+async fn admission_limit_preserves_uncommitted_preparation_and_original_replay() {
+    let store = MemoryStore::new();
+    let original =
+        crate::session_owner::preparation_contract::resources::initial_unkeyed_observation(&store)
+            .await;
+    let grant = original.observed_grant();
+    let session = grant
+        .original_reservation()
+        .owner
+        .binding
+        .session_id
+        .clone();
+    let reconciliation = store
+        .lookup_preparation(&session, &grant.original_reservation().key)
+        .await
+        .unwrap();
+    let revision = store.session_revision(&session).await.unwrap();
+    let mut input = Proof::bounded(inspection::MAX_PROOF);
+    crate::native_enrollment::caller::initial::preparation_input(&original, &mut input).unwrap();
+    for cap in [0, input.used()] {
+        let mut proof = Proof::bounded(cap);
+        let error = store
+            .complete_preparation_captured_with_proof(&original, false, &mut proof)
+            .err()
+            .unwrap();
+        let PreparationCommitError::Store(error) = error else {
+            panic!("typed store proof limit");
+        };
+        let limit = error.admission_limit().unwrap();
+        assert_eq!(limit.kind().as_str(), "proof_bytes");
+        assert_eq!(limit.limit_bytes(), Some(u64::try_from(cap).unwrap()));
+        assert_eq!(store.session_revision(&session).await.unwrap(), revision);
+        assert_eq!(
+            store
+                .lookup_preparation(&session, &grant.original_reservation().key)
+                .await
+                .unwrap(),
+            reconciliation
+        );
+        assert!(
+            store
+                .inspect_initial_preparation_admission(&original)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    let admitted = Store::complete_preparation(&store, original.clone())
+        .await
+        .unwrap();
+    assert!(!admitted.is_replayed());
+    assert!(
+        Store::complete_preparation(&store, original)
+            .await
+            .unwrap()
+            .is_replayed()
+    );
 }

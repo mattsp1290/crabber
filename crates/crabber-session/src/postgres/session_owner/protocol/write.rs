@@ -6,20 +6,20 @@ pub(in super::super) async fn prepare(
     audit: &Audit,
     fresh: bool,
     proof: &mut Proof,
-) -> Result<bool, Error> {
+) -> Result<bool, crate::public_session::v2::proof::ReadError<Error>> {
     if fresh {
         if audit.receipt.operation != SessionOwnerOperation::Reserve
             || audit.record.sequence != 1
             || audit.record.version != 2
         {
-            return Err(Error::InvalidRequest);
+            return Err(Error::InvalidRequest.into());
         }
         return Ok(true);
     }
     let binding = &audit.record.snapshot.binding;
     match super::verify(tx, &binding.session_id, &binding.id, proof)
         .await
-        .map_err(|error| error.into_domain_or(Error::Capacity))?
+        .map_err(crate::public_session::v2::proof::ReadError::capacity_fallback)?
     {
         Coverage::Verified => Ok(true),
         Coverage::Legacy => Ok(false),

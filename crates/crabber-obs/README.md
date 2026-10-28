@@ -223,3 +223,18 @@ The new metrics cover store transaction/connect/migrate latency, provider respon
 `LogsPolicy` defaults to INFO and excludes lifecycle duplicates, exporter diagnostics and guest text. Guest export requires explicit opt-in and limits `guest.text` to 256 bytes. Layer logs carry `crabber.source:layer` and both OTel hex and Datadog trace/span conventions when the host supplies context.
 
 `Telemetry::health()` reports `spans_seen`, `events_seen`, `metrics_enqueued`, `metrics_dropped`, `logs_enqueued`, `logs_dropped`, `messages_unlisted` and `attributes_scrubbed`; these are separate from `ExportHealth`. `spans_seen` counts callbacks in the metrics and logs layers (a span seen by both contributes twice). With those layers configured, zero after an instrumented run is a first subscriber/layer diagnostic; OTLP-only configuration does not increment it. Call bundle shutdown before runtime exit; Drop aborts the intake worker and requests detached bounded OTLP cleanup. Offline fixtures prove the wire contracts; no live visibility is claimed without a successful `verify-datadog` evidence row.
+
+## Admission limit telemetry
+
+Admission spans may export `admission.limit_kind` as the finite string
+`proof_bytes`, and `admission.limit_bytes` as an integer from the actual proof
+cap. The byte attribute is absent when the cap is unavailable, zero, or cannot
+fit a signed telemetry integer. Success and ordinary validation failures omit
+both attributes. No used or requested counters are exported.
+
+`RuntimeError::admission_limit()` finds this metadata through nested
+`PreparationIncomplete` wrappers. Those wrappers keep `outcome=unknown` and
+`error.kind=preparation_incomplete`, with their original reconciliation
+descriptor. The metadata does not establish rollback or successful cleanup.
+Direct store limit failures have `error.kind=store_admission_limit` and a rejected
+admission outcome. The exporter scrubs source strings and carrier content.

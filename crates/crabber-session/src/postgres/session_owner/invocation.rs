@@ -36,7 +36,8 @@ async fn verify_inner(
             &target.id,
             proof,
         )
-        .await?;
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         crate::session_owner::invocation_parent::original(current, &parent)
             .map_err(|_| Error::UnknownStoreOutcome)?;
         selected = Some(parent);

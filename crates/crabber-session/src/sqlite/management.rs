@@ -206,7 +206,7 @@ pub(super) async fn admission_archived_with_proof(
     id: &SessionId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<bool, crate::StoreError> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(s.id AS BLOB))+length(CAST(s.data AS BLOB))+COALESCE(length(CAST(m.workspace_id AS BLOB)),0)+COALESCE(length(CAST(m.data_json AS BLOB)),0)+16 AS BIGINT) FROM sessions s JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&id.0),proof).await.map_err(|_|crate::StoreError::Conflict)?;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(s.id AS BLOB))+length(CAST(s.data AS BLOB))+COALESCE(length(CAST(m.workspace_id AS BLOB)),0)+COALESCE(length(CAST(m.data_json AS BLOB)),0)+16 AS BIGINT) FROM sessions s JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&id.0),proof).await.map_err(|error| proof.admission_failure(&error, crate::StoreError::Conflict))?;
     let query=format!("{} AND m.session_id IS NOT NULL",CURRENT.replace("m.workspace_id", "CASE WHEN length(CAST(m.workspace_id AS BLOB))<=512 THEN m.workspace_id END AS workspace_id"));
     let row = sqlx::query(&query)
         .bind(&id.0)

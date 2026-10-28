@@ -142,13 +142,15 @@ impl<T: Send + 'static> PendingInitialTask<T> {
     /// Retain this original registration before starting native completion IO.
     /// # Errors
     /// Refuses unsupported original source, identity mismatch or shared capacity.
+    /// Owner failures remain `PreparationCommitError::Owner`. Proven proof-byte
+    /// exhaustion returns `PreparationCommitError::Store` with a typed admission limit.
     pub fn register<F, W>(
         owner: &PendingDriverTasks,
         store: Arc<dyn Store>,
         context: SessionContext,
         original: JoinedPreparation,
         business: F,
-    ) -> Result<Self, Error>
+    ) -> Result<Self, crate::session_owner::preparation::PreparationCommitError>
     where
         F: FnOnce(DriverMainContext, PreparationCompletion) -> W + Send + 'static,
         W: Future<Output = T> + Send + 'static,

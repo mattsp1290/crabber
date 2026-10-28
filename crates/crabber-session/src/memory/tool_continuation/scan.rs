@@ -95,12 +95,13 @@ pub(in super::super) fn pending(state: &State, session: &SessionId) -> Result<bo
         session,
         &mut crate::public_session::v2::proof::Proof::legacy(),
     )
+    .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
 pub(in crate::memory) fn pending_with_proof(
     state: &State,
     session: &SessionId,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<bool, Error> {
+) -> Result<bool, crate::public_session::v2::proof::ToolReadError> {
     super::super::continuation_input::consistent(
         state,
         crate::continuation_input::Domain::Tool,
@@ -108,7 +109,7 @@ pub(in crate::memory) fn pending_with_proof(
         None,
         proof,
     )
-    .map_err(|_| Error::UnknownStoreOutcome)?;
+    .map_err(|error| error.map_domain(|_| Error::UnknownStoreOutcome))?;
     let mut count = 0;
     let mut pending = false;
     for record in state
@@ -117,13 +118,13 @@ pub(in crate::memory) fn pending_with_proof(
         .filter(|record| record.session_id == *session)
     {
         let record = super::checked_record_with_proof(state, &record.batch.continuation.id, proof)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+            .map_err(|error| error.map_domain(|_| Error::UnknownStoreOutcome))?;
         count += 1;
         pending |= record.state != ToolContinuationState::Released;
     }
     proof
         .measure(&state.tool_barriers.get(session))
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+        .map_err(crate::public_session::v2::proof::ToolReadError::Budget)?;
     if count
         != state
             .events
@@ -136,7 +137,7 @@ pub(in crate::memory) fn pending_with_proof(
             })
         })
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     Ok(pending)
 }

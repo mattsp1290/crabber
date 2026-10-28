@@ -40,7 +40,8 @@ pub(in crate::sqlite) async fn driver_roster(
                 &crabber_core::SessionOwnerId(owner),
                 proof,
             ))
-            .await?,
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?,
         );
     }
     Ok(records)
@@ -67,7 +68,10 @@ impl crate::sqlite::SqliteStore {
             &request.target.id,
             parts.proof,
         ))
-        .await?;
+        .await
+        .map_err(|error| {
+            crate::session_owner::preparation::inspection::read_error(parts.proof, error)
+        })?;
         for expected in [&register.reserve, &register.begin] {
             let actual = super::super::drivers::selected_consumer_audit(
                 tx,
@@ -136,7 +140,10 @@ impl crate::sqlite::SqliteStore {
             false,
             parts.proof,
         ))
-        .await?;
+        .await
+        .map_err(|error| {
+            crate::session_owner::preparation::inspection::read_error(parts.proof, error)
+        })?;
         Ok(actual)
     }
 }

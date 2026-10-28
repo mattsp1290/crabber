@@ -24,6 +24,31 @@ impl Proof {
             None,
         )
     }
+    pub fn limit_bytes(&self) -> Option<u64> {
+        self.active()
+            .then(|| u64::try_from(self.0.cap).ok())
+            .flatten()
+    }
+    pub fn admission_failure<E: From<crate::StoreError>>(&self, error: &Failure, fallback: E) -> E {
+        match error {
+            Failure::Limited(Limit::ProofBytes) => crate::StoreError::AdmissionLimit(
+                crabber_core::AdmissionLimit::proof_bytes(self.limit_bytes()),
+            )
+            .into(),
+            Failure::Limited(_) | Failure::Error(_) => fallback,
+        }
+    }
+    pub fn admission_read<E, F: From<crate::StoreError>>(
+        &self,
+        error: ReadError<E>,
+        domain: impl FnOnce(E) -> F,
+        fallback: F,
+    ) -> F {
+        match error {
+            ReadError::Domain(error) => domain(error),
+            ReadError::Budget(error) => self.admission_failure(&error, fallback),
+        }
+    }
     pub fn active(&self) -> bool {
         self.1
     }
@@ -219,4 +244,98 @@ pub(crate) fn validate_request(
         return Err(PublicSessionError::InvalidRequest);
     }
     Ok(())
+}
+
+impl ReadError<crate::session_owner::SessionOwnerError> {
+    pub fn capacity(error: Failure) -> Self {
+        match error {
+            Failure::Limited(Limit::ProofBytes) => Self::Budget(error),
+            Failure::Limited(_) | Failure::Error(_) => {
+                Self::Domain(crate::session_owner::SessionOwnerError::Capacity)
+            }
+        }
+    }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub fn capacity_fallback(self) -> Self {
+        match self {
+            Self::Domain(_) => self,
+            Self::Budget(error) => Self::capacity(error),
+        }
+    }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub fn owner(self) -> crate::session_owner::SessionOwnerError {
+        match self {
+            Self::Domain(error) => error,
+            Self::Budget(Failure::Limited(_)) => crate::session_owner::SessionOwnerError::Capacity,
+            Self::Budget(Failure::Error(_)) => {
+                crate::session_owner::SessionOwnerError::UnknownStoreOutcome
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::StoreError;
+
+    #[test]
+    fn admission_conversion_requires_proof_byte_provenance() {
+        let proof = Proof::bounded(73);
+        let error: StoreError =
+            proof.admission_failure(&Failure::Limited(Limit::ProofBytes), StoreError::Conflict);
+        let limit = error.admission_limit().unwrap();
+        assert_eq!(limit.kind().as_str(), "proof_bytes");
+        assert_eq!(limit.limit_bytes(), Some(73));
+        assert_eq!(error.error_kind(), "admission_limit");
+        assert_eq!(
+            proof.admission_failure(&Failure::Limited(Limit::HeaderBytes), StoreError::Conflict),
+            StoreError::Conflict
+        );
+        assert_eq!(
+            proof.admission_read(
+                ReadError::Domain(StoreError::NotFound),
+                |e| e,
+                StoreError::Conflict
+            ),
+            StoreError::NotFound
+        );
+        assert_eq!(
+            proof.admission_failure(
+                &Failure::Error(PublicSessionError::UnknownStoreOutcome),
+                StoreError::Conflict
+            ),
+            StoreError::Conflict
+        );
+        let legacy: StoreError = Proof::legacy()
+            .admission_failure(&Failure::Limited(Limit::ProofBytes), StoreError::Conflict);
+        assert_eq!(legacy.admission_limit().unwrap().limit_bytes(), None);
+    }
+
+    #[test]
+    fn owner_reader_capacity_fallback_preserves_nonproof_errors() {
+        use crate::session_owner::SessionOwnerError as Owner;
+        assert!(matches!(
+            ReadError::<Owner>::capacity(Failure::Error(PublicSessionError::UnknownStoreOutcome)),
+            ReadError::Domain(Owner::Capacity)
+        ));
+        assert!(matches!(
+            ReadError::<Owner>::capacity(Failure::Limited(Limit::HeaderBytes)),
+            ReadError::Domain(Owner::Capacity)
+        ));
+        assert!(matches!(
+            ReadError::<Owner>::capacity(Failure::Limited(Limit::ProofBytes)),
+            ReadError::Budget(Failure::Limited(Limit::ProofBytes))
+        ));
+    }
+
+    #[test]
+    fn failed_materialization_does_not_publish_used_as_a_byte_counter() {
+        let mut proof = Proof::bounded(5);
+        let failure = proof.measure(&"longer than the cap").unwrap_err();
+        let error: StoreError = proof.admission_failure(&failure, StoreError::Conflict);
+        assert_eq!(error.admission_limit().unwrap().limit_bytes(), Some(5));
+        assert!(proof.charge(0).is_err());
+        assert_eq!(proof.limit_bytes(), Some(5));
+    }
 }

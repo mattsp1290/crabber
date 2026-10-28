@@ -44,9 +44,8 @@ async fn private_binding(store: &impl Store) {
         store
             .inspect_initial_preparation_admission(&oversized)
             .await,
-        Err(PreparationCommitError::Owner(
-            crate::session_owner::SessionOwnerError::Capacity
-        ))
+        Err(PreparationCommitError::Store(crate::StoreError::AdmissionLimit(limit)))
+            if limit.limit_bytes() == Some(33_554_432)
     ));
 }
 #[tokio::test]

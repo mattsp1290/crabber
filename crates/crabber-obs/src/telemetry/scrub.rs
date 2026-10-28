@@ -12,6 +12,8 @@ use std::{
 };
 
 pub const ALLOWED_ATTRIBUTES: &[&str] = &[
+    "admission.limit_kind",
+    "admission.limit_bytes",
     "session.id",
     "run.id",
     "attempt.id",

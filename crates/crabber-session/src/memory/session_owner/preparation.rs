@@ -49,8 +49,16 @@ impl MemoryStore {
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
-        crate::native_enrollment::caller::initial::preparation_input(joined, read_proof)
-            .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
+        crate::native_enrollment::caller::initial::preparation_input(joined, read_proof).map_err(
+            |error| {
+                read_proof.admission_failure(
+                    &error,
+                    crate::session_owner::preparation::PreparationCommitError::Owner(
+                        crate::session_owner::SessionOwnerError::Capacity,
+                    ),
+                )
+            },
+        )?;
         joined.verify_original_intent()?;
         let mut guard = self.state.lock().expect("memory store poisoned");
         let selected = match self.before_prepared_native(&guard, joined, read_proof)? {
@@ -100,7 +108,13 @@ impl MemoryStore {
         let mut proof = state
             .session_owners
             .verify_preparation_with_proof(joined.observed_grant(), before, now, read_proof)
-            .map_err(storage_error)?;
+            .map_err(|error| {
+                read_proof.admission_read(
+                    error,
+                    storage_error,
+                    StoreError::Validation("preparation ownership proof unavailable".into()),
+                )
+            })?;
         proof.bind_observed_operation(joined)?;
         state
             .session_owners

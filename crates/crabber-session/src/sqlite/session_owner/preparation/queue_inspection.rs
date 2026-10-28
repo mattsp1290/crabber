@@ -90,7 +90,7 @@ async fn read(
     }
     let source = super::super::drivers::source::original_read(tx, &request.session_id, run, proof)
         .await
-        .map_err(|error| inspection::read_error(&error))?;
+        .map_err(|error| inspection::read_error(proof, error))?;
     queue_admission::verify(
         original,
         actual,

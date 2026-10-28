@@ -476,7 +476,7 @@ pub(super) async fn lookup_receipt_with_proof(
     key: &AdmissionKey,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<AdmissionReceipt>, StoreError> {
-    read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|_| StoreError::Conflict)?;
+    read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
     lookup_receipt(tx, session, key).await
 }
 async fn lookup_receipt(
@@ -627,7 +627,7 @@ impl PostgresStore {
         let birth = caller.birth();
         caller
             .input_request(request, read_proof)
-            .map_err(|_| StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, StoreError::Conflict))?;
         guard.verify(request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;
@@ -657,11 +657,17 @@ impl PostgresStore {
         )
         .await
         .map_err(|error| {
-            if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
-                StoreError::SessionIdentityMismatch
-            } else {
-                StoreError::Validation("session ownership proof unavailable".into())
-            }
+            read_proof.admission_read(
+                error,
+                |error| {
+                    if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                        StoreError::SessionIdentityMismatch
+                    } else {
+                        StoreError::Validation("session ownership proof unavailable".into())
+                    }
+                },
+                StoreError::Validation("session ownership proof unavailable".into()),
+            )
         })?;
         let existing = admission_reads::session(tx, &session_id, read_proof).await?;
         let had_session = existing.is_some();

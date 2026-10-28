@@ -119,9 +119,8 @@ async fn historical_prefix_uses_exact_same_bounded_proof() {
     assert!(prefix::verify(&original, selected(&audits), &mut Proof::bounded(used)).is_ok());
     assert!(matches!(
         prefix::verify(&original, selected(&audits), &mut Proof::bounded(used - 1)),
-        Err(PreparationCommitError::Owner(
-            crate::session_owner::SessionOwnerError::Capacity
-        ))
+        Err(PreparationCommitError::Store(crate::StoreError::AdmissionLimit(limit)))
+            if limit.limit_bytes() == Some(u64::try_from(used - 1).unwrap())
     ));
 
     let mut shared = Proof::bounded(32 << 20);

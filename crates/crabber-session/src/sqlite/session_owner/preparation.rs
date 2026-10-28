@@ -9,14 +9,13 @@ mod replay;
 use super::{Audit, Error, SessionOwnerOperation, publish_revision, reads};
 use crate::StoreError;
 use crate::session_owner::preparation::{
-    JoinedPreparation, PreparationCompletion, PreparedDriverCompletion,
+    JoinedPreparation, PreparationCommitError, PreparationCompletion, PreparedDriverCompletion,
 };
 impl super::SqliteStore {
     pub(in crate::sqlite) async fn complete_preparation(
         &self,
         joined: JoinedPreparation,
-    ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
-    {
+    ) -> Result<PreparationCompletion, PreparationCommitError> {
         Box::pin(self.complete_preparation_captured(joined, false))
             .await
             .map(|v| v.completion)
@@ -25,8 +24,7 @@ impl super::SqliteStore {
         &self,
         joined: JoinedPreparation,
         require_input_birth: bool,
-    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
-    {
+    ) -> Result<PreparedDriverCompletion, PreparationCommitError> {
         Box::pin(self.complete_preparation_captured_with_proof(
             joined,
             require_input_birth,
@@ -38,7 +36,7 @@ impl super::SqliteStore {
         tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         joined: &JoinedPreparation,
         proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
+    ) -> Result<(), PreparationCommitError> {
         let session = &joined
             .observed_grant()
             .original_reservation()
@@ -55,13 +53,15 @@ impl super::SqliteStore {
         joined: JoinedPreparation,
         require_input_birth: bool,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
-    {
-        crate::native_enrollment::caller::initial::preparation_input(&joined, read_proof)
-            .map_err(|_| Error::Capacity)?;
+    ) -> Result<PreparedDriverCompletion, PreparationCommitError> {
+        crate::native_enrollment::caller::initial::preparation_input(&joined, read_proof).map_err(
+            |error| {
+                read_proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+            },
+        )?;
         joined.verify_original_intent()?;
-        let session = joined
-            .observed_grant()
+        let grant = joined.observed_grant();
+        let session = grant
             .original_reservation()
             .owner
             .binding
@@ -75,49 +75,36 @@ impl super::SqliteStore {
             if let Some(outcome) = self.replay_prepared(&mut tx, &joined, read_proof).await? {
                 return Ok(crate::session_owner::preparation::driver_completion::replayed(outcome));
             }
-            read_proof.charge(2).map_err(|_| Error::Capacity)?;
+            read_proof.charge(2).map_err(|error| {
+                read_proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+            })?;
             reads::scope(&mut tx, &session)
                 .await
                 .map_err(storage_error)?;
             let mut record = reads::current_with_proof(
                 &mut tx,
                 &session,
-                &joined
-                    .observed_grant()
-                    .original_reservation()
-                    .owner
-                    .binding
-                    .id,
+                &grant.original_reservation().owner.binding.id,
                 read_proof,
             )
             .await
-            .map_err(storage_error)?;
+            .map_err(|error| storage_read_error(read_proof, error))?;
             require_birth(&mut tx, &joined, require_input_birth, read_proof).await?;
-            let mut proof = Box::pin(self.verify_service_preparation(
-                &mut tx,
-                joined.observed_grant(),
-                None,
-                false,
-                read_proof,
-            ))
-            .await
-            .map_err(storage_error)?;
+            let mut proof =
+                Box::pin(self.verify_service_preparation(&mut tx, grant, None, false, read_proof))
+                    .await
+                    .map_err(|error| storage_read_error(read_proof, error))?;
             proof.bind_observed_operation(&joined)?;
-            let join =
-                crate::session_owner::preparation::proof::join_request(joined.observed_grant())
-                    .map_err(storage_error)?;
+            let join = crate::session_owner::preparation::proof::join_request(grant)
+                .map_err(storage_error)?;
             record
-                .mutate(
-                    &join,
-                    Some(joined.observed_grant().owner_authority()),
-                    self.clock.now(),
-                )
+                .mutate(&join, Some(grant.owner_authority()), self.clock.now())
                 .map_err(storage_error)?;
             crate::session_owner::preparation::proof::record_handoff(&mut record, &proof)
                 .map_err(storage_error)?;
             publish_join(&mut tx, &session, record, &join, read_proof)
                 .await
-                .map_err(storage_error)?;
+                .map_err(|error| storage_read_error(read_proof, error))?;
             let result = Box::pin(self.apply_prepared_native(
                 &mut tx,
                 joined.observed_operation().clone(),
@@ -155,6 +142,17 @@ impl super::SqliteStore {
         }
     }
 }
+fn storage_read_error(
+    proof: &crate::public_session::v2::proof::Proof,
+    error: crate::public_session::v2::proof::ReadError<Error>,
+) -> StoreError {
+    proof.admission_read(
+        error,
+        storage_error,
+        storage_error(Error::UnknownStoreOutcome),
+    )
+}
+
 fn storage_error(error: Error) -> StoreError {
     match error {
         Error::RevisionConflict => StoreError::AdmissionRevisionConflict,
@@ -166,17 +164,20 @@ async fn verify_replay(
     tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     grant: &crate::session_owner::preparation::PreparationGrant,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), Error> {
+) -> Result<(), PreparationCommitError> {
     let join = crate::session_owner::preparation::proof::join_request(grant)?;
-    let source = reads::audit_with_proof(tx, &join.session_id, &join.id, proof).await?;
+    let source = reads::audit_with_proof(tx, &join.session_id, &join.id, proof)
+        .await
+        .map_err(|error| crate::session_owner::preparation::inspection::read_error(proof, error))?;
     crate::session_owner::preparation::proof::verify_join_audit(grant, source.as_ref())
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
 fn after_commit(
     store: &super::SqliteStore,
     value: &PreparationCompletion,
-) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
+) -> Result<(), PreparationCommitError> {
     use std::sync::atomic::Ordering;
     if value.is_replayed() {
         return Ok(());
@@ -206,7 +207,7 @@ async fn publish_join(
     record: crate::session_owner::record::Record,
     join: &crate::session_owner::MutateSessionOwner,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), Error> {
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
     let receipt = record.receipt(
         join.id.clone(),
         crate::session_owner::preparation::handoff::record_fingerprint(&record, &join.id)?,
@@ -234,7 +235,7 @@ async fn require_birth(
     joined: &JoinedPreparation,
     required: bool,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
+) -> Result<(), PreparationCommitError> {
     if required {
         let scope = crate::session_owner::preparation::driver_completion::protected_scope(joined)?;
         if !crate::sqlite::continuation_input::protocol(tx, &scope, proof)

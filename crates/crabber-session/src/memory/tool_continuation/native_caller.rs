@@ -30,7 +30,8 @@ pub(in crate::memory) fn selected(
     let run = selected_run(state, input, proof)?;
     super::super::approval::verify_session_with_proof(state, &run.session_id, proof)
         .map_err(|_| Error::UnknownStoreOutcome)?;
-    super::pending_in_session_with_proof(state, &run.session_id, proof)?;
+    super::pending_in_session_with_proof(state, &run.session_id, proof)
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))?;
     for parent in state
         .attempts
         .values()

@@ -406,6 +406,7 @@ impl RuntimeError {
             Self::Store(error) => match error.error_kind() {
                 "validation" => "store_validation",
                 "limit" => "store_limit",
+                "admission_limit" => "store_admission_limit",
                 "conflict" => "store_conflict",
                 "admission_conflict" => "store_admission_conflict",
                 "admission_revision_conflict" => "store_admission_revision_conflict",

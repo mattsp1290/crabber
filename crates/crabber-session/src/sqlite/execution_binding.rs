@@ -48,7 +48,7 @@ impl SqliteStore {
             &self.native_raw_probe,
         )
         .await
-        .map_err(|_| StoreError::Conflict)?;
+        .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
         Ok(captured.admitted)
     }
     pub(super) async fn admit_keyed_guarded_with_proof(
@@ -131,7 +131,7 @@ impl SqliteStore {
         }
         caller
             .input_keyed(keyed, read_proof)
-            .map_err(|_| StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, StoreError::Conflict))?;
         let digest = keyed.validated_digest()?;
         if let Some((existing, _)) =
             super::admission_reads::session(tx, session, read_proof).await?
@@ -176,7 +176,7 @@ impl SqliteStore {
             .charge(std::mem::size_of::<
                 crate::native_enrollment::caller::initial::CapturedAdmission,
             >())
-            .map_err(|_| StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, StoreError::Conflict))?;
         Ok(
             crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started {
                 receipt,
@@ -193,7 +193,7 @@ impl SqliteStore {
         let mut proof = Proof::bounded(32 << 20);
         proof
             .measure(&(&request, &binding))
-            .map_err(|_| StoreError::Conflict)?;
+            .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
         if let Some(binding) = &binding {
             binding.validate(&request)?;
         }
@@ -261,7 +261,7 @@ impl SqliteStore {
         let mut proof = Proof::bounded(32 << 20);
         proof
             .measure(&(&request, &binding))
-            .map_err(|_| StoreError::Conflict)?;
+            .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
         if let Some(binding) = &binding {
             binding.validate_keyed(&request)?;
         } else {
@@ -297,7 +297,9 @@ impl SqliteStore {
                             &mut proof,
                         )
                         .await
-                        .map_err(|e| e.into_domain_or(StoreError::AdmissionConflict))?
+                        .map_err(|e| {
+                            proof.admission_read(e, |error| error, StoreError::AdmissionConflict)
+                        })?
                         .is_none_or(|original| original.capsule != *capsule)
                     {
                         return Err(StoreError::AdmissionConflict);
@@ -525,7 +527,7 @@ async fn save_execution(
             crate::AdmissionExecutionState::Unstarted,
             read_proof,
         )
-        .map_err(|error| error.into_domain_or(StoreError::Conflict))?;
+        .map_err(|error| read_proof.admission_read(error, |error| error, StoreError::Conflict))?;
         let record = crate::AdmissionExecutionRecord {
             receipt: receipt.clone(),
             key: keyed.options.key.clone(),

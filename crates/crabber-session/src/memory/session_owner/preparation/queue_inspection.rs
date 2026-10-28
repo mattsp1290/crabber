@@ -68,7 +68,7 @@ impl MemoryStore {
             .run_id;
         let (session, initial, witness, sources) =
             super::super::drivers::sources_read(&state, run, proof)
-                .map_err(|error| inspection::read_error(&error))?;
+                .map_err(|error| inspection::read_error(proof, error))?;
         let protected = crate::memory::native_parent::source_protocol::original(
             &state,
             &request.session_id,
@@ -86,7 +86,7 @@ impl MemoryStore {
             return Err(Error::Unsupported.into());
         }
         let init = super::super::drivers::initial_journal_read(&state, run, initial, proof)
-            .map_err(|error| inspection::read_error(&error))?;
+            .map_err(|error| inspection::read_error(proof, error))?;
         queue_admission::verify(
             original,
             actual,

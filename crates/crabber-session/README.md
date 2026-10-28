@@ -567,3 +567,17 @@ recover the previous schema. To clean a partially provisioned LOGIN role, first
 `DROP OWNED BY <role>` and `DROP ROLE <role>` as the administrator. Leaked
 `crabber_test_*` test roles have only their explicitly granted workspaces and
 can be cleaned with the same procedure.
+
+## Admission proof limits
+
+`StoreError::AdmissionLimit` carries `AdmissionLimit`, with the finite
+`AdmissionLimitKind::ProofBytes` kind and its `proof_bytes` label.
+`StoreError::admission_limit()` returns this metadata. `limit_bytes()` reports the
+actual bounded proof cap when representable. The current admission cap is
+33554432 bytes. No used or requested byte counters are exposed.
+
+The proof allowance counts repeated carrier materialization during admission.
+Raw prompt length is not the cumulative proof cost. Model output and turn limits
+do not change this allowance. `PreparationCommitError::Store` preserves this
+error during preparation. A limit does not prove rollback or successful cleanup.
+Retain and reconcile any original preparation descriptor.

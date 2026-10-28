@@ -68,6 +68,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(clock.clone());
+    proof_limits(&store, now).await;
     run_borrowed(&store, &clock, now).await;
 }
 
@@ -262,4 +263,47 @@ async fn run_borrowed(store: &dyn Store, clock: &Arc<ManualClock>, now: OffsetDa
             .any(|run| run.session_id == session)
     );
     Box::pin(cross_session_ids::run(store, &original, &receipt, now)).await;
+}
+
+async fn proof_limits(store: &impl Store, now: OffsetDateTime) {
+    for keyed in [false, true] {
+        let session = SessionId::new();
+        let mut large = request(&session, now);
+        if !keyed {
+            large.request.session_id = None;
+        }
+        large.request.user_message.parts[0].content = ContentBlock::Text {
+            text: "x".repeat(32 << 20),
+        };
+        let error = if keyed {
+            store.admit_keyed_run(large).await.unwrap_err()
+        } else {
+            store.admit_run(large.request).await.unwrap_err()
+        };
+        let limit = error
+            .admission_limit()
+            .expect("actual caller proof exhaustion");
+        assert_eq!(limit.kind().as_str(), "proof_bytes");
+        assert_eq!(limit.limit_bytes(), Some(33_554_432));
+        assert!(store.get_session(&session).await.unwrap().is_none());
+        let mut fitting = request(&session, now);
+        if !keyed {
+            fitting.request.session_id = None;
+        }
+        if keyed {
+            assert!(matches!(
+                store.admit_keyed_run(fitting.clone()).await.unwrap(),
+                KeyedAdmitOutcome::Started { .. }
+            ));
+            assert!(matches!(
+                store.admit_keyed_run(fitting).await.unwrap(),
+                KeyedAdmitOutcome::Replayed(_)
+            ));
+        } else {
+            assert_eq!(
+                store.admit_run(fitting.request).await.unwrap().session.id,
+                session
+            );
+        }
+    }
 }

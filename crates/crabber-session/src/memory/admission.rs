@@ -22,22 +22,26 @@ pub(super) fn selected(
         .unwrap_or(&request.user_message.session_id);
     proof
         .measure(&state.sessions.get(session))
-        .map_err(initial_invalid)?;
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     if let Some(keyed) = keyed
         && let Some(receipt) = state
             .receipts
             .get(&(session.clone(), keyed.options.key.clone()))
     {
-        proof.measure(receipt).map_err(initial_invalid)?;
+        proof
+            .measure(receipt)
+            .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
         return Ok(());
     }
     state
         .session_owners
         .context_with_proof(session, &request.workspace_id, &request.directory, proof)
-        .map_err(|_| StoreError::Conflict)?;
+        .map_err(|error| {
+            proof.admission_read(error, |_| StoreError::Conflict, StoreError::Conflict)
+        })?;
     proof
         .measure(&state.management.get(session))
-        .map_err(initial_invalid)?;
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     for record in state
         .queue
         .values()
@@ -52,10 +56,12 @@ pub(super) fn selected(
                 record.summary.state,
                 record.prepared.is_some(),
             ))
-            .map_err(initial_invalid)?;
+            .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     }
     for run in state.runs.values().filter(|r| r.session_id == *session) {
-        proof.measure(run).map_err(initial_invalid)?;
+        proof
+            .measure(run)
+            .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     }
     if let Some(run) = state
         .run_order
@@ -66,10 +72,12 @@ pub(super) fn selected(
     {
         proof
             .measure(&state.epochs.get(&run.epoch_id))
-            .map_err(initial_invalid)?;
+            .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     }
     for message in state.messages.iter().filter(|m| m.session_id == *session) {
-        proof.measure(message).map_err(initial_invalid)?;
+        proof
+            .measure(message)
+            .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     }
     pending_with_proof(state, session, proof)?;
     Ok(())
@@ -80,15 +88,23 @@ fn pending_with_proof(
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<bool, StoreError> {
     super::approval::verify_session_with_proof(state, session, proof).map_err(|error| {
-        error
-            .map_domain(|_| StoreError::Validation("approval integrity failure".into()))
-            .into_domain_or(initial_invalid("approval proof budget"))
+        proof.admission_read(
+            error,
+            |_| StoreError::Validation("approval integrity failure".into()),
+            initial_invalid(),
+        )
     })?;
     let pending = super::tool_continuation::pending_in_session_with_proof(state, session, proof)
-        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+        .map_err(|error| {
+            proof.admission_read(
+                error,
+                |_| StoreError::Validation("invalid tool continuation evidence".into()),
+                StoreError::Validation("invalid tool continuation evidence".into()),
+            )
+        })?;
     proof
         .measure(&state.approval_barriers.get(session))
-        .map_err(initial_invalid)?;
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     Ok(state.approval_barriers.contains_key(session) || pending)
 }
 pub(super) fn admit_transaction_captured(
@@ -102,7 +118,7 @@ pub(super) fn admit_transaction_captured(
 ) -> Result<CapturedAdmission, StoreError> {
     caller
         .input_request(request, proof)
-        .map_err(initial_invalid)?;
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     selected(state, request, None, proof)?;
     guard.verify(request)?;
     if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
@@ -350,7 +366,9 @@ pub(super) fn admit_keyed_captured(
         }
         return Ok(CapturedKeyedAdmission::Replayed(receipt.clone()));
     }
-    caller.input_keyed(keyed, proof).map_err(initial_invalid)?;
+    caller
+        .input_keyed(keyed, proof)
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     let digest = keyed.validated_digest()?;
     if guard.is_ordinary()
         && state.queue.values().any(|record| {
@@ -383,7 +401,7 @@ pub(super) fn admit_keyed_captured(
             crate::AdmissionExecutionState::Unstarted,
             proof,
         )
-        .map_err(|error| error.into_domain_or(initial_invalid("execution record budget")))?;
+        .map_err(|error| proof.admission_read(error, |error| error, initial_invalid()))?;
         #[cfg(test)]
         state
             .pending_initial_carrier_observations
@@ -411,7 +429,7 @@ pub(super) fn admit_keyed_captured(
         .charge(std::mem::size_of::<
             crate::native_enrollment::caller::initial::CapturedAdmission,
         >())
-        .map_err(initial_invalid)?;
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     Ok(CapturedKeyedAdmission::Started {
         receipt,
         admitted: Box::new(captured),
@@ -427,7 +445,9 @@ fn record_ownership(
     caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<crate::native_enrollment::caller::initial::FirstPublication, StoreError> {
-    proof.measure(&(session, run)).map_err(initial_invalid)?;
+    proof
+        .measure(&(session, run))
+        .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     let invalid = |_| StoreError::Validation("preparation admission evidence unavailable".into());
     let witness = guard
         .preparation()
@@ -448,7 +468,9 @@ fn record_ownership(
         .map_err(invalid)?
         .flatten();
     if let Some(witness) = witness {
-        proof.measure(&witness).map_err(initial_invalid)?;
+        proof
+            .measure(&witness)
+            .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
         let origin = if new_session {
             Some(crate::deletion::origin::OwnershipOrigin::prepared(&witness).map_err(invalid)?)
         } else {
@@ -461,7 +483,9 @@ fn record_ownership(
             caller.birth(),
             proof,
         )
-        .map_err(|_| StoreError::Conflict)?;
+        .map_err(|error| {
+            proof.admission_read(error, |_| StoreError::Conflict, StoreError::Conflict)
+        })?;
         if let Some(origin) = origin {
             state.ownership_protocol_sessions.insert(session.id.clone());
             state.ownership_origins.insert(session.id.clone(), origin);
@@ -469,7 +493,9 @@ fn record_ownership(
         Ok(first)
     } else {
         super::native_parent::record_initial_run_with_birth(state, run, caller.birth(), proof)
-            .map_err(|_| StoreError::Conflict)
+            .map_err(|error| {
+                proof.admission_read(error, |_| StoreError::Conflict, StoreError::Conflict)
+            })
     }
 }
 pub(super) fn finish_initial(
@@ -491,10 +517,10 @@ pub(super) fn finish_initial(
         #[cfg(test)]
         probe,
     )
-    .map_err(initial_invalid)?;
+    .map_err(|error| proof.admission_failure(&error, initial_invalid()))?;
     Ok(captured.admitted)
 }
-fn initial_invalid(_: impl std::fmt::Debug) -> StoreError {
+fn initial_invalid() -> StoreError {
     StoreError::Validation("native initial caller evidence unavailable".into())
 }
 

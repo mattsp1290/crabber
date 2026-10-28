@@ -81,7 +81,8 @@ pub(super) async fn verify_selected(
     for id in [&ids.reserve, &ids.begin, &ids.join] {
         audits.push(
             crate::postgres::session_owner::reads::audit_with_proof(tx, session, id, proof)
-                .await?
+                .await
+                .map_err(crate::public_session::v2::proof::ReadError::owner)?
                 .ok_or(Error::UnknownStoreOutcome)?,
         );
     }

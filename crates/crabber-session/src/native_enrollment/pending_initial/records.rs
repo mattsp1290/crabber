@@ -63,11 +63,12 @@ impl SourceKey {
         // Reconciliation derives root operation IDs. Charge its actual complete
         // input before its existing canonical fingerprint/hash/allocation work.
         let authority = grant.owner_authority();
-        proof
-            .measure(&(reserve, registration))
-            .map_err(|_| Error::Capacity)?;
-        crate::native_enrollment::caller::measure_owner_authority(authority, proof)
-            .map_err(|_| Error::Capacity)?;
+        proof.measure(&(reserve, registration)).map_err(|error| {
+            proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+        })?;
+        crate::native_enrollment::caller::measure_owner_authority(authority, proof).map_err(
+            |error| proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity)),
+        )?;
         let root = reserve.reconciliation()?;
         Self::from_original_identities(
             &reserve.owner.binding.session_id,
@@ -78,8 +79,14 @@ impl SourceKey {
             proof,
         )
         .map_err(|error| match error {
-            Failure::Limited(_) => Error::Capacity.into(),
-            Failure::Error(_) => Error::UnknownStoreOutcome.into(),
+            Failure::Limited(limit) => proof.admission_failure(
+                &Failure::Limited(limit),
+                PreparationCommitError::Owner(Error::Capacity),
+            ),
+            Failure::Error(error) => proof.admission_failure(
+                &Failure::Error(error),
+                PreparationCommitError::Owner(Error::UnknownStoreOutcome),
+            ),
         })
     }
 }

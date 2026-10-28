@@ -51,7 +51,7 @@ impl ExpectedSource {
         identity: &Identity,
         proof: &mut Proof,
     ) -> Result<Correlation> {
-        identity.validate().map_err(|error| failure(&error))?;
+        identity.validate().map_err(|error| failure(proof, &error))?;
         measure(
             proof,
             &(
@@ -111,7 +111,7 @@ pub(crate) fn select_selected(
     match selected {
         Some(selected) => selected
             .verify(original, proof)
-            .map_err(|error| failure(&error))?,
+            .map_err(|error| failure(proof, &error))?,
         None => measure(proof, &(reservation, registration))?,
     }
     let root = reservation.reconciliation()?;
@@ -143,7 +143,7 @@ fn prepare_selected(
     selected: Option<&SelectedOriginal<'_>>,
     proof: &mut Proof,
 ) -> Result<ExpectedSource> {
-    input_preparation(original, selected, proof).map_err(|error| failure(&error))?;
+    input_preparation(original, selected, proof).map_err(|error| failure(proof, &error))?;
     let grant = original.observed_grant();
     let reservation = grant.original_reservation();
     let registration = original
@@ -301,14 +301,14 @@ fn verify_child(original: &JoinedPreparation, audits: InitialPrefixAudits<'_>) -
 }
 
 fn measure(proof: &mut Proof, value: &impl Serialize) -> Result<()> {
-    proof.measure(value).map_err(|error| failure(&error))
+    proof.measure(value).map_err(|error| failure(proof, &error))
 }
-fn failure(error: &Failure) -> PreparationCommitError {
-    match error {
+fn failure(proof: &Proof, error: &Failure) -> PreparationCommitError {
+    let fallback = match error {
         Failure::Limited(_) => OwnerError::Capacity,
         Failure::Error(_) => OwnerError::UnknownStoreOutcome,
-    }
-    .into()
+    };
+    proof.admission_failure(error, PreparationCommitError::Owner(fallback))
 }
 
 /// Stream the already measured exact carrier; do not allocate another large

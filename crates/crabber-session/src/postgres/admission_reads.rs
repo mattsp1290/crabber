@@ -9,7 +9,7 @@ pub(super) async fn project(
     id: &SessionId,
     proof: &mut Proof,
 ) -> Result<Vec<Message>, StoreError> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(COALESCE((SELECT SUM(octet_length(data::text)) FROM (SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1) last_run),0)+COALESCE((SELECT SUM(octet_length(e.data::text)) FROM epochs e WHERE e.id=(SELECT data->>'epoch_id' FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1)),0)+COALESCE((SELECT SUM(octet_length(snapshot_record)) FROM messages WHERE session_id=$1),0) AS BIGINT)").bind(&id.0),proof).await.map_err(|_|StoreError::Conflict)?;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(COALESCE((SELECT SUM(octet_length(data::text)) FROM (SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1) last_run),0)+COALESCE((SELECT SUM(octet_length(e.data::text)) FROM epochs e WHERE e.id=(SELECT data->>'epoch_id' FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1)),0)+COALESCE((SELECT SUM(octet_length(snapshot_record)) FROM messages WHERE session_id=$1),0) AS BIGINT)").bind(&id.0),proof).await.map_err(|error|proof.admission_failure(&error,StoreError::Conflict))?;
     let exists = sqlx::query("SELECT 1 FROM sessions WHERE id=$1")
         .bind(&id.0)
         .fetch_optional(&mut **tx)
@@ -79,7 +79,7 @@ pub(super) async fn session(
         proof,
     )
     .await
-    .map_err(|_| StoreError::Conflict)?;
+    .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
     let row=sqlx::query("SELECT CASE WHEN octet_length(data::text)<=33554432 THEN data::text END AS data,public_revision FROM sessions WHERE id=$1").bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
     row.map(|row| {
         let text = row
@@ -97,7 +97,7 @@ pub(super) async fn previous_epoch(
     id: &SessionId,
     proof: &mut Proof,
 ) -> Result<Option<ContextEpoch>, StoreError> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(data) AS BIGINT) FROM (SELECT e.data::text AS data FROM runs r JOIN epochs e ON e.id=r.data->>'epoch_id' WHERE r.session_id=$1 ORDER BY r.seq DESC LIMIT 1) selected").bind(&id.0),proof).await.map_err(|_|StoreError::Conflict)?;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(data) AS BIGINT) FROM (SELECT e.data::text AS data FROM runs r JOIN epochs e ON e.id=r.data->>'epoch_id' WHERE r.session_id=$1 ORDER BY r.seq DESC LIMIT 1) selected").bind(&id.0),proof).await.map_err(|error|proof.admission_failure(&error,StoreError::Conflict))?;
     let value:Option<Option<String>>=sqlx::query_scalar("SELECT CASE WHEN octet_length(data)<=33554432 THEN data END FROM (SELECT e.data::text AS data FROM runs r JOIN epochs e ON e.id=r.data->>'epoch_id' WHERE r.session_id=$1 ORDER BY r.seq DESC LIMIT 1) selected").bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
     value
         .map(|v| {
@@ -123,12 +123,24 @@ pub(super) async fn pending(
         tx, session, proof,
     ))
     .await
-    .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
+    .map_err(|error| {
+        proof.admission_read(
+            error,
+            |_| StoreError::Validation("approval integrity failure".into()),
+            StoreError::Validation("approval integrity failure".into()),
+        )
+    })?;
     let pending = Box::pin(super::tool_continuation::pending_in_session_with_proof(
         tx, session, proof,
     ))
     .await
-    .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    .map_err(|error| {
+        proof.admission_read(
+            error,
+            |_| StoreError::Validation("invalid tool continuation evidence".into()),
+            StoreError::Validation("invalid tool continuation evidence".into()),
+        )
+    })?;
     let approval: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
     )

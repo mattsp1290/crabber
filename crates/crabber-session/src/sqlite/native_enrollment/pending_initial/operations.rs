@@ -51,11 +51,11 @@ pub(super) async fn apply(
         parts.proof,
     )
     .await
-    .map_err(budget)?;
+    .map_err(|error| budget(parts.proof, error))?;
     state
         .view()
         .verify(&parts.expected.key, parts.proof)
-        .map_err(budget)?;
+        .map_err(|error| budget(parts.proof, error))?;
     let consumer = Box::pin(super::super::initial_consumer::check_birth(
         tx,
         parts,
@@ -103,7 +103,7 @@ async fn change(
                     Box::pin(store.pending_initial_fresh(tx, parts.original, parts.proof)).await?;
                     write::persist(tx, &delta, parts.proof)
                         .await
-                        .map_err(budget)?;
+                        .map_err(|error| budget(parts.proof, error))?;
                     super::super::initial_consumer::open(tx, parts, prefix, &record, consumer)
                         .await?;
                     PendingInitialNativeReply::opened(record, parts.proof)?
@@ -134,7 +134,7 @@ async fn change(
                 CloseDecision::Publish { record, delta } => {
                     write::persist(tx, &delta, parts.proof)
                         .await
-                        .map_err(budget)?;
+                        .map_err(|error| budget(parts.proof, error))?;
                     PendingInitialNativeReply::closed(record, parts.proof)?
                 }
                 CloseDecision::Replayed(record) => {
@@ -160,7 +160,7 @@ async fn complete(
     state
         .view()
         .verify(&parts.expected.key, parts.proof)
-        .map_err(budget)?;
+        .map_err(|error| budget(parts.proof, error))?;
     if state
         .epoch
         .as_ref()
@@ -169,13 +169,16 @@ async fn complete(
         return Err(Error::SemanticConflict.into());
     }
     Ok(if let Some(close) = &state.close {
-        parts.proof.measure(close).map_err(|_| Error::Capacity)?;
+        parts
+            .proof
+            .measure(close)
+            .map_err(|error| super::budget(parts.proof, error))?;
         PendingInitialNativeReply::closed(close.clone(), parts.proof)?
     } else if let Some(assignment) = &state.assignment {
         parts
             .proof
             .measure(assignment)
-            .map_err(|_| Error::Capacity)?;
+            .map_err(|error| super::budget(parts.proof, error))?;
         PendingInitialNativeReply::already_published(assignment.clone(), parts.proof)?
     } else {
         let opened = parts.opened.ok_or(Error::InvalidTransition)?;
@@ -199,7 +202,7 @@ async fn complete(
         let delta = prepare_assignment(&call, &assignment, state.view(), parts.proof)?;
         write::persist(tx, &delta, parts.proof)
             .await
-            .map_err(budget)?;
+            .map_err(|error| budget(parts.proof, error))?;
         publish_origin(tx, &assignment, &first, parts.proof).await?;
         let actual = EnrolledInitialData {
             completion,

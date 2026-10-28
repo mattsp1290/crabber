@@ -335,7 +335,7 @@ pub(super) async fn lookup_receipt_with_proof(
     key: &AdmissionKey,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<AdmissionReceipt>, StoreError> {
-    super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|_| StoreError::Conflict)?;
+    super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2").bind(&session.0).bind(key.as_str()), proof).await.map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
     lookup_receipt(tx, session, key).await
 }
 pub(super) async fn lookup_receipt(

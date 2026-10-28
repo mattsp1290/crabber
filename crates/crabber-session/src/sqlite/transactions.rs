@@ -72,7 +72,7 @@ impl SqliteStore {
         let birth = caller.birth();
         caller
             .input_request(request, read_proof)
-            .map_err(|_| StoreError::Conflict)?;
+            .map_err(|error| read_proof.admission_failure(&error, StoreError::Conflict))?;
         guard.verify(request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;
@@ -103,11 +103,17 @@ impl SqliteStore {
         )
         .await
         .map_err(|error| {
-            if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
-                StoreError::SessionIdentityMismatch
-            } else {
-                StoreError::Validation("session ownership proof unavailable".into())
-            }
+            read_proof.admission_read(
+                error,
+                |error| {
+                    if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                        StoreError::SessionIdentityMismatch
+                    } else {
+                        StoreError::Validation("session ownership proof unavailable".into())
+                    }
+                },
+                StoreError::Validation("session ownership proof unavailable".into()),
+            )
         })?;
         let existing = super::admission_reads::session(tx, &session_id, read_proof).await?;
         let had_session = existing.is_some();

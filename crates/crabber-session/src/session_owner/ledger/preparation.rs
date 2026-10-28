@@ -10,26 +10,32 @@ impl Ledger {
         &self,
         grant: &crate::session_owner::preparation::PreparationGrant,
         proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(), Error> {
+    ) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
         let session = &grant.original_reservation().owner.binding.session_id;
         proof
             .measure(&self.contexts.get(session))
-            .map_err(|_| Error::Capacity)?;
+            .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
         for (key, value) in self.records.iter().filter(|((s, _), _)| s == session) {
-            proof.measure(&(key, value)).map_err(|_| Error::Capacity)?;
+            proof
+                .measure(&(key, value))
+                .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
         }
         for (key, value) in self.audits.iter().filter(|((s, _), _)| s == session) {
-            proof.measure(&(key, value)).map_err(|_| Error::Capacity)?;
+            proof
+                .measure(&(key, value))
+                .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
         }
         for (key, value) in self.publications.iter().filter(|((s, _), _)| s == session) {
-            proof.measure(&(key, value)).map_err(|_| Error::Capacity)?;
+            proof
+                .measure(&(key, value))
+                .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
         }
         proof
             .charge(
                 (crate::session_owner::preparation::proof::MAX_PUBLICATIONS + 1)
                     * std::mem::size_of::<&super::Audit>(),
             )
-            .map_err(|_| Error::Capacity)?;
+            .map_err(crate::public_session::v2::proof::ReadError::capacity)?;
         Ok(())
     }
     pub(crate) fn verify_preparation_with_proof<'a>(
@@ -38,9 +44,13 @@ impl Ledger {
         revision: RevisionState,
         now: OffsetDateTime,
         proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<crate::session_owner::preparation::proof::VerifiedPreparation<'a>, Error> {
+    ) -> Result<
+        crate::session_owner::preparation::proof::VerifiedPreparation<'a>,
+        crate::public_session::v2::proof::ReadError<Error>,
+    > {
         self.preflight_preparation(grant, proof)?;
         self.verify_preparation(grant, revision, now)
+            .map_err(Into::into)
     }
     pub fn verify_preparation_join(
         &self,

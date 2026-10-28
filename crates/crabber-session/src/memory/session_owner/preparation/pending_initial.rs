@@ -14,9 +14,9 @@ use crate::session_owner::{
         JoinedPreparation, PreparationCommitError, PreparationCompletion, PreparedOperation,
     },
 };
-fn failure(error: &Failure) -> PreparationCommitError {
+fn failure(proof: &Proof, error: &Failure) -> PreparationCommitError {
     match error {
-        Failure::Limited(_) => Error::Capacity.into(),
+        Failure::Limited(_) => proof.admission_failure(error, PreparationCommitError::Owner(Error::Capacity)),
         Failure::Error(_) => Error::UnknownStoreOutcome.into(),
     }
 }
@@ -29,7 +29,7 @@ impl MemoryStore {
     ) -> Result<(), PreparationCommitError> {
         state
             .session_owners
-            .preflight_preparation(original.observed_grant(), proof)?;
+            .preflight_preparation(original.observed_grant(), proof).map_err(|error| crate::session_owner::preparation::inspection::read_error(proof, error))?;
         match original.observed_operation() {
             PreparedOperation::Admit(bound) => {
                 crate::memory::admission::selected(state, &bound.request, None, proof)?;
@@ -55,7 +55,7 @@ impl MemoryStore {
             ),
             self.clock.now(),
             proof,
-        )?;
+        ).map_err(|error| crate::session_owner::preparation::inspection::read_error(proof, error))?;
         verified.bind_observed_operation(original)?;
         Ok(())
     }
@@ -81,7 +81,7 @@ impl MemoryStore {
             before,
             self.clock.now(),
             proof,
-        )?;
+        ).map_err(|error| crate::session_owner::preparation::inspection::read_error(proof, error))?;
         verified.bind_observed_operation(original)?;
         state
             .session_owners
@@ -100,7 +100,7 @@ impl MemoryStore {
     ) -> Result<EnrolledInitialData, PreparationCommitError> {
         call.selected()
             .verify(original, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         let verified = self.join_pending_initial(state, original, proof)?;
         let guard = crate::queue::AdmissionGuard::Preparation(&verified);
         let (completion, first) = match original.observed_operation() {
@@ -163,17 +163,17 @@ impl MemoryStore {
         let view = state
             .pending_initial
             .selected(&call.correlation().key, &call.correlation().identity, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         let delta = protocol::prepare_assignment(call, &assignment, view, proof)?;
         state
             .pending_initial
             .publish(delta, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         crate::memory::native_enrollment::publish_pending_birth(state, &assignment, &first, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         proof
             .charge(std::mem::size_of::<EnrolledInitialData>())
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         Ok(EnrolledInitialData {
             completion,
             first,
@@ -189,11 +189,11 @@ impl MemoryStore {
     ) -> Result<Option<ActualRawMetadata>, PreparationCommitError> {
         selected
             .verify(original, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         let grant = original.observed_grant();
         let metadata = grant.reconciliation()?;
         let key = (metadata.session_id, metadata.join_id);
-        proof.measure(&key).map_err(|error| failure(&error))?;
+        proof.measure(&key).map_err(|error| failure(proof, &error))?;
         let Some(run) = state.preparation_admission_joins.get(&key) else {
             if state.session_owners.source_audit(&key.0, &key.1).is_some() {
                 return Err(Error::UnknownStoreOutcome.into());
@@ -207,9 +207,9 @@ impl MemoryStore {
             }
             return Ok(None);
         };
-        proof.measure(run).map_err(|error| failure(&error))?;
+        proof.measure(run).map_err(|error| failure(proof, &error))?;
         match crate::memory::native_enrollment::original(state, &key.0, run, proof)
-            .map_err(|error| failure(&error))?
+            .map_err(|error| failure(proof, &error))?
         {
             crate::native_enrollment::Status::Pending => return Ok(None),
             crate::native_enrollment::Status::Legacy => return Err(Error::Unsupported.into()),
@@ -217,19 +217,19 @@ impl MemoryStore {
         }
         let (session, issuer, witness, sources) =
             super::super::drivers::sources_read(state, run, proof)
-                .map_err(|e| failure(&e.public()))?;
+                .map_err(|e| failure(proof, &e.public()))?;
         witness.verify_sources(session, issuer, &sources)?;
         state.session_owners.verify_preparation_join(grant)?;
         let source = state
             .native_run_sources
             .get(&(key.0.clone(), run.clone(), 1))
             .ok_or(Error::UnknownStoreOutcome)?;
-        proof.measure(source).map_err(|error| failure(&error))?;
+        proof.measure(source).map_err(|error| failure(proof, &error))?;
         source
             .verify(issuer)
             .map_err(|_| Error::UnknownStoreOutcome)?;
         let first = initial::FirstPublication::capture(issuer, source, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         let raw = match original.observed_operation() {
             PreparedOperation::Admit(bound) => {
                 bound.binding.validate(&bound.request)?;
@@ -240,7 +240,7 @@ impl MemoryStore {
                     RawInitialReceipt::Unkeyed(&receipt),
                     proof,
                 )
-                .map_err(|error| failure(&error))?
+                .map_err(|error| failure(proof, &error))?
             }
             PreparedOperation::AdmitKeyed(bound) => {
                 bound.binding.validate_keyed(&bound.keyed)?;
@@ -248,7 +248,7 @@ impl MemoryStore {
                     .receipts
                     .get(&(key.0.clone(), bound.keyed.options.key.clone()))
                     .ok_or(Error::UnknownStoreOutcome)?;
-                proof.measure(receipt).map_err(|error| failure(&error))?;
+                proof.measure(receipt).map_err(|error| failure(proof, &error))?;
                 if receipt.run_id != *run
                     || receipt.semantic_digest != bound.keyed.validated_digest()?
                     || receipt.fingerprint != bound.keyed.options.fingerprint
@@ -256,7 +256,7 @@ impl MemoryStore {
                     return Err(Error::SemanticConflict.into());
                 }
                 let init = super::super::drivers::initial_journal_read(state, run, issuer, proof)
-                    .map_err(|e| failure(&e.public()))?;
+                    .map_err(|e| failure(proof, &e.public()))?;
                 let execution = bound.keyed.execution.as_ref().ok_or(Error::Unsupported)?;
                 init.verify_capsule(receipt, &bound.keyed.options.key, execution)?;
                 ActualRawMetadata::from_original(
@@ -265,7 +265,7 @@ impl MemoryStore {
                     RawInitialReceipt::Keyed(receipt),
                     proof,
                 )
-                .map_err(|error| failure(&error))?
+                .map_err(|error| failure(proof, &error))?
             }
             _ => return Err(Error::Unsupported.into()),
         };
@@ -286,13 +286,13 @@ fn retain(
             &admitted.run.session_id,
             &user.id,
         ))
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| failure(proof, &error))?;
     let retained = crate::RetainedExecutionBinding::new(&admitted.run, user, binding.clone());
-    proof.measure(&retained).map_err(|error| failure(&error))?;
+    proof.measure(&retained).map_err(|error| failure(proof, &error))?;
     let encoded = retained.encode()?;
     proof
         .measure(&admitted.run.id)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| failure(proof, &error))?;
     state
         .execution_bindings
         .insert(admitted.run.id.clone(), encoded);

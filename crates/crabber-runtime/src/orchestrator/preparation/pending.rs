@@ -5,7 +5,7 @@ mod factory;
 pub(in crate::orchestrator) mod main;
 #[path = "pending/supervise.rs"]
 mod supervise;
-use super::{DurablePreparation, Orchestrator, RuntimeError, retained};
+use super::{DurablePreparation, Orchestrator, RuntimeError, incomplete, retained};
 use crate::orchestrator::{RunHandle, worker};
 use crabber_core::{AdmissionReceipt, SessionContext};
 use crabber_session::session_owner::{
@@ -236,7 +236,9 @@ impl Orchestrator {
             }
             drop(context);
         };
-        let shared = pending.register_main(self, context, original, body)?;
+        let shared = pending
+            .register_main(self, context, original, body)
+            .map_err(|error| incomplete(descriptor.clone(), error))?;
         let mut caller = CancelOnDrop {
             pending: pending.clone(),
             armed: true,

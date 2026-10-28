@@ -15,7 +15,9 @@ pub(in super::super) async fn record_admission(
     if !guard.has_owned_resources() {
         return Ok(None);
     }
-    read_proof.measure(&(session, run)).map_err(invalid)?;
+    read_proof
+        .measure(&(session, run))
+        .map_err(|error| read_proof.admission_failure(&error, invalid("proof budget")))?;
     let preparation = guard.preparation().ok_or(StoreError::Conflict)?;
     let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
         .bind(&session.id.0)
@@ -26,9 +28,13 @@ pub(in super::super) async fn record_admission(
     let witness = Witness::from_preparation(preparation, session, run, revision)
         .map_err(invalid)?
         .ok_or(StoreError::Conflict)?;
-    read_proof.measure(&witness).map_err(invalid)?;
+    read_proof
+        .measure(&witness)
+        .map_err(|error| read_proof.admission_failure(&error, invalid("proof budget")))?;
     let issuance = witness.initial_issuance(run).map_err(invalid)?;
-    read_proof.measure(&issuance).map_err(invalid)?;
+    read_proof
+        .measure(&issuance)
+        .map_err(|error| read_proof.admission_failure(&error, invalid("proof budget")))?;
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_run_issuances WHERE run_id=$1)")
             .bind(&run.id.0)
@@ -45,7 +51,7 @@ pub(in super::super) async fn record_admission(
         tx, &issuance, read_proof, birth,
     )
     .await
-    .map_err(invalid)?
+    .map_err(|error| read_proof.admission_read(error, invalid, invalid("proof budget")))?
     .first
     .ok_or(StoreError::Conflict)?;
     sqlx::query(

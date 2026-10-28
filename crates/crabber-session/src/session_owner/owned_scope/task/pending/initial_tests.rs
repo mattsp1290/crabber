@@ -295,7 +295,7 @@ async fn initial_and_successor_share_one_capacity_and_original_tag_observation()
             initial,
             |_, _| async {}
         ),
-        Err(Error::Capacity)
+        Err(crate::session_owner::preparation::PreparationCommitError::Owner(Error::Capacity))
     ));
     let first = tasks.last_mut().unwrap();
     // A malformed private facade tag cannot consume/release the raw actual

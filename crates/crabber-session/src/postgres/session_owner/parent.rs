@@ -28,7 +28,8 @@ pub(super) async fn proof(
             &authority.target().id,
             proof,
         )
-        .await?;
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         super::invocation::verify(tx, &original, proof).await?;
         let witness = crate::session_owner::invocation_parent::fresh(
             request, &original, authority, now, proof,

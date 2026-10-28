@@ -462,8 +462,65 @@ impl Default for ByteLimits {
     }
 }
 
+/// Finite admission resources checked before provider dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionLimitKind {
+    /// Aggregate bytes materialized while proving admission evidence.
+    ProofBytes,
+}
+impl AdmissionLimitKind {
+    /// Finite diagnostic label, safe to export without source content.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProofBytes => "proof_bytes",
+        }
+    }
+}
+/// An admission proof allowance was exhausted.
+///
+/// This allowance counts repeated carrier materialization, not raw prompt bytes.
+/// Model output or turn limits do not change it. This error does not establish
+/// rollback or successful cleanup. Preparation reconciliation remains necessary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmissionLimit {
+    kind: AdmissionLimitKind,
+    limit_bytes: Option<u64>,
+}
+impl AdmissionLimit {
+    /// Creates metadata from the authoritative proof cap, when available.
+    #[must_use]
+    pub const fn proof_bytes(limit_bytes: Option<u64>) -> Self {
+        Self {
+            kind: AdmissionLimitKind::ProofBytes,
+            limit_bytes,
+        }
+    }
+    /// The finite admission resource whose allowance was exhausted.
+    #[must_use]
+    pub const fn kind(&self) -> AdmissionLimitKind {
+        self.kind
+    }
+    /// The authoritative bounded proof cap, when representable as bytes.
+    #[must_use]
+    pub const fn limit_bytes(&self) -> Option<u64> {
+        self.limit_bytes
+    }
+}
+impl fmt::Display for AdmissionLimit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("admission proof-byte allowance exhausted")?;
+        if let Some(bytes) = self.limit_bytes {
+            write!(f, " (limit {bytes} bytes)")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CoreError {
+    #[error("{0}")]
+    AdmissionLimit(AdmissionLimit),
     #[error("invalid input: {0}")]
     Validation(String),
     #[error("limit exceeded: {0}")]
@@ -494,10 +551,19 @@ pub enum CoreError {
     PendingInput,
 }
 impl CoreError {
+    /// Typed admission allowance metadata without source data.
+    #[must_use]
+    pub fn admission_limit(&self) -> Option<&AdmissionLimit> {
+        match self {
+            Self::AdmissionLimit(limit) => Some(limit),
+            _ => None,
+        }
+    }
     /// Returns a finite diagnostic category without error content.
     #[must_use]
     pub fn error_kind(&self) -> &'static str {
         match self {
+            Self::AdmissionLimit(..) => "admission_limit",
             Self::Validation(..) => "validation",
             Self::Limit(..) => "limit",
             Self::Conflict => "conflict",
@@ -645,5 +711,33 @@ pub mod event_payload {
     pub struct MessageCommitted {
         pub message_id: MessageId,
         pub role: Role,
+    }
+}
+
+#[cfg(test)]
+mod admission_limit_tests {
+    use super::*;
+
+    #[test]
+    fn finite_admission_limit_has_content_free_diagnostics() {
+        let error = CoreError::AdmissionLimit(AdmissionLimit::proof_bytes(Some(33_554_432)));
+        assert_eq!(error.error_kind(), "admission_limit");
+        let limit = error.admission_limit().unwrap();
+        assert_eq!(limit.kind(), AdmissionLimitKind::ProofBytes);
+        assert_eq!(limit.kind().as_str(), "proof_bytes");
+        assert_eq!(limit.limit_bytes(), Some(33_554_432));
+        assert_eq!(
+            error.to_string(),
+            "admission proof-byte allowance exhausted (limit 33554432 bytes)"
+        );
+        assert!(
+            CoreError::Validation("ordinary input".into())
+                .admission_limit()
+                .is_none()
+        );
+        assert_eq!(
+            AdmissionLimit::proof_bytes(None).to_string(),
+            "admission proof-byte allowance exhausted"
+        );
     }
 }

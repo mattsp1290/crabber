@@ -28,7 +28,7 @@ impl PostgresStore {
             let root = reads::current(&mut tx, &link.session_id, &link.root.id).await?;
             reads::preparation_order(&mut tx, &grant).await?;
             let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
-            let audits = reads::preparation_audits(&mut tx, &link.session_id, &link.root.id, None, &mut read_proof).await?;
+            let audits = reads::preparation_audits(&mut tx, &link.session_id, &link.root.id, None, &mut read_proof).await.map_err(crate::public_session::v2::proof::ReadError::owner)?;
             self.preparation_source_context(&mut tx, grant.original_reservation(), &mut read_proof).await?;
             let current = revision(&mut tx, &link.session_id).await?;
             let now = self.clock.now();

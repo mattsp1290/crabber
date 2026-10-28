@@ -68,7 +68,7 @@ pub(super) async fn context_with_proof(
     workspace: &str,
     directory: &str,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), Error> {
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
     reads::context_with_proof(tx, session, workspace, directory, proof).await
 }
 pub(super) async fn context(
@@ -320,7 +320,8 @@ impl SqliteStore {
             &mut crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024),
         )
         .await
-        .map(|record| record.snapshot);
+        .map(|record| record.snapshot)
+        .map_err(crate::public_session::v2::proof::ReadError::owner);
         finish(tx, result).await
     }
     pub(super) async fn owner_receipt(
@@ -472,7 +473,9 @@ pub(super) async fn source_audit_with_proof(
     id: &SessionOwnerOperationId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<Audit>, Error> {
-    reads::audit_with_proof(tx, session, id, proof).await
+    reads::audit_with_proof(tx, session, id, proof)
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)
 }
 
 pub(in crate::sqlite) use preparation::{VerifiedTool, verify_tool};

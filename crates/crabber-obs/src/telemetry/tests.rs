@@ -515,3 +515,9 @@ async fn empty_bundle_does_not_filter_host_layers() {
     assert!(telemetry.exporter().is_none() && telemetry.provider.is_none());
     telemetry.shutdown().await.unwrap();
 }
+
+#[path = "tests/admission_limits.rs"]
+mod admission_limits;
+
+#[path = "tests/fault_store.rs"]
+mod fault_store;

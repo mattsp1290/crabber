@@ -53,12 +53,13 @@ pub(in super::super) async fn preparation_order(
         &mut crate::public_session::v2::proof::Proof::legacy(),
     )
     .await
+    .map_err(|error| error.into_domain_or(Error::Capacity))
 }
 pub(in super::super) async fn preparation_order_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     grant: &crate::session_owner::preparation::PreparationGrant,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), Error> {
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
     let request = grant.original_reservation();
     let ids = super::services::service_ids_with_proof(
         tx,
@@ -97,7 +98,7 @@ pub(in super::super) async fn preparation_order_with_proof(
         .await
         .map_err(unknown)?;
     if foreign {
-        Err(Error::RevisionConflict)
+        Err(Error::RevisionConflict.into())
     } else {
         Ok(())
     }

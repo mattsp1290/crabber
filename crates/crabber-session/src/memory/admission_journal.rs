@@ -46,7 +46,7 @@ pub(super) fn init_with_proof(
     // The caller charged this independent record immediately before its copy.
     // Charge the new Init source before receipt/key/actual issuer are copied.
     let source = admission_journal::init_with_proof(record, issuance, proof)
-        .map_err(|error| error.into_domain_or(invalid()))?;
+        .map_err(|error| proof.admission_read(error, |error| error, invalid()))?;
     source.encode()?;
     if !state.admission_execution_protocols.insert(run.id.clone())
         || state

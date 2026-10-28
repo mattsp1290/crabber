@@ -43,7 +43,8 @@ pub(super) async fn register(
         true,
         proof,
     )
-    .await?;
+    .await
+    .map_err(crate::public_session::v2::proof::ReadError::owner)?;
     let command = MutateSessionOwner {
         id: source.identities()?.begin,
         session_id: session.clone(),
@@ -68,7 +69,8 @@ pub(super) async fn register(
         false,
         proof,
     )
-    .await?;
+    .await
+    .map_err(crate::public_session::v2::proof::ReadError::owner)?;
     let receipt = super::metadata::receipt_with_proof(tx, request, proof)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;

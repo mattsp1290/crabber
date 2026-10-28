@@ -6,7 +6,10 @@ pub const POSTGRES_SCHEMA_VERSION: i32 = 25;
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
 pub const SQLITE_SCHEMA_VERSION: i64 = 20;
 
-pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
+pub use crabber_core::{
+    AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest, AdmissionLimit,
+    AdmissionLimitKind,
+};
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 #[path = "telemetry_targets.rs"]

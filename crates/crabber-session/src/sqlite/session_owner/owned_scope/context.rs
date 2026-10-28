@@ -37,7 +37,8 @@ impl crate::sqlite::SqliteStore {
                 true,
                 proof,
             ))
-            .await?
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?
             .require_resource_activation();
         }
         if record.resource.is_some() {
@@ -54,7 +55,9 @@ impl crate::sqlite::SqliteStore {
             {
                 return Err(Error::InvalidRequest);
             }
-            Box::pin(self.verify_service_preparation(tx, grant, None, false, proof)).await?;
+            Box::pin(self.verify_service_preparation(tx, grant, None, false, proof))
+                .await
+                .map_err(crate::public_session::v2::proof::ReadError::owner)?;
             return Ok(());
         }
         if record.preparation.is_some() {

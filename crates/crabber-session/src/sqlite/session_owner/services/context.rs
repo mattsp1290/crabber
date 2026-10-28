@@ -16,7 +16,7 @@ impl crate::sqlite::SqliteStore {
         activating: Option<&SessionOwnerTarget>,
         strict: bool,
         proof: &mut Proof,
-    ) -> Result<VerifiedPreparation<'a>, Error> {
+    ) -> Result<VerifiedPreparation<'a>, crate::public_session::v2::proof::ReadError<Error>> {
         let original = grant.original_reservation();
         let session = &original.owner.binding.session_id;
         verify_owner(tx, session, &original.owner.binding.id, strict, proof).await?;
@@ -55,7 +55,8 @@ impl crate::sqlite::SqliteStore {
                 &audits,
                 current,
                 self.clock.now(),
-            );
+            )
+            .map_err(Into::into);
         }
         crate::session_owner::preparation::proof::verify_with_services(
             grant,
@@ -66,6 +67,7 @@ impl crate::sqlite::SqliteStore {
             self.clock.now(),
             requirement,
         )
+        .map_err(Into::into)
     }
 }
 
@@ -75,17 +77,14 @@ async fn verify_owner(
     id: &crabber_core::SessionOwnerId,
     strict: bool,
     proof: &mut Proof,
-) -> Result<(), Error> {
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
     super::super::public::preflight(tx, session, &id.0, proof)
         .await
-        .map_err(|error| match error {
-            crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
-            crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
-        })?;
+        .map_err(crate::public_session::v2::proof::ReadError::Budget)?;
     if strict {
         super::super::protocol::require(tx, session, id, proof)
             .await
-            .map_err(|error| error.into_domain_or(Error::Capacity))?;
+            .map_err(crate::public_session::v2::proof::ReadError::capacity_fallback)?;
     }
     Ok(())
 }

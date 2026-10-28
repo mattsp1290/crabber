@@ -26,7 +26,13 @@ impl MemoryStore {
         state
             .session_owners
             .preflight_preparation(joined.observed_grant(), proof)
-            .map_err(storage_error)?;
+            .map_err(|error| {
+                proof.admission_read(
+                    error,
+                    storage_error,
+                    StoreError::Validation("preparation ownership proof unavailable".into()),
+                )
+            })?;
         let selected = queue::before(state, joined, proof, self.clock.now())?;
         if matches!(selected, queue::Before::Replayed(_)) {
             return Ok(selected);
@@ -34,7 +40,14 @@ impl MemoryStore {
         match joined.observed_operation() {
             crate::session_owner::preparation::PreparedOperation::AdmissionRecovery(recovery) => {
                 crate::native_enrollment::caller::measure_recovery_source(&recovery.source, proof)
-                    .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
+                    .map_err(|error| {
+                        proof.admission_failure(
+                            &error,
+                            crate::session_owner::preparation::PreparationCommitError::Owner(
+                                crate::session_owner::SessionOwnerError::Capacity,
+                            ),
+                        )
+                    })?;
                 crate::memory::admission_execution::validate_source_with_proof(
                     state,
                     &recovery.source,
@@ -45,13 +58,13 @@ impl MemoryStore {
             crate::session_owner::preparation::PreparedOperation::Admit(bound) => {
                 proof
                     .measure(&(&bound.request, &bound.binding))
-                    .map_err(|_| StoreError::Conflict)?;
+                    .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
                 crate::memory::admission::selected(state, &bound.request, None, proof)?;
             }
             crate::session_owner::preparation::PreparedOperation::AdmitKeyed(bound) => {
                 proof
                     .measure(&(&bound.keyed, &bound.binding))
-                    .map_err(|_| StoreError::Conflict)?;
+                    .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
                 crate::memory::admission::selected(
                     state,
                     &bound.keyed.request,

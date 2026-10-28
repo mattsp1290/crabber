@@ -33,7 +33,10 @@ pub(in crate::sqlite) async fn selected(
         &ids.activated,
     ] {
         let audit = super::super::reads::audit_with_proof(tx, session, id, proof)
-            .await?
+            .await
+            .map_err(|error| {
+                crate::session_owner::preparation::inspection::read_error(proof, error)
+            })?
             .ok_or(Error::UnknownStoreOutcome)?;
         // selected() deliberately permits honest legacy metadata. This producer
         // requires an actual independently protected publication, never that fallback.
@@ -42,7 +45,9 @@ pub(in crate::sqlite) async fn selected(
         }
         super::super::protocol::selected(tx, &audit, proof)
             .await
-            .map_err(|error| crate::session_owner::preparation::inspection::read_error(&error))?;
+            .map_err(|error| {
+                crate::session_owner::preparation::inspection::read_error(proof, error)
+            })?;
         values.push(audit);
     }
     values

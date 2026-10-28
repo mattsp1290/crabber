@@ -32,7 +32,8 @@ impl PostgresStore {
                 request.operation_id(),
                 &mut proof,
             )
-            .await?
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?
             {
                 if audit.receipt.semantic_digest != digest
                     || audit.receipt.operation != SessionOwnerOperation::ActivateScope
@@ -51,7 +52,8 @@ impl PostgresStore {
                 &request.source.reserve,
                 &mut proof,
             )
-            .await?
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?
             .ok_or(Error::UnknownStoreOutcome)?;
             let begin = reads::audit_with_proof(
                 &mut tx,
@@ -59,7 +61,8 @@ impl PostgresStore {
                 &request.source.begin,
                 &mut proof,
             )
-            .await?
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?
             .ok_or(Error::UnknownStoreOutcome)?;
             source::verify(&request.source, &record, &reserve, &begin)?;
             Box::pin(self.owned_scope_context(
@@ -87,7 +90,8 @@ impl PostgresStore {
                 false,
                 &mut proof,
             )
-            .await?;
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?;
             #[cfg(test)]
             crate::session_owner_contract::process::pause("scope-before");
             before(self)?;
@@ -143,7 +147,9 @@ impl PostgresStore {
         }
         reads::scope(tx, &request.session_id).await?;
         let mut record =
-            reads::current_with_proof(tx, &request.session_id, &request.target.id, budget).await?;
+            reads::current_with_proof(tx, &request.session_id, &request.target.id, budget)
+                .await
+                .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         let activation = proof.activation();
         let reserve = super::drivers::selected_consumer_audit(
             tx,
@@ -193,7 +199,8 @@ impl PostgresStore {
         let actual = Box::pin(reads::publish_captured_with_proof(
             tx, &audit, false, budget,
         ))
-        .await?;
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         Ok((
             SessionOwnerOutcome::Applied {
                 receipt,

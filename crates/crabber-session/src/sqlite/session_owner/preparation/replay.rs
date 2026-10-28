@@ -143,9 +143,14 @@ impl super::super::SqliteStore {
         .await?
         .is_some()
         {
-            proof
-                .measure(&bound.keyed)
-                .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
+            proof.measure(&bound.keyed).map_err(|error| {
+                proof.admission_failure(
+                    &error,
+                    crate::session_owner::preparation::PreparationCommitError::Owner(
+                        crate::session_owner::SessionOwnerError::Capacity,
+                    ),
+                )
+            })?;
             let outcome = self
                 .admit_keyed_guarded_with_proof(
                     tx,
@@ -162,7 +167,7 @@ impl super::super::SqliteStore {
                     proof,
                 )
                 .await
-                .map_err(|error| error.into_domain_or(StoreError::Conflict))?
+                .map_err(|error| proof.admission_read(error, |error| error, StoreError::Conflict))?
                 .is_none_or(|saved| saved.capsule != bound.binding)
             {
                 return Err(StoreError::AdmissionConflict.into());
@@ -223,5 +228,73 @@ impl super::super::SqliteStore {
             _ => (),
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod proof_limit_tests {
+    use super::*;
+    use crate::session_owner::preparation_contract::resources;
+    use crate::{Store, public_session::v2::proof::Proof};
+
+    #[tokio::test]
+    async fn keyed_admission_replay_preserves_carrier_and_binding_read_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyed-replay-limits.sqlite");
+        crate::SqliteStore::migrate(&path).await.unwrap();
+        let store = crate::SqliteStore::connect(&path).await.unwrap();
+        let (root, bound) = resources::declaration::setup(&store).await;
+        let original = resources::initial_driver_observation(
+            &store,
+            root,
+            PreparedOperation::AdmitKeyed(Box::new(bound)),
+        )
+        .await;
+        let result = Store::complete_preparation(&store, original.clone())
+            .await
+            .unwrap();
+        assert!(!result.is_replayed());
+        let PreparedOperation::AdmitKeyed(bound) = original.observed_operation() else {
+            unreachable!()
+        };
+        let session = bound.keyed.request.session_id.as_ref().unwrap();
+        let revision = store.session_revision(session).await.unwrap();
+        let mut tx = store.begin_write().await.unwrap();
+        let mut receipt = Proof::bounded(32 << 20);
+        super::super::super::super::records::lookup_receipt_with_proof(
+            &mut tx,
+            session,
+            &bound.keyed.options.key,
+            &mut receipt,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut full = Proof::bounded(32 << 20);
+        assert!(
+            store
+                .replay_keyed(&mut tx, bound, &mut full)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_replayed()
+        );
+        for cap in [receipt.used(), full.used() - 1] {
+            let error = store
+                .replay_keyed(&mut tx, bound, &mut Proof::bounded(cap))
+                .await
+                .err()
+                .unwrap();
+            let crate::session_owner::preparation::PreparationCommitError::Store(error) = error
+            else {
+                panic!("typed keyed replay proof limit");
+            };
+            assert_eq!(
+                error.admission_limit().unwrap().limit_bytes(),
+                Some(u64::try_from(cap).unwrap())
+            );
+        }
+        tx.rollback().await.unwrap();
+        assert_eq!(store.session_revision(session).await.unwrap(), revision);
     }
 }

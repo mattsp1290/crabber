@@ -46,8 +46,9 @@ impl PostgresStore {
             record: record.clone(),
             publication: Some(publication),
         };
-        let reserve_audit =
-            reads::publish_captured_with_proof(tx, &reserve_audit, true, proof).await?;
+        let reserve_audit = reads::publish_captured_with_proof(tx, &reserve_audit, true, proof)
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         let command = crate::session_owner::MutateSessionOwner {
             id: request.identities()?.begin,
             session_id: request.context.session_id().clone(),
@@ -67,8 +68,9 @@ impl PostgresStore {
             record,
             publication: Some(publication),
         };
-        let begin_audit =
-            reads::publish_captured_with_proof(tx, &begin_audit, false, proof).await?;
+        let begin_audit = reads::publish_captured_with_proof(tx, &begin_audit, false, proof)
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         let receipt = ExecutionDriverReceipt {
             session_id: request.context.session_id().clone(),
             run_id: request.fence.run_id.clone(),
@@ -117,7 +119,9 @@ impl PostgresStore {
             record,
             publication: Some(publication),
         };
-        let audit = reads::publish_captured_with_proof(tx, &audit, false, proof).await?;
+        let audit = reads::publish_captured_with_proof(tx, &audit, false, proof)
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::owner)?;
         Ok(ActivationPublication { audit })
     }
 }

@@ -63,11 +63,15 @@ async fn publish_origin(
         &first.source,
         proof,
     )
-    .map_err(|error| inspection::read_error(&error.map_domain(|_| Error::UnknownStoreOutcome)))?;
-    let digest = origin.digest(proof).map_err(|error| {
-        inspection::read_error(&error.map_domain(|_| Error::UnknownStoreOutcome))
+    .map_err(|error| {
+        inspection::read_error(proof, error.map_domain(|_| Error::UnknownStoreOutcome))
     })?;
-    proof.measure(&origin).map_err(|_| Error::Capacity)?;
+    let digest = origin.digest(proof).map_err(|error| {
+        inspection::read_error(proof, error.map_domain(|_| Error::UnknownStoreOutcome))
+    })?;
+    proof.measure(&origin).map_err(|error| {
+        proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+    })?;
     let data = serde_json::to_string(&origin).map_err(unknown)?;
     sqlx::query("INSERT INTO native_execution_origins(session_id,run_id,first_issuer_digest,origin_digest,birth_kind,unclassified_run_id,pending_epoch,data) VALUES($1,$2,$3,$4,'pending',NULL,$5,$6)")
   .bind(&origin.session_id.0).bind(&origin.run_id.0).bind(origin.first_issuer_digest.as_str()).bind(digest.as_str()).bind(&assignment.correlation.identity.epoch.0).bind(data).execute(&mut **tx).await.map_err(unknown)?;
@@ -76,8 +80,8 @@ async fn publish_origin(
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
-fn budget(error: Failure) -> PreparationCommitError {
-    inspection::read_error(&ReadError::Budget(error))
+fn budget(proof: &Proof, error: Failure) -> PreparationCommitError {
+    inspection::read_error(proof, ReadError::Budget(error))
 }
 
 pub(super) async fn assignment_for_run(
@@ -154,7 +158,9 @@ pub(in crate::postgres) async fn refuse_raw(
         return Ok(());
     }
     let key = SourceKey::expected(original, proof)?;
-    proof.charge(1).map_err(|_| Error::Capacity)?;
+    proof.charge(1).map_err(|error| {
+        proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+    })?;
     let present:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_initial_cohorts WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_epochs WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_source_slots WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_registered_completes WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_assignments WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_closes WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_publications WHERE session_id=$1 AND source_key=$2 UNION ALL SELECT 1 FROM pending_initial_heads WHERE session_id=$1 AND source_key=$2)").bind(&key.session_id.0).bind(key.identity.as_str()).fetch_one(&mut **tx).await.map_err(unknown)?;
     if present {
         return Err(Error::Unsupported.into());

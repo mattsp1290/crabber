@@ -27,7 +27,10 @@ pub(super) async fn receipt_with_proof(
     let source = request.source()?;
     let ids = source.identities()?;
     let session = &source.root.session_id;
-    let Some(reserved) = reads::audit_with_proof(tx, session, &ids.reserve, proof).await? else {
+    let Some(reserved) = reads::audit_with_proof(tx, session, &ids.reserve, proof)
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?
+    else {
         return Ok(None);
     };
     if reserved.receipt.semantic_digest
@@ -37,13 +40,16 @@ pub(super) async fn receipt_with_proof(
         return Err(Error::SemanticConflict);
     }
     let began = reads::audit_with_proof(tx, session, &ids.begin, proof)
-        .await?
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?
         .ok_or(Error::UnknownStoreOutcome)?;
     let root_reserve = reads::audit_with_proof(tx, session, &source.root.root_reserve, proof)
-        .await?
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?
         .ok_or(Error::UnknownStoreOutcome)?;
     let root_begin = reads::audit_with_proof(tx, session, &source.root.root_begin, proof)
-        .await?
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::owner)?
         .ok_or(Error::UnknownStoreOutcome)?;
     crate::session_owner::audit::verify_current(&began.record, &reserved, &began)?;
     crate::session_owner::preparation::resource_source::verify(

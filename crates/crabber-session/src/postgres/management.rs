@@ -225,7 +225,7 @@ pub(super) async fn admission_archived_with_proof(
     id: &SessionId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<bool, crate::StoreError> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(s.id)+octet_length(s.data::text)+COALESCE(octet_length(m.workspace_id),0)+COALESCE(octet_length(m.data_json),0)+16 AS BIGINT) FROM sessions s JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&id.0),proof).await.map_err(|_|crate::StoreError::Conflict)?;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(s.id)+octet_length(s.data::text)+COALESCE(octet_length(m.workspace_id),0)+COALESCE(octet_length(m.data_json),0)+16 AS BIGINT) FROM sessions s JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&id.0),proof).await.map_err(|error| proof.admission_failure(&error, crate::StoreError::Conflict))?;
     let query = format!(
         "{} AND m.session_id IS NOT NULL",
         CURRENT.replace(

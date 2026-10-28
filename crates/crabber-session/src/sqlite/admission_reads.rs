@@ -9,7 +9,7 @@ pub(super) async fn project(
     id: &SessionId,
     proof: &mut Proof,
 ) -> Result<Vec<Message>, StoreError> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM (SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1) last_run),0)+COALESCE((SELECT SUM(length(CAST(e.data AS BLOB))) FROM epochs e WHERE e.id=(SELECT json_extract(data,'$.epoch_id') FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1)),0)+COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM messages WHERE session_id=$1),0) AS BIGINT)").bind(&id.0),proof).await.map_err(|_|StoreError::Conflict)?;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM (SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1) last_run),0)+COALESCE((SELECT SUM(length(CAST(e.data AS BLOB))) FROM epochs e WHERE e.id=(SELECT json_extract(data,'$.epoch_id') FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1)),0)+COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM messages WHERE session_id=$1),0) AS BIGINT)").bind(&id.0),proof).await.map_err(|error|proof.admission_failure(&error,StoreError::Conflict))?;
     let exists = sqlx::query("SELECT 1 FROM sessions WHERE id=$1")
         .bind(&id.0)
         .fetch_optional(&mut **tx)
@@ -79,7 +79,7 @@ pub(super) async fn session(
         proof,
     )
     .await
-    .map_err(|_| StoreError::Conflict)?;
+    .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
     let row=sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data,public_revision FROM sessions WHERE id=$1").bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
     row.map(|row| {
         let text = row
@@ -97,7 +97,7 @@ pub(super) async fn previous_epoch(
     id: &SessionId,
     proof: &mut Proof,
 ) -> Result<Option<ContextEpoch>, StoreError> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1").bind(&id.0),proof).await.map_err(|_|StoreError::Conflict)?;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1").bind(&id.0),proof).await.map_err(|error|proof.admission_failure(&error,StoreError::Conflict))?;
     let row=sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1").bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let run: Run = read(&row)?;
@@ -110,7 +110,7 @@ pub(super) async fn previous_epoch(
         proof,
     )
     .await
-    .map_err(|_| StoreError::Conflict)?;
+    .map_err(|error| proof.admission_failure(&error, StoreError::Conflict))?;
     let row=sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data FROM epochs WHERE id=$1").bind(&run.epoch_id.0).fetch_optional(&mut **tx).await.map_err(db)?;
     row.as_ref().map(read).transpose()
 }
@@ -132,12 +132,24 @@ pub(super) async fn pending(
         tx, session, proof,
     ))
     .await
-    .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
+    .map_err(|error| {
+        proof.admission_read(
+            error,
+            |_| StoreError::Validation("approval integrity failure".into()),
+            StoreError::Validation("approval integrity failure".into()),
+        )
+    })?;
     let pending = Box::pin(super::tool_continuation::pending_in_session_with_proof(
         tx, session, proof,
     ))
     .await
-    .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    .map_err(|error| {
+        proof.admission_read(
+            error,
+            |_| StoreError::Validation("invalid tool continuation evidence".into()),
+            StoreError::Validation("invalid tool continuation evidence".into()),
+        )
+    })?;
     let approval: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
     )

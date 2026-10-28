@@ -153,7 +153,8 @@ async fn publish(
         true,
         budget,
     )
-    .await?;
+    .await
+    .map_err(crate::public_session::v2::proof::ReadError::owner)?;
     let command = crate::session_owner::MutateSessionOwner {
         id: request.identities()?.begin,
         session_id: session.clone(),
@@ -178,7 +179,8 @@ async fn publish(
         false,
         budget,
     )
-    .await?;
+    .await
+    .map_err(crate::public_session::v2::proof::ReadError::owner)?;
     let receipt = SuccessorExecutionDriverReceipt {
         claim: request.claim.clone(),
         worker: ExecutionDriverReceipt {

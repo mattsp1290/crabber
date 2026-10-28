@@ -49,6 +49,11 @@ async fn joined_legacy_failure_reconciles_original_cancelled_ack_without_factory
     let mut input = request();
     input.session_id = Some(SessionId::new());
     let error = runtime.start_keyed(input, options()).await.err().unwrap();
+    assert!(error.admission_limit().is_none());
+    assert!(matches!(
+        error.operation_error(),
+        crate::RuntimeError::PreparationRecoveryRequired
+    ));
     let descriptor = error.preparation_reconciliation().unwrap().clone();
     let receipt = memory
         .lookup_session_owner(&descriptor.session_id, &descriptor.join_id)

@@ -80,11 +80,12 @@ fn checked_prefix(
     }
     Ok(())
 }
-fn capacity(error: &Failure) -> PreparationCommitError {
-    match error {
-        Failure::Limited(_) => crate::session_owner::SessionOwnerError::Capacity.into(),
-        Failure::Error(_) => crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into(),
-    }
+fn capacity(proof: &Proof, error: &Failure) -> PreparationCommitError {
+    let fallback = match error {
+        Failure::Limited(_) => crate::session_owner::SessionOwnerError::Capacity,
+        Failure::Error(_) => crate::session_owner::SessionOwnerError::UnknownStoreOutcome,
+    };
+    proof.admission_failure(error, PreparationCommitError::Owner(fallback))
 }
 pub(crate) fn prepare_open(
     prefix: &prefix::HistoricalInitialPrefix<'_>,
@@ -94,49 +95,49 @@ pub(crate) fn prepare_open(
 ) -> Result<OpenDecision, PreparationCommitError> {
     checked_prefix(prefix, expected, proof)?;
     view.verify(&expected.key, proof)
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     if let Some(epoch) = view.epoch {
         if epoch.correlation != *expected {
             return Ok(OpenDecision::Conflict);
         }
         if let Some(close) = view.close {
             return Ok(OpenDecision::Closed(
-                copied(close, proof).map_err(|error| capacity(&error))?,
+                copied(close, proof).map_err(|error| capacity(proof, &error))?,
             ));
         }
         return Ok(OpenDecision::Replayed(OpenRecord {
-            epoch: copied(epoch, proof).map_err(|error| capacity(&error))?,
+            epoch: copied(epoch, proof).map_err(|error| capacity(proof, &error))?,
             slot: copied(
                 view.slot
-                    .ok_or_else(|| capacity(&unknown("missing slot")))?,
+                    .ok_or_else(|| capacity(proof, &unknown("missing slot")))?,
                 proof,
             )
-            .map_err(|error| capacity(&error))?,
+            .map_err(|error| capacity(proof, &error))?,
             registered: copied(
                 view.registered
-                    .ok_or_else(|| capacity(&unknown("missing Complete registration")))?,
+                    .ok_or_else(|| capacity(proof, &unknown("missing Complete registration")))?,
                 proof,
             )
-            .map_err(|error| capacity(&error))?,
+            .map_err(|error| capacity(proof, &error))?,
         }));
     }
     let epoch = Epoch {
         version: 1,
-        correlation: copied(expected, proof).map_err(|error| capacity(&error))?,
+        correlation: copied(expected, proof).map_err(|error| capacity(proof, &error))?,
         kind: EpochKind::Opened,
     };
-    let epoch_digest = epoch.digest().map_err(|error| capacity(&error))?;
+    let epoch_digest = epoch.digest().map_err(|error| capacity(proof, &error))?;
     let slot = SourceSlot {
         version: 1,
-        key: copied(&expected.key, proof).map_err(|error| capacity(&error))?,
-        epoch: copied(&expected.identity.epoch, proof).map_err(|error| capacity(&error))?,
-        epoch_digest: copied(&epoch_digest, proof).map_err(|error| capacity(&error))?,
+        key: copied(&expected.key, proof).map_err(|error| capacity(proof, &error))?,
+        epoch: copied(&expected.identity.epoch, proof).map_err(|error| capacity(proof, &error))?,
+        epoch_digest: copied(&epoch_digest, proof).map_err(|error| capacity(proof, &error))?,
     };
     let registered = RegisteredComplete {
         version: 1,
-        key: copied(&expected.key, proof).map_err(|error| capacity(&error))?,
-        epoch: copied(&expected.identity.epoch, proof).map_err(|error| capacity(&error))?,
-        call: copied(&expected.identity.complete, proof).map_err(|error| capacity(&error))?,
+        key: copied(&expected.key, proof).map_err(|error| capacity(proof, &error))?,
+        epoch: copied(&expected.identity.epoch, proof).map_err(|error| capacity(proof, &error))?,
+        call: copied(&expected.identity.complete, proof).map_err(|error| capacity(proof, &error))?,
         epoch_digest,
     };
     let record = OpenRecord {
@@ -150,7 +151,7 @@ pub(crate) fn prepare_open(
         &record.slot,
         &record.registered,
     ))
-    .map_err(|error| capacity(&error))?;
+    .map_err(|error| capacity(proof, &error))?;
     let (publication, head) = append(
         &view,
         expected,
@@ -158,18 +159,18 @@ pub(crate) fn prepare_open(
         record_digest,
         proof,
     )
-    .map_err(|error| capacity(&error))?;
+    .map_err(|error| capacity(proof, &error))?;
     let delta = RecordDelta {
-        epoch: Some(copied(&record.epoch, proof).map_err(|error| capacity(&error))?),
-        slot: Some(copied(&record.slot, proof).map_err(|error| capacity(&error))?),
-        registered: Some(copied(&record.registered, proof).map_err(|error| capacity(&error))?),
+        epoch: Some(copied(&record.epoch, proof).map_err(|error| capacity(proof, &error))?),
+        slot: Some(copied(&record.slot, proof).map_err(|error| capacity(proof, &error))?),
+        registered: Some(copied(&record.registered, proof).map_err(|error| capacity(proof, &error))?),
         publication: Some(publication),
         head: Some(head),
         ..RecordDelta::default()
     };
     proof
         .charge(std::mem::size_of::<RecordDelta>())
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     Ok(OpenDecision::Publish {
         record,
         delta: Box::new(delta),
@@ -185,9 +186,9 @@ pub(crate) fn verify_complete<'a>(
     checked_prefix(prefix, expected, proof)?;
     selected
         .verify(prefix.original(), proof)
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     view.verify(&expected.key, proof)
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     let epoch = view
         .epoch
         .ok_or(crate::session_owner::SessionOwnerError::Unsupported)?;
@@ -200,7 +201,7 @@ pub(crate) fn verify_complete<'a>(
     }
     Ok(VerifiedInitialCall {
         expected,
-        epoch_digest: epoch.digest().map_err(|error| capacity(&error))?,
+        epoch_digest: epoch.digest().map_err(|error| capacity(proof, &error))?,
         selected,
     })
 }
@@ -213,21 +214,21 @@ pub(crate) fn prepare_close(
 ) -> Result<CloseDecision, PreparationCommitError> {
     checked_prefix(prefix, expected, proof)?;
     view.verify(&expected.key, proof)
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     if let Some(epoch) = view.epoch {
         if epoch.correlation != *expected {
             return Ok(CloseDecision::Conflict);
         }
         if let Some(close) = view.close {
             return Ok(CloseDecision::Replayed(
-                copied(close, proof).map_err(|error| capacity(&error))?,
+                copied(close, proof).map_err(|error| capacity(proof, &error))?,
             ));
         }
     }
     let new_epoch = if view.epoch.is_none() {
         Some(Epoch {
             version: 1,
-            correlation: copied(expected, proof).map_err(|error| capacity(&error))?,
+            correlation: copied(expected, proof).map_err(|error| capacity(proof, &error))?,
             kind: EpochKind::SealedBeforeOpen,
         })
     } else {
@@ -237,30 +238,30 @@ pub(crate) fn prepare_close(
         .epoch
         .or(new_epoch.as_ref())
         .ok_or(crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?;
-    let epoch_digest = epoch.digest().map_err(|error| capacity(&error))?;
+    let epoch_digest = epoch.digest().map_err(|error| capacity(proof, &error))?;
     let slot = if view.slot.is_none() {
         Some(SourceSlot {
             version: 1,
-            key: copied(&expected.key, proof).map_err(|error| capacity(&error))?,
-            epoch: copied(&expected.identity.epoch, proof).map_err(|error| capacity(&error))?,
-            epoch_digest: copied(&epoch_digest, proof).map_err(|error| capacity(&error))?,
+            key: copied(&expected.key, proof).map_err(|error| capacity(proof, &error))?,
+            epoch: copied(&expected.identity.epoch, proof).map_err(|error| capacity(proof, &error))?,
+            epoch_digest: copied(&epoch_digest, proof).map_err(|error| capacity(proof, &error))?,
         })
     } else {
         None
     };
     let record = CloseRecord {
         version: 1,
-        correlation: copied(expected, proof).map_err(|error| capacity(&error))?,
+        correlation: copied(expected, proof).map_err(|error| capacity(proof, &error))?,
         epoch_digest,
         outcome: match view.assignment {
             Some(a) => CloseOutcome::Assigned {
-                assignment_digest: a.digest().map_err(|error| capacity(&error))?,
+                assignment_digest: a.digest().map_err(|error| capacity(proof, &error))?,
             },
             None => CloseOutcome::NoPublication,
         },
     };
     let record_digest =
-        digest(&("crabber.pending-initial.close.v1", &record)).map_err(|error| capacity(&error))?;
+        digest(&("crabber.pending-initial.close.v1", &record)).map_err(|error| capacity(proof, &error))?;
     let (publication, head) = append(
         &view,
         expected,
@@ -268,18 +269,18 @@ pub(crate) fn prepare_close(
         record_digest,
         proof,
     )
-    .map_err(|error| capacity(&error))?;
+    .map_err(|error| capacity(proof, &error))?;
     let delta = RecordDelta {
         epoch: new_epoch,
         slot,
-        close: Some(copied(&record, proof).map_err(|error| capacity(&error))?),
+        close: Some(copied(&record, proof).map_err(|error| capacity(proof, &error))?),
         publication: Some(publication),
         head: Some(head),
         ..RecordDelta::default()
     };
     proof
         .charge(std::mem::size_of::<RecordDelta>())
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     Ok(CloseDecision::Publish {
         record,
         delta: Box::new(delta),
@@ -324,7 +325,7 @@ fn actual_assignment(
         first,
     }
     .verify(proof)
-    .map_err(|error| capacity(&error))?;
+    .map_err(|error| capacity(proof, &error))?;
     let actual = (
         &admitted.session,
         &admitted.run,
@@ -333,26 +334,26 @@ fn actual_assignment(
         &admitted.epoch,
         &admitted.prior_history,
     );
-    proof.measure(&actual).map_err(|error| capacity(&error))?;
+    proof.measure(&actual).map_err(|error| capacity(proof, &error))?;
     let result_digest = digest(&("crabber.pending-initial.actual-result.v1", actual))
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     let value = Assignment {
         version: 1,
-        correlation: copied(correlation, proof).map_err(|error| capacity(&error))?,
-        call: copied(&correlation.identity.complete, proof).map_err(|error| capacity(&error))?,
-        run_id: copied(&admitted.run.id, proof).map_err(|error| capacity(&error))?,
-        epoch_digest: copied(epoch_digest, proof).map_err(|error| capacity(&error))?,
+        correlation: copied(correlation, proof).map_err(|error| capacity(proof, &error))?,
+        call: copied(&correlation.identity.complete, proof).map_err(|error| capacity(proof, &error))?,
+        run_id: copied(&admitted.run.id, proof).map_err(|error| capacity(proof, &error))?,
+        epoch_digest: copied(epoch_digest, proof).map_err(|error| capacity(proof, &error))?,
         first_issuer_digest: copied(&first.source.issuance_digest, proof)
-            .map_err(|error| capacity(&error))?,
+            .map_err(|error| capacity(proof, &error))?,
         first_source_digest: copied(&first.source.chain_digest, proof)
-            .map_err(|error| capacity(&error))?,
+            .map_err(|error| capacity(proof, &error))?,
         result_digest,
         keyed_receipt_digest: receipt
             .map(|r| digest(&("crabber.pending-initial.keyed-result.v1", r)))
             .transpose()
-            .map_err(|error| capacity(&error))?,
+            .map_err(|error| capacity(proof, &error))?,
     };
-    bounded(&value, proof).map_err(|error| capacity(&error))?;
+    bounded(&value, proof).map_err(|error| capacity(proof, &error))?;
     Ok(value)
 }
 impl EnrolledInitialData {
@@ -365,13 +366,13 @@ impl EnrolledInitialData {
         self.assignment
             .correlation
             .validate(proof)
-            .map_err(|error| capacity(&error))?;
+            .map_err(|error| capacity(proof, &error))?;
         let epoch = Epoch {
             version: 1,
-            correlation: copied(self.correlation(), proof).map_err(|error| capacity(&error))?,
+            correlation: copied(self.correlation(), proof).map_err(|error| capacity(proof, &error))?,
             kind: EpochKind::Opened,
         };
-        let epoch_digest = epoch.digest().map_err(|error| capacity(&error))?;
+        let epoch_digest = epoch.digest().map_err(|error| capacity(proof, &error))?;
         let expected = actual_assignment(
             self.correlation(),
             &epoch_digest,
@@ -380,7 +381,7 @@ impl EnrolledInitialData {
             &self.first,
             proof,
         )?;
-        bounded(&self.assignment, proof).map_err(|error| capacity(&error))?;
+        bounded(&self.assignment, proof).map_err(|error| capacity(proof, &error))?;
         if expected != self.assignment {
             return Err(crate::session_owner::SessionOwnerError::SemanticConflict.into());
         }
@@ -394,19 +395,19 @@ pub(crate) fn prepare_assignment(
     proof: &mut Proof,
 ) -> Result<RecordDelta, PreparationCommitError> {
     view.verify(&call.correlation().key, proof)
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     let epoch = view
         .epoch
         .ok_or(crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?;
     call.selected
         .verify(call.selected.original(), proof)
-        .map_err(|error| capacity(&error))?;
+        .map_err(|error| capacity(proof, &error))?;
     if epoch.correlation != *call.correlation()
         || epoch.kind != EpochKind::Opened
         || view.assignment.is_some()
         || view.close.is_some()
         || assignment.correlation != epoch.correlation
-        || assignment.epoch_digest != epoch.digest().map_err(|error| capacity(&error))?
+        || assignment.epoch_digest != epoch.digest().map_err(|error| capacity(proof, &error))?
     {
         return Err(crate::session_owner::SessionOwnerError::InvalidTransition.into());
     }
@@ -414,12 +415,12 @@ pub(crate) fn prepare_assignment(
         &view,
         call.correlation(),
         PublicationKind::Assigned,
-        assignment.digest().map_err(|error| capacity(&error))?,
+        assignment.digest().map_err(|error| capacity(proof, &error))?,
         proof,
     )
-    .map_err(|error| capacity(&error))?;
+    .map_err(|error| capacity(proof, &error))?;
     Ok(RecordDelta {
-        assignment: Some(copied(assignment, proof).map_err(|error| capacity(&error))?),
+        assignment: Some(copied(assignment, proof).map_err(|error| capacity(proof, &error))?),
         publication: Some(publication),
         head: Some(head),
         ..RecordDelta::default()

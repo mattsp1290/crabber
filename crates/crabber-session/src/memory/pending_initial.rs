@@ -7,9 +7,11 @@ use crate::session_owner::{
     preparation::{JoinedPreparation, PreparationCommitError},
 };
 use crabber_core::SessionId;
-fn failure(error: &Failure) -> PreparationCommitError {
+fn failure(proof: &Proof, error: &Failure) -> PreparationCommitError {
     match error {
-        Failure::Limited(_) => Error::Capacity.into(),
+        Failure::Limited(_) => {
+            proof.admission_failure(error, PreparationCommitError::Owner(Error::Capacity))
+        }
         Failure::Error(_) => Error::UnknownStoreOutcome.into(),
     }
 }
@@ -67,11 +69,11 @@ pub(super) fn raw_preparation(
         return Ok(());
     }
     let key = SourceKey::expected(original, proof)?;
-    routes(state, &key.session_id, proof).map_err(|error| failure(&error))?;
+    routes(state, &key.session_id, proof).map_err(|error| failure(proof, &error))?;
     if state
         .pending_initial
         .source_claimed(&key, proof)
-        .map_err(|error| failure(&error))?
+        .map_err(|error| failure(proof, &error))?
     {
         return Err(Error::Unsupported.into());
     }

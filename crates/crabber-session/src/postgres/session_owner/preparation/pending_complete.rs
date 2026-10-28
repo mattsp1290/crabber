@@ -38,7 +38,13 @@ impl crate::postgres::PostgresStore {
             read_proof,
         ))
         .await
-        .map_err(super::storage_error)?;
+        .map_err(|error| {
+            read_proof.admission_read(
+                error,
+                super::storage_error,
+                crate::StoreError::Validation("preparation ownership proof unavailable".into()),
+            )
+        })?;
         verified.bind_observed_operation(original)?;
         verified.require_resource_activation()?;
         Ok(())
@@ -62,11 +68,25 @@ impl crate::postgres::PostgresStore {
             read_proof,
         )
         .await
-        .map_err(super::storage_error)?;
+        .map_err(|error| {
+            read_proof.admission_read(
+                error,
+                super::storage_error,
+                crate::StoreError::Validation("preparation ownership proof unavailable".into()),
+            )
+        })?;
         let mut verified =
             Box::pin(self.verify_service_preparation(tx, grant, None, true, read_proof))
                 .await
-                .map_err(super::storage_error)?;
+                .map_err(|error| {
+                    read_proof.admission_read(
+                        error,
+                        super::storage_error,
+                        crate::StoreError::Validation(
+                            "preparation ownership proof unavailable".into(),
+                        ),
+                    )
+                })?;
         verified.bind_observed_operation(original)?;
         verified.require_resource_activation()?;
         let join = crate::session_owner::preparation::proof::join_request(grant)
@@ -78,7 +98,13 @@ impl crate::postgres::PostgresStore {
             .map_err(super::storage_error)?;
         super::publish_join(tx, session, record, &join, read_proof)
             .await
-            .map_err(super::storage_error)?;
+            .map_err(|error| {
+                read_proof.admission_read(
+                    error,
+                    super::storage_error,
+                    crate::StoreError::Validation("preparation ownership proof unavailable".into()),
+                )
+            })?;
         let guard = crate::queue::AdmissionGuard::Preparation(&verified);
         let (completion, first) =
             Box::pin(self.apply_pending_initial_body(tx, original, call, guard, read_proof))
@@ -107,9 +133,7 @@ impl crate::postgres::PostgresStore {
                         read_proof,
                     )
                     .await?;
-                read_proof
-                    .measure(&bound.binding)
-                    .map_err(|_| Error::Capacity)?;
+                measure_late_binding(&bound.binding, read_proof)?;
                 super::super::super::execution_binding::save(
                     tx,
                     &crate::RetainedExecutionBinding::new(
@@ -138,9 +162,7 @@ impl crate::postgres::PostgresStore {
                 else {
                     return Err(Error::InvalidTransition.into());
                 };
-                read_proof
-                    .measure(&bound.binding)
-                    .map_err(|_| Error::Capacity)?;
+                measure_late_binding(&bound.binding, read_proof)?;
                 super::super::super::execution_binding::save(
                     tx,
                     &crate::RetainedExecutionBinding::new(
@@ -164,5 +186,56 @@ impl crate::postgres::PostgresStore {
             }
             _ => return Err(Error::Unsupported.into()),
         })
+    }
+}
+
+fn measure_late_binding(
+    binding: &crate::ExecutionBindingCapsule,
+    proof: &mut Proof,
+) -> Result<(), PreparationCommitError> {
+    proof.measure(binding).map_err(|error| {
+        proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn late_binding_refusal_preserves_keyed_and_unkeyed_proof_caps() {
+        for keyed in [false, true] {
+            let bound = crate::session_owner::preparation_contract::fixture(
+                &crabber_core::SessionId::new(),
+                crabber_core::SessionRevision::INITIAL,
+            );
+            let operation = if keyed {
+                PreparedOperation::AdmitKeyed(Box::new(bound))
+            } else {
+                PreparedOperation::Admit(Box::new(crate::BoundAdmitRequest {
+                    request: bound.keyed.request,
+                    binding: bound.binding,
+                }))
+            };
+            let binding = match &operation {
+                PreparedOperation::Admit(bound) => &bound.binding,
+                PreparedOperation::AdmitKeyed(bound) => &bound.binding,
+                _ => unreachable!(),
+            };
+            let mut full = Proof::bounded(32 << 20);
+            measure_late_binding(binding, &mut full).unwrap();
+            let cap = full.used() - 1;
+            let error = measure_late_binding(binding, &mut Proof::bounded(cap))
+                .err()
+                .unwrap();
+            let PreparationCommitError::Store(error) = error else {
+                panic!("late binding must preserve its own proof refusal");
+            };
+            assert_eq!(
+                error.admission_limit().unwrap().limit_bytes(),
+                Some(u64::try_from(cap).unwrap())
+            );
+            measure_late_binding(binding, &mut Proof::bounded(full.used())).unwrap();
+        }
     }
 }

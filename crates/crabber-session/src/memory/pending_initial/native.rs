@@ -19,11 +19,11 @@ fn selected<'a>(
     expected: &Correlation,
     proof: &mut Proof,
 ) -> Result<Bundle<'a>, PreparationCommitError> {
-    routes(state, &expected.key.session_id, proof).map_err(|error| failure(&error))?;
+    routes(state, &expected.key.session_id, proof).map_err(|error| failure(proof, &error))?;
     let view = state
         .pending_initial
         .selected(&expected.key, &expected.identity, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| failure(proof, &error))?;
     if state.pending_initial_protocols.contains_key(&expected.key) == view.empty() {
         return Err(Error::UnknownStoreOutcome.into());
     }
@@ -50,11 +50,11 @@ fn selected_consumer<'a>(
     proof: &mut Proof,
 ) -> Result<crate::native_enrollment::initial_consumer::Selection<'a>, PreparationCommitError> {
     let selected = crate::memory::initial_consumer::selected(state, expected, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| failure(proof, &error))?;
     if !selected.empty() {
         selected
             .verify_birth(birth, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         crate::memory::initial_consumer::native::verify_members(state, &selected, proof)?;
         if consumer.is_none() {
             return Err(Error::Unsupported.into());
@@ -130,7 +130,7 @@ fn published_initial_reply(
     if assignment.correlation != *expected {
         return Err(Error::SemanticConflict.into());
     }
-    proof.measure(assignment).map_err(|error| failure(&error))?;
+    proof.measure(assignment).map_err(|error| failure(proof, &error))?;
     PendingInitialNativeReply::already_published(assignment.clone(), proof).map(Some)
 }
 fn raw_completed_reply(
@@ -179,7 +179,7 @@ pub(in crate::memory) fn publish(
         // cloning; only a genuine new Open/Seal delta reaches this insertion.
         proof
             .measure(&(&slot.key, slot))
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         Some((slot.key.clone(), slot.clone()))
     } else {
         None
@@ -187,7 +187,7 @@ pub(in crate::memory) fn publish(
     state
         .pending_initial
         .publish(delta, proof)
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| failure(proof, &error))?;
     if let Some((key, slot)) = original {
         state.pending_initial_protocols.insert(key, slot);
     }
@@ -207,7 +207,7 @@ impl MemoryStore {
             crate::memory::session_owner::revision(state, &expected.key.session_id),
             self.clock.now(),
             proof,
-        )?;
+        ).map_err(|error| crate::session_owner::preparation::inspection::read_error(proof, error))?;
         verified.bind_observed_operation(original)?;
         let mut next = state.clone();
         publish(&mut next, expected, *plan.1, proof)?;
@@ -300,7 +300,7 @@ impl MemoryStore {
                 crate::native_enrollment::initial_consumer::PairedCloseDecision::Publish(plan) => {
                     publish(&mut next, expected, *plan.birth, proof)?;
                     crate::memory::initial_consumer::publish(&mut next, plan.consumer, proof)
-                        .map_err(|error| failure(&error))?;
+                        .map_err(|error| failure(proof, &error))?;
                     Ok((
                         Some(next),
                         PendingInitialNativeReply::closed(plan.record, proof)?,
@@ -372,7 +372,7 @@ impl MemoryStore {
                 )?;
                 if let Some(delta) = consumer_delta {
                     crate::memory::initial_consumer::publish(&mut next, delta, proof)
-                        .map_err(|error| failure(&error))?;
+                        .map_err(|error| failure(proof, &error))?;
                 }
                 Ok((Some(next), reply))
             }
@@ -410,7 +410,7 @@ impl MemoryStore {
                 selected, birth, &data, proof,
             )?;
             crate::memory::initial_consumer::publish(&mut next, delta, proof)
-                .map_err(|error| failure(&error))?;
+                .map_err(|error| failure(proof, &error))?;
         }
         Ok((next, PendingInitialNativeReply::completed(data)))
     }
@@ -457,7 +457,7 @@ impl MemoryStore {
             crate::memory::initial_consumer::policy::verify_unopened_retirement(
                 state, activation, proof,
             )
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         }
         if let Some(tail) = retirement {
             tail.verify_close(
@@ -487,7 +487,7 @@ impl MemoryStore {
         parts
             .selected
             .verify(original, proof)
-            .map_err(|error| failure(&error))?;
+            .map_err(|error| failure(proof, &error))?;
         let state = self.state.lock().map_err(|_| Error::UnknownStoreOutcome)?;
         crate::memory::deletion::ensure_live(&state, parts.context.session_id())
             .map_err(crate::deletion::owner_error)?;

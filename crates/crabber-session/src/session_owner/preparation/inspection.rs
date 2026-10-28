@@ -31,19 +31,23 @@ pub(crate) fn original<'a>(
             &bound.request,
             &bound.binding,
         ))
-        .map_err(|_| Error::Capacity)?;
+        .map_err(|error| {
+            proof.admission_failure(&error, PreparationCommitError::Owner(Error::Capacity))
+        })?;
     joined.verify_original_intent()?;
     Ok(bound)
 }
-pub(crate) fn read_error(error: &ReadError<Error>) -> PreparationCommitError {
+pub(crate) fn read_error(proof: &Proof, error: ReadError<Error>) -> PreparationCommitError {
     match error {
-        ReadError::Domain(error) => *error,
-        ReadError::Budget(crate::public_session::v2::proof::Failure::Limited(_)) => Error::Capacity,
-        ReadError::Budget(crate::public_session::v2::proof::Failure::Error(_)) => {
-            Error::UnknownStoreOutcome
+        ReadError::Domain(error) => error.into(),
+        ReadError::Budget(error) => {
+            let fallback = match &error {
+                crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
+                crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
+            };
+            proof.admission_failure(&error, PreparationCommitError::Owner(fallback))
         }
     }
-    .into()
 }
 
 #[cfg(test)]
