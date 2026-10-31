@@ -263,7 +263,7 @@ other examples retain their canonical native producer observations. There is
 no separate `--examples` compiler command.
 
 Both modes share these producer implementations and their order. Full keeps
-72 obligations. The retained workspace executable journals omit dependency
+73 obligations. The retained workspace executable journals omit dependency
 libraries, proc macros and graph edges. Their equality does not independently
 prove canonical transitive feature-context equivalence. These preparations
 provide no whole-check coverage or timing qualification.
