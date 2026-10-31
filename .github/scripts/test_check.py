@@ -325,6 +325,9 @@ class SharedProbeInventoryTests(unittest.TestCase):
 
 class DeadlineTests(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ, {'CRABBER_COMPILER_CACHE': 'off'})
+        environment.start()
+        self.addCleanup(environment.stop)
         (ROOT / 'target').mkdir(exist_ok=True)
         self.directory = tempfile.TemporaryDirectory(dir=ROOT / 'target')
         self.addCleanup(self.directory.cleanup)

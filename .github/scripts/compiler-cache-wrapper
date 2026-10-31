@@ -1,0 +1,18 @@
+#!/usr/bin/env -S python3 -I -S
+"""Keep fixture credentials out of compiler clients while retaining their group."""
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('compiler_cache', Path(__file__).with_name('compiler-cache.py'))
+cache = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cache)
+try:
+    descriptor = cache.validate_descriptor(Path(os.environ['CRABBER_COMPILER_CACHE_SESSION']))
+    environment = cache.compiler_environment(descriptor, os.environ)
+    executable = descriptor['executable']
+    os.execve(executable, [executable, *sys.argv[1:]], environment)
+except (ValueError, OSError, KeyError) as error:
+    raise SystemExit(f'compiler cache wrapper rejected its owner: {error}; use CRABBER_COMPILER_CACHE=off')

@@ -24,6 +24,11 @@ on:
         description: Run the three cached-source qualification cases once
         type: boolean
         default: false
+      compiler-results:
+        description: Opt-in compiler-result cache experiment, independent of Cargo target restoration
+        type: choice
+        options: ['off', local]
+        default: 'off'
 
 permissions:
   contents: read
@@ -61,6 +66,8 @@ jobs:
       - name: Set up required check
         id: check-setup
         uses: ./.github/actions/check-setup
+        with:
+          compiler-results: ${{ (inputs.compiler-results == 'local' || vars.CRABBER_COMPILER_RESULTS == 'local') && 'local' || 'off' }}
       - name: Start complete-check clock after setup
         id: budget
         env:
@@ -132,6 +139,18 @@ jobs:
             target/test-tools
             fixtures/wasm/target
           key: ${{ steps.check-setup.outputs.cache-primary-key }}
+      - name: Admit closed compiler-result publication from the canonical main writer
+        id: compiler-result-publication
+        if: always() && steps.check-setup.outcome == 'success' && env.CRABBER_COMPILER_CACHE == 'local' && github.repository == 'mattsp1290/crabber' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 -I -S .github/scripts/compiler-cache.py ci-publication "target/test-performance/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Save closed compiler-result snapshots separately from target and test receipts
+        if: always() && steps.compiler-result-publication.outputs.eligible == 'true' && github.repository == 'mattsp1290/crabber' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.check-setup.outputs.compiler-result-path }}/snapshots
+            ${{ steps.check-setup.outputs.compiler-result-path }}/latest.json
+          key: ${{ steps.check-setup.outputs.compiler-result-key }}
       - name: Preserve sanitized check, coverage and fixture reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

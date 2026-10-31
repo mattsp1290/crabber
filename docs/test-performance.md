@@ -1,5 +1,151 @@
 # Test execution and performance evidence
 
+## Compiler-result cache operations
+
+Compiler-result caching supplements the existing Cargo target snapshots. It is
+off by default. The complete measured launcher remains `check.py`, and its
+600-second budget and 20-second cleanup reserve remain unchanged. Linux is the
+supported complete-check platform. The pinned macOS tool can run isolated
+compiler diagnostics; it does not add macOS CI or complete-check support.
+
+Install the archive-digest-pinned sccache v0.19.0 tool with
+`python3 -I -S .github/scripts/compiler-cache.py install target/test-tools`.
+Select `CRABBER_COMPILER_CACHE=local` when running the Python launcher.
+`CRABBER_SCCACHE_PATH` selects an absolute installed binary with its adjacent
+`sccache.pin.json` receipt. `CRABBER_COMPILER_CACHE_DIR` selects an absolute
+user-owned directory with mode 0700. Its default is
+`$XDG_CACHE_HOME/crabber/compiler-cache`, or `$HOME/.cache/crabber/compiler-cache`
+when XDG_CACHE_HOME is absent. macOS diagnostic storage uses Library/Caches.
+Do not point it at another repository's compiler objects.
+The binary and receipt must be owned regular files with one link, no writable
+group/other bits and no symlink ancestors. Version output must match the pinned
+line byte for byte. Version and compiler identity probes use the same closed
+compiler-input policy as compilation.
+
+Local mode sets `CARGO_INCREMENTAL=0` before the launcher's outer Cargo command
+and rejects a caller's conflicting value. Off mode preserves Cargo's existing
+incremental default. A direct command must use
+`CARGO_INCREMENTAL=0 CRABBER_COMPILER_CACHE=local cargo xtask check`.
+Xtask replaces itself with the same Python owner before its schedule starts.
+Its already completed outer Cargo compilation is outside that cache session.
+The Python launcher measures the entire outer command.
+
+Each invocation copies one closed compatible snapshot into its own writable
+store and owns an original foreground storage server on a short private Unix
+socket. The 10-GiB namespace limit and 20-GiB repository snapshot limit do not
+apply to existing Cargo targets. A shared maintenance lease spans pointer
+selection and the entire import. Publication and eviction acquire that same
+lock exclusively, with a bounded wait. Imports use independent file copies.
+Symlinks, special files, incompatible manifests, oversized stores and changed
+object digests fail setup. Malformed snapshots are quarantined. A separate
+subsequent invocation can seed an empty store; there is no automatic retry.
+Eviction validates every namespace and snapshot directory, the complete closed
+manifest, entry digests and actual size before granting deletion authority.
+
+Cargo uses the repository's `compiler-cache-wrapper` as RUSTC_WRAPPER. It checks
+the original owner lease and the pinned executable digest, retains its process
+group, and execs that executable. A closed allowlist in `COMPILER_INPUTS` passes
+compiler and declared build-script inputs. Fixture URLs, provider credentials
+and unrecognized variables do not enter sccache or rustc. Nextest retains its
+runtime fixture environment. The wrapper reconstructs cache settings from the
+private descriptor and requires client-side compilation and no daemonization.
+Its policy and effective allowed compiler inputs participate in compatibility
+identity. Compilation and linker descendants stay in the timed Cargo group.
+
+The supervisor measures the storage server with other owned descendants.
+Original-server death permanently fails the invocation and prevents export,
+including when upstream fallback reports success. On normal completion,
+failure, deadline or cancellation, the owner joins clients and the server before
+publishing a closed immutable snapshot. Finalized objects from a failed check
+carry failed-check status. Cache statistics, restored producer identity,
+snapshot ID, phase costs and cleanup evidence appear in the version-2 check
+report's strict `compiler_cache` field. Objects and hits never grant test credit.
+Shutdown also rejects an original process that exits between the last health
+check and the owner's shutdown request. Only the pinned server's expected
+SIGTERM exit permits publication. Escalation or another exit status fails the
+session. Exported statistics contain fixed numeric counters, Rust hit/miss/error
+counts and non-cacheable `crate-type`, `incremental` and aggregate `other` counts.
+Server-supplied paths, scheduler names and unknown fields are excluded.
+
+Canonical Linux CI has independent target and compiler-result restore/save
+paths. Compiler-result mode remains off until correctness and paired
+performance qualification pass. A workflow dispatch can select `compiler-results`
+as `local` for an experiment. After qualification, maintainers can set the
+repository variable `CRABBER_COMPILER_RESULTS=local`. Only a push to
+`mattsp1290/crabber` on exactly `refs/heads/main` may publish a compiler-result
+snapshot. Publication requires a matching finalized invocation report and
+verified cleanup even if its check failed. PRs, forks, manual runs and other
+branches cannot publish. Private descriptors, logs, sockets, live stores and
+test receipts are excluded from compiler-result archives. Existing target
+cache publication and source-time checks retain their own rules.
+
+Native and quality diagnostics explicitly keep compiler-result caching off.
+Their existing target-cache controls and exact receipts remain independent.
+Version-2 reports require the exact off descriptor on Native receipt admission;
+unknown compiler-cache fields and modes fail. The three existing qualification
+cases retain their full schedules and qualification rules. Reports label
+target-only and combined layers, without claiming a measured benefit. Fresh
+target controls, paired total-wall comparisons, real input-change fixtures and
+Linux x64/arm64 full qualification remain rollout gates.
+
+For rollback, run
+`CRABBER_COMPILER_CACHE=off python3 -I -S .github/scripts/check.py`
+and leave `CRABBER_COMPILER_RESULTS` unset or `off` in CI. No global Cargo config,
+shared target directory, provider request or SDK pin change is required.
+
+### Fresh-target complete-check experiment
+
+Provision the pinned Rust components and `wasm32-wasip2`, ripgrep 14+, Python,
+Docker and its pinned PostgreSQL image before measuring. Existing setup commands
+install nextest with `python3 -I -S .github/scripts/install-nextest.py target/test-tools`
+and wasm-tools with `cargo install wasm-tools --version 1.261.0 --locked --root target/test-tools`.
+Install sccache as above. Keep those tool directories on PATH for the entire
+experiment and prepare dependency sources first. `--offline` is required so
+download warming cannot affect compiler-cache comparisons. This setup
+does not compile Crabber's workspace.
+
+From a clean committed source snapshot on Linux, run a pilot with:
+
+```sh
+python3 -I -S .github/scripts/qualify-compiler-cache.py \
+  --output "$PWD/target/test-performance/compiler-cache-pilot" --trials 1 --offline
+```
+
+The command creates and retains a new detached worktree. Each trial runs the
+complete Python check in off, empty-store and one planned warm-store order.
+It allocates distinct Cargo targets, retains each previous owned WASM target
+outside the next condition and preserves the same source path. Incremental is
+off in all three conditions. Every command retains the 600-second total budget,
+including target preparation, snapshot import, startup, compilation, complete
+schedule, cleanup and publication. It does not change the existing bootstrap CI
+budget or three-case qualification command.
+
+Only a bounded timeout may supply a failed off control or failed empty seed.
+The seed must have published a closed snapshot with verified cleanup. There is
+exactly one empty seed and one warm attempt per trial. The warm attempt must
+consume that seed, show a real Rust library hit and complete the full schedule
+within budget. A warm failure stops the experiment immediately without a retry.
+Other source, coverage, compilation or cleanup failures also stop it.
+
+The default is five alternating trials. Odd trials run off/empty/warm; even
+trials run empty/warm/off. The report records each trial's order. `--trials 1` is an
+unqualified diagnostic even if every condition passes. The report always keeps
+`qualified=false` because resource/limiter review, target-only/combined controls,
+the existing three qualification cases and Linux x64/arm64 trusted CI persistence
+remain separate gates. Five-trial fresh-target results require a 20% median
+total-wall reduction when all off controls finish, or all off controls timing
+out while every warm command finishes under the same limit. Mixed censoring
+does not grant performance acceptance. Reports retain every outcome and the
+first failure. Existing local incremental defaults require a separate operating
+tradeoff comparison.
+
+The explicit Linux real-tool contracts also exercise actual Cargo through
+`compiler-cache-wrapper`, using fresh targets for source, build-script input,
+environment, feature, flags, profile, macro-file content and added macro directory
+members. Run them with `CRABBER_TEST_REAL_SCCACHE` set to the installed pinned
+binary when invoking `test_compiler_cache.py`. A cache-input mismatch is a
+correctness failure and blocks rollout.
+
 ## Ten-minute follow-up
 
 The current follow-up replaces the original percentage target and historical tuple-bijection requirement with a 600-second complete-check budget and [risk-based coverage ownership](test-coverage-policy.md). Qualification is pending. The budgeted entrypoint is `python3 -I -S .github/scripts/check.py`; it wraps the full `cargo xtask check`, including real PostgreSQL, compilation, checks and cleanup. Use `cargo xtask check --lane offline` or `check-postgres` for explicitly partial developer runs. The combined schedule is under validation; the 600-second target has not passed qualification.

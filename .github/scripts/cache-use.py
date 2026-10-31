@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -22,7 +23,7 @@ started_unix_seconds command source_revision source_clean cpu_count platform pea
 peak_processes peak_threads resource_scope cpu_affinity_count physical_memory_bytes cgroup_limits profile
 cargo_profiles reason child_exit_code wall_seconds launcher_wall_seconds ended_unix_seconds budget_breached
 interrupted_signal launcher_cpu_user_seconds launcher_cpu_system_seconds cpu_user_seconds cpu_system_seconds
-cache_state phases_report end_revision end_clean timing_target_seconds coverage_scope timing_target_met qualified'''.split())
+cache_state phases_report end_revision end_clean timing_target_seconds coverage_scope timing_target_met qualified compiler_cache'''.split())
 ASSOCIATION = 'Source-trusted restore and producer correlation; cache origin is not server-attested.'
 
 
@@ -88,8 +89,12 @@ def marker(value):
     require(revision(parsed['revision']) and type(parsed['complete']) is bool, 'invalid marker identity')
     check = parsed['check']
     require(isinstance(check, dict) and not set(check) - CHECK_FIELDS, 'unexpected marker check fields')
-    require(type(check.get('version')) is int and check['version'] == 1
+    require(type(check.get('version')) is int and check['version'] in [1, 2]
             and check.get('status') in ['passed', 'failed'], 'unfinished marker check')
+    if check['version'] == 2:
+        compiler_result(check.get('compiler_cache'))
+    else:
+        require('compiler_cache' not in check, 'unexpected legacy compiler cache field')
     require(revision(check.get('source_revision')) and revision(check.get('end_revision')), 'invalid marker source')
     if parsed['complete']:
         require(check['status'] == 'passed' and check.get('child_exit_code') == 0
@@ -100,6 +105,49 @@ def marker(value):
                 'contradictory complete marker')
     return {'kind': 'complete' if parsed['complete'] else 'non-complete',
             'revision': parsed['revision'], 'check_status': check['status']}
+
+
+def compiler_result(value, off_only=False):
+    require(isinstance(value, dict) and type(value.get('version')) is int and value['version'] == 1,
+            'invalid compiler-result report version')
+    if value.get('mode') == 'off':
+        exact(value, ['version', 'mode'])
+        return
+    require(not off_only and value.get('mode') == 'local', 'Native diagnostics require compiler-result caching off')
+    exact(value, ['version', 'mode', 'namespace', 'restored', 'published', 'state', 'stats',
+                  'cleanup_verified', 'error', 'restore_seconds', 'startup_seconds', 'cleanup_seconds'])
+    require(isinstance(value['namespace'], str) and re.fullmatch('[0-9a-f]{64}', value['namespace']) is not None
+            and value['state'] in ['closed', 'failed'] and type(value['cleanup_verified']) is bool,
+            'invalid compiler-result lifecycle evidence')
+    require(value['published'] is None or (isinstance(value['published'], str)
+            and value['state'] == 'closed' and value['cleanup_verified']
+            and re.fullmatch('[0-9a-f]{32}', value['published']) is not None), 'compiler snapshot published without cleanup')
+    stats = value['stats']
+    if stats is not None:
+        counters = set('''compile_requests requests_unsupported_compiler requests_not_compile requests_not_cacheable
+        requests_executed cache_timeouts cache_read_errors non_cacheable_compilations forced_recaches cache_write_errors
+        cache_writes compilations compile_fails'''.split())
+        exact(stats, counters | {'cache_errors', 'cache_hits', 'cache_misses', 'not_cached'})
+        require(all(integer(stats[name]) for name in counters), 'invalid numeric invocation statistics')
+        for name in ['cache_errors', 'cache_hits', 'cache_misses']:
+            exact(stats[name], ['counts'])
+            exact(stats[name]['counts'], ['Rust'])
+            require(integer(stats[name]['counts']['Rust']), 'invalid Rust invocation statistics')
+        exact(stats['not_cached'], ['crate-type', 'incremental', 'other'])
+        require(all(integer(value) for value in stats['not_cached'].values()), 'invalid non-cacheable statistics')
+    require(value['error'] is None or isinstance(value['error'], str), 'invalid compiler error')
+    for name in ['restore_seconds', 'startup_seconds', 'cleanup_seconds']:
+        require(type(value[name]) in [int, float] and math.isfinite(value[name]) and value[name] >= 0,
+                'invalid compiler-cache duration')
+    restored = value['restored']
+    if restored is not None:
+        exact(restored, ['snapshot', 'check_status', 'producer', 'bytes'])
+        require(isinstance(restored['snapshot'], str) and re.fullmatch('[0-9a-f]{32}', restored['snapshot'])
+                and restored['check_status'] in ['passed', 'failed'] and integer(restored['bytes']), 'invalid compiler restore')
+        producer = restored['producer']
+        exact(producer, ['source_revision', 'source_clean'])
+        require(revision(producer['source_revision']) and type(producer['source_clean']) is bool,
+                'invalid compiler snapshot producer')
 
 
 def source_manifest(value):

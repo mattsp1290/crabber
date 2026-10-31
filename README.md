@@ -108,6 +108,19 @@ Cargo doctests, WASM and consumer boundaries, demos and the 60-line embedding
 glue limit, including an owned PostgreSQL 14 fixture. The launcher counts Cargo
 compilation and cleanup within its 600-second budget; final performance
 qualification is pending. `cargo xtask check` runs the same complete schedule.
+Compiler-result caching is off by default. On Linux, install the pinned tool and
+select local snapshots explicitly:
+
+```sh
+python3 -I -S .github/scripts/compiler-cache.py install target/test-tools
+CRABBER_COMPILER_CACHE=local python3 -I -S .github/scripts/check.py
+```
+
+Local mode disables incremental compilation before outer Cargo. An explicit
+conflicting `CARGO_INCREMENTAL` fails. Direct `cargo xtask check` requires
+`CARGO_INCREMENTAL=0 CRABBER_COMPILER_CACHE=local`; its outer xtask compilation
+precedes the cache session. See [compiler-result cache operations](docs/test-performance.md#compiler-result-cache-operations)
+for ownership, reports, overrides and rollback. Performance qualification remains pending.
 For explicitly partial developer checks:
 
 ```sh

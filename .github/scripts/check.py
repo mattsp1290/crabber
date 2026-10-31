@@ -2,14 +2,21 @@
 """Run a full or partial check with a supervised deadline, defaulting to 600 seconds."""
 import argparse
 import ctypes
+import importlib.util
 import json
 import os
 from pathlib import Path
 import resource
 import signal
 import subprocess
+import sys
 import time
 import tomllib
+
+sys.dont_write_bytecode = True
+_cache_spec = importlib.util.spec_from_file_location('compiler_cache', Path(__file__).with_name('compiler-cache.py'))
+compiler_cache = importlib.util.module_from_spec(_cache_spec)
+_cache_spec.loader.exec_module(compiler_cache)
 
 
 def identity(pid):
@@ -89,11 +96,16 @@ def cargo_profiles(cwd):
         return {'unavailable': type(error).__name__}
 
 
-def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., env=None):
+def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., env=None, validate=None):
     started = time.monotonic()
     initial_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     initial_self_usage = resource.getrusage(resource.RUSAGE_SELF)
     child_env = dict(os.environ if env is None else env)
+    cache_config = compiler_cache.configuration(Path(cwd), child_env)
+    child_env = compiler_cache.clean_environment(child_env)
+    if cache_config is not None:
+        child_env['CARGO_INCREMENTAL'] = '0'
+    cache = None
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if report_path.exists():
@@ -137,13 +149,21 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
         old_handlers[number] = signal.signal(number, interrupt)
     persist(report_path, report)
     try:
-        remaining = budget - elapsed
+        remaining = budget - elapsed - (time.monotonic() - started)
         child_env['CRABBER_CHECK_WORK_DEADLINE_NS'] = str(
             time.monotonic_ns() + max(0, int((remaining - reserve) * 1_000_000_000)))
         if remaining <= reserve:
             reason = 'budget-exhausted-before-cargo'
         else:
-            child = subprocess.Popen(command, cwd=cwd, env=child_env, start_new_session=True)
+            if cache_config is not None:
+                cache = compiler_cache.CompilerCacheSession(cache_config,
+                    work_deadline=started + budget - elapsed - reserve, deadline=started + budget - elapsed)
+                cache.start()
+                child_env = cache.clients(child_env)
+                if elapsed + time.monotonic() - started >= budget - reserve:
+                    reason = 'budget-exhausted-before-cargo'
+            if reason is None:
+                child = subprocess.Popen(command, cwd=cwd, env=child_env, start_new_session=True)
         while child is not None:
             tree = collect(owned)
             code = child.poll()
@@ -156,10 +176,14 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
             report['peak_threads'] = max(report['peak_threads'], sum(row[4] for row in tree.values()))
             live = {pid: row for pid, row in tree.items()
                     if row[2] != 'Z' and not (pid == child.pid and code is not None)}
+            if cache is not None and cache.server is not None:
+                live.pop(cache.server.pid, None)
             total = elapsed + time.monotonic() - started
             if termination_started is None:
                 if interrupted is not None:
                     reason = 'interrupted'
+                elif cache is not None and not cache.healthy():
+                    reason = 'compiler-cache-server-failed'
                 elif total >= budget - reserve:
                     reason = 'budget-expired'
                 elif code is not None and live:
@@ -187,7 +211,7 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
                     send(pid, row[1], signal.SIGKILL)
             # Cargo is reaped through Popen; reap adopted helper descendants too.
             for pid in tree:
-                if pid != child.pid:
+                if pid != child.pid and (cache is None or cache.server is None or pid != cache.server.pid):
                     try:
                         os.waitpid(pid, os.WNOHANG)
                     except ChildProcessError:
@@ -198,7 +222,9 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
             # cleanup reserve without repeatedly scanning every Tokio thread.
             time.sleep(.1)
         code = child.wait() if child is not None else None
-    except BaseException:
+    except BaseException as error:
+        if cache is not None:
+            cache.fail('compiler cache invocation failed: ' + type(error).__name__)
         # A reporting/spawn failure cannot leave an owned compiler/test running.
         if child is not None:
             for pid, row in collect(owned).items():
@@ -207,6 +233,39 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
         reason = reason or 'launcher-error'
         raise
     finally:
+        if reason is None and child is not None and child.returncode == 0 and validate is not None:
+            try:
+                reason = validate(report)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                reason = 'report-validation-failed'
+        if cache is not None:
+            def verify_cache_cleanup():
+                until = time.monotonic() + 2
+                while True:
+                    leftovers = collect(owned)
+                    live = [(pid, row) for pid, row in leftovers.items() if row[2] != 'Z']
+                    for pid, row in live:
+                        send(pid, row[1], signal.SIGKILL)
+                    for pid in leftovers:
+                        try:
+                            os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            pass
+                    if not live:
+                        return True
+                    if time.monotonic() >= until:
+                        return False
+                    time.sleep(.02)
+
+            check_passed = reason is None and child is not None and child.returncode == 0 and report['source_clean']
+            if not cache.close('passed' if check_passed else 'failed',
+                               publish=reason != 'compiler-cache-server-failed', verify_cleanup=verify_cache_cleanup):
+                reason = reason or 'compiler-cache-close-failed'
+            report['compiler_cache'] = cache.report
+            report['version'] = 2
+        else:
+            report['compiler_cache'] = {'version': 1, 'mode': 'off'}
+            report['version'] = 2
         for number, previous in old_handlers.items():
             signal.signal(number, previous)
         wall = elapsed + time.monotonic() - started
@@ -227,6 +286,35 @@ def supervise(command, cwd, report_path, budget=600., reserve=20., elapsed=0., e
     if report['status'] != 'passed':
         return 124 if reason and reason.startswith('budget-') else (code if code and code > 0 else 1)
     return 0
+
+
+def schedule_failure(inner, part):
+    try:
+        phases = json.loads(inner.read_text())
+    except (OSError, ValueError):
+        phases = {}
+    expected_scope = part or 'complete'
+    library_quarter = int(part.rsplit('-', 1)[1]) if part and part.startswith('native-library-') else None
+    library_admitted = library_quarter is None or (
+        phases.get('part_family') == 'native-libraries'
+        and phases.get('library_quarter') == library_quarter
+        and phases.get('library_quarter_count') == 4
+        and phases.get('full_coverage_policy_executed') is False)
+
+    remaining_quarter = int(part.rsplit('-', 1)[1]) if part and part.startswith('native-remaining-') else None
+    remaining_admitted = remaining_quarter is None or (
+        phases.get('part_family') == 'native-remaining'
+        and phases.get('target_quarter') == remaining_quarter
+        and phases.get('target_quarter_count') == 4
+        and phases.get('full_coverage_policy_executed') is False)
+
+    if (not library_admitted or not remaining_admitted or phases.get('coverage_scope') != expected_scope or phases.get('status') != 'passed'
+            or (part and (phases.get('qualified') is not False
+                              or phases.get('processes_drained') is not True
+                              or phases.get('full_native_suite_executed') is not False
+                              or phases.get('owned_postgres_run') is not (part != 'quality-contracts')))):
+        return 'partial-schedule-report-missing' if part else 'complete-schedule-report-missing'
+    return None
 
 
 def main():
@@ -260,36 +348,25 @@ def main():
     if args.part:
         command += ['--part', args.part]
     command += ['--timings', str(inner)]
-    code = supervise(command, cwd, report, budget=args.budget_seconds, elapsed=elapsed + time.monotonic() - main_started, env=env)
+    def validate_completed(record):
+        failure = schedule_failure(inner, args.part)
+        if failure:
+            return failure
+        revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip()
+        clean = not subprocess.check_output(['git', 'status', '--porcelain'], cwd=cwd, text=True).strip()
+        if not record['source_clean'] or not clean or revision != record['source_revision']:
+            return 'source-changed-or-dirty'
+        return None
+
+    code = supervise(command, cwd, report, budget=args.budget_seconds,
+                     elapsed=elapsed + time.monotonic() - main_started, env=env, validate=validate_completed)
     result = json.loads(report.read_text())
     result['cache_state'] = args.cache_state
     result['phases_report'] = str(inner)
     if code == 0:
-        try:
-            phases = json.loads(inner.read_text())
-        except (OSError, ValueError):
-            phases = {}
-        expected_scope = args.part or 'complete'
-        library_quarter = int(args.part.rsplit('-', 1)[1]) if args.part and args.part.startswith('native-library-') else None
-        library_admitted = library_quarter is None or (
-            phases.get('part_family') == 'native-libraries'
-            and phases.get('library_quarter') == library_quarter
-            and phases.get('library_quarter_count') == 4
-            and phases.get('full_coverage_policy_executed') is False)
-
-        remaining_quarter = int(args.part.rsplit('-', 1)[1]) if args.part and args.part.startswith('native-remaining-') else None
-        remaining_admitted = remaining_quarter is None or (
-            phases.get('part_family') == 'native-remaining'
-            and phases.get('target_quarter') == remaining_quarter
-            and phases.get('target_quarter_count') == 4
-            and phases.get('full_coverage_policy_executed') is False)
-
-        if (not library_admitted or not remaining_admitted or phases.get('coverage_scope') != expected_scope or phases.get('status') != 'passed'
-                or (args.part and (phases.get('qualified') is not False
-                                  or phases.get('processes_drained') is not True
-                                  or phases.get('full_native_suite_executed') is not False
-                                  or phases.get('owned_postgres_run') is not (args.part != 'quality-contracts')))):
-            result.update(status='failed', reason='partial-schedule-report-missing' if args.part else 'complete-schedule-report-missing')
+        failure = schedule_failure(inner, args.part)
+        if failure:
+            result.update(status='failed', reason=failure)
             code = 1
     result['end_revision'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip()
     result['end_clean'] = not subprocess.check_output(['git', 'status', '--porcelain'], cwd=cwd, text=True).strip()
@@ -315,4 +392,7 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(f'check setup failed: {error}. Recovery: {compiler_cache.RECOVERY}')
