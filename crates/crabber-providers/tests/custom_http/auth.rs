@@ -346,6 +346,19 @@ async fn concurrent_source_compare_invalidates_and_refreshes_single_flight() {
 
 #[tokio::test]
 async fn second_dynamic_401_body_failures_remain_terminal_auth() {
+    struct BodyFailureObserver {
+        statuses: Mutex<Vec<StatusCode>>,
+        stalled_body: bool,
+    }
+    impl ResponseObserver for BodyFailureObserver {
+        fn observe(&self, status: StatusCode, _: &HeaderMap) {
+            let mut statuses = self.statuses.lock().unwrap();
+            statuses.push(status);
+            if self.stalled_body && *statuses == [StatusCode::UNAUTHORIZED; 2] {
+                tokio::time::pause();
+            }
+        }
+    }
     struct PanicClassifier;
     impl ErrorClassifier for PanicClassifier {
         fn classify(&self, _: StatusCode, _: &str) -> (ProviderErrorKind, bool) {
@@ -356,6 +369,7 @@ async fn second_dynamic_401_body_failures_remain_terminal_auth() {
         for stalled_body in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
+            let (release_body, mut wait_for_release) = tokio::sync::oneshot::channel::<()>();
             let server = tokio::spawn(async move {
                 let mut captured = Vec::new();
                 for attempt in 0..2 {
@@ -371,7 +385,8 @@ async fn second_dynamic_401_body_failures_remain_terminal_auth() {
                     };
                     socket.write_all(&response).await.unwrap();
                     if attempt == 1 && stalled_body {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        let _ = (&mut wait_for_release).await;
+                        drop(socket);
                     }
                 }
                 captured
@@ -381,22 +396,24 @@ async fn second_dynamic_401_body_failures_remain_terminal_auth() {
                 values: Mutex::new([Ok(HeaderMap::new()), Ok(HeaderMap::new())].into()),
                 calls: AtomicUsize::new(0),
             });
-            let observer = Arc::new(Observer::default());
+            let observer = Arc::new(BodyFailureObserver {
+                statuses: Mutex::new(Vec::new()),
+                stalled_body,
+            });
             let adapter = HttpAdapter::custom("custom", url, Protocol::Messages)
                 .with_auth_scheme(scheme)
                 .with_credential_source(source.clone())
                 .with_request_header_hook(hook.clone())
                 .with_response_observer(observer.clone())
                 .with_error_classifier(Arc::new(PanicClassifier))
-                .try_with_client_config(
-                    HttpClientConfig::new().read_timeout(Duration::from_millis(50)),
-                )
+                .try_with_client_config(HttpClientConfig::new().read_timeout(LOOPBACK_TIMEOUT))
                 .unwrap();
-            let error = timeout(LOOPBACK_TIMEOUT, adapter.stream(request("custom")))
-                .await
-                .unwrap()
-                .err()
-                .unwrap();
+            let result = timeout(2 * LOOPBACK_TIMEOUT, adapter.stream(request("custom"))).await;
+            if stalled_body && *observer.statuses.lock().unwrap() == [StatusCode::UNAUTHORIZED; 2] {
+                tokio::time::resume();
+            }
+            drop(release_body);
+            let error = result.unwrap().err().unwrap();
             assert_eq!(error.kind, ProviderErrorKind::Auth);
             assert!(!error.retryable);
             assert_eq!(
@@ -409,7 +426,7 @@ async fn second_dynamic_401_body_failures_remain_terminal_auth() {
             assert_eq!(*source.invalidated.lock().unwrap(), ["old"]);
             assert_eq!(hook.calls.load(Ordering::SeqCst), 2);
             assert_eq!(
-                *observer.0.lock().unwrap(),
+                *observer.statuses.lock().unwrap(),
                 [StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED]
             );
             for (headers, key) in captured.iter().zip(["old", "new"]) {
