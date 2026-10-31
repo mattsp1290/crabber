@@ -84,7 +84,9 @@ else:
     def test_compiler_closed_allowlist_preserves_declared_build_inputs_only(self):
         descriptor = {'config': '/private/config.toml', 'socket': '/private/socket', 'store': '/private/store'}
         incoming = {'PATH': '/bin', 'OUT_DIR': '/build/out', 'CRABBER_GIT_SHA': 'a' * 40,
-                    'CARGO_PKG_VERSION': '0.1.0', 'CRABBER_POSTGRES_URL': 'SYNTHETIC_FIXTURE_SECRET',
+                    'CARGO_PKG_VERSION': '0.1.0', 'CLIPPY_ARGS': '-D__CLIPPY_HACKERY__warnings',
+                    'CLIPPY_CONF_DIR': '/private/lint-policy',
+                    'CRABBER_POSTGRES_URL': 'SYNTHETIC_FIXTURE_SECRET',
                     'POSTGRES_URL': 'SYNTHETIC_FIXTURE_SECRET', 'BUILD_LEAK_SENTINEL': 'SYNTHETIC_SECRET',
                     'RUSTC_BOOTSTRAP': '1',
                     'SCCACHE_START_SERVER': '1', 'SCCACHE_ERROR_LOG': 'foreign', 'SCCACHE_BUCKET': 'foreign'}
@@ -92,6 +94,8 @@ else:
         self.assertEqual(result['OUT_DIR'], incoming['OUT_DIR'])
         self.assertEqual(result['CRABBER_GIT_SHA'], incoming['CRABBER_GIT_SHA'])
         self.assertEqual(result['CARGO_PKG_VERSION'], incoming['CARGO_PKG_VERSION'])
+        self.assertEqual(result['CLIPPY_ARGS'], incoming['CLIPPY_ARGS'])
+        self.assertEqual(result['CLIPPY_CONF_DIR'], incoming['CLIPPY_CONF_DIR'])
         self.assertFalse(any('SYNTHETIC' in value for value in result.values()))
         for key in ['SCCACHE_START_SERVER', 'SCCACHE_ERROR_LOG', 'SCCACHE_BUCKET']:
             self.assertNotIn(key, result)
@@ -484,6 +488,70 @@ else:
         subprocess.run([rustc, str(application), '--extern', f'cache_fixture={uncached}/libcache_fixture.rlib',
                         '-o', str(uncached / 'app')], check=True, timeout=30, capture_output=True)
         self.assertEqual(subprocess.check_output([str(uncached / 'app')], text=True).strip(), results[-1])
+
+    @unittest.skipUnless(Path('/proc/self/stat').exists() and os.environ.get('CRABBER_TEST_REAL_SCCACHE'),
+                         'explicit pinned Clippy/wrapper probe on Linux')
+    def test_real_clippy_preserves_denied_warnings_and_external_lint_configuration(self):
+        fixture = self.root / 'clippy-inputs'
+        (fixture / 'src').mkdir(parents=True)
+        (fixture / 'Cargo.toml').write_text(
+            '[workspace]\n[package]\nname="clippy-input-fixture"\nversion="0.1.0"\nedition="2024"\n')
+        source = fixture / 'src/lib.rs'
+        warning = '#![warn(clippy::needless_return)]\npub fn answer() -> u32 { return 42; }\n'
+        source.write_text(warning)
+        for relative in ['.github/scripts/compiler-cache.py', '.github/scripts/compiler-cache-wrapper',
+                         '.config/test-tools.json', 'rust-toolchain.toml']:
+            destination = fixture / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, destination)
+        env = cache.clean_environment(dict(os.environ))
+        for name in ['CLIPPY_ARGS', 'CLIPPY_CONF_DIR']:
+            env.pop(name, None)
+        env.update(CARGO_INCREMENTAL='0', CRABBER_SCCACHE_PATH=os.environ['CRABBER_TEST_REAL_SCCACHE'],
+                   CRABBER_COMPILER_CACHE_DIR=str(self.base))
+        subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=fixture, env=env,
+                       check=True, capture_output=True, timeout=10)
+        for arguments in [['init', '-q'], ['remote', 'add', 'origin', 'compiler-clippy-fixture'], ['add', '.'],
+                          ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']]:
+            subprocess.run(['git', *arguments], cwd=fixture, check=True, capture_output=True, timeout=10)
+        configuration = self.root / 'clippy-configuration'
+        configuration.mkdir()
+        (configuration / 'clippy.toml').write_text('disallowed-names = ["forbidden"]\n')
+        cases = [
+            ('allowed-warning', warning, {}, True, False),
+            ('warning', warning, {}, False, True),
+            ('configuration', 'pub fn answer(forbidden: u32) -> u32 { forbidden }\n',
+             {'CLIPPY_CONF_DIR': str(configuration)}, False, True),
+            ('clean', 'pub fn answer(value: u32) -> u32 { value }\n', {}, True, True),
+        ]
+        seed = None
+        for name, code, extra, success, deny in cases:
+            source.write_text(code)
+            for mode in ['off', 'local']:
+                with self.subTest(case=name, mode=mode):
+                    command = ['cargo', 'clippy', '--offline', '--locked', '--target-dir',
+                               str(self.root / f'{name}-{mode}')]
+                    if deny:
+                        command += ['--', '-D', 'warnings']
+                    report = self.root / f'{name}-{mode}.json'
+                    result = check.supervise(command, fixture, report, budget=30, reserve=5,
+                                             env={**env, **extra, 'CRABBER_COMPILER_CACHE': mode})
+                    record = json.loads(report.read_text())
+                    expected = 0 if success else 101
+                    self.assertEqual(result, expected, f'Clippy {name}, cache {mode}, exit {result}')
+                    self.assertIsNone(record['reason'])
+                    self.assertEqual(record['child_exit_code'], expected)
+                    if mode == 'local':
+                        local = record['compiler_cache']
+                        self.assertTrue(local['cleanup_verified'])
+                        if name == 'allowed-warning':
+                            self.assertTrue(record['source_clean'])
+                            seed = local['published']
+                            self.assertIsInstance(seed, str)
+                        elif name == 'warning':
+                            self.assertTrue(record['source_clean'])
+                            self.assertEqual(local['restored']['snapshot'], seed)
+                            self.assertEqual(local['restored']['check_status'], 'passed')
 
     @unittest.skipUnless(Path('/proc/self/stat').exists() and os.environ.get('CRABBER_TEST_REAL_SCCACHE'),
                          'explicit pinned Cargo/wrapper probe on Linux')
