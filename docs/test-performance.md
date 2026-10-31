@@ -30,6 +30,11 @@ Xtask replaces itself with the same Python owner before its schedule starts.
 Its already completed outer Cargo compilation is outside that cache session.
 The Python launcher measures the entire outer command.
 
+The pinned sccache 0.19 client replaces Cargo's shared jobserver with a
+CPU-sized jobserver for each rustc client. Cargo retains its crate job limit,
+but codegen can use more CPUs on a host with spare capacity. Use a container
+cpuset or process affinity together with a fixed memory cap for comparisons.
+
 Each invocation copies one closed compatible snapshot into its own writable
 store and owns an original foreground storage server on a short private Unix
 socket. The 10-GiB namespace limit and 20-GiB repository snapshot limit do not
@@ -104,10 +109,16 @@ experiment and prepare dependency sources first. `--offline` is required so
 download warming cannot affect compiler-cache comparisons. This setup
 does not compile Crabber's workspace.
 
-From a clean committed source snapshot on Linux, run a pilot with:
+Keep the existing Cargo job limit explicit in `CARGO_BUILD_JOBS`. Restrict CPU
+affinity to that many CPUs or fewer, and use the same memory limit throughout.
+The experiment refuses spare CPU capacity. It records the initial affinity,
+job limit and cgroup limits, then rejects changed resource or profile reports.
+
+From a clean committed source snapshot on Linux with at most four available
+CPUs and the existing four-job limit, run a pilot with:
 
 ```sh
-python3 -I -S .github/scripts/qualify-compiler-cache.py \
+CARGO_BUILD_JOBS=4 python3 -I -S .github/scripts/qualify-compiler-cache.py \
   --output "$PWD/target/test-performance/compiler-cache-pilot" --trials 1 --offline
 ```
 

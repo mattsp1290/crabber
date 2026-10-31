@@ -624,6 +624,10 @@ class QualificationProtocolTests(unittest.TestCase):
         self.checkout.mkdir()
         self.output.mkdir()
         self.calls = []
+        self.resources = {'cargo_build_jobs': 4, 'cpu_affinity': [0, 1, 2, 3], 'cgroup_limits': {}}
+        resources = mock.patch.object(qualify, 'qualification_resources', return_value=self.resources)
+        resources.start()
+        self.addCleanup(resources.stop)
 
     def run_conditions(self, failures=None, trials=1):
         failures = failures or {}
@@ -660,12 +664,24 @@ class QualificationProtocolTests(unittest.TestCase):
                       'budget_breached': fault == 'timeout', 'timing_target_met': status == 'passed',
                       'source_revision': 'a' * 40, 'end_revision': 'a' * 40,
                       'source_clean': fault != 'dirty', 'end_clean': True,
-                      'wall_seconds': 600 if fault == 'timeout' else .001, 'profile': {'CARGO_INCREMENTAL': '0'},
-                      'compiler_cache': local}
+                      'wall_seconds': 600 if fault == 'timeout' else .001,
+                      'cpu_count': 4, 'cpu_affinity_count': 4, 'physical_memory_bytes': 8 * 1024 ** 3,
+                      'cgroup_limits': {}, 'cargo_profiles': {},
+                      'profile': {'CARGO_INCREMENTAL': '0', 'CARGO_BUILD_JOBS': '4'}, 'compiler_cache': local}
+            changed = {'context-cpu-count': ('cpu_count', 8),
+                       'context-affinity': ('cpu_affinity_count', 2),
+                       'context-memory': ('physical_memory_bytes', 4 * 1024 ** 3),
+                       'context-limits': ('cgroup_limits', {'memory.max': '4294967296'}),
+                       'context-profile': ('profile', {'CARGO_INCREMENTAL': '0', 'CARGO_BUILD_JOBS': '4',
+                                                       'CARGO_PROFILE_TEST_OPT_LEVEL': '1'}),
+                       'context-cargo-profiles': ('cargo_profiles', {'test': {'opt-level': 1}})}
+            if fault in changed:
+                field, value = changed[fault]
+                result[field] = value
             cache.write_json(Path(command[command.index('--report') + 1]), result)
             return 124 if fault == 'timeout' else (1 if status == 'failed' else 0)
         with mock.patch.object(qualify, 'run_check', side_effect=execute), contextlib.redirect_stdout(io.StringIO()):
-            return qualify.conditions(self.checkout, self.output, trials, {}, 'a' * 40)
+            return qualify.conditions(self.checkout, self.output, trials, {'CARGO_BUILD_JOBS': '4'}, 'a' * 40, self.resources)
 
     def test_pilot_uses_full_schedule_fresh_targets_and_explicitly_never_qualifies(self):
         result = self.run_conditions()
@@ -705,7 +721,7 @@ class QualificationProtocolTests(unittest.TestCase):
                 effect = outcome if isinstance(outcome, Exception) else None
                 with mock.patch.object(qualify, 'run_check', return_value=outcome, side_effect=effect), \
                         contextlib.redirect_stdout(io.StringIO()):
-                    result = qualify.conditions(self.checkout, output, 5, {}, 'a' * 40)
+                    result = qualify.conditions(self.checkout, output, 5, {'CARGO_BUILD_JOBS': '4'}, 'a' * 40, self.resources)
                 self.assertEqual(result['status'], 'failed')
                 self.assertEqual(len(result['cases']), 1)
                 self.assertEqual(result['cases'][0]['role'], 'off')
@@ -717,7 +733,7 @@ class QualificationProtocolTests(unittest.TestCase):
     def test_cancellation_is_recorded_as_a_failed_attempt_with_the_original_signal(self):
         with mock.patch.object(qualify, 'run_check', side_effect=qualify.Cancelled(signal.SIGTERM)), \
                 contextlib.redirect_stdout(io.StringIO()):
-            result = qualify.conditions(self.checkout, self.output, 5, {}, 'a' * 40)
+            result = qualify.conditions(self.checkout, self.output, 5, {'CARGO_BUILD_JOBS': '4'}, 'a' * 40, self.resources)
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(len(result['cases']), 1)
         self.assertEqual(result['cases'][0]['exit_code'], 143)
@@ -760,6 +776,29 @@ class QualificationProtocolTests(unittest.TestCase):
                 shutil.rmtree(self.checkout / 'target')
                 shutil.rmtree(self.checkout / 'fixtures')
 
+    def test_static_resource_and_profile_changes_stop_and_preserve_the_case(self):
+        for fault in ['context-cpu-count', 'context-affinity', 'context-memory', 'context-limits',
+                      'context-profile', 'context-cargo-profiles']:
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir=self.root) as temporary:
+                with mock.patch.object(self, 'output', Path(temporary)):
+                    result = self.run_conditions({'empty': fault}, trials=5)
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual([case['role'] for case in result['cases']], ['off', 'empty'])
+                self.assertEqual(result['cases'][-1]['reason'], 'resource-context-changed')
+                self.assertEqual(result['resources'], self.resources)
+                self.calls.clear()
+                shutil.rmtree(self.checkout / 'target')
+                shutil.rmtree(self.checkout / 'fixtures')
+
+    def test_live_affinity_change_stops_after_the_recorded_attempt(self):
+        changed = {**self.resources, 'cpu_affinity': [4, 5, 6, 7]}
+        with mock.patch.object(qualify, 'qualification_resources', return_value=changed):
+            result = self.run_conditions(trials=5)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(len(result['cases']), 1)
+        self.assertEqual(result['cases'][0]['observed_resources'], changed)
+        self.assertEqual(result['cases'][0]['reason'], 'resource-context-changed')
+
     def test_default_is_five_trials_in_a_new_detached_worktree(self):
         output = self.root / 'new-experiment'
         def git(command, **_kwargs):
@@ -769,12 +808,48 @@ class QualificationProtocolTests(unittest.TestCase):
                 mock.patch.object(qualify.cache, 'verify_executable'), \
                 mock.patch.object(qualify.subprocess, 'run') as create, \
                 mock.patch.object(qualify, 'conditions', return_value={'status': 'passed'}) as run, \
+                mock.patch.dict(os.environ, {'CARGO_BUILD_JOBS': '4'}), \
                 mock.patch.object(sys, 'argv', ['qualify-compiler-cache.py', '--output', str(output), '--offline']), \
                 mock.patch.object(qualify.signal, 'signal'), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(qualify.main(), 0)
         self.assertEqual(run.call_args.args[2], 5)
         self.assertEqual(create.call_args.args[0][1:4], ['worktree', 'add', '--detach'])
         self.assertEqual(run.call_args.args[0], output / 'checkout')
+        self.assertEqual(run.call_args.args[5], self.resources)
+
+
+class QualificationResourceTests(unittest.TestCase):
+    def test_explicit_positive_cargo_job_limit_is_required(self):
+        for value in [None, '', '0', '-1', 'auto', '4.0', ' 4', '４']:
+            with self.subTest(value=value):
+                env = {} if value is None else {'CARGO_BUILD_JOBS': value}
+                with self.assertRaisesRegex(ValueError, 'explicit positive CARGO_BUILD_JOBS'):
+                    qualify.qualification_resources(env)
+
+    def test_spare_cpu_capacity_is_refused_and_a_matching_affinity_is_recorded(self):
+        with mock.patch.object(qualify.os, 'sched_getaffinity', return_value={0, 1, 2, 3}, create=True):
+            with self.assertRaisesRegex(ValueError, 'CPU affinity must not exceed'):
+                qualify.qualification_resources({'CARGO_BUILD_JOBS': '2'})
+            resources = qualify.qualification_resources({'CARGO_BUILD_JOBS': '4'})
+        self.assertEqual(resources['cargo_build_jobs'], 4)
+        self.assertEqual(resources['cpu_affinity'], [0, 1, 2, 3])
+        self.assertIsInstance(resources['cgroup_limits'], dict)
+
+    def test_capacity_refusal_precedes_tool_probes_and_worktree_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'never-created'
+            with mock.patch.object(qualify.sys, 'platform', 'linux'), \
+                    mock.patch.object(qualify.subprocess, 'check_output', side_effect=['', 'a' * 40]), \
+                    mock.patch.dict(os.environ, {'CARGO_BUILD_JOBS': '2'}), \
+                    mock.patch.object(qualify.os, 'sched_getaffinity', return_value={0, 1, 2, 3}, create=True), \
+                    mock.patch.object(qualify.cache, 'verify_executable') as verify, \
+                    mock.patch.object(qualify.subprocess, 'run') as create, \
+                    mock.patch.object(sys, 'argv', ['qualify-compiler-cache.py', '--output', str(output), '--offline']):
+                with self.assertRaisesRegex(ValueError, 'CPU affinity must not exceed'):
+                    qualify.main()
+            verify.assert_not_called()
+            create.assert_not_called()
+            self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':

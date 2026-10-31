@@ -19,6 +19,27 @@ ROOT = Path(__file__).resolve().parents[2]
 BUDGET = 600
 
 
+def qualification_resources(env):
+    value = env.get('CARGO_BUILD_JOBS')
+    cache.require(isinstance(value, str) and value.isascii() and value.isdecimal(),
+                  'qualification requires an explicit positive CARGO_BUILD_JOBS')
+    jobs = int(value)
+    cache.require(jobs > 0, 'qualification requires an explicit positive CARGO_BUILD_JOBS')
+    affinity = sorted(os.sched_getaffinity(0))
+    cache.require(affinity and len(affinity) <= jobs,
+                  'qualification CPU affinity must not exceed CARGO_BUILD_JOBS; use fixed CPU and memory limits')
+    limits = {name: path.read_text().strip()
+              for name in ['cpu.max', 'memory.max', 'cpuset.cpus.effective']
+              if (path := Path('/sys/fs/cgroup') / name).is_file()}
+    return {'cargo_build_jobs': jobs, 'cpu_affinity': affinity, 'cgroup_limits': limits}
+
+
+def comparison_context(measurement):
+    fields = ['cpu_count', 'cpu_affinity_count', 'physical_memory_bytes', 'cgroup_limits', 'profile', 'cargo_profiles']
+    cache.require(all(name in measurement for name in fields), 'check report lacks the resource comparison context')
+    return {name: measurement[name] for name in fields}
+
+
 class Cancelled(KeyboardInterrupt):
     def __init__(self, number):
         self.number = number
@@ -105,10 +126,10 @@ def attempt(checkout, output, pair, role, env, previous):
     return record, directory
 
 
-def conditions(checkout, output, trials, env, revision):
+def conditions(checkout, output, trials, env, revision, resources):
     report = {'version': 1, 'status': 'running', 'qualified': False, 'pilot': trials < 5,
               'revision': revision, 'budget_seconds': BUDGET, 'requested_trials': trials,
-              'pair_orders': [], 'cases': [], 'reason': None,
+              'pair_orders': [], 'cases': [], 'reason': None, 'resources': resources, 'comparison_context': None,
               'acceptance_remaining': ['paired resource/limiter review', 'target-only/combined controls',
                                        'unchanged/runtime/session qualification', 'Linux x64 and arm64 CI persistence'],
               'timing_scope': 'each complete command includes preparation, import, server startup, compilation, full schedule, cleanup and publication'}
@@ -133,6 +154,23 @@ def conditions(checkout, output, trials, env, revision):
             if record['reason'] is not None:
                 return stop(f'{name}-{record["reason"]}')
             result = record['measurement']
+            try:
+                observed = qualification_resources(env)
+                context = comparison_context(result)
+                comparable = (observed == resources
+                              and result['cpu_affinity_count'] == len(resources['cpu_affinity'])
+                              and result['cgroup_limits'] == resources['cgroup_limits']
+                              and result['profile'].get('CARGO_BUILD_JOBS') == env['CARGO_BUILD_JOBS']
+                              and (report['comparison_context'] is None or context == report['comparison_context']))
+            except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                record.update(reason='resource-context-invalid', resource_error=type(error).__name__)
+                return stop(f'{name}-resource-context-invalid')
+            if not comparable:
+                record.update(reason='resource-context-changed', observed_resources=observed)
+                return stop(f'{name}-resource-context-changed')
+            if report['comparison_context'] is None:
+                report['comparison_context'] = context
+            save()
             if role == 'off':
                 if result.get('compiler_cache') != {'version': 1, 'mode': 'off'}:
                     return stop(f'{name}-off-control-not-disabled')
@@ -190,6 +228,7 @@ def main():
                   'qualification requires a clean committed source snapshot')
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     env = dict(os.environ)
+    resources = qualification_resources(env)
     env['CRABBER_SCCACHE_PATH'] = str(Path(env.get('CRABBER_SCCACHE_PATH', str(ROOT / 'target/test-tools/sccache'))).absolute())
     cache.verify_executable(Path(env['CRABBER_SCCACHE_PATH']), env=env)
     env['CARGO_NET_OFFLINE'] = 'true'
@@ -199,12 +238,12 @@ def main():
     checkout = output / 'checkout'
     subprocess.run(['git', 'worktree', 'add', '--detach', str(checkout), revision], cwd=ROOT, check=True)
     cache.write_json(output / 'ownership.json', {'version': 1, 'source_revision': revision,
-                                               'purpose': 'disposable compiler-cache qualification worktree'})
+                                               'purpose': 'disposable compiler-cache qualification worktree', 'resources': resources})
     def interrupt(number, _frame):
         raise Cancelled(number)
     for number in [signal.SIGINT, signal.SIGTERM]:
         signal.signal(number, interrupt)
-    result = conditions(checkout, output, args.trials, env, revision)
+    result = conditions(checkout, output, args.trials, env, revision, resources)
     print(f"Compiler-cache experiment {result['status']}; qualified=false; reports retained for review.", flush=True)
     interrupted = next((case['interrupted_signal'] for case in result.get('cases', []) if case['interrupted_signal']), None)
     return 128 + interrupted if interrupted else (0 if result['status'] == 'passed' else 1)
