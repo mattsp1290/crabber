@@ -295,6 +295,10 @@ def admit_envelope(identity, arch, slot, directory, compiler_cache):
     require(sorted(path.name for path in directory.iterdir()) == ['bundle', 'ci-envelope.json'],
             'unexpected worker archive layout')
     wrapper = load(bundle / 'reports/check.json')
+    if wrapper.get('version') == 2:
+        cache_use.compiler_result(wrapper.get('compiler_cache'), off_only=True)
+    else:
+        require(wrapper.get('version') == 1 and 'compiler_cache' not in wrapper, 'unsupported Native check report')
     require(wrapper['coverage_scope'] == slot and wrapper['profile'] == PROFILE
             and wrapper['source_revision'] == identity.source and wrapper['end_revision'] == identity.source
             and wrapper['source_clean'] is True and wrapper['end_clean'] is True
@@ -308,6 +312,10 @@ def worker(args):
     identity = Identity.environment()
     require(args.slot in slots(), 'unknown worker slot')
     report = load(args.report)
+    if report.get('version') == 2:
+        cache_use.compiler_result(report.get('compiler_cache'), off_only=True)
+    else:
+        require(report.get('version') == 1 and 'compiler_cache' not in report, 'unsupported Native check report')
     phase = load(Path(report['phases_report']))
     metrics = Path(phase['fixture_metrics'])
     require(metrics.is_absolute() and metrics.name == 'fixtures.jsonl', 'invalid finalized fixture data path')

@@ -183,6 +183,13 @@ class CacheUseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cache.capture(target, 10)
 
+    def test_compiler_result_schema_is_exact_and_never_native_credit(self):
+        cache.compiler_result({'version': 1, 'mode': 'off'}, off_only=True)
+        for value in [{'version': 2, 'mode': 'off'}, {'version': 1, 'mode': 'off', 'extra': True},
+                      {'version': 1, 'mode': 'local'}, {'version': 1, 'mode': 'remote'}]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                cache.compiler_result(value, off_only=True)
+
 
 if __name__ == '__main__':
     unittest.main()

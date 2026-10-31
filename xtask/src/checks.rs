@@ -997,7 +997,7 @@ mod tests {
         let directory =
             crate::workspace().join("target/test-performance/remaining-list-purity-unused");
         let full = crate::complete::schedule(Vec::new(), &directory, None, None);
-        assert_eq!(full.gates.len(), 72);
+        assert_eq!(full.gates.len(), 73);
         for (label, quarter) in [
             ("native-remaining-1", Quarter::One),
             ("native-remaining-2", Quarter::Two),
@@ -1143,7 +1143,7 @@ mod tests {
             previous = Some(gate.inventory["id"].clone());
         }
         if part == Part::QualityContracts {
-            assert_eq!(partial.gates.len(), 41);
+            assert_eq!(partial.gates.len(), 42);
             assert_eq!(metadata["postgres_demos"], json!([]));
         } else {
             assert_artifact_preparation(&partial, full);
@@ -1342,8 +1342,8 @@ mod tests {
         let checks = crate::complete::schedule(Vec::new(), &directory, None, None);
         assert_stable_gate_ids(&checks, &directory);
         let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
-        assert_eq!(checks.gates.len(), 72);
-        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 41);
+        assert_eq!(checks.gates.len(), 73);
+        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 42);
         assert_eq!(ownership["quality-artifacts"].as_array().unwrap().len(), 23);
         assert_eq!(ownership["native"].as_array().unwrap().len(), 8);
         assert_part_projection(&checks, &directory, crate::parts::Part::QualityContracts);

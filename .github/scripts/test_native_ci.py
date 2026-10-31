@@ -194,7 +194,8 @@ class NativeTransportTests(unittest.TestCase):
                             'rustc': compiler.decode().strip()},
                  'recorded_roots': {'workspace': '/original/worker'}}
         (bundle / 'bundle.json').write_text(json.dumps(index))
-        wrapper = {'coverage_scope': slot, 'profile': native.PROFILE,
+        wrapper = {'version': 2, 'compiler_cache': {'version': 1, 'mode': 'off'},
+                   'coverage_scope': slot, 'profile': native.PROFILE,
                    'source_revision': self.identity.source, 'end_revision': self.identity.source,
                    'source_clean': True, 'end_clean': True, 'cache_state': 'unclassified',
                    'status': 'passed', 'platform': ['Linux', 'host', 'release', 'version', 'x86_64']}
@@ -247,7 +248,9 @@ class NativeTransportTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')
         native.save(self.root / 'ci-envelope.json', envelope)
-        for key, value in [('profile', {}), ('source_clean', False), ('end_revision', 'c' * 40)]:
+        for key, value in [('profile', {}), ('source_clean', False), ('end_revision', 'c' * 40),
+                           ('compiler_cache', {'version': 1, 'mode': 'local'}),
+                           ('compiler_cache', {'version': 1, 'mode': 'off', 'extra': True}), ('version', 999)]:
             native.save(bundle / 'reports/check.json', dict(wrapper, **{key: value}))
             with self.subTest(key=key), self.assertRaises(ValueError):
                 native.admit_envelope(self.identity, 'x64', slot, self.root, 'off')

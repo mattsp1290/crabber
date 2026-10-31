@@ -80,6 +80,7 @@ struct Spawned {
 fn spawn(command: &mut Command) -> io::Result<Spawned> {
     check_cancelled()?;
     environment::remove_parent_package(command);
+    crate::compiler_cache::configure_command(command);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

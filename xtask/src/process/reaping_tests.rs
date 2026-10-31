@@ -137,7 +137,9 @@ ready = Path(sys.argv[1])
 child = os.fork()
 if child == 0:
     os.setsid()
-    ready.write_text(str(os.getpid()))
+    pending = ready.with_suffix(".pending")
+    pending.write_text(str(os.getpid()))
+    pending.replace(ready)
     time.sleep(30)
     os._exit(0)
 deadline = time.monotonic() + 3
@@ -200,7 +202,16 @@ fn cancellation_reaps_escaped_helper() {
 }
 
 fn assert_helper_gone(path: &std::path::Path) {
-    let pid = std::fs::read_to_string(path).unwrap();
-    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    let record = std::fs::read_to_string(path).unwrap();
+    let pid: i32 = record.trim().parse().unwrap_or_else(|error| {
+        panic!("helper readiness must contain a complete PID, got {record:?}: {error}")
+    });
+    assert!(pid > 0, "helper PID must be positive: {record:?}");
+    let process = std::path::PathBuf::from(format!("/proc/{pid}"));
+    assert!(
+        !process.exists(),
+        "owned helper {pid} survived cleanup: {:?}",
+        std::fs::read_to_string(process.join("stat")).ok()
+    );
     std::fs::remove_file(path).unwrap();
 }

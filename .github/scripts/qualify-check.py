@@ -55,6 +55,11 @@ def main():
     summary = {'version': 1, 'status': 'running', 'revision': revision,
                'condition': 'same-revision completed target, then package-scoped invalidation of every affected owned target; dependencies retained',
                'warm_report': str(args.warm_report), 'cases': []}
+    summary['cache_layers'] = {
+        'cargo_targets': 'existing admitted snapshot',
+        'compiler_results': os.environ.get('CRABBER_COMPILER_CACHE', 'off'),
+        'comparison': 'combined' if os.environ.get('CRABBER_COMPILER_CACHE') == 'local' else 'target-only',
+        'performance_claim': 'unqualified; paired fresh-target and target-only controls required'}
     started = time.monotonic()
     usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
 
