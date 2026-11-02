@@ -275,6 +275,9 @@ fn driver_free_libraries(gates: &mut Checks, destination: PathBuf) {
                     .expect("required production library compiled");
                 let features = features.as_array().unwrap();
                 assert!(!features.iter().any(|f| f == "postgres" || f == "otlp"));
+                if name == "crabber_session" {
+                    assert!(!features.iter().any(|f| f == "conformance"));
+                }
                 if name != "crabber_obs" {
                     assert!(features.iter().any(|f| f == "sqlite"));
                 }

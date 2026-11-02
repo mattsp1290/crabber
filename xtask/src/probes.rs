@@ -362,6 +362,11 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut crate::checks::Checks) {
             source_lease.release();
         });
     }
+    let mut conformance = Command::new("python3");
+    conformance
+        .args(["-I", "-S", "testdata/session-conformance-probe/check.py"])
+        .current_dir(workspace);
+    gates.command(workspace, conformance, "Session conformance build boundary");
 }
 
 fn prepare(workspace: &Path, original: &Path, destination: &Path) {

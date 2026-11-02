@@ -24,6 +24,7 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]
 default = []
+conformance = []
 postgres = ["crabber-test-support/postgres", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 
