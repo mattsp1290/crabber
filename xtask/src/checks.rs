@@ -830,7 +830,7 @@ mod tests {
             previous = Some(gate.inventory["id"].clone());
         }
         if part == Part::QualityContracts {
-            assert_eq!(partial.gates.len(), 41);
+            assert_eq!(partial.gates.len(), 42);
             assert_eq!(metadata["postgres_demos"], json!([]));
         } else {
             assert_artifact_preparation(&partial, full);
@@ -997,8 +997,20 @@ mod tests {
         let checks = crate::complete::schedule(Vec::new(), &directory, None, None);
         assert_stable_gate_ids(&checks, &directory);
         let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
-        assert_eq!(checks.gates.len(), 72);
-        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 41);
+        assert_eq!(checks.gates.len(), 73);
+        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 42);
+        let conformance: Vec<_> = checks
+            .gates
+            .iter()
+            .filter(|gate| {
+                gate.inventory["argv"].as_array().is_some_and(|args| {
+                    args.iter()
+                        .any(|arg| arg == "testdata/session-conformance-probe/check.py")
+                })
+            })
+            .collect();
+        assert_eq!(conformance.len(), 1);
+        assert_eq!(conformance[0].inventory["owner"], "quality-contracts");
         assert_eq!(ownership["quality-artifacts"].as_array().unwrap().len(), 23);
         assert_eq!(ownership["native"].as_array().unwrap().len(), 8);
         assert_part_projection(&checks, &directory, crate::parts::Part::QualityContracts);

@@ -22,6 +22,7 @@ mod continuation_input;
 mod event_persistence;
 mod execution_binding;
 mod typed_admission;
+#[cfg(any(test, feature = "conformance"))]
 pub mod typed_admission_contract;
 pub use execution_binding::{
     BoundAdmitRequest, BoundKeyedAdmitRequest, ExecutionBindingCapsule, HOST_BEHAVIOR_COMPONENT,
@@ -31,19 +32,23 @@ mod frontend_continuation;
 #[cfg(test)]
 mod frontend_contract;
 pub use frontend_continuation::*;
+#[cfg(any(test, feature = "conformance"))]
 pub mod interaction_contract;
 mod tool_continuation;
 /// Existing adapter imports retain the same substantive conformance harness.
+#[cfg(any(test, feature = "conformance"))]
 pub use interaction_contract as tool_continuation_contract;
 pub use tool_continuation::*;
 mod approval;
 mod approval_termination;
 mod continuation_handoff;
 pub use approval_termination::{ApprovalTermination, ApprovalTerminationKind};
+#[cfg(any(test, feature = "conformance"))]
 pub mod approval_contract;
 pub use approval::*;
 mod attempt;
 mod attempt_control;
+#[cfg(any(test, feature = "conformance"))]
 pub mod attempt_control_contract;
 pub use attempt_control::{
     AttemptControlOutcome, AttemptResolverClaim, AttemptRetirement, AttemptRetirementOutcome,
@@ -81,8 +86,10 @@ mod phase_settlement;
 pub use phase_settlement::{PhaseSettlement, PhaseSettlementRecords};
 mod phase_start;
 pub use phase_start::PhaseStart;
+#[cfg(any(test, feature = "conformance"))]
 pub mod phase_contract;
 pub use phase::*;
+#[cfg(any(test, feature = "conformance"))]
 pub mod attempt_contract;
 pub use admission_execution::*;
 pub use attempt::{
@@ -90,9 +97,11 @@ pub use attempt::{
     AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt, AttemptSnapshot,
     AttemptState, AttemptTarget, VersionedAttempt,
 };
+#[cfg(any(test, feature = "conformance"))]
 pub mod admission_contract;
 #[cfg(test)]
 mod admission_execution_contract;
+#[cfg(any(test, feature = "conformance"))]
 pub mod execution_binding_contract;
 pub mod queue;
 #[cfg(test)]
@@ -102,9 +111,11 @@ pub use queue::{
     QueueOutcome, QueuePage, QueuePageRequest, QueueReceipt, QueueState, QueueSummary,
     RetainedQueue,
 };
+#[cfg(any(test, feature = "conformance"))]
 pub mod control_contract;
 pub mod run_control;
 /// Existing adapter imports retain the same substantive conformance harness.
+#[cfg(any(test, feature = "conformance"))]
 pub use control_contract as run_control_contract;
 pub use run_control::{
     RunControlAction, RunControlBinding, RunControlBoundary, RunControlError, RunControlKind,
@@ -119,10 +130,13 @@ pub use deletion::{
 };
 mod fork;
 pub use fork::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
+#[cfg(any(test, feature = "conformance"))]
 pub mod session_management_contract;
 /// Existing adapter imports retain the same substantive conformance harness.
+#[cfg(any(test, feature = "conformance"))]
 pub use session_management_contract as management_contract;
 pub mod session_owner;
+#[cfg(any(test, feature = "conformance"))]
 pub mod session_owner_contract;
 pub use management::{
     ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
@@ -141,6 +155,7 @@ pub use public_history::{PublicHistoryOutcome, PublicHistoryPage, PublicNewestHi
 pub use public_session::*;
 mod continuation_source;
 mod public_state;
+#[cfg(any(test, feature = "conformance"))]
 pub mod public_state_contract;
 mod snapshot;
 pub use public_run::{PublicRunOutcome, PublicRunState, PublicRunSummary};
@@ -158,7 +173,9 @@ pub use snapshot::{
     SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
     SnapshotRequest, SnapshotUsage,
 };
+#[cfg(any(test, feature = "conformance"))]
 pub mod revision_contract;
+#[cfg(any(test, feature = "conformance"))]
 pub mod storetest;
 
 pub use memory::MemoryStore;

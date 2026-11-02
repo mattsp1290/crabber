@@ -4019,6 +4019,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "crabber",
+ "crabber-session",
  "crabber-test-support",
  "serde",
  "serde_json",

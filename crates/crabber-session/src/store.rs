@@ -226,7 +226,7 @@ pub enum InboxKind {
 /// reject, before changing state, any record their readers cannot decode or
 /// which contains a NUL character, using [`StoreError::Validation`]. Bundled
 /// stores use [`crate::ensure_storable`]; custom stores should run
-/// [`crate::storetest::run_storable_record_contract`].
+/// `crabber_session::storetest::run_storable_record_contract` (feature `conformance`).
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {

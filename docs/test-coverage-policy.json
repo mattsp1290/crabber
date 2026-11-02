@@ -155,7 +155,7 @@
         "concurrent_sessions_serialize_without_state_leak"
       ],
       "before": "212 full Agent turns merely increment one state key past1000; actual default entry/value/key overflow was not crossed.",
-      "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999→1000 counter transition and existing two-session concurrent state history remain.",
+      "after": "Two actual Agent runs plus real PerCall guest writes across the default64-entry and16KiB byte bounds, failed-write snapshots unchanged; a direct999\u21921000 counter transition and existing two-session concurrent state history remain.",
       "rationale": "The counter guest only updates count; another model turn repeats the same transport/state path. Direct guest calls exercise actual host imports and state snapshots at their owning WASM layer. Limits/defaults/instance mode and production implementations are unchanged.",
       "validation": "New real WASM host-boundary/counter and shortAgent cases passed; native pending families passed33selected cases at1and4 onMemory/SQLite andMemory/PostgreSQL;32matchedPGfixturepairs and2ownedcontainersverifiedgone. Three consequential retained detectors failed under meaningful temporary production faults and passed after exact restoration. Full600second qualification remains pending."
     },
@@ -903,6 +903,38 @@
         {
           "package": "crabber-runtime",
           "suffix": "tests::owned_tool_invocations::mixed_products::contracts::postgres_mixed_products_both_scope_orders"
+        }
+      ]
+    },
+    {
+      "behavior": "Public Store conformance remains executable after build selection",
+      "primary_owner": "Session public harnesses and actual external adapter callers",
+      "required_layer": "Memory SQLite PostgreSQL facade and AuditedStore integration suites",
+      "status": "required-selected-manifest",
+      "required_detectors": [
+        {
+          "package": "server-host-probe",
+          "suffix": "memory_custom_adapter_conformance"
+        },
+        {
+          "package": "server-host-probe",
+          "suffix": "sqlite_custom_adapter_conformance"
+        },
+        {
+          "package": "server-host-probe",
+          "suffix": "postgres_custom_adapter_conformance"
+        },
+        {
+          "package": "crabber",
+          "suffix": "session_owners::memory_session_owners"
+        },
+        {
+          "package": "crabber",
+          "suffix": "session_owners::sqlite_session_owners"
+        },
+        {
+          "package": "crabber",
+          "suffix": "session_owners::postgres_session_owners"
         }
       ]
     }
