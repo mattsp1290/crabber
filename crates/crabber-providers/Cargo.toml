@@ -28,7 +28,7 @@ all-providers = ["anthropic", "openai", "codex", "opencode-go"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["registry"] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
 
 [[test]]
 name = "custom_http"
