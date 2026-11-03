@@ -40,11 +40,13 @@ use crabber_runtime::{
     RuntimeError,
 };
 pub use crabber_runtime::{ContinueApproval, RecoverApproval};
+#[cfg(feature = "memory")]
+use crabber_session::MemoryStore;
 #[cfg(feature = "postgres")]
 use crabber_session::PostgresStore;
 #[cfg(feature = "sqlite")]
 use crabber_session::SqliteStore;
-use crabber_session::{MemoryStore, Store};
+use crabber_session::Store;
 use std::{
     sync::{
         Arc,
@@ -82,6 +84,14 @@ impl AgentConfig {
     pub fn model_controls(mut self, controls: crabber_core::ModelControls) -> Self {
         self.model_controls = controls;
         self
+    }
+    fn validate(&self) -> Result<(), BuildError> {
+        if self.max_output_tokens == Some(0) {
+            return Err(BuildError::InvalidConfig(
+                "max_output_tokens must be positive",
+            ));
+        }
+        Ok(())
     }
     /// Caps output tokens for every model turn; model-stream around hooks may override it.
     #[must_use]
@@ -211,6 +221,7 @@ impl AgentBuilder {
             self
         }
     }
+    #[cfg(feature = "memory")]
     #[must_use]
     pub fn memory(mut self) -> Self {
         self.store = Some(Arc::new(MemoryStore::new()));
@@ -364,11 +375,7 @@ impl AgentBuilder {
         }
         let resolver = self.resolver.ok_or(BuildError::NoProvider)?;
         let config = self.config.ok_or(BuildError::NoConfig)?;
-        if config.max_output_tokens == Some(0) {
-            return Err(BuildError::InvalidConfig(
-                "max_output_tokens must be positive",
-            ));
-        }
+        config.validate()?;
         #[cfg(feature = "datadog")]
         let datadog = self
             .datadog_observer
@@ -422,8 +429,12 @@ impl AgentBuilder {
             } else {
                 Arc::new(StaticPlanProvider::new(self.tools, self.prompts))
             };
+        #[cfg(feature = "memory")]
+        let store = self.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
+        #[cfg(not(feature = "memory"))]
+        let store = self.store.ok_or(RuntimeError::Missing("store"))?;
         let mut runtime = Orchestrator::builder()
-            .store(self.store.unwrap_or_else(|| Arc::new(MemoryStore::new())))
+            .store(store)
             .resolver(resolver)
             .plan_provider(plan_provider)
             .execution_mode(self.execution_mode)

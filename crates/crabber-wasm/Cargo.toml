@@ -9,7 +9,7 @@ anyhow = "1"
 async-trait = "0.1"
 crabber-core = { path = "../crabber-core" }
 crabber-extension = { path = "../crabber-extension" }
-crabber-session = { path = "../crabber-session" }
+crabber-session = { path = "../crabber-session", default-features = false }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
@@ -23,7 +23,8 @@ wasmtime-wasi = { version = "=49.0.1", default-features = false, features = ["p2
 workspace = true
 
 [dev-dependencies]
+crabber-session = { path = "../crabber-session", default-features = false, features = ["memory"] }
 tracing-subscriber = { version = "0.3", features = ["registry"] }
-crabber-runtime = { path = "../crabber-runtime" }
+crabber-runtime = { path = "../crabber-runtime", default-features = false }
 crabber-providers = { path = "../crabber-providers" }
 wat = "1"

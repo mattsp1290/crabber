@@ -209,6 +209,7 @@ jobs:
             target/test-performance/complete-*/boundary-features.json
             target/test-performance/complete-*/resource-groups.json
             target/test-performance/complete-*/*-version.txt
+            target/consumer-probes/*/backend-selection/**/reports/*/result.json
           if-no-files-found: ignore
           retention-days: 7
 

@@ -214,3 +214,6 @@ impl FixedMemoryInitialObservation {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+pub(crate) use tests::sql_policy::assert_fixed_policy_sql_refusal;

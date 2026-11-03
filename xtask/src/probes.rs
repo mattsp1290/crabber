@@ -166,6 +166,20 @@ pub(crate) fn schedule(workspace: &Path, gates: &mut crate::checks::Checks) {
         .args(["-I", "-S", "testdata/session-conformance-probe/check.py"])
         .current_dir(workspace);
     gates.command(workspace, conformance, "Session conformance build boundary");
+    gates.prepares_for(crate::parts::Part::QualityArtifacts, |gates| {
+        backend_selection(
+            workspace,
+            gates,
+            "backend-selection-quality-build",
+            &["build", "--lane", "quality-contracts"],
+        );
+    });
+    backend_selection(
+        workspace,
+        gates,
+        "backend-selection-local-runtime",
+        &["local"],
+    );
 }
 
 fn prepare(workspace: &Path, original: &Path, destination: &Path) {
@@ -188,4 +202,23 @@ fn prepare(workspace: &Path, original: &Path, destination: &Path) {
         }
     }
     println!("local API check: recorded Git pin {revision} is unchanged and not qualified here");
+}
+
+pub(crate) fn backend_selection(
+    workspace: &Path,
+    gates: &mut crate::checks::Checks,
+    id: &str,
+    arguments: &[&str],
+) {
+    let mut command = Command::new("python3");
+    command
+        .args(["-I", "-S", "testdata/backend-selection-probe/check.py"])
+        .args(arguments)
+        .current_dir(workspace);
+    gates.named_command(
+        id,
+        workspace,
+        command,
+        "selected backend compiler/source boundary and actual public client assertions",
+    );
 }

@@ -36,6 +36,7 @@ features = ["rt-multi-thread", "time"]
 optional = true
 
 [dependencies.crabber-session]
+default-features = false
 path = "../crates/crabber-session"
 features = ["postgres"]
 optional = true

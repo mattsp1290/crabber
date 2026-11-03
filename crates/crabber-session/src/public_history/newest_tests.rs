@@ -149,6 +149,7 @@ pub(crate) async fn tools(store: &dyn Store) {
         PublicNewestHistoryOutcome::Limited(SnapshotLimit::EncodedBytes)
     ));
 }
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) async fn raw_bytes(store: &dyn Store, session: &SessionId, total: usize, newest: usize) {
     let mut req = request(session);
     req.limits.encoded_bytes = total - 1;

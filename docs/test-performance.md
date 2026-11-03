@@ -88,7 +88,7 @@ The larger supervision budget lets the first cost probe finish. The supervisor r
 
 ## Partial artifact cost probe
 
-`cargo xtask check --part quality-artifacts` runs 23 artifact obligations with their explicit readiness, normal-example and template preparation, followed by the four real PostgreSQL demos. `--list` shows the semantic gates, preparation steps and owned demo commands without starting them. The existing producer still selects `--bins --tests --example protected_workspace`: it compiles native test harnesses. This mode executes rustdoc tests and CLI journeys, while the canonical Nextest suite remains part of the full check.
+`cargo xtask check --part quality-artifacts` runs 25 artifact obligations with ten explicit readiness, normal-example, backend-selection and template preparations, followed by the four real PostgreSQL demos. `--list` shows the semantic gates, preparation steps and owned demo commands without starting them. The existing producer still selects `--bins --tests --example protected_workspace`: it compiles native test harnesses. This mode executes rustdoc tests and CLI journeys, while the canonical Nextest suite remains part of the full check.
 
 The extra example build precedes the normal producer. The runner checks actual Cargo output records for the normal programs and all three normal examples, with the protected example bound to its final producer. No transitive feature-context equivalence is inferred for the other two examples. The normal producer now has the semantic ID `normal-output-build` in both full and partial reports; full command selectors and order stay unchanged.
 
@@ -893,3 +893,41 @@ owned container cleanup verified. The two affected compiled binaries retain all
 poll bodies instead of 18 in the earlier retained build (51,200 versus 152,040
 bytes). This is structural evidence, not a controlled compilation speedup.
 Full local/CI checks and all final rebuild qualification cases remain pending.
+
+## Backend-selection client gates
+
+`cargo xtask check --list` reports four standalone client gates. The
+`backend-selection-quality-build` and `backend-selection-local-runtime` gates
+belong to QualityContracts. QualityArtifacts receives the quality build as
+preparation without semantic credit, then owns `backend-selection-postgres-build`
+and `backend-selection-postgres-runtime`. The PostgreSQL build precedes template
+migration, and runtime follows it. Native ownership receives none of these gates.
+
+The client uses `testdata/backend-selection-probe/check.py` with `build --lane
+quality-contracts`, `local`, `build --lane postgres` and `postgres`. Each lane owns
+separate targets, source copies and receipts. Runtime builds its exact selected
+normal binary, validates compiler/source/feature and dep-info records, then runs
+that reported executable. Default and explicit Memory behavior, exact missing-store
+errors, real SQLite and managed PostgreSQL journeys remain separate assertions.
+The SQL client also exercises the public native producer and scripted consumer
+without Memory. Generic opaque preparation policy remains Unproven.
+
+These checks provide no compiler timing qualification or published Git-consumer
+credit. The complete gate retains all native suites, custom adapters, embedded
+source tests and PostgreSQL demos under the existing deadline.
+
+The empty-backend and conformance-only Session selections retain shared stored
+schema and opaque native calls without builtin readers. One configuration-scoped
+expectation covers `dead_code` and `unused_imports` in those selections. It also
+covers future warnings in those two categories, so it does not lock their current
+inventory. All other warnings and all enabled-backend strict checks remain fatal.
+The former strict empty-backend failure remains failed evidence under its original
+policy. Conformance-only has an explicit primary build row and no runtime credit.
+
+The native detectors `sqlite_fixed_policy_sql_refusal_precedes_transaction` and
+`postgres_fixed_policy_sql_refusal_precedes_transaction` exercise actual Memory
+Open and Seal policy carriers against a real SQL Store whose writer is closed.
+They require exact `Owner(Unsupported)` before transaction acquisition, unchanged
+independent SQL observations, and genuine Memory retry, resource joins and
+supervision. Their private one-shot transport selection exists only in SQL-enabled
+unit tests. They grant no standalone client or compiler-timing credit.

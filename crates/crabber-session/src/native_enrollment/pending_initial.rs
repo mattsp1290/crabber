@@ -1,5 +1,6 @@
 //! Closed Pending Initial source and publication relations. No business or `MainJoin`.
 #[path = "pending_initial/ledger.rs"]
+#[cfg(any(test, feature = "memory"))]
 mod ledger;
 #[path = "pending_initial/records.rs"]
 mod records;
@@ -7,6 +8,7 @@ mod records;
 mod relation;
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
 use crabber_core::InputFingerprint;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use ledger::Ledger;
 pub(crate) use records::*;
 pub(crate) use relation::*;

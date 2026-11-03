@@ -265,6 +265,12 @@ fn behavior_graph(
                 "warnings",
             ],
         );
+        crate::probes::backend_selection(
+            workspace,
+            gates,
+            "backend-selection-postgres-build",
+            &["build", "--lane", "postgres"],
+        );
     });
     // The same features own binaries, tests and docs; there are no per-package
     // behavior reruns merely to enable PostgreSQL or another provider/exporter.
@@ -315,6 +321,12 @@ fn behavior_graph(
         run_native_behaviors(gates, workspace, &cargo_metadata, &binaries, profile);
     });
     gates.owned(Owner::QualityArtifacts, |gates| {
+        crate::probes::backend_selection(
+            workspace,
+            gates,
+            "backend-selection-postgres-runtime",
+            &["postgres"],
+        );
         gates.cargo(
             workspace,
             &["test", "--workspace", "--features", FEATURES, "--doc"],

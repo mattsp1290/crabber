@@ -6,7 +6,9 @@ use crabber_core::{ControlId, InputFingerprint, SessionRevision};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[path = "source/ledger.rs"]
+#[cfg(any(test, feature = "memory"))]
 mod ledger;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use ledger::Ledger;
 pub(crate) const MAX_SOURCE: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

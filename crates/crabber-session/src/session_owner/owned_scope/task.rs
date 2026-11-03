@@ -5,6 +5,8 @@ mod driver;
 mod pending;
 pub use driver::DriverMainContext;
 use driver::MainIngress;
+#[cfg(any(test, feature = "memory"))]
+pub(crate) use pending::InitialResourceAssociation;
 pub use pending::{
     BoundInitialControl, BoundSuccessorControl, InitialAdmissionMetadata, InitialAdmissionReplay,
     LocallyJoinedInitialSeal, PendingDriverTasks, PendingInitialCompletion, PendingInitialControl,
@@ -16,13 +18,14 @@ pub use pending::{
     PendingSuccessorTask, PendingSuccessorTasks, PendingSupervisionReport, QueueAdmissionMetadata,
 };
 pub(crate) use pending::{
-    DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
-    InitialRetirementWitness, NativeConsumerParts,
+    DrainedInitialResources, InitialRetirementView, InitialRetirementWitness, NativeConsumerParts,
 };
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use pending::{
     FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
     verify_fixed_binding,
 };
+#[cfg(any(test, feature = "memory"))]
 pub use pending::{
     FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialObservation,
     FixedMemoryInitialTask, FixedMemoryInitialTaskControl,
@@ -30,6 +33,7 @@ pub use pending::{
 #[cfg(test)]
 pub(crate) use pending::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
 pub(crate) use pending::{NativeInitialOperation, NativeInitialParts};
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use pending::{OriginalPolicyRetirementView, OriginalPolicyView};
 pub use pending::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use std::{future::Future, sync::Arc};
@@ -119,6 +123,7 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
     }
     // Only the closed preparation owner consumes the cached real observation,
     // after moving its actual value into that owner's retained output slot.
+    #[cfg(any(test, feature = "memory"))]
     pub(super) fn take_fixed_joined(&mut self) -> Result<JoinedOwnedTask<T>, Error> {
         if self.task.is_some()
             || self
@@ -246,3 +251,6 @@ pub(crate) use pending::{ConsumerProofCaps, ConsumerProofUsage};
 
 #[cfg(test)]
 pub(crate) use pending::FixedInitialTestHooks;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+pub(crate) use pending::assert_fixed_policy_sql_refusal;

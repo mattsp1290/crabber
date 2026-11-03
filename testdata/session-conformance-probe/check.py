@@ -53,7 +53,7 @@ def completed(rows, success):
     assert rows[finish[0]].get("success") is success, "unexpected compiler completion"
 
 
-def session_artifact(rows, workspace, full):
+def session_artifact(rows, workspace, features):
     completed(rows, True)
     artifacts = [row for row in rows if row.get("reason") == "compiler-artifact"
                  and row.get("target", {}).get("name") == "crabber_session"]
@@ -64,7 +64,7 @@ def session_artifact(rows, workspace, full):
     assert Path(target["src_path"]).resolve() == workspace / "crates/crabber-session/src/lib.rs", "wrong Session source"
     assert artifact["profile"]["test"] is False, "dependency artifact must not be a test"
     assert isinstance(artifact["fresh"], bool), "compiler freshness required"
-    assert artifact["features"] == (["conformance"] if full else []), "wrong Session build selection"
+    assert artifact["features"] == sorted(features), "wrong Session build selection"
     return artifact
 
 
@@ -94,9 +94,12 @@ resolver = "3"
 
 [features]
 conformance = ["crabber-session/conformance"]
+memory = ["crabber-session/memory", "crabber/memory"]
+sqlite = ["crabber-session/sqlite"]
 
 [dependencies]
 crabber-session = {{ path = {json.dumps(str(workspace / 'crates/crabber-session'))}, default-features = false }}
+crabber = {{ path = {json.dumps(str(workspace / 'crates/crabber'))}, default-features = false }}
 ''')
     shutil.copyfile(workspace / "Cargo.lock", scratch / "Cargo.lock")
     (source / "normal.rs").write_text('use crabber_session::{MemoryStore, Store};\nfn main() { let store = MemoryStore::default(); let _: &dyn Store = &store; }\n')
@@ -104,23 +107,34 @@ crabber-session = {{ path = {json.dumps(str(workspace / 'crates/crabber-session'
         (source / f"{name}.rs").write_text(f'use crabber_session::{name};\nfn main() {{}}\n')
     imports = "".join(f"use crabber_session::{name} as _;\n" for name in ROOTS)
     (source / "qualified.rs").write_text(imports + 'fn main() { let _ = crabber_session::storetest::run_contract(|clock| crabber_session::MemoryStore::with_clock(clock)); }\n')
+    (source / "backend_free.rs").write_text('use crabber_session::Store; fn main() { let _: Option<&dyn Store> = None; let _ = crabber::Agent::builder(); }\n')
+    additions = {
+        "memory_import": ('use crabber_session::MemoryStore; fn main() {}\n', "E0432"),
+        "fixed_host_import": ('use crabber_session::session_owner::owned_scope::FixedMemoryInitialHost; fn main() {}\n', "E0432"),
+        "memory_method": ('fn main() { let _ = crabber::Agent::builder().memory(); }\n', "E0599"),
+    }
+    for name, (text, _) in additions.items():
+        (source / f"{name}.rs").write_text(text)
+    (source / "sqlite_qualified.rs").write_text('use crabber_session::{SqliteStore, Store}; fn main() { fn selected(store: SqliteStore) { let _: &dyn Store = &store; let _ = crabber_session::storetest::run_contract(move |clock| store.clone().with_clock(clock)); } let _ = selected; }\n')
     spec = importlib.util.spec_from_file_location("diagnostic", workspace / "testdata/custom-http-feature-probe/check-diagnostic.py")
     diagnostic = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(diagnostic)
     observations = []
 
-    def cargo(name, full=False, locked=True):
+    def cargo(name, full=False, locked=True, features=None):
         argv = ["cargo", "check", "--quiet", "--manifest-path", str(manifest),
                 "--bin", name, "--message-format=json"]
         if locked:
             argv.append("--locked")
-        if full:
-            argv.extend(["--features", "conformance"])
+        features = features if features is not None else (["conformance", "memory"] if full else ["memory"])
+        if features:
+            argv.extend(["--features", ",".join(features)])
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(cache / "target")
         env["CARGO_BUILD_BUILD_DIR"] = str(cache / "target")
-        output = report / f"{name}.jsonl"
-        stderr = report / f"{name}.stderr"
+        case = f"{name}-{'-'.join(features) or 'none'}-{len(observations)}"
+        output = report / f"{case}.jsonl"
+        stderr = report / f"{case}.stderr"
         with output.open("xb") as out, stderr.open("xb") as err:
             result = subprocess.run(argv, cwd=workspace, env=env, stdout=out, stderr=err)
         assert stderr.stat().st_size <= LIMIT, "compiler stderr exceeds the probe bound"
@@ -135,7 +149,7 @@ crabber-session = {{ path = {json.dumps(str(workspace / 'crates/crabber-session'
     try:
         status, normal = cargo("normal", locked=False)
         assert status == 0, "normal production dependency failed"
-        ordinary = session_artifact(normal, workspace, False)
+        ordinary = session_artifact(normal, workspace, ["memory"])
         for name in ROOTS:
             status, rows = cargo(name)
             assert status != 0, f"normal build unexpectedly exposes {name}"
@@ -143,11 +157,25 @@ crabber-session = {{ path = {json.dumps(str(workspace / 'crates/crabber-session'
             assert diagnostic.rejected(rows, source / f"{name}.rs", "E0432"), f"{name} failed without its root import diagnostic"
         status, full = cargo("qualified", full=True)
         assert status == 0, "conformance dependency failed"
-        qualified = session_artifact(full, workspace, True)
+        qualified = session_artifact(full, workspace, ["conformance", "memory"])
+        for name, (_, code) in additions.items():
+            status, baseline = cargo("backend_free", features=[])
+            assert status == 0, "memory-free baseline failed"
+            session_artifact(baseline, workspace, [])
+            status, positive = cargo(name, features=["memory"])
+            assert status == 0, f"enabled {name} positive failed"
+            session_artifact(positive, workspace, ["memory"])
+            status, rows = cargo(name, features=[])
+            assert status != 0, f"memory-free build unexpectedly exposes {name}"
+            completed(rows, False)
+            assert diagnostic.rejected(rows, source / f"{name}.rs", code), f"{name} failed without its source-bound {code} diagnostic"
+        status, sql = cargo("sqlite_qualified", features=["sqlite", "conformance"])
+        assert status == 0, "memory-free SQL conformance dependency failed"
+        session_artifact(sql, workspace, ["sqlite", "conformance"])
         (report / "result.json").write_text(json.dumps({
             "schema": 1, "workspace": str(workspace), "normal": ordinary,
             "qualified": qualified, "rejected_imports": list(ROOTS),
-            "commands": observations, "conformance_executed": False,
+            "commands": observations, "memory_rejections": list(additions), "conformance_executed": False,
         }, indent=2) + "\n")
         shutil.copyfile(manifest, report / "Cargo.toml")
         shutil.copyfile(scratch / "Cargo.lock", report / "Cargo.lock")

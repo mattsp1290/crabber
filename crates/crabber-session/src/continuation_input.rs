@@ -2,11 +2,13 @@
 #[path = "continuation_input/input.rs"]
 mod input;
 #[path = "continuation_input/ledger.rs"]
+#[cfg(any(test, feature = "memory"))]
 mod ledger;
 #[path = "continuation_input/receipt.rs"]
 mod receipt;
 use crabber_core::{ControlId, EventCursor, EventRecord, InputFingerprint, RunId, SessionId};
 pub(crate) use input::Input;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use ledger::Ledger;
 pub(crate) use receipt::Receipt;
 use serde::{Deserialize, Serialize};

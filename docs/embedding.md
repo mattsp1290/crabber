@@ -1,5 +1,13 @@
 # Embedding Crabber
 
+The facade enables `memory` by default, including `.memory()` and an omitted-store
+fallback. To compile a persistent or custom-store host without that backend, set
+`default-features = false` and select the required SQL feature if applicable.
+Supply the store explicitly. With a valid provider and configuration, an omitted
+store returns `BuildError::Runtime(RuntimeError::Missing("store"))`.
+Direct `crabber-session` consumers also default to `memory`; `conformance` does
+not enable it. Runtime builders always require a store.
+
 The default facade has no provider credentials, database, WASM, observability or
 AG-UI dependency. Begin with `Agent::builder().behavior_version("my-host.v1").memory()` and a FakeProvider;
 subscribe to live events, then await the run's durable completion. Enable only

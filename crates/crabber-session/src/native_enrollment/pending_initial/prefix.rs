@@ -92,6 +92,7 @@ impl HistoricalInitialPrefix<'_> {
     }
 }
 
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn select(original: &JoinedPreparation, proof: &mut Proof) -> Result<PrefixIds> {
     select_selected(original, None, proof)
 }

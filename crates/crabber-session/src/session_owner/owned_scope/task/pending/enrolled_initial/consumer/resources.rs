@@ -275,18 +275,21 @@ pub(crate) struct InitialResourceAssociation<'a> {
     resources: &'a InitialResources,
 }
 impl InitialResourceAssociation<'_> {
+    #[cfg(any(test, feature = "memory"))]
     pub(in crate::session_owner::owned_scope::task::pending) fn same_holder(
         &self,
         other: &Self,
     ) -> bool {
         std::ptr::eq(self.resources, other.resources)
     }
+    #[cfg(any(test, feature = "memory"))]
     pub(in crate::session_owner::owned_scope::task::pending) fn belongs_to(
         &self,
         holder: Option<&InitialResources>,
     ) -> bool {
         holder.is_some_and(|holder| std::ptr::eq(holder, self.resources))
     }
+    #[cfg(any(test, feature = "memory"))]
     pub(in crate::session_owner::owned_scope::task::pending) fn verify_policy_close(
         &self,
         original: &JoinedPreparation,

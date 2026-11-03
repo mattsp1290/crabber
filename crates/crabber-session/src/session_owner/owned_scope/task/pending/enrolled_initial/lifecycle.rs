@@ -26,6 +26,7 @@ impl LocallyJoinedInitialSeal {
             let drained = resources.drain().await;
             drained?;
         }
+        #[cfg(any(test, feature = "memory"))]
         if let Some(preparation) = &retained.fixed_preparation
             && let Err(error) = preparation.drain().await
         {
@@ -36,6 +37,7 @@ impl LocallyJoinedInitialSeal {
             return Ok(terminal.clone());
         }
         if retained.lock().identity.is_none() {
+            #[cfg(any(test, feature = "memory"))]
             if let Some(preparation) = &retained.fixed_preparation {
                 preparation.cleanup_partial().await?;
             }
@@ -70,6 +72,7 @@ impl LocallyJoinedInitialSeal {
             )
             .await;
         let accepted = outcome.and_then(closed_status);
+        #[cfg(any(test, feature = "memory"))]
         if matches!(
             &accepted,
             Ok(PendingInitialProducerStatus::ClosedNoPublication)
@@ -126,12 +129,16 @@ impl LocallyJoinedInitialSeal {
 
 impl RetainedInitial {
     pub(in crate::session_owner::owned_scope::task::pending) fn resources_pending(&self) -> bool {
-        self.consumer
+        let pending = self
+            .consumer
             .as_ref()
-            .is_some_and(|resources| resources.owner.snapshot().pending != 0)
+            .is_some_and(|resources| resources.owner.snapshot().pending != 0);
+        #[cfg(any(test, feature = "memory"))]
+        let pending = pending
             || self.fixed_preparation.as_ref().is_some_and(
                 super::super::fixed_preparation::FixedPreparationLoan::resources_pending,
-            )
+            );
+        pending
     }
     pub(in crate::session_owner::owned_scope::task::pending) async fn join_original_resources(
         &self,
@@ -139,6 +146,7 @@ impl RetainedInitial {
         if let Some(resources) = &self.consumer {
             let _report = resources.owner.join().await;
         }
+        #[cfg(any(test, feature = "memory"))]
         if let Some(preparation) = &self.fixed_preparation {
             preparation.join_original_resources().await;
         }

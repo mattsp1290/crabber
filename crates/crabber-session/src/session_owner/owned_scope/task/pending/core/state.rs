@@ -1,6 +1,8 @@
 use super::super::{Error, OwnedMainDisposition};
 use super::{Binding, Family, Notice, OwnedScopeActivation};
-use std::sync::{Arc, Mutex, Weak};
+#[cfg(any(test, feature = "memory"))]
+use std::sync::Weak;
+use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -16,6 +18,7 @@ struct State {
     bound: Option<Binding>,
     completion: Option<Notice>,
     resources: Option<crabber_extension::ToolResourceOwner>,
+    #[cfg(any(test, feature = "memory"))]
     fixed: Option<Weak<super::super::fixed_memory::RetainedFixedController>>,
 }
 /// Signals/observes this original task. It cannot create a task, context or permit.
@@ -41,6 +44,7 @@ impl Control {
                 bound: None,
                 completion: None,
                 resources: None,
+                #[cfg(any(test, feature = "memory"))]
                 fixed: None,
             })),
             changed: watch::channel(()).0,
@@ -50,24 +54,33 @@ impl Control {
     /// future stays owned; already-dispatched business work is not aborted.
     /// Its Runtime owner must signal its independent cancellation/cleanup scope.
     pub(in crate::session_owner::owned_scope::task::pending) fn request_stop(&self) {
-        let (resources, fixed) = {
+        let resources;
+        #[cfg(any(test, feature = "memory"))]
+        let fixed;
+        {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.stopped = true;
-            (state.resources.clone(), state.fixed.clone())
-        };
+            resources = state.resources.clone();
+            #[cfg(any(test, feature = "memory"))]
+            {
+                fixed = state.fixed.clone();
+            }
+        }
         // Closing can notify actual resource observers; never do that under the
         // administrative mutex or substitute a signal for their actual joins.
         if let Some(resources) = resources {
             resources.close();
         }
+        #[cfg(any(test, feature = "memory"))]
         if let Some(fixed) = fixed.and_then(|owner| owner.upgrade()) {
             fixed.request_stop();
         }
         self.changed.send_replace(());
     }
+    #[cfg(any(test, feature = "memory"))]
     pub(in crate::session_owner::owned_scope::task::pending) fn install_fixed_controller(
         &self,
         owner: &Arc<super::super::fixed_memory::RetainedFixedController>,

@@ -85,6 +85,7 @@ pub(crate) fn prepare_anchor(
 ) -> Result<RecordDelta, PreparationCommitError> {
     prepare_anchor_policy(prefix, opened, view, None, proof)
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn prepare_fixed_anchor(
     prefix: &HistoricalInitialPrefix<'_>,
     opened: &birth::OpenRecord,
