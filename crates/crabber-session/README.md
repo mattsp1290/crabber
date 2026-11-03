@@ -540,6 +540,20 @@ identity guards, cleanup semantics, bounds and host responsibilities.
 
 ### Public adapter conformance suites
 
+Public transactional harnesses require the opt-in `conformance` feature. Add it
+to a development dependency on the same Session package and immutable revision
+used by your application:
+
+```toml
+[dev-dependencies]
+crabber-session = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "<same immutable revision>", features = ["conformance"] }
+```
+
+This also enables the harnesses reexported through `crabber::session` when both
+dependencies use the same SDK revision. Ordinary production builds leave the
+feature disabled. Session's own unit tests retain the harnesses automatically.
+Store implementations and runtime validation remain available without it.
+
 Custom adapters can invoke `session_management_contract::run_contract` with a
 Store, and `control_contract::run_contract` / `interaction_contract::run_contract`
 with a factory that installs the supplied `ManualClock`. These are the actual

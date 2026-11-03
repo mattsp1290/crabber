@@ -170,3 +170,13 @@ Set `COMMAND_GUARD_REQUIRE_SHELLS=1` and use the same CPU affinity for both side
 The harness reports exact-test pass counts, errors, hashes, CPU usage and ranges.
 It rejects known missing-PostgreSQL and missing-shell messages. Inspect each test's
 work counters as well; a libtest pass alone does not prove its internal work ran.
+
+
+## Public Store conformance build selection
+
+The Session conformance feature is selected by the facade and server-host-probe
+development dependencies. The required manifest retains their six existing
+Memory, SQLite and PostgreSQL conformance tests. They execute the substantive
+public harnesses; the standalone visibility probe supplies compilation evidence
+only. Ordinary Session/SQLite compiler receipts separately reject conformance,
+so a broad test graph cannot stand in for production feature absence.
