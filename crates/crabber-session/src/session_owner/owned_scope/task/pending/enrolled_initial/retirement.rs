@@ -9,7 +9,9 @@ use crate::session_owner::{
     owned_scope::{JoinedOwnedScope, OwnedScopeActivation},
     preparation::{JoinedPreparation, PreparationCompletion},
 };
-use crabber_core::{ControlId, SessionContext};
+#[cfg(any(test, feature = "memory"))]
+use crabber_core::ControlId;
+use crabber_core::SessionContext;
 
 /// Borrowed physical observations from the existing original-task retainer.
 /// No native record, receipt or caller-supplied disposition constructs this.
@@ -22,6 +24,7 @@ pub(crate) struct InitialRetirementWitness<'a> {
 
 /// Genuine retained originals. Native source authentication remains mandatory.
 pub(crate) struct InitialRetirementView<'a> {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) calls: &'a [ControlId],
     pub(crate) disposition: OwnedMainDisposition,
     pub(crate) activation: Option<&'a OwnedScopeActivation>,
@@ -65,6 +68,8 @@ impl<'a> InitialRetirementWitness<'a> {
         let calls = self
             .association
             .verify_close(original, context, expected, proof)?;
+        #[cfg(not(any(test, feature = "memory")))]
+        let _ = calls;
         proof
             .measure(&self.disposition)
             .map_err(|_| Error::Capacity)?;
@@ -96,6 +101,7 @@ impl<'a> InitialRetirementWitness<'a> {
             return Err(Error::InvalidTransition.into());
         }
         Ok(InitialRetirementView {
+            #[cfg(any(test, feature = "memory"))]
             calls,
             disposition: self.disposition,
             activation,

@@ -5,7 +5,9 @@ use crate::{
     AttemptCleanup, AttemptReceipt, AttemptSnapshot, AttemptState, AttemptTarget,
     ContinuationTarget,
 };
-use crabber_core::{ContinuationId, EventRecord, Run, RunStatus};
+#[cfg(any(test, feature = "memory"))]
+use crabber_core::Run;
+use crabber_core::{ContinuationId, EventRecord, RunStatus};
 use std::collections::BTreeSet;
 
 pub(crate) struct Source {
@@ -45,6 +47,7 @@ pub(crate) fn continuation(outcome: &ApprovalOutcome) -> &ContinuationTarget {
     }
 }
 impl ApprovalRecord {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn verify_current(
         &self,
         run: &Run,

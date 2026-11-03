@@ -344,8 +344,10 @@ pub mod owned_scope;
 pub(crate) mod validation;
 use validation::{digest, identifier, lease, resolver};
 pub(crate) mod audit;
+#[cfg(any(test, feature = "memory"))]
 mod ledger;
 pub(crate) mod record;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use ledger::Ledger;
 /// Authority for the actual native parent at a detached ownership handoff.
 /// Session-only preparation/service reservations have no execution parent.

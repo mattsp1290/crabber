@@ -108,9 +108,10 @@ async fn change(
                         .await?;
                     PendingInitialNativeReply::opened(record, parts.proof)?
                 }
-                OpenDecision::Replayed(_) => {
-                    PendingInitialNativeReply::already_opened(parts.expected.clone(), parts.proof)?
-                }
+                OpenDecision::Replayed(record) => PendingInitialNativeReply::already_opened(
+                    record.epoch.correlation,
+                    parts.proof,
+                )?,
                 OpenDecision::Closed(record) => {
                     PendingInitialNativeReply::closed(record, parts.proof)?
                 }

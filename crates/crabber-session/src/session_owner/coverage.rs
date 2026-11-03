@@ -8,6 +8,7 @@ pub(crate) mod contract;
 
 /// Borrowed historical metadata from one fully checked fixed source. This does
 /// not grant authority; the defining `Ledger` independently selects every source.
+#[cfg(any(test, feature = "memory"))]
 pub(crate) struct FixedInitialOwnerRole<'a> {
     pub reserve: &'a crate::session_owner::audit::Audit,
     pub begin: &'a crate::session_owner::audit::Audit,

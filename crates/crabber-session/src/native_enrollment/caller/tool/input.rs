@@ -14,6 +14,7 @@ pub(crate) enum ToolInput<'a> {
     FrontendRecovery(&'a FrontendContinuationRecovery),
 }
 impl<'a> ToolInput<'a> {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn prepared(
         operation: &'a crate::session_owner::preparation::PreparedOperation,
     ) -> Option<Self> {

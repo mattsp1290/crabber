@@ -3,11 +3,14 @@
 pub(crate) mod join;
 mod task;
 pub use join::{JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask};
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use task::{
     FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
     verify_fixed_binding,
 };
 pub(crate) mod join_verify;
+#[cfg(any(test, feature = "memory"))]
+pub(crate) use task::InitialResourceAssociation;
 pub use task::{
     BoundInitialControl, BoundSuccessorControl, DriverMainContext, InitialAdmissionMetadata,
     InitialAdmissionReplay, JoinedOwnedTask, LocallyJoinedInitialSeal, OwnedTaskRegistration,
@@ -20,15 +23,17 @@ pub use task::{
     PendingSuccessorTasks, PendingSupervisionReport, QueueAdmissionMetadata,
 };
 pub(crate) use task::{
-    DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
-    InitialRetirementWitness, NativeConsumerParts, NativeInitialOperation, NativeInitialParts,
+    DrainedInitialResources, InitialRetirementView, InitialRetirementWitness, NativeConsumerParts,
+    NativeInitialOperation, NativeInitialParts,
 };
+#[cfg(any(test, feature = "memory"))]
 pub use task::{
     FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialObservation,
     FixedMemoryInitialTask, FixedMemoryInitialTaskControl,
 };
 #[cfg(test)]
 pub(crate) use task::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use task::{OriginalPolicyRetirementView, OriginalPolicyView};
 pub use task::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 pub(crate) mod source;
@@ -155,3 +160,6 @@ pub(crate) use task::{ConsumerProofCaps, ConsumerProofUsage};
 
 #[cfg(test)]
 pub(crate) use task::FixedInitialTestHooks;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+pub(crate) use task::assert_fixed_policy_sql_refusal;

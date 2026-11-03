@@ -2,7 +2,9 @@
 use crate::AttemptReceipt;
 use crate::approval::ApprovalRecord;
 use crate::{ApprovalError as Error, ApprovalReceipt};
-use crabber_core::{EventRecord, Run};
+use crabber_core::EventRecord;
+#[cfg(any(test, feature = "memory"))]
+use crabber_core::Run;
 
 pub(crate) struct OriginRunFacts<'a> {
     pub session_id: &'a crabber_core::SessionId,
@@ -11,6 +13,7 @@ pub(crate) struct OriginRunFacts<'a> {
 }
 
 impl ApprovalRecord {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn verify_origin(
         &self,
         run: &Run,

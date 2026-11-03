@@ -479,3 +479,35 @@ async fn corrupt_projection(
         "independent cohort refuses all-projection loss"
     );
 }
+
+#[tokio::test]
+async fn postgres_fixed_policy_sql_refusal_precedes_transaction() {
+    use crabber_test_support::postgres::{DatabaseMode, TestDatabase};
+    use futures::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    if !TestDatabase::available().unwrap() {
+        return;
+    }
+    let database = TestDatabase::create(DatabaseMode::Current).await.unwrap();
+    let result = AssertUnwindSafe(async {
+        let url = database.url();
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+        let observer = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+        let query = "SELECT (SELECT count(*) FROM sessions), (SELECT count(*) FROM runs), (SELECT count(*) FROM pending_initial_epochs), (SELECT count(*) FROM pending_initial_assignments), (SELECT count(*) FROM pending_initial_closes), (SELECT count(*) FROM initial_consumer_origins), (SELECT count(*) FROM initial_consumer_assignments), (SELECT count(*) FROM initial_consumer_closes), (SELECT count(*) FROM session_owner_audits)";
+        let before: (i64,i64,i64,i64,i64,i64,i64,i64,i64) = sqlx::query_as(query).fetch_one(&observer).await.unwrap();
+        store.pool.close().await;
+        let history = AssertUnwindSafe(crate::session_owner::owned_scope::assert_fixed_policy_sql_refusal(store.clone())).catch_unwind().await;
+        let after: (i64,i64,i64,i64,i64,i64,i64,i64,i64) = sqlx::query_as(query).fetch_one(&observer).await.unwrap();
+        observer.close().await;
+        drop(store);
+        assert_eq!(before, (0,0,0,0,0,0,0,0,0));
+        assert_eq!(after, before);
+        if let Err(payload) = history { std::panic::resume_unwind(payload); }
+    }).catch_unwind().await;
+    database.finish().await.unwrap();
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}

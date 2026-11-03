@@ -392,6 +392,7 @@ pub(crate) fn before_event(
     )
     .map_err(|_| Error::UnknownStoreOutcome)
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn verify_before_event(event: &EventRecord, before: &EventRecord) -> Result<(), Error> {
     verify_before_event_with_proof(
         event,

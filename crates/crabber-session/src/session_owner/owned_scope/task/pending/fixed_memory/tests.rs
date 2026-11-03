@@ -196,3 +196,6 @@ async fn fixed_host_refuses_missing_managed_session_without_adopting_it() {
 mod lifetime;
 
 mod substitution;
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(super) mod sql_policy;

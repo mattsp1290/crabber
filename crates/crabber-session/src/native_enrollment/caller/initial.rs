@@ -428,9 +428,11 @@ impl Input<'_> {
 
 #[path = "initial/selected.rs"]
 mod selected;
+#[cfg(any(test, feature = "memory"))]
+pub(crate) use selected::with_queue_input;
 #[cfg(any(feature = "postgres", feature = "sqlite", test))]
 pub(crate) use selected::with_queue_input_async;
-pub(crate) use selected::{Dispatch, SelectedInput, input_keyed, with_queue_input};
+pub(crate) use selected::{Dispatch, SelectedInput, input_keyed};
 
 pub(crate) use selected::SelectedOriginal;
 native_pending_initial_items! {

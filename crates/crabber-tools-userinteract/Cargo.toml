@@ -8,7 +8,7 @@ publish = false
 
 
 [dependencies]
-crabber = { path = "../crabber" }
+crabber = { path = "../crabber", default-features = false }
 crabber-tools-core = { path = "../crabber-tools-core" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

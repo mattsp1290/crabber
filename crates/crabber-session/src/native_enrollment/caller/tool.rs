@@ -382,6 +382,7 @@ pub(crate) struct ToolGrantOutput {
     pub frontend: Vec<crate::FrontendPhaseResume>,
     pub digest: crabber_core::InputFingerprint,
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) struct ParentGrant {
     pub previous: AttemptRecord,
     pub parent: AttemptRecord,

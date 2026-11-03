@@ -82,6 +82,7 @@ impl ToolContinuationTermination {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn verify_run(
         &self,
         record: &ToolContinuationRecord,

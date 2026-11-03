@@ -603,3 +603,43 @@ async fn corrupt_projection(
         "independent cohort refuses all-projection loss"
     );
 }
+
+#[tokio::test]
+async fn sqlite_fixed_policy_sql_refusal_precedes_transaction() {
+    use futures::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fixed-policy-refusal.sqlite");
+    crate::SqliteStore::migrate(&path).await.unwrap();
+    let store = std::sync::Arc::new(crate::SqliteStore::connect(&path).await.unwrap());
+    let observer = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .read_only(true),
+        )
+        .await
+        .unwrap();
+    let query = "SELECT (SELECT count(*) FROM sessions), (SELECT count(*) FROM runs), (SELECT count(*) FROM pending_initial_epochs), (SELECT count(*) FROM pending_initial_assignments), (SELECT count(*) FROM pending_initial_closes), (SELECT count(*) FROM initial_consumer_origins), (SELECT count(*) FROM initial_consumer_assignments), (SELECT count(*) FROM initial_consumer_closes), (SELECT count(*) FROM session_owner_audits)";
+    let before: (i64, i64, i64, i64, i64, i64, i64, i64, i64) =
+        sqlx::query_as(query).fetch_one(&observer).await.unwrap();
+    store.writer.close().await;
+    let result = AssertUnwindSafe(
+        crate::session_owner::owned_scope::assert_fixed_policy_sql_refusal(store.clone()),
+    )
+    .catch_unwind()
+    .await;
+    let after: (i64, i64, i64, i64, i64, i64, i64, i64, i64) =
+        sqlx::query_as(query).fetch_one(&observer).await.unwrap();
+    observer.close().await;
+    store.readers.close().await;
+    drop(store);
+    directory.close().unwrap();
+    assert_eq!(before, (0, 0, 0, 0, 0, 0, 0, 0, 0));
+    assert_eq!(after, before);
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}

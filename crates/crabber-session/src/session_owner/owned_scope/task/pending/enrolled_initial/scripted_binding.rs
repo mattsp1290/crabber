@@ -111,12 +111,14 @@ fn describe(
 #[derive(Clone, Copy)]
 enum ProfileKind {
     Generic,
+    #[cfg(any(test, feature = "memory"))]
     FixedMemory,
 }
 impl ProfileKind {
     fn components(self) -> (&'static str, &'static str, &'static [u8]) {
         match self {
             Self::Generic => (PROFILE_COMPONENT, PROFILE_VERSION, BEHAVIOR),
+            #[cfg(any(test, feature = "memory"))]
             Self::FixedMemory => ("contract:crabber/pending-initial-scripted-fixed-memory.v3", "3", b"crabber.pending-initial.scripted-fixed-memory-behavior.v3:system-clock:literal-preparation:one-turn:no-tools:no-prompts:no-guards:no-provider-factories:no-host-callbacks:no-compaction:no-heartbeat:canonical-attempt-prelude:permission-before-run-started:five-lifecycle-events:one-assistant-message:drain-before-conclusion:actual-main-and-resource-join:atomic-native-preparation-child-and-driver-retirement-and-paired-close:original-policy-open-v1:policy-terminal-v1"),
         }
     }
@@ -252,6 +254,7 @@ fn verify_profile_kind(
             resource_contract,
             proof,
         ),
+        #[cfg(any(test, feature = "memory"))]
         ProfileKind::FixedMemory => profile_kind(
             descriptor,
             &binding.request.selection_policy,
@@ -329,6 +332,7 @@ fn verify_kind(
     }
     match kind {
         ProfileKind::Generic => verify_profile(binding, &descriptor, original, proof),
+        #[cfg(any(test, feature = "memory"))]
         ProfileKind::FixedMemory => verify_fixed_binding(
             binding,
             original
@@ -341,12 +345,14 @@ fn verify_kind(
     }
 }
 
+#[cfg(any(test, feature = "memory"))]
 pub(crate) struct FixedInitialProfile {
     pub(crate) provider: ProviderBindingDescriptor,
     pub(crate) behavior: InputFingerprint,
     pub(crate) semantics: serde_json::Value,
     pub(crate) plan: String,
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn fixed_initial_resource_contract(
     proof: &mut Proof,
 ) -> Result<InputFingerprint, PreparationCommitError> {
@@ -356,6 +362,7 @@ pub(crate) fn fixed_initial_resource_contract(
         .map_err(|error| budget(&error))?;
     InputFingerprint::new(format!("{:x}", Sha256::digest(declaration))).map_err(|_| conflict())
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn fixed_initial_profile(
     source: &LibraryScriptedSource,
     policy: &crate::AdmissionSelectionPolicy,
@@ -386,6 +393,7 @@ pub(crate) fn fixed_initial_profile(
         plan: profile.plan,
     })
 }
+#[cfg(any(test, feature = "memory"))]
 pub(super) fn verify_fixed(
     source: &LibraryScriptedSource,
     original: &JoinedPreparation,
@@ -393,6 +401,7 @@ pub(super) fn verify_fixed(
 ) -> Result<(), PreparationCommitError> {
     verify_kind(source, original, ProfileKind::FixedMemory, proof)
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn verify_fixed_binding(
     binding: &ExecutionBindingCapsule,
     resource_contract: Option<&InputFingerprint>,

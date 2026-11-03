@@ -71,6 +71,7 @@ impl Budget {
         Ok(())
     }
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn outcome(
     result: Result<super::PublicControlHeader, Failure>,
 ) -> Result<super::PublicHeaderOutcome, PublicSessionError> {

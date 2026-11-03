@@ -77,8 +77,10 @@ impl PublicStateMutation {
 mod records;
 pub(crate) use records::*;
 mod source;
+#[cfg(any(test, feature = "memory"))]
+pub(crate) use source::verify_before_event;
 pub use source::{PublicSourceAuthority, PublicSourceMutation};
-pub(crate) use source::{attach_before, before_event, verify_before_event};
+pub(crate) use source::{attach_before, before_event};
 pub(crate) use source::{source_event, source_matches, verify_source_event};
 
 pub(crate) use source::{verify_before_event_with_proof, verify_source_event_with_proof};

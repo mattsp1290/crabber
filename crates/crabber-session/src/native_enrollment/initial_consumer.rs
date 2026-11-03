@@ -4,6 +4,7 @@
 #[path = "initial_consumer/classification.rs"]
 mod classification;
 #[path = "initial_consumer/ledger.rs"]
+#[cfg(any(test, feature = "memory"))]
 mod ledger;
 pub(crate) use classification::InitialConsumption;
 #[path = "initial_consumer/original.rs"]
@@ -20,9 +21,12 @@ mod relation;
 pub(crate) use digests::ResultIndex;
 #[path = "initial_consumer/retirement.rs"]
 mod retirement;
-pub(crate) use super::pending_initial::{Correlation, SourceKey};
+pub(crate) use super::pending_initial::Correlation;
+#[cfg(any(test, feature = "memory"))]
+pub(crate) use super::pending_initial::SourceKey;
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
 use crabber_core::InputFingerprint;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use ledger::Ledger;
 pub(crate) use original::*;
 pub(crate) use records::*;

@@ -1,3 +1,12 @@
+#![cfg_attr(
+    not(any(test, feature = "memory", feature = "postgres", feature = "sqlite")),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "empty-backend interfaces retain builtin schema and opaque ownership without backend readers"
+    )
+)]
+
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
@@ -145,6 +154,7 @@ pub use management::{
     ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
     SessionDefaults, SessionListCursor, SessionListPage, SessionSummary,
 };
+#[cfg(any(test, feature = "memory"))]
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -181,6 +191,7 @@ pub mod revision_contract;
 #[cfg(any(test, feature = "conformance"))]
 pub mod storetest;
 
+#[cfg(any(test, feature = "memory"))]
 pub use memory::MemoryStore;
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStore;

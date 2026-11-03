@@ -995,6 +995,61 @@
           "suffix": "session_owners::postgres_session_owners"
         }
       ]
+    },
+    {
+      "behavior": "Fixed Memory policy carriers refuse SQL forwarding before transaction acquisition",
+      "required_detectors": [
+        {
+          "package": "crabber-session",
+          "suffix": "sqlite_fixed_policy_sql_refusal_precedes_transaction"
+        },
+        {
+          "package": "crabber-session",
+          "suffix": "postgres_fixed_policy_sql_refusal_precedes_transaction"
+        }
+      ]
     }
-  ]
+  ],
+  "standalone_backend_selection_gates": {
+    "owner": "testdata/backend-selection-probe/check.py",
+    "gates": [
+      {
+        "id": "backend-selection-quality-build",
+        "owner": "quality-contracts",
+        "argv": [
+          "build",
+          "--lane",
+          "quality-contracts"
+        ],
+        "prepares_for": [
+          "quality-artifacts"
+        ]
+      },
+      {
+        "id": "backend-selection-local-runtime",
+        "owner": "quality-contracts",
+        "argv": [
+          "local"
+        ]
+      },
+      {
+        "id": "backend-selection-postgres-build",
+        "owner": "quality-artifacts",
+        "argv": [
+          "build",
+          "--lane",
+          "postgres"
+        ]
+      },
+      {
+        "id": "backend-selection-postgres-runtime",
+        "owner": "quality-artifacts",
+        "argv": [
+          "postgres"
+        ]
+      }
+    ],
+    "native_detector_credit": false,
+    "timing_qualification": false
+  }
 }
