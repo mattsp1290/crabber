@@ -158,6 +158,7 @@ pub struct HttpAdapter {
     id: String,
     base_url: String,
     protocol: Protocol,
+    responses_parallel_tool_calls: bool,
     kind: AdapterKind,
     credential_placement: CredentialPlacement,
     #[allow(dead_code)]
@@ -208,6 +209,7 @@ impl HttpAdapter {
             id: id.into(),
             base_url: base_url.into(),
             protocol,
+            responses_parallel_tool_calls: false,
             kind,
             credential_placement,
             chat_token_mode: crate::chat::TokenMode::MaxTokens,
@@ -322,6 +324,14 @@ impl HttpAdapter {
     #[must_use]
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
+        self
+    }
+    /// Allows the Responses model to request multiple tool calls in one response.
+    /// Defaults to false. This setting has no effect on Messages or Chat
+    /// Completions adapters and does not change how the runtime executes tools.
+    #[must_use]
+    pub fn with_responses_parallel_tool_calls(mut self, enabled: bool) -> Self {
+        self.responses_parallel_tool_calls = enabled;
         self
     }
     #[must_use]

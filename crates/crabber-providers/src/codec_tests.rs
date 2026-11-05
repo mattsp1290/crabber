@@ -10,6 +10,8 @@ mod anthropic;
 mod chat_tests;
 #[path = "codec_tests/reasoning.rs"]
 mod reasoning;
+#[path = "codec_tests/responses_batching.rs"]
+mod responses_batching;
 
 fn event(kind: &str, value: &serde_json::Value) -> sse::Event {
     sse::Event {

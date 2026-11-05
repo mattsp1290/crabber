@@ -50,6 +50,8 @@ use operational_observation::{
 
 mod approval_order;
 mod approval_recovery;
+#[path = "tests/batched_tool_calls.rs"]
+mod batched_tool_calls;
 #[path = "tests/callback_ownership.rs"]
 mod callback_ownership;
 #[path = "tests/continuation_source.rs"]
@@ -62,6 +64,7 @@ mod model_completion;
 mod native_phase;
 #[path = "tests/owned_tool_invocations.rs"]
 mod owned_tool_invocations;
+mod pending_arguments;
 #[path = "tests/preparation_resources.rs"]
 mod preparation_resources;
 #[path = "tests/prompt_products.rs"]

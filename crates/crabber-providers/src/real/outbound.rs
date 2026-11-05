@@ -229,7 +229,9 @@ pub(super) fn prepare(
     }
     let mut body = match adapter.protocol {
         super::Protocol::Responses => {
-            crate::responses::body(request, adapter.uses_codex_responses_mode())
+            let mut body = crate::responses::body(request, adapter.uses_codex_responses_mode());
+            body["parallel_tool_calls"] = adapter.responses_parallel_tool_calls.into();
+            body
         }
         super::Protocol::Messages => crate::messages::body(request),
         super::Protocol::ChatCompletions => crate::chat::body(request, adapter.chat_token_mode),
