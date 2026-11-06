@@ -42,6 +42,15 @@ async fn frontend_claim_and_recovery_replay_never_read_current_run() {
         let session = handle.session_id().clone();
         let run = handle.run_id().clone();
         assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        let pending = store
+            .list_events(&session, None, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == EventKind::ToolCallPending)
+            .unwrap();
+        assert!(pending.payload.get("arguments").is_none());
+        assert!(pending.payload.get("arguments_unavailable").is_none());
         let waiting = store
             .tool_continuation_snapshot(&session, &run)
             .await

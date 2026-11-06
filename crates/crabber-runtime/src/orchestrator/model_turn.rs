@@ -544,6 +544,11 @@ impl Orchestrator {
         if crabber_session::ensure_storable(&record).is_err() {
             record.arguments = json!({PREPARE_ERROR_KEY: UNSTORABLE_ARGUMENTS_TEXT});
         }
+        event.payload["arguments"] = record.arguments.clone();
+        if crabber_session::ensure_storable(&event).is_err() {
+            event.payload.as_object_mut().unwrap().remove("arguments");
+            event.payload["arguments_unavailable"] = json!("event_not_storable");
+        }
         execution
             .create_tool_call(record.clone(), event.clone())
             .await?;

@@ -55,6 +55,13 @@ impl HttpAdapter {
             }
             config
         };
+        let config = {
+            let mut config = config;
+            if self.protocol == super::Protocol::Responses && self.responses_parallel_tool_calls {
+                config.push("responses.parallel_tool_calls=true");
+            }
+            config
+        };
         let config =
             serde_json::to_vec(&config).map_err(|_| ProviderBindingError::InvalidDescriptor)?;
         let config = InputFingerprint::new(format!("{:x}", Sha256::digest(config)))
@@ -131,6 +138,36 @@ mod tests {
 #[cfg(all(test, feature = "codex"))]
 mod codex_tests {
     use super::*;
+    #[tokio::test]
+    async fn responses_parallel_tool_call_policy_is_bound_and_restore_rejects_drift() {
+        use crate::{HttpResolver, Resolver};
+        let store = std::sync::Arc::new(crabber_auth::MemoryCredentialStore::default());
+        let selection = Selection {
+            provider_id: "codex".into(),
+            model_id: "model".into(),
+        };
+        let adapter = HttpAdapter::codex_cli(store);
+        let original = adapter.builtin_binding(&selection).unwrap();
+        assert_eq!(
+            original.config_fingerprint().as_str(),
+            "4d1e4f4cfe5c56d8629a30037aa9cf00f3488cce5419bacfc954f8236d2078cc"
+        );
+        assert_eq!(
+            adapter
+                .clone()
+                .with_responses_parallel_tool_calls(false)
+                .builtin_binding(&selection)
+                .unwrap(),
+            original
+        );
+        let enabled = adapter.with_responses_parallel_tool_calls(true);
+        assert_ne!(enabled.builtin_binding(&selection).unwrap(), original);
+        let resolver = HttpResolver::new().with_adapter(enabled);
+        assert!(matches!(
+            resolver.restore_binding(&original).await,
+            Err(ProviderBindingError::VersionConflict)
+        ));
+    }
     #[test]
     fn codex_profiles_have_distinct_route_fingerprints() {
         let store = std::sync::Arc::new(crabber_auth::MemoryCredentialStore::default());

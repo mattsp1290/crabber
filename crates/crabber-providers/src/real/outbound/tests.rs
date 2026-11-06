@@ -10,6 +10,41 @@ use std::sync::{
 };
 
 pub(super) struct Credentials(pub(super) AtomicUsize);
+
+#[test]
+fn responses_parallel_tool_calls_changes_only_the_opted_in_wire_field() {
+    let request = request(
+        ContentBlock::Text {
+            text: "read files".into(),
+        },
+        false,
+    );
+    let adapter = HttpAdapter::custom("fixture", "http://127.0.0.1:1", Protocol::Responses).inner;
+    let original = prepare(&adapter, &request).unwrap();
+    assert_eq!(original, crate::responses::body(&request, false));
+    assert_eq!(original["parallel_tool_calls"], false);
+    assert_eq!(
+        prepare(
+            &adapter.clone().with_responses_parallel_tool_calls(false),
+            &request
+        )
+        .unwrap(),
+        original
+    );
+    let mut expected = original;
+    expected["parallel_tool_calls"] = true.into();
+    assert_eq!(
+        prepare(&adapter.with_responses_parallel_tool_calls(true), &request).unwrap(),
+        expected
+    );
+    for protocol in [Protocol::Messages, Protocol::ChatCompletions] {
+        let adapter = HttpAdapter::custom("fixture", "http://127.0.0.1:1", protocol).inner;
+        assert_eq!(
+            prepare(&adapter, &request).unwrap(),
+            prepare(&adapter.with_responses_parallel_tool_calls(true), &request).unwrap()
+        );
+    }
+}
 #[async_trait::async_trait]
 impl CredentialSource for Credentials {
     async fn credential(&self, _: &ModelRequest) -> Result<String, ProviderError> {
