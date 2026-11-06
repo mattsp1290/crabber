@@ -16,7 +16,7 @@ crabber-core = { path = "../crabber-core" }
 crabber-extension = { path = "../crabber-extension" }
 tokio-util = { version = "0.7", features = ["rt"] }
 crabber-providers = { path = "../crabber-providers" }
-crabber-session = { path = "../crabber-session" }
+crabber-session = { path = "../crabber-session", default-features = false }
 async-trait = "0.1"
 futures = "0.3"
 jsonschema = { version = "0.58", default-features = false }
@@ -27,6 +27,7 @@ time = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
+crabber-session = { path = "../crabber-session", default-features = false, features = ["memory"] }
 crabber-test-support = { path = "../crabber-test-support", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 crabber-middleware = { path = "../crabber-middleware" }

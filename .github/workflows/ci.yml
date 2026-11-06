@@ -167,6 +167,7 @@ jobs:
             target/test-performance/complete-*/boundary-features.json
             target/test-performance/complete-*/resource-groups.json
             target/test-performance/complete-*/*-version.txt
+            target/consumer-probes/*/backend-selection/**/reports/*/result.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -380,6 +381,7 @@ jobs:
             target/test-performance/complete-*/boundary-features.json
             target/test-performance/complete-*/resource-groups.json
             target/test-performance/complete-*/*-version.txt
+            target/consumer-probes/*/backend-selection/**/reports/*/result.json
             target/test-performance/complete-*/normal-output-artifacts.jsonl
             target/test-performance/complete-*/native-artifacts.jsonl
             target/test-performance/complete-*/prepared-normal-examples.json

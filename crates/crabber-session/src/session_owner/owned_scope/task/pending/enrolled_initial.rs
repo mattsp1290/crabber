@@ -6,6 +6,7 @@ mod lifecycle;
 pub(super) mod observe;
 mod retirement;
 mod scripted_binding;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use scripted_binding::{
     FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
     verify_fixed_binding,
@@ -28,11 +29,11 @@ use crate::{
 };
 #[cfg(test)]
 pub(crate) use budget::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+pub(in crate::session_owner::owned_scope::task::pending) use consumer::FreshBegun;
+#[cfg(any(test, feature = "memory"))]
+pub(in crate::session_owner::owned_scope::task::pending) use consumer::InitialResources;
 pub(crate) use consumer::{
     DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
-};
-pub(in crate::session_owner::owned_scope::task::pending) use consumer::{
-    FreshBegun, InitialResources,
 };
 pub use consumer::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use crabber_core::{ControlId, RunId, SessionContext};
@@ -85,6 +86,7 @@ pub(in crate::session_owner::owned_scope::task::pending) struct RetainedInitial 
     state: Mutex<State>,
     consumer: Option<Arc<consumer::InitialResources>>,
     calls: consumer::Calls,
+    #[cfg(any(test, feature = "memory"))]
     fixed_preparation: Option<super::fixed_preparation::FixedPreparationLoan>,
     #[cfg(test)]
     budget: budget::Harness,
@@ -101,6 +103,7 @@ impl RetainedInitial {
         ingress: Arc<MainIngress>,
         control: Control,
     ) -> Result<(), Error> {
+        #[cfg(any(test, feature = "memory"))]
         if let Some(preparation) = &self.fixed_preparation {
             preparation.registered(task)?;
         }
@@ -219,11 +222,13 @@ impl RetainedInitial {
                         ),
                         _ => None,
                     };
+                    #[cfg(any(test, feature = "memory"))]
                     let policy = self
                         .fixed_preparation
                         .as_ref()
                         .zip(consumer.as_ref())
                         .map(|(loan, association)| loan.view(association));
+                    #[cfg(any(test, feature = "memory"))]
                     let policy_retirement = if operation == Operation::Seal {
                         policy
                             .as_ref()
@@ -241,25 +246,34 @@ impl RetainedInitial {
                         lease: &lease,
                         consumer: consumer.as_ref(),
                         retirement: retirement.as_ref(),
+                        #[cfg(any(test, feature = "memory"))]
                         original_policy: policy.as_ref(),
+                        #[cfg(any(test, feature = "memory"))]
                         policy_retirement: policy_retirement.as_ref(),
                     };
+                    #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+                    let forwarding = self
+                        .fixed_preparation
+                        .as_ref()
+                        .and_then(|loan| loan.test_native_forward(operation));
                     let observed = observe::original(
-                        || self.store.pending_initial_native(call),
-                        |result| self.stage(result),
+                        || {
+                            #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+                            if let Some((store, _)) = &forwarding {
+                                return store.pending_initial_native(call);
+                            }
+                            self.store.pending_initial_native(call)
+                        },
+                        |result| {
+                            #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+                            if let Some((_, hooks)) = &forwarding {
+                                hooks.record_native_result(operation, &result);
+                            }
+                            self.stage(result);
+                        },
                         deadline,
                         || {
-                            self.status(match operation {
-                                Operation::Open => {
-                                    PendingInitialProducerStatus::OpenDisposalPending
-                                }
-                                Operation::Complete => {
-                                    PendingInitialProducerStatus::CompleteDisposalPending
-                                }
-                                Operation::Seal => {
-                                    PendingInitialProducerStatus::SealDisposalPending
-                                }
-                            });
+                            self.status(disposal_status(operation));
                         },
                         || {
                             self.lock().observation_failed = true;
@@ -283,6 +297,14 @@ impl RetainedInitial {
         #[cfg(test)]
         self.budget.record(operation, proof.used(), result.is_ok());
         result
+    }
+}
+
+fn disposal_status(operation: Operation) -> PendingInitialProducerStatus {
+    match operation {
+        Operation::Open => PendingInitialProducerStatus::OpenDisposalPending,
+        Operation::Complete => PendingInitialProducerStatus::CompleteDisposalPending,
+        Operation::Seal => PendingInitialProducerStatus::SealDisposalPending,
     }
 }
 
@@ -554,6 +576,7 @@ impl PendingInitialProducer {
             Self::register_with_resources(owner, store, prepared, Some(resources))
         }
     }
+    #[cfg(any(test, feature = "memory"))]
     pub(in crate::session_owner::owned_scope::task::pending) fn register_fixed_scripted(
         owner: &PendingDriverTasks,
         core: &Arc<super::fixed_memory::FixedMemoryInitialControl>,
@@ -594,6 +617,7 @@ impl PendingInitialProducer {
         }
         Ok(task)
     }
+    #[cfg(any(test, feature = "memory"))]
     pub(in crate::session_owner::owned_scope::task::pending) fn take_fixed_observation(
         &mut self,
     ) -> Option<PendingInitialProducerObservation> {
@@ -626,6 +650,7 @@ impl PendingInitialProducer {
             store,
             prepared,
             consumer,
+            #[cfg(any(test, feature = "memory"))]
             None,
             #[cfg(test)]
             budget,
@@ -636,7 +661,9 @@ impl PendingInitialProducer {
         store: Arc<dyn Store>,
         prepared: PreparedSource,
         consumer: Option<Arc<consumer::InitialResources>>,
-        fixed_preparation: Option<super::fixed_preparation::FixedPreparationLoan>,
+        #[cfg(any(test, feature = "memory"))] fixed_preparation: Option<
+            super::fixed_preparation::FixedPreparationLoan,
+        >,
         #[cfg(test)] budget: budget::Harness,
     ) -> Result<Self, PreparationCommitError> {
         let retained = Arc::new(RetainedInitial {
@@ -644,6 +671,7 @@ impl PendingInitialProducer {
             store,
             consumer,
             calls: consumer::Calls::default(),
+            #[cfg(any(test, feature = "memory"))]
             fixed_preparation,
             state: Mutex::new(State {
                 task: None,

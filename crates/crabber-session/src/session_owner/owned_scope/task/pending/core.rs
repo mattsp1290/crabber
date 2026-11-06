@@ -25,11 +25,13 @@ pub(super) enum Family {
     Queue,
     Successor,
     EnrolledInitial,
+    #[cfg(any(test, feature = "memory"))]
     FixedMemoryController,
 }
 #[derive(Clone)]
 pub(super) enum RetainedOwner {
     Initial(Arc<super::enrolled_initial::RetainedInitial>),
+    #[cfg(any(test, feature = "memory"))]
     FixedMemoryController(Arc<super::fixed_memory::RetainedFixedController>),
 }
 impl RetainedOwner {
@@ -41,6 +43,7 @@ impl RetainedOwner {
     ) -> Result<(), Error> {
         match self {
             Self::Initial(owner) => owner.attach(task, ingress, control),
+            #[cfg(any(test, feature = "memory"))]
             Self::FixedMemoryController(owner) => owner.attach(task, ingress, &control),
         }
     }
@@ -50,6 +53,7 @@ impl RetainedOwner {
     ) -> Option<super::enrolled_initial::PendingInitialProducerObservation> {
         match self {
             Self::Initial(owner) => Some(owner.clone().after_join(disposition).await),
+            #[cfg(any(test, feature = "memory"))]
             Self::FixedMemoryController(owner) => {
                 owner.after_join(disposition).await;
                 None
@@ -59,12 +63,14 @@ impl RetainedOwner {
     pub(super) fn resources_pending(&self) -> bool {
         match self {
             Self::Initial(owner) => owner.resources_pending(),
+            #[cfg(any(test, feature = "memory"))]
             Self::FixedMemoryController(owner) => owner.resources_pending(),
         }
     }
     pub(super) async fn join_original_resources(&self) {
         match self {
             Self::Initial(owner) => owner.join_original_resources().await,
+            #[cfg(any(test, feature = "memory"))]
             Self::FixedMemoryController(owner) => owner.join_original_resources().await,
         }
     }

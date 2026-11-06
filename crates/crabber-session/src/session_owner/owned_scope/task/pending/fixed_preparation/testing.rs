@@ -32,8 +32,83 @@ pub(crate) struct FixedInitialTestHooks {
     consumer_caps: Mutex<Vec<(crate::native_enrollment::initial_consumer::CallKind, usize)>>,
     fixed_seal: AtomicBool,
     pub(crate) usage: Arc<Mutex<InitialProofUsage>>,
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    native_forward: Mutex<Option<(NativeInitialOperation, Arc<dyn crate::Store>)>>,
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    native_results: Mutex<Vec<(NativeInitialOperation, NativeForwardResult)>>,
+}
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::session_owner::owned_scope::task::pending) enum NativeForwardResult {
+    Unsupported,
+    InvalidTransition,
+    UnknownStoreOutcome,
+    Other,
 }
 impl FixedInitialTestHooks {
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub(in crate::session_owner::owned_scope::task::pending) fn forward_native_once(
+        &self,
+        operation: NativeInitialOperation,
+        store: Arc<dyn crate::Store>,
+    ) {
+        assert!(
+            self.native_forward
+                .lock()
+                .unwrap()
+                .replace((operation, store))
+                .is_none()
+        );
+    }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    fn take_native_forward(
+        &self,
+        operation: NativeInitialOperation,
+    ) -> Option<Arc<dyn crate::Store>> {
+        let mut selected = self.native_forward.lock().unwrap();
+        if selected
+            .as_ref()
+            .is_some_and(|(expected, _)| *expected == operation)
+        {
+            selected.take().map(|(_, store)| store)
+        } else {
+            None
+        }
+    }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub(in crate::session_owner::owned_scope::task::pending) fn record_native_result(
+        &self,
+        operation: NativeInitialOperation,
+        result: &Result<super::super::PendingInitialNativeReply, super::PreparationCommitError>,
+    ) {
+        let observed = match result {
+            Err(super::PreparationCommitError::Owner(Error::Unsupported)) => {
+                NativeForwardResult::Unsupported
+            }
+            Err(super::PreparationCommitError::Owner(Error::InvalidTransition)) => {
+                NativeForwardResult::InvalidTransition
+            }
+            Err(super::PreparationCommitError::Owner(Error::UnknownStoreOutcome)) => {
+                NativeForwardResult::UnknownStoreOutcome
+            }
+            _ => NativeForwardResult::Other,
+        };
+        self.native_results
+            .lock()
+            .unwrap()
+            .push((operation, observed));
+    }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub(in crate::session_owner::owned_scope::task::pending) fn assert_native_refusal(
+        &self,
+        operation: NativeInitialOperation,
+    ) {
+        assert!(self.native_forward.lock().unwrap().is_none());
+        assert_eq!(
+            *self.native_results.lock().unwrap(),
+            vec![(operation, NativeForwardResult::Unsupported)]
+        );
+    }
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             seal_cap: AtomicUsize::new(32 << 20),
@@ -251,6 +326,16 @@ impl FixedPreparationOwner {
     }
 }
 impl FixedPreparationLoan {
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub(in crate::session_owner::owned_scope::task::pending) fn test_native_forward(
+        &self,
+        operation: NativeInitialOperation,
+    ) -> Option<(Arc<dyn crate::Store>, Arc<FixedInitialTestHooks>)> {
+        let hooks = self.owner.test.get()?;
+        hooks
+            .take_native_forward(operation)
+            .map(|store| (store, hooks.clone()))
+    }
     pub(in crate::session_owner::owned_scope::task::pending) fn refuse_seal_ack(&self) -> bool {
         self.owner
             .test

@@ -39,6 +39,7 @@ impl Selection<'_> {
     }
 }
 impl DriverRetirement {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn audit(&self) -> Option<&Audit> {
         match self {
             Self::NoDriver => None,

@@ -116,6 +116,7 @@ impl ConsumerClose {
 }
 
 native_pending_initial_items! {
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn retirement_verify_child(audit: &Audit, activated: &crate::session_owner::record::Record, proof: &mut Proof) -> Result<(), Failure> {
     proof.measure(activated)?;
     let joined = audit.record.owned_join.as_ref().ok_or_else(|| unknown("fixed child missing joined original"))?;

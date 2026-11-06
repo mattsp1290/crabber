@@ -1,5 +1,11 @@
 # Crabber session stores
 
+The default `memory` feature provides `MemoryStore` and the fixed-memory initial
+host. Disable defaults for an explicit persistent or custom Store host.
+`postgres`, `sqlite` and `conformance` remain independent of `memory`.
+Serialized policy records and generic native validation remain available in
+memory-free builds. Unit tests retain the canonical Memory backend.
+
 The `postgres` feature uses `sqlx` with Tokio, rustls, and a PostgreSQL pool. It targets PostgreSQL 14 or newer and requires a dedicated database whose schema the migrating role owns. Migrations create the Crabber tables in the default schema, so do not run them in a shared application schema.
 
 Current bundled storage requires PostgreSQL 25 / SQLite 20, defined by

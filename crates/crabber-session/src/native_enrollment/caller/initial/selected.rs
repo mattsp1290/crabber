@@ -26,6 +26,7 @@ impl SelectedInput<'_> {
         Ok(())
     }
 }
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn with_queue_input<R>(
     admission: &crate::queue::VerifiedAdmission<'_>,
     proof: &mut Proof,

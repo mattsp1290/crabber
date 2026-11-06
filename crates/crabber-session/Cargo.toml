@@ -23,7 +23,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"]
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]
-default = []
+default = ["memory"]
+memory = []
 conformance = []
 postgres = ["crabber-test-support/postgres", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]

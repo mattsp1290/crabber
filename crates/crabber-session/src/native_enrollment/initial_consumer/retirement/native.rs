@@ -54,6 +54,7 @@ pub(crate) fn verify_unactivated_retirement<'a>(
     })
 }
 impl VerifiedUnactivatedRetirement<'_> {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn request(&self) -> &MutateSessionOwner {
         &self.request
     }

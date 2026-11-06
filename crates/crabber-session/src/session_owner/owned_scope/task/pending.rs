@@ -7,23 +7,29 @@
 //! authority. Native source and local task observations do not prove complete
 //! native enrollment, resource policy or whole-Run main ownership.
 mod core;
+#[cfg(any(test, feature = "memory"))]
 mod fixed_memory;
+#[cfg(any(test, feature = "memory"))]
 pub(super) mod fixed_preparation;
+#[cfg(any(test, feature = "memory"))]
 pub use fixed_memory::{
     FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialObservation,
     FixedMemoryInitialTask, FixedMemoryInitialTaskControl,
 };
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use fixed_preparation::{OriginalPolicyRetirementView, OriginalPolicyView};
 mod enrolled_initial;
+#[cfg(any(test, feature = "memory"))]
 pub(crate) use enrolled_initial::{
     FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
     verify_fixed_binding,
 };
 mod execute;
 mod initial;
+#[cfg(any(test, feature = "memory"))]
+pub(crate) use enrolled_initial::InitialResourceAssociation;
 pub(crate) use enrolled_initial::{
-    DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
-    InitialRetirementWitness, NativeConsumerParts,
+    DrainedInitialResources, InitialRetirementView, InitialRetirementWitness, NativeConsumerParts,
 };
 #[cfg(test)]
 pub(crate) use enrolled_initial::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
@@ -219,3 +225,6 @@ pub(crate) use enrolled_initial::{ConsumerProofCaps, ConsumerProofUsage};
 
 #[cfg(test)]
 pub(crate) use fixed_preparation::FixedInitialTestHooks;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+pub(crate) use fixed_memory::assert_fixed_policy_sql_refusal;

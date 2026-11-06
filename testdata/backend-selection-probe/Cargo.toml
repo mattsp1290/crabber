@@ -1,0 +1,32 @@
+[package]
+name = "backend-selection-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[features]
+default = ["crabber/default"]
+memory = ["crabber/memory", "crabber-session/memory"]
+postgres = ["crabber/postgres", "crabber-session/postgres", "dep:crabber-test-support", "crabber-test-support/postgres", "dep:sqlx", "sqlx/postgres"]
+sqlite = ["crabber/sqlite", "crabber-session/sqlite", "dep:sqlx", "sqlx/sqlite", "dep:tempfile"]
+conformance = ["crabber-session/conformance"]
+
+[dependencies]
+crabber = { path = "../../crates/crabber", default-features = false }
+crabber-core = { path = "../../crates/crabber-core" }
+crabber-extension = { path = "../../crates/crabber-extension" }
+crabber-providers = { path = "../../crates/crabber-providers" }
+crabber-runtime = { path = "../../crates/crabber-runtime", default-features = false }
+crabber-session = { path = "../../crates/crabber-session", default-features = false }
+crabber-test-support = { path = "../../crates/crabber-test-support", default-features = false, optional = true }
+async-trait = "0.1"
+futures = "0.3"
+serde_json = "1"
+sha2 = "0.10"
+time = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls"], optional = true }
+tempfile = { version = "3", optional = true }

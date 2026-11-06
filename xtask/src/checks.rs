@@ -371,7 +371,6 @@ impl Checks {
         self.register_command(None, directory, command, expected);
     }
 
-    #[cfg(feature = "postgres-check")]
     pub(crate) fn named_command(
         &mut self,
         id: &str,
@@ -945,6 +944,7 @@ mod tests {
             assert_eq!(metadata["requires_owned_postgres"], true);
             assert_eq!(metadata["postgres_demos"], json!([]));
             assert_library_gate_selection(&partial, quarter);
+            assert_no_backend_selection(&partial);
             assert!(
                 partial
                     .gates
@@ -997,7 +997,7 @@ mod tests {
         let directory =
             crate::workspace().join("target/test-performance/remaining-list-purity-unused");
         let full = crate::complete::schedule(Vec::new(), &directory, None, None);
-        assert_eq!(full.gates.len(), 74);
+        assert_eq!(full.gates.len(), 78);
         for (label, quarter) in [
             ("native-remaining-1", Quarter::One),
             ("native-remaining-2", Quarter::Two),
@@ -1018,6 +1018,7 @@ mod tests {
             );
             let metadata = partial.scope.as_ref().unwrap().metadata();
             assert_eq!(metadata["target_quarter"], quarter.index());
+            assert_no_backend_selection(&partial);
             assert_eq!(metadata["qualified"], false);
             assert_eq!(metadata["full_coverage_policy_executed"], false);
             assert_eq!(metadata["postgres_demos"], json!([]));
@@ -1111,6 +1112,16 @@ mod tests {
     }
 
     #[cfg(feature = "postgres-check")]
+    fn assert_no_backend_selection(checks: &Checks) {
+        assert!(checks.gates.iter().all(|gate| {
+            !gate.inventory["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("backend-selection-")
+        }));
+    }
+
+    #[cfg(feature = "postgres-check")]
     fn assert_part_projection(full: &Checks, directory: &Path, part: crate::parts::Part) {
         use crate::parts::Part;
         let partial = crate::complete::schedule(Vec::new(), directory, None, Some(part));
@@ -1143,8 +1154,27 @@ mod tests {
             previous = Some(gate.inventory["id"].clone());
         }
         if part == Part::QualityContracts {
-            assert_eq!(partial.gates.len(), 43);
+            assert_eq!(partial.gates.len(), 45);
             assert_eq!(metadata["postgres_demos"], json!([]));
+            for id in [
+                "backend-selection-quality-build",
+                "backend-selection-local-runtime",
+            ] {
+                let selected: Vec<_> = partial
+                    .gates
+                    .iter()
+                    .filter(|g| g.inventory["id"] == id)
+                    .collect();
+                assert_eq!(selected.len(), 1);
+                assert_eq!(selected[0].inventory["owner"], "quality-contracts");
+                assert_eq!(selected[0].inventory["semantic_credit"], true);
+            }
+            assert!(!partial.gates.iter().any(|g| {
+                g.inventory["id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("backend-selection-postgres-")
+            }));
         } else {
             assert_artifact_preparation(&partial, full);
             assert_eq!(metadata["postgres_demos"].as_array().unwrap().len(), 4);
@@ -1165,14 +1195,14 @@ mod tests {
 
     #[cfg(feature = "postgres-check")]
     fn assert_artifact_preparation(partial: &Checks, full: &Checks) {
-        assert_eq!(partial.gates.len(), 33);
+        assert_eq!(partial.gates.len(), 36);
         assert_eq!(
             partial
                 .gates
                 .iter()
                 .filter(|g| g.inventory["execution_role"] == "preparation")
                 .count(),
-            10
+            11
         );
         let nextest: Vec<_> = partial
             .gates
@@ -1241,6 +1271,7 @@ mod tests {
             .unwrap();
         assert!(compiler < examples && examples < bins);
         assert_eq!(bins + 1, migration);
+        assert_artifact_backend_selection(partial, migration);
         assert_eq!(partial.gates[migration].inventory["owner"], "native");
         assert_eq!(partial.gates[migration].inventory["semantic_credit"], false);
         let full_bins = full
@@ -1255,6 +1286,43 @@ mod tests {
         assert_eq!(
             partial.gates[migration].inventory["execution_role"],
             "preparation"
+        );
+    }
+
+    #[cfg(feature = "postgres-check")]
+    fn assert_artifact_backend_selection(partial: &Checks, migration: usize) {
+        let position = |id: &str| {
+            partial
+                .gates
+                .iter()
+                .position(|g| g.inventory["id"] == id)
+                .unwrap()
+        };
+        let selection_build = position("backend-selection-quality-build");
+        assert_eq!(
+            partial.gates[selection_build].inventory["execution_role"],
+            "preparation"
+        );
+        assert_eq!(
+            partial.gates[selection_build].inventory["semantic_credit"],
+            false
+        );
+        assert!(
+            !partial
+                .gates
+                .iter()
+                .any(|g| g.inventory["id"] == "backend-selection-local-runtime")
+        );
+        let postgres_build = position("backend-selection-postgres-build");
+        let postgres_runtime = position("backend-selection-postgres-runtime");
+        for index in [postgres_build, postgres_runtime] {
+            assert_eq!(partial.gates[index].inventory["owner"], "quality-artifacts");
+            assert_eq!(partial.gates[index].inventory["semantic_credit"], true);
+        }
+        assert!(
+            selection_build < postgres_build
+                && postgres_build < migration
+                && migration < postgres_runtime
         );
     }
 
@@ -1328,6 +1396,85 @@ mod tests {
     }
 
     #[cfg(feature = "postgres-check")]
+    fn assert_backend_selection_inventory(checks: &Checks) {
+        let backend_gates = [
+            (
+                "backend-selection-quality-build",
+                "quality-contracts",
+                vec!["build", "--lane", "quality-contracts"],
+            ),
+            (
+                "backend-selection-local-runtime",
+                "quality-contracts",
+                vec!["local"],
+            ),
+            (
+                "backend-selection-postgres-build",
+                "quality-artifacts",
+                vec!["build", "--lane", "postgres"],
+            ),
+            (
+                "backend-selection-postgres-runtime",
+                "quality-artifacts",
+                vec!["postgres"],
+            ),
+        ];
+        for (id, owner, suffix) in backend_gates {
+            let gates: Vec<_> = checks
+                .gates
+                .iter()
+                .filter(|g| g.inventory["id"] == id)
+                .collect();
+            assert_eq!(gates.len(), 1);
+            assert_eq!(gates[0].inventory["owner"], owner);
+            let mut argv = vec![
+                "python3",
+                "-I",
+                "-S",
+                "testdata/backend-selection-probe/check.py",
+            ];
+            argv.extend(suffix);
+            assert_eq!(gates[0].inventory["argv"], json!(argv));
+        }
+    }
+
+    #[cfg(feature = "postgres-check")]
+    fn assert_backend_selection_order(
+        checks: &Checks,
+        conformance: &super::GateCommand,
+        compile: usize,
+        behavior: usize,
+        rustdoc: usize,
+    ) {
+        let gate_position = |id: &str| {
+            checks
+                .gates
+                .iter()
+                .position(|g| g.inventory["id"] == id)
+                .unwrap()
+        };
+        let conformance_position = checks
+            .gates
+            .iter()
+            .position(|g| g.inventory == conformance.inventory)
+            .unwrap();
+        assert_eq!(
+            gate_position("backend-selection-quality-build"),
+            conformance_position + 1
+        );
+        assert_eq!(
+            gate_position("backend-selection-local-runtime"),
+            conformance_position + 2
+        );
+        assert!(gate_position("backend-selection-postgres-build") < compile);
+        assert!(behavior < gate_position("backend-selection-postgres-runtime"));
+        assert_eq!(
+            gate_position("backend-selection-postgres-runtime") + 1,
+            rustdoc
+        );
+    }
+
+    #[cfg(feature = "postgres-check")]
     #[test]
     fn complete_migrates_the_owned_template_after_builds_before_native_execution() {
         let directory = std::env::temp_dir().join(format!(
@@ -1342,8 +1489,8 @@ mod tests {
         let checks = crate::complete::schedule(Vec::new(), &directory, None, None);
         assert_stable_gate_ids(&checks, &directory);
         let ownership = crate::parts::ownership(checks.gates.iter().map(|gate| &gate.inventory));
-        assert_eq!(checks.gates.len(), 74);
-        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 43);
+        assert_eq!(checks.gates.len(), 78);
+        assert_eq!(ownership["quality-contracts"].as_array().unwrap().len(), 45);
         let conformance: Vec<_> = checks
             .gates
             .iter()
@@ -1356,8 +1503,10 @@ mod tests {
             .collect();
         assert_eq!(conformance.len(), 1);
         assert_eq!(conformance[0].inventory["owner"], "quality-contracts");
-        assert_eq!(ownership["quality-artifacts"].as_array().unwrap().len(), 23);
+        assert_eq!(ownership["quality-artifacts"].as_array().unwrap().len(), 25);
         assert_eq!(ownership["native"].as_array().unwrap().len(), 8);
+        assert_backend_selection_inventory(&checks);
+
         assert_part_projection(&checks, &directory, crate::parts::Part::QualityContracts);
         assert_part_projection(&checks, &directory, crate::parts::Part::QualityArtifacts);
         for invalid in [
@@ -1394,6 +1543,14 @@ mod tests {
             .unwrap();
         let behavior = position(&["cargo", "nextest", "run", "--cargo-metadata"]);
         assert!(compile < bins && bins + 1 == migration && migration < behavior);
+        assert_backend_selection_order(
+            &checks,
+            conformance[0],
+            compile,
+            behavior,
+            position(&["cargo", "test", "--workspace", "--features"]),
+        );
+
         assert_eq!(
             checks.gates[migration].inventory["prerequisites"],
             json!([checks.gates[bins].inventory["id"]])

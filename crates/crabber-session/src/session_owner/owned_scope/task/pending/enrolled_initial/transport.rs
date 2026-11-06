@@ -28,8 +28,10 @@ pub struct PendingInitialNativeCall<'call> {
     pub(super) lease: &'call LocalLease,
     pub(super) consumer: Option<&'call super::InitialResourceAssociation<'call>>,
     pub(super) retirement: Option<&'call super::InitialRetirementWitness<'call>>,
+    #[cfg(any(test, feature = "memory"))]
     pub(super) original_policy:
         Option<&'call super::super::fixed_preparation::OriginalPolicyView<'call>>,
+    #[cfg(any(test, feature = "memory"))]
     pub(super) policy_retirement:
         Option<&'call super::super::fixed_preparation::OriginalPolicyRetirementView<'call>>,
 }
@@ -53,7 +55,9 @@ pub(crate) struct NativeInitialParts<'a> {
     pub(crate) proof: &'a mut Proof,
     pub(crate) consumer: Option<&'a super::InitialResourceAssociation<'a>>,
     pub(crate) retirement: Option<&'a super::InitialRetirementWitness<'a>>,
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) original_policy: Option<&'a super::super::fixed_preparation::OriginalPolicyView<'a>>,
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) policy_retirement:
         Option<&'a super::super::fixed_preparation::OriginalPolicyRetirementView<'a>>,
     _lease: &'a LocalLease,
@@ -71,8 +75,11 @@ impl<'a> PendingInitialNativeCall<'a> {
             .verify(self.operation, self.source, self.expected)?;
         let needs_retirement =
             self.operation == NativeInitialOperation::Seal && self.consumer.is_some();
-        if self.retirement.is_some() != needs_retirement
-            || (self.original_policy.is_some() && self.consumer.is_none())
+        if self.retirement.is_some() != needs_retirement {
+            return Err(Error::InvalidTransition.into());
+        }
+        #[cfg(any(test, feature = "memory"))]
+        if (self.original_policy.is_some() && self.consumer.is_none())
             || self.policy_retirement.is_some()
                 != (self.operation == NativeInitialOperation::Seal
                     && self.original_policy.is_some())
@@ -89,7 +96,9 @@ impl<'a> PendingInitialNativeCall<'a> {
             proof: self.proof,
             consumer: self.consumer,
             retirement: self.retirement,
+            #[cfg(any(test, feature = "memory"))]
             original_policy: self.original_policy,
+            #[cfg(any(test, feature = "memory"))]
             policy_retirement: self.policy_retirement,
             _lease: self.lease,
         })

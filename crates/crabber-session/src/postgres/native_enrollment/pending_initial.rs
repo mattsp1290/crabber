@@ -22,6 +22,7 @@ impl crate::postgres::PostgresStore {
             call.into_native()?;
         // This composition is tied to the actual library-created Memory root.
         // A forwarded private view cannot originate a policy on a SQL backend.
+        #[cfg(any(test, feature = "memory"))]
         if parts.original_policy.is_some() || parts.policy_retirement.is_some() {
             return Err(Error::Unsupported.into());
         }

@@ -135,6 +135,21 @@ Cargo fallback, bounded scheduler settings and timing evidence. Concurrent lanes
 in one checkout must use distinct `CARGO_TARGET_DIR` values; keep sources fixed
 while qualification runs.
 
+## Store selection
+
+The facade and `crabber-session` enable `memory` by default. Default builds retain
+`MemoryStore`, `AgentBuilder::memory()` and a fresh in-memory store when the
+builder omits a store. Persistent or custom-store hosts can disable defaults:
+
+```toml
+crabber = { path = "crates/crabber", default-features = false, features = ["sqlite"] }
+```
+
+Supply an explicit store in that configuration. Otherwise, a valid provider and
+configuration return `BuildError::Runtime(RuntimeError::Missing("store"))`.
+The `postgres`, `sqlite` and `conformance` features do not enable Memory.
+`crabber-runtime` always requires an explicit store and has no `memory` feature.
+
 ## PostgreSQL persistence
 
 Enable the `postgres` feature to use `PostgresStore`. PostgreSQL 14+ and a dedicated database are required; call `PostgresStore::migrate(url)` before connecting. The minimal embedding example enables this feature and accepts `--store postgres`, reading `CRABBER_POSTGRES_URL`. With `--interrupt` (also accepted as `--interrupt-after-first-delta`), it prints the run ID and leaves the interrupted run in PostgreSQL. A later process can run `--store postgres --resume <run-id>` with the same URL. The default `--store memory` remains process local.

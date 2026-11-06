@@ -95,6 +95,7 @@ impl<T> JoinedOwnedTask<T> {
     }
 }
 impl JoinedOwnedScope {
+    #[cfg(any(test, feature = "memory"))]
     pub(crate) fn from_fixed_preparation(
         witness: &super::OriginalPolicyRetirementView<'_>,
         proof: &mut crate::public_session::v2::proof::Proof,
